@@ -1,0 +1,95 @@
+---
+source: crates/obu-node-repl/tests/description_snapshot.rs
+assertion_line: 4
+expression: body
+---
+Execute JavaScript in a persistent Node-backed open-browser-use kernel.
+
+Use this tool when a task benefits from JavaScript state, top-level `await`,
+module imports, filesystem inspection, data shaping, or repeated probing. Each
+call runs as a fresh ES module in the same Node child. Top-level `let`/`const`
+bindings from successful calls are carried forward by the kernel, so you can
+define helper functions once and reuse them later. `js_reset` clears that state
+by respawning the child.
+
+When `@open-browser-use/sdk` is installed in a trusted module directory, the kernel
+automatically installs the global `agent`. Use `agent.browsers.get("cdp")` or
+`agent.browsers.get("chrome")` to drive a browser through the Playwright-shaped
+open-browser-use SDK. This is the browser automation surface: do not ask for separate
+`click`, `type`, `screenshot`, or `scroll` tools. Write JavaScript with
+`agent`, `tab`, `locator`, and `tab.cua` instead.
+
+## Arguments
+
+- `source` — JavaScript source to execute.
+- `timeout_ms` — optional execution timeout in milliseconds. On timeout the
+  current Node child is killed and the next `js` call starts a fresh child.
+
+## Result
+
+The structured result contains:
+
+- `stdout` — captured `console.log`, `console.info`, `console.warn`,
+  `console.error`, and `nodeRepl.write` output.
+- `stderr` — reserved for future split capture; currently empty.
+- `result` — the JSON-serializable value of the last expression, or `null`.
+- `duration_ms` — kernel-measured execution time.
+- `displays` — values emitted by `display(value)`.
+
+## Globals
+
+- `display(value)` — show progress. Strings and JSON-compatible values stream
+  live via MCP `notifications/progress` when the client provides a progress
+  token, and are also returned in `displays`. Image payloads shaped as
+  `{ __obuImage: true, mime_type, data }` are not streamed; they only appear in
+  the final `displays` array.
+- `nodeRepl.cwd` — current working directory.
+- `nodeRepl.homeDir` — user home directory, when available.
+- `nodeRepl.tmpDir` — scratch directory.
+- `nodeRepl.requestMeta` — per-request metadata supplied by the MCP client.
+- `nodeRepl.setResponseMeta(value)` — attach response metadata.
+- `nodeRepl.write(string)` — append low-level text output. Prefer `display`
+  for user-facing progress.
+- `obuRepl.discoverBackends()` — trusted SDK backend inventory seeded by the
+  Rust parent from `OBU_BACKENDS`.
+- `obuRepl.discoverBackendDiagnostics()` — ignored runtime backend descriptor
+  reasons, useful when browser setup is not discoverable.
+- `agent` — installed when trusted `@open-browser-use/sdk` is discoverable. Use
+  `await agent.browsers.get(kind)` to connect lazily.
+- `help()` — prints the SDK API table.
+
+## Examples
+
+```js
+const browser = await agent.browsers.get("cdp");
+const tab = await browser.tabs.create("https://example.com");
+await tab.attach();
+await tab.locator("h1").click();
+await tab.content.export({ format: "png" });
+```
+
+```js
+const browser = await agent.browsers.get("chrome");
+const tab = await browser.tabs.create("data:text/html,<button>Save</button>");
+await tab.attach();
+await tab.getByRole("button", { name: "Save" }).click();
+```
+
+```js
+const browser = await agent.browsers.get("chrome");
+for (const deliverable of await browser.deliverables()) {
+  display({ recoverableTab: deliverable.tabId, title: deliverable.title });
+  await deliverable.claim();
+}
+await browser.clearLifecycleDiagnostics();
+```
+
+```js
+display("checking package metadata");
+const pkg = await import("./package.json", { with: { type: "json" } });
+pkg.default.version;
+```
+
+Use `js_add_module_dir({ path })` before importing packages from an additional
+absolute directory. The directory is added to the kernel's bare-module import
+roots and is also included when the kernel respawns.

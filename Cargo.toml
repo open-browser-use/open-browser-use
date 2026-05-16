@@ -1,0 +1,56 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/obu-wire",
+    "crates/obu-node-repl",
+    "crates/obu-host",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.88"
+license = "MIT"
+repository = "https://github.com/open-browser-use/runtime"
+
+[workspace.dependencies]
+# core async + serde
+tokio = { version = "1.50", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec", "rt"] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+async-trait = "0.1"
+futures-util = { version = "0.3", features = ["sink"] }
+bytes = "1"
+tokio-tungstenite = "0.27"
+url = "2"
+reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
+
+# error / logging
+anyhow = "1"
+thiserror = "1"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# MCP server
+rmcp = { version = "=1.5.0", default-features = false, features = ["server", "transport-io"] }
+
+# crypto / env
+sha2 = "0.10"
+hex = "0.4"
+base64 = "0.22"
+clap = { version = "4.6", features = ["derive", "env"] }
+which = "8"
+uuid = { version = "1", features = ["v4", "serde"] }
+dirs = "5"
+libc = "0.2"
+
+# test deps
+insta = { version = "1", features = ["json"] }
+assert_cmd = "2"
+predicates = "3"
+tempfile = "3"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

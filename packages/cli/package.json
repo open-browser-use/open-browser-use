@@ -1,0 +1,28 @@
+{
+  "name": "@open-browser-use/cli",
+  "version": "0.1.0",
+  "private": true,
+  "description": "open-browser-use user-facing command line tools.",
+  "license": "MIT",
+  "type": "module",
+  "bin": {
+    "obu": "./dist/index.js",
+    "open-browser-use": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "prepublishOnly": "node scripts/deny-direct-publish.mjs",
+    "test": "tsc -p tsconfig.json && node --test \"dist/**/*.test.js\"",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.5",
+    "typescript": "5.7.3"
+  },
+  "engines": {
+    "node": ">=22.22.0"
+  },
+  "dependencies": {
+    "jsonc-parser": "3.3.1"
+  }
+}

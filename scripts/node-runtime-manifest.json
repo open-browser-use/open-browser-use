@@ -1,0 +1,37 @@
+{
+  "schemaVersion": 1,
+  "nodeVersion": "22.22.0",
+  "sources": {
+    "darwin-arm64": {
+      "file": "node-v22.22.0-darwin-arm64.tar.gz",
+      "url": "https://nodejs.org/download/release/v22.22.0/node-v22.22.0-darwin-arm64.tar.gz",
+      "sha256": "5ed4db0fcf1eaf84d91ad12462631d73bf4576c1377e192d222e48026a902640",
+      "source": "official-nodejs-release"
+    },
+    "darwin-x64": {
+      "file": "node-v22.22.0-darwin-x64.tar.gz",
+      "url": "https://nodejs.org/download/release/v22.22.0/node-v22.22.0-darwin-x64.tar.gz",
+      "sha256": "5ea50c9d6dea3dfa3abb66b2656f7a4e1c8cef23432b558d45fb538c7b5dedce",
+      "source": "official-nodejs-release"
+    },
+    "linux-x64-gnu": {
+      "file": "node-v22.22.0-linux-x64.tar.gz",
+      "url": "https://nodejs.org/download/release/v22.22.0/node-v22.22.0-linux-x64.tar.gz",
+      "sha256": "c33c39ed9c80deddde77c960d00119918b9e352426fd604ba41638d6526a4744",
+      "source": "official-nodejs-release"
+    },
+    "linux-x64-musl": {
+      "file": "node-v22.22.0-linux-x64-musl.tar.gz",
+      "url": "https://unofficial-builds.nodejs.org/download/release/v22.22.0/node-v22.22.0-linux-x64-musl.tar.gz",
+      "sha256": "5618c83f81bdf51ac7fdfdf5bd6e179c15294b10ae4af13c028a27d54a0bd780",
+      "source": "nodejs-unofficial-builds",
+      "note": "Node-hosted unofficial musl build; verify release policy before public publish."
+    },
+    "linux-arm64-gnu": {
+      "file": "node-v22.22.0-linux-arm64.tar.gz",
+      "url": "https://nodejs.org/download/release/v22.22.0/node-v22.22.0-linux-arm64.tar.gz",
+      "sha256": "25ba95dfb96871fa2ef977f11f95ea90818c8fa15c0f2110771db08d4ba423be",
+      "source": "official-nodejs-release"
+    }
+  }
+}

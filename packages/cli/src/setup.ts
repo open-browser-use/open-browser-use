@@ -1,0 +1,178 @@
+import { installNativeHosts } from "./native-host.js";
+import { ensureRuntimeDir, type RuntimeLayout, writeUserConfig } from "./runtime-layout.js";
+import { updateExtension, type ExtensionUpdateStep } from "./extension-update.js";
+import type { BrowserKind } from "./browser-paths.js";
+import { configureAgents } from "./agents/configure.js";
+import type { AgentId, McpServerInvocation } from "./agents/registry.js";
+
+export type SetupStepStatus = "applied" | "skipped" | "manual_action_required" | "failed";
+
+export type SetupJson = {
+  schemaVersion: 1;
+  generatedAt: string;
+  obuVersion: string;
+  dryRun: boolean;
+  result: "complete" | "manual_action_required" | "failed";
+  steps: Array<{
+    id: string;
+    status: SetupStepStatus;
+    message: string;
+    details?: Record<string, unknown>;
+  }>;
+  nextActions: Array<{ kind: "command" | "manual" | "docs"; value: string }>;
+};
+
+export type SetupOptions = {
+  layout: RuntimeLayout;
+  obuVersion: string;
+  browsers: BrowserKind[];
+  agents: AgentId[];
+  server: McpServerInvocation;
+  dryRun?: boolean;
+  skipExtension?: boolean;
+  skipAgents?: boolean;
+  extensionPath?: string;
+  env?: NodeJS.ProcessEnv;
+};
+
+export async function setupOpenBrowserUse(options: SetupOptions): Promise<SetupJson> {
+  const dryRun = options.dryRun === true;
+  const steps: SetupJson["steps"] = [];
+  const nextActions: SetupJson["nextActions"] = [];
+
+  if (dryRun) {
+    steps.push({
+      id: "runtime-dir",
+      status: "skipped",
+      message: `would ensure runtime directory ${options.layout.runtimeDir}`,
+      details: { runtimeDir: options.layout.runtimeDir, dryRun: true },
+    });
+  } else {
+    const runtime = await ensureRuntimeDir(options.layout.runtimeDir);
+    if (!runtime.ok) {
+      steps.push({
+        id: "runtime-dir",
+        status: "failed",
+        message: runtime.message ?? "invalid runtime directory",
+        ...(runtime.details ? { details: runtime.details } : {}),
+      });
+      return finalize(options, steps, nextActions);
+    }
+    await writeUserConfig(options.layout.userConfigPath, {
+      schemaVersion: 1,
+      runtimeDir: options.layout.runtimeDir,
+      extensionCurrentDir: options.layout.extensionCurrentDir,
+      nativeHostInstallRoot: options.layout.nativeHostInstallRoot,
+    });
+    steps.push({
+      id: "runtime-dir",
+      status: "applied",
+      message: `ensured runtime directory ${options.layout.runtimeDir}`,
+      details: { runtimeDir: options.layout.runtimeDir },
+    });
+  }
+
+  const hostActions = await installNativeHosts({
+    layout: options.layout,
+    browsers: options.browsers,
+    dryRun,
+  });
+  for (const action of hostActions) {
+    steps.push({
+      id: `native-host-${action.browser}`,
+      status: setupStatus(action.status),
+      message: action.message,
+      ...(action.details ? { details: action.details } : {}),
+    });
+  }
+
+  if (options.skipExtension) {
+    steps.push({
+      id: "extension-update",
+      status: "skipped",
+      message: "skipped extension update",
+    });
+  } else {
+    const extension = await updateExtension({
+      layout: options.layout,
+      dryRun,
+      ...(options.extensionPath ? { sourceDir: options.extensionPath } : {}),
+    });
+    for (const step of extension.steps) steps.push(mapExtensionStep(step));
+    nextActions.push(...extension.nextActions);
+  }
+
+  if (options.skipAgents || options.agents.length === 0) {
+    steps.push({
+      id: "agent-adapters",
+      status: "skipped",
+      message: options.skipAgents ? "skipped agent adapter wiring" : "no agent adapters requested",
+    });
+  } else {
+    const agentSteps = await configureAgents({
+      agents: options.agents,
+      server: options.server,
+      dryRun,
+      ...(options.env ? { env: options.env } : {}),
+    });
+    for (const step of agentSteps) {
+      steps.push({
+        id: step.id,
+        status: step.status,
+        message: step.message,
+        ...(step.details ? { details: step.details } : {}),
+      });
+      if (step.nextActions) nextActions.push(...step.nextActions);
+    }
+  }
+
+  nextActions.push({ kind: "command", value: "obu doctor" });
+  return finalize(options, steps, dedupeActions(nextActions));
+}
+
+function mapExtensionStep(step: ExtensionUpdateStep): SetupJson["steps"][number] {
+  return {
+    id: step.id,
+    status: setupStatus(step.status),
+    message: step.message,
+    ...(step.details ? { details: step.details } : {}),
+  };
+}
+
+function setupStatus(status: string): SetupStepStatus {
+  if (status === "failed") return "failed";
+  if (status === "manual_action_required") return "manual_action_required";
+  if (status === "skipped" || status === "would_apply") return "skipped";
+  return "applied";
+}
+
+function finalize(
+  options: SetupOptions,
+  steps: SetupJson["steps"],
+  nextActions: SetupJson["nextActions"],
+): SetupJson {
+  const result = steps.some((step) => step.status === "failed")
+    ? "failed"
+    : steps.some((step) => step.status === "manual_action_required")
+      ? "manual_action_required"
+      : "complete";
+  return {
+    schemaVersion: 1,
+    generatedAt: new Date().toISOString(),
+    obuVersion: options.obuVersion,
+    dryRun: options.dryRun === true,
+    result,
+    steps,
+    nextActions,
+  };
+}
+
+function dedupeActions(actions: SetupJson["nextActions"]): SetupJson["nextActions"] {
+  const seen = new Set<string>();
+  return actions.filter((action) => {
+    const key = `${action.kind}:${action.value}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+}

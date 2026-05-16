@@ -1,0 +1,138 @@
+:root {
+  color-scheme: light dark;
+  --bg: #f7f5ef;
+  --ink: #171717;
+  --muted: #6b665c;
+  --line: #d8d2c4;
+  --panel: #fffdf7;
+  --accent: #006c67;
+  --danger: #a92d23;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --bg: #111312;
+    --ink: #f4f0e7;
+    --muted: #a7a094;
+    --line: #333832;
+    --panel: #181b19;
+    --accent: #5ac8bd;
+    --danger: #ff7d6e;
+  }
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  width: 360px;
+  margin: 0;
+  background: var(--bg);
+  color: var(--ink);
+  font: 13px/1.45 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  letter-spacing: 0;
+}
+
+.shell {
+  padding: 16px;
+}
+
+.header {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 16px;
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.eyebrow,
+.label,
+footer {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  text-transform: uppercase;
+}
+
+h1 {
+  margin: 2px 0 0;
+  font-size: 18px;
+  font-weight: 700;
+}
+
+.dot {
+  width: 10px;
+  height: 10px;
+  margin-top: 6px;
+  border-radius: 50%;
+  background: var(--muted);
+}
+
+.dot.connected {
+  background: var(--accent);
+}
+
+.dot.error {
+  background: var(--danger);
+}
+
+.status {
+  margin: 14px 0;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.value {
+  margin: 3px 0 0;
+  font-size: 14px;
+  font-weight: 700;
+}
+
+.detail {
+  min-height: 18px;
+  margin: 8px 0 0;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  gap: 8px;
+}
+
+.stop,
+.resume {
+  width: 100%;
+  min-height: 36px;
+  border-radius: 8px;
+  background: transparent;
+  font: inherit;
+  font-weight: 700;
+  cursor: pointer;
+}
+
+.stop {
+  border: 1px solid var(--danger);
+  color: var(--danger);
+}
+
+.resume {
+  min-width: 92px;
+  border: 1px solid var(--accent);
+  color: var(--accent);
+}
+
+.stop:disabled,
+.resume:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+}
+
+footer {
+  margin-top: 12px;
+}

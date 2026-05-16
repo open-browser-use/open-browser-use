@@ -1,0 +1,37 @@
+{
+  "name": "open-browser-use-monorepo",
+  "private": true,
+  "license": "MIT",
+  "packageManager": "pnpm@10.0.0",
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "build": "pnpm -r build",
+    "coverage": "pnpm coverage:sdk && pnpm coverage:extension && pnpm coverage:rust",
+    "coverage:extension": "pnpm --filter @open-browser-use/extension coverage",
+    "coverage:rust": "sh scripts/coverage-rust.sh",
+    "coverage:sdk": "pnpm --filter @open-browser-use/sdk coverage",
+    "assemble:payload": "node scripts/assemble-payload.mjs",
+    "fetch:node-runtime": "node scripts/fetch-node-runtime.mjs",
+    "make:curl-artifact": "node scripts/make-curl-artifact.mjs",
+    "smoke:agent-adapters": "node scripts/agent-adapter-smoke.mjs",
+    "smoke:cli-runtime-deps": "node scripts/cli-runtime-deps-smoke.mjs",
+    "smoke:curl-install": "node scripts/curl-install-smoke.mjs",
+    "smoke:cargo-dist": "node scripts/cargo-dist-smoke.mjs",
+    "smoke:mcp-stdio-clean": "node scripts/mcp-stdio-clean-smoke.mjs",
+    "smoke:payload": "node scripts/payload-self-check.mjs",
+    "smoke:p4-release-readiness": "node scripts/p4-release-readiness-smoke.mjs",
+    "smoke:npm-pack": "node scripts/npm-pack-smoke.mjs",
+    "stage:npm": "node scripts/stage-npm-packages.mjs",
+    "smoke:package-static": "node scripts/package-local-smoke.mjs --target all --static",
+    "smoke:setup-local-spine": "node scripts/setup-local-spine-smoke.mjs",
+    "smoke:setup-webext": "node scripts/setup-webext-e2e.mjs",
+    "smoke:npm-wrapper": "node scripts/npm-wrapper-resolver-smoke.mjs",
+    "test": "pnpm -r test",
+    "typecheck": "pnpm -r typecheck"
+  },
+  "devDependencies": {
+    "typescript": "5.7.3"
+  }
+}

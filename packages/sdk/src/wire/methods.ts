@@ -1,0 +1,166 @@
+/**
+ * Names of every JSON-RPC method on the obu-host wire.
+ *
+ * MUST stay in sync with `crates/obu-host/src/methods.rs`.
+ */
+
+export const PING = "ping" as const;
+export const GET_INFO = "getInfo" as const;
+
+export const GET_TABS = "getTabs" as const;
+export const CREATE_TAB = "createTab" as const;
+export const FINALIZE_TABS = "finalizeTabs" as const;
+export const CLAIM_USER_TAB = "claimUserTab" as const;
+export const GET_USER_TABS = "getUserTabs" as const;
+export const NAME_SESSION = "nameSession" as const;
+
+export const ATTACH = "attach" as const;
+export const DETACH = "detach" as const;
+export const EXECUTE_CDP = "executeCdp" as const;
+export const MOVE_MOUSE = "moveMouse" as const;
+
+export const GET_USER_HISTORY = "getUserHistory" as const;
+
+export const TURN_ENDED = "turnEnded" as const;
+export const CLEAR_LIFECYCLE_DIAGNOSTICS = "clearLifecycleDiagnostics" as const;
+export const EXECUTE_UNHANDLED_COMMAND = "executeUnhandledCommand" as const;
+
+export const PLAYWRIGHT_LOCATOR_CLICK = "playwright_locator_click" as const;
+export const PLAYWRIGHT_LOCATOR_DBLCLICK = "playwright_locator_dblclick" as const;
+export const PLAYWRIGHT_LOCATOR_DOWNLOAD_MEDIA = "playwright_locator_download_media" as const;
+export const PLAYWRIGHT_LOCATOR_FILL = "playwright_locator_fill" as const;
+export const PLAYWRIGHT_LOCATOR_PRESS = "playwright_locator_press" as const;
+export const PLAYWRIGHT_LOCATOR_WAIT_FOR = "playwright_locator_wait_for" as const;
+export const PLAYWRIGHT_LOCATOR_COUNT = "playwright_locator_count" as const;
+export const PLAYWRIGHT_LOCATOR_SELECT_OPTION = "playwright_locator_select_option" as const;
+export const PLAYWRIGHT_LOCATOR_SET_CHECKED = "playwright_locator_set_checked" as const;
+export const PLAYWRIGHT_LOCATOR_IS_VISIBLE = "playwright_locator_is_visible" as const;
+export const PLAYWRIGHT_LOCATOR_IS_ENABLED = "playwright_locator_is_enabled" as const;
+export const PLAYWRIGHT_LOCATOR_ALL_TEXT_CONTENTS = "playwright_locator_all_text_contents" as const;
+export const PLAYWRIGHT_LOCATOR_TEXT_CONTENT = "playwright_locator_text_content" as const;
+export const PLAYWRIGHT_LOCATOR_INNER_TEXT = "playwright_locator_inner_text" as const;
+export const PLAYWRIGHT_LOCATOR_GET_ATTRIBUTE = "playwright_locator_get_attribute" as const;
+export const PLAYWRIGHT_LOCATOR_READ_ALL = "playwright_locator_read_all" as const;
+export const PLAYWRIGHT_LOCATOR_HOVER = "playwright_locator_hover" as const;
+export const PLAYWRIGHT_LOCATOR_BOUNDING_BOX = "playwright_locator_bounding_box" as const;
+
+export const PLAYWRIGHT_SCREENSHOT = "playwright_screenshot" as const;
+export const PLAYWRIGHT_DOM_SNAPSHOT = "playwright_dom_snapshot" as const;
+export const PLAYWRIGHT_WAIT_FOR_TIMEOUT = "playwright_wait_for_timeout" as const;
+export const PLAYWRIGHT_WAIT_FOR_URL = "playwright_wait_for_url" as const;
+export const PLAYWRIGHT_WAIT_FOR_LOAD_STATE = "playwright_wait_for_load_state" as const;
+export const PLAYWRIGHT_WAIT_FOR_FILE_CHOOSER = "playwright_wait_for_file_chooser" as const;
+export const PLAYWRIGHT_FILE_CHOOSER_SET_FILES = "playwright_file_chooser_set_files" as const;
+export const PLAYWRIGHT_WAIT_FOR_DOWNLOAD = "playwright_wait_for_download" as const;
+export const PLAYWRIGHT_DOWNLOAD_PATH = "playwright_download_path" as const;
+
+export const CUA_CLICK = "cua_click" as const;
+export const CUA_DBLCLICK = "cua_dblclick" as const;
+export const CUA_SCROLL = "cua_scroll" as const;
+export const CUA_TYPE = "cua_type" as const;
+export const CUA_KEYPRESS = "cua_keypress" as const;
+export const CUA_DRAG = "cua_drag" as const;
+export const CUA_MOVE = "cua_move" as const;
+export const CUA_DOWNLOAD_MEDIA = "cua_download_media" as const;
+
+export const TAB_CLIPBOARD_READ_TEXT = "tab_clipboard_read_text" as const;
+export const TAB_CLIPBOARD_WRITE_TEXT = "tab_clipboard_write_text" as const;
+export const TAB_CLIPBOARD_READ = "tab_clipboard_read" as const;
+export const TAB_CLIPBOARD_WRITE = "tab_clipboard_write" as const;
+
+export const DOM_CUA_GET_VISIBLE_DOM = "dom_cua_get_visible_dom" as const;
+export const DOM_CUA_CLICK = "dom_cua_click" as const;
+export const DOM_CUA_DOUBLE_CLICK = "dom_cua_double_click" as const;
+export const DOM_CUA_SCROLL = "dom_cua_scroll" as const;
+export const DOM_CUA_TYPE = "dom_cua_type" as const;
+export const DOM_CUA_KEYPRESS = "dom_cua_keypress" as const;
+export const DOM_CUA_DOWNLOAD_MEDIA = "dom_cua_download_media" as const;
+
+export const TAB_GOTO = "tab_goto" as const;
+export const TAB_RELOAD = "tab_reload" as const;
+export const TAB_BACK = "tab_back" as const;
+export const TAB_FORWARD = "tab_forward" as const;
+export const TAB_CLOSE = "tab_close" as const;
+export const TAB_SCREENSHOT = "tab_screenshot" as const;
+export const TAB_WAIT_FOR_URL = "tab_wait_for_url" as const;
+export const TAB_WAIT_FOR_LOAD_STATE = "tab_wait_for_load_state" as const;
+export const TAB_CONTENT_EXPORT = "tab_content_export" as const;
+export const TAB_URL = "tab_url" as const;
+export const TAB_TITLE = "tab_title" as const;
+
+/** Every inbound (SDK -> obu-host) method name. */
+export const ALL_INBOUND_METHODS = [
+  PING,
+  GET_INFO,
+  GET_TABS,
+  CREATE_TAB,
+  FINALIZE_TABS,
+  CLAIM_USER_TAB,
+  GET_USER_TABS,
+  NAME_SESSION,
+  ATTACH,
+  DETACH,
+  EXECUTE_CDP,
+  MOVE_MOUSE,
+  GET_USER_HISTORY,
+  TURN_ENDED,
+  CLEAR_LIFECYCLE_DIAGNOSTICS,
+  EXECUTE_UNHANDLED_COMMAND,
+  PLAYWRIGHT_LOCATOR_CLICK,
+  PLAYWRIGHT_LOCATOR_DBLCLICK,
+  PLAYWRIGHT_LOCATOR_DOWNLOAD_MEDIA,
+  PLAYWRIGHT_LOCATOR_FILL,
+  PLAYWRIGHT_LOCATOR_PRESS,
+  PLAYWRIGHT_LOCATOR_WAIT_FOR,
+  PLAYWRIGHT_LOCATOR_COUNT,
+  PLAYWRIGHT_LOCATOR_SELECT_OPTION,
+  PLAYWRIGHT_LOCATOR_SET_CHECKED,
+  PLAYWRIGHT_LOCATOR_IS_VISIBLE,
+  PLAYWRIGHT_LOCATOR_IS_ENABLED,
+  PLAYWRIGHT_LOCATOR_ALL_TEXT_CONTENTS,
+  PLAYWRIGHT_LOCATOR_TEXT_CONTENT,
+  PLAYWRIGHT_LOCATOR_INNER_TEXT,
+  PLAYWRIGHT_LOCATOR_GET_ATTRIBUTE,
+  PLAYWRIGHT_LOCATOR_READ_ALL,
+  PLAYWRIGHT_LOCATOR_HOVER,
+  PLAYWRIGHT_LOCATOR_BOUNDING_BOX,
+  PLAYWRIGHT_SCREENSHOT,
+  PLAYWRIGHT_DOM_SNAPSHOT,
+  PLAYWRIGHT_WAIT_FOR_TIMEOUT,
+  PLAYWRIGHT_WAIT_FOR_URL,
+  PLAYWRIGHT_WAIT_FOR_LOAD_STATE,
+  PLAYWRIGHT_WAIT_FOR_FILE_CHOOSER,
+  PLAYWRIGHT_FILE_CHOOSER_SET_FILES,
+  PLAYWRIGHT_WAIT_FOR_DOWNLOAD,
+  PLAYWRIGHT_DOWNLOAD_PATH,
+  CUA_CLICK,
+  CUA_DBLCLICK,
+  CUA_SCROLL,
+  CUA_TYPE,
+  CUA_KEYPRESS,
+  CUA_DRAG,
+  CUA_MOVE,
+  CUA_DOWNLOAD_MEDIA,
+  TAB_CLIPBOARD_READ_TEXT,
+  TAB_CLIPBOARD_WRITE_TEXT,
+  TAB_CLIPBOARD_READ,
+  TAB_CLIPBOARD_WRITE,
+  DOM_CUA_GET_VISIBLE_DOM,
+  DOM_CUA_CLICK,
+  DOM_CUA_DOUBLE_CLICK,
+  DOM_CUA_SCROLL,
+  DOM_CUA_TYPE,
+  DOM_CUA_KEYPRESS,
+  DOM_CUA_DOWNLOAD_MEDIA,
+  TAB_GOTO,
+  TAB_RELOAD,
+  TAB_BACK,
+  TAB_FORWARD,
+  TAB_CLOSE,
+  TAB_SCREENSHOT,
+  TAB_WAIT_FOR_URL,
+  TAB_WAIT_FOR_LOAD_STATE,
+  TAB_CONTENT_EXPORT,
+  TAB_URL,
+  TAB_TITLE,
+] as const satisfies readonly string[];

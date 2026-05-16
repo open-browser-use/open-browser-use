@@ -1,0 +1,453 @@
+#!/usr/bin/env node
+import { spawn } from "node:child_process";
+import path from "node:path";
+
+import { isAgentId, renderAgentMcpConfig, supportedAgentIds, type AgentId, type McpServerInvocation } from "./agents/registry.js";
+import { doctorAggregate, formatAggregateDoctorReport } from "./doctor.js";
+import { doctorJson } from "./doctor-json.js";
+import { doctorBrowser, formatDoctorReport, hasDoctorFailures, type BrowserKind, type DoctorReport } from "./doctor-browser.js";
+import { updateExtension } from "./extension-update.js";
+import { installNativeHosts, supportedNativeHostBrowsers } from "./native-host.js";
+import { ensureRuntimeDir, executableExists, packageVersion, resolveRuntimeLayout, validateRuntimeDir, writeUserConfig } from "./runtime-layout.js";
+import { setupOpenBrowserUse } from "./setup.js";
+
+type ParsedArgs = {
+  command?: string;
+  subject?: string;
+  browser?: BrowserKind;
+  agent?: string;
+  json: boolean;
+  repair: boolean;
+  cleanBackups: boolean;
+  strict: boolean;
+  print: boolean;
+  all: boolean;
+  dryRun: boolean;
+  help: boolean;
+  version: boolean;
+  extensionId?: string;
+  channel?: string;
+  extensionPath?: string;
+  noWait: boolean;
+  yes: boolean;
+  agents: string[];
+  skipExtension: boolean;
+  skipAgents: boolean;
+};
+
+async function main(argv: string[]): Promise<number> {
+  const args = parseArgs(argv);
+  if (args.help) {
+    printHelp();
+    return 0;
+  }
+  if (args.version || args.command === "version") {
+    console.log(await packageVersion());
+    return 0;
+  }
+  if (args.command === "doctor") {
+    return runDoctor(args);
+  }
+  if (args.command === "mcp-config") {
+    return runMcpConfig(args);
+  }
+  if (args.command === "mcp" && args.subject === "stdio") {
+    return runMcpStdio();
+  }
+  if (args.command === "install-host") {
+    return runInstallHost(args);
+  }
+  if (args.command === "update-extension") {
+    return runUpdateExtension(args);
+  }
+  if (args.command === "setup") {
+    return runSetup(args);
+  }
+  if (args.command === "repl") {
+    console.error("obu repl is deferred in P4a. Use `obu mcp stdio` for MCP clients; a direct debug REPL needs a separate tested contract.");
+    return 2;
+  }
+  printHelp();
+  return 2;
+}
+
+async function runSetup(args: ParsedArgs): Promise<number> {
+  const channelStatus = validateChannel(args.channel);
+  if (channelStatus) {
+    console.error(channelStatus);
+    return 2;
+  }
+  const layout = await resolveRuntimeLayout();
+  if (layout.configIssue) {
+    console.error(`open-browser-use user config is invalid: ${layout.configIssue.message}. Fix or remove ${layout.configIssue.path}, then rerun obu setup.`);
+    return 2;
+  }
+  const supported = supportedNativeHostBrowsers();
+  const browsers = args.all ? supported : [args.browser ?? ("chrome" as BrowserKind)];
+  const unsupported = browsers.filter((browser) => !supported.includes(browser));
+  if (unsupported.length > 0) {
+    console.error(`unsupported setup browser target on ${process.platform}: ${unsupported.join(", ")}`);
+    return 2;
+  }
+  const unsupportedAgents = args.agents.filter((agent) => !isAgentId(agent));
+  if (unsupportedAgents.length > 0) {
+    console.error(`unsupported agent id(s): ${unsupportedAgents.join(", ")}. Supported agents: ${supportedAgentIds().join(", ")}`);
+    return 2;
+  }
+  const invocation = await resolveMcpInvocation(layout.openBrowserUseCommand, layout.cliEntry);
+  const server: McpServerInvocation = {
+    name: "open-browser-use",
+    command: invocation.command,
+    args: invocation.args,
+  };
+  const report = await setupOpenBrowserUse({
+    layout,
+    obuVersion: await packageVersion(),
+    browsers,
+    agents: args.agents as AgentId[],
+    server,
+    dryRun: args.dryRun,
+    skipExtension: args.skipExtension,
+    skipAgents: args.skipAgents,
+    env: process.env,
+    ...(args.extensionPath ? { extensionPath: args.extensionPath } : {}),
+  });
+  if (args.json) {
+    console.log(JSON.stringify(report, null, 2));
+  } else {
+    for (const step of report.steps) {
+      console.log(`${step.status.toUpperCase().padEnd(22)} ${step.id}: ${step.message}`);
+    }
+    for (const action of report.nextActions) {
+      console.log(`${action.kind}: ${action.value}`);
+    }
+  }
+  return report.result === "complete" ? 0 : 1;
+}
+
+async function runUpdateExtension(args: ParsedArgs): Promise<number> {
+  const channelStatus = validateChannel(args.channel);
+  if (channelStatus) {
+    console.error(channelStatus);
+    return 2;
+  }
+  const layout = await resolveRuntimeLayout();
+  if (layout.configIssue) {
+    console.error(`open-browser-use user config is invalid: ${layout.configIssue.message}. Fix or remove ${layout.configIssue.path}, then rerun obu update-extension.`);
+    return 2;
+  }
+  if (!args.dryRun) {
+    const runtime = await ensureRuntimeDir(layout.runtimeDir);
+    if (!runtime.ok) {
+      console.error(`open-browser-use runtime is not ready: ${runtime.message ?? "invalid runtime directory"}`);
+      return 2;
+    }
+    await writeUserConfig(layout.userConfigPath, {
+      schemaVersion: 1,
+      runtimeDir: layout.runtimeDir,
+      extensionCurrentDir: layout.extensionCurrentDir,
+      nativeHostInstallRoot: layout.nativeHostInstallRoot,
+    });
+  }
+  const report = await updateExtension({
+    layout,
+    dryRun: args.dryRun,
+    noWait: args.noWait,
+    ...(args.extensionPath ? { sourceDir: args.extensionPath } : {}),
+  });
+  if (args.json) {
+    console.log(JSON.stringify(report, null, 2));
+  } else {
+    for (const step of report.steps) {
+      console.log(`${step.status.toUpperCase().padEnd(22)} ${step.id}: ${step.message}`);
+    }
+    for (const action of report.nextActions) {
+      console.log(`${action.kind}: ${action.value}`);
+    }
+  }
+  return report.result === "complete" ? 0 : 1;
+}
+
+async function runInstallHost(args: ParsedArgs): Promise<number> {
+  const channelStatus = validateChannel(args.channel);
+  if (channelStatus) {
+    console.error(channelStatus);
+    return 2;
+  }
+  const layout = await resolveRuntimeLayout();
+  if (layout.configIssue) {
+    console.error(`open-browser-use user config is invalid: ${layout.configIssue.message}. Fix or remove ${layout.configIssue.path}, then rerun obu install-host.`);
+    return 2;
+  }
+  if (!args.dryRun) {
+    const runtime = await ensureRuntimeDir(layout.runtimeDir);
+    if (!runtime.ok) {
+      console.error(`open-browser-use runtime is not ready: ${runtime.message ?? "invalid runtime directory"}`);
+      return 2;
+    }
+    await writeUserConfig(layout.userConfigPath, {
+      schemaVersion: 1,
+      runtimeDir: layout.runtimeDir,
+      extensionCurrentDir: layout.extensionCurrentDir,
+      nativeHostInstallRoot: layout.nativeHostInstallRoot,
+    });
+  }
+  const supported = supportedNativeHostBrowsers();
+  const browsers = args.all ? supported : [args.browser ?? ("chrome" as BrowserKind)];
+  const unsupported = browsers.filter((browser) => !supported.includes(browser));
+  if (unsupported.length > 0) {
+    console.error(`unsupported native-host browser target on ${process.platform}: ${unsupported.join(", ")}`);
+    return 2;
+  }
+  const actions = await installNativeHosts({
+    layout,
+    browsers,
+    dryRun: args.dryRun,
+    ...(args.extensionId ? { extensionId: args.extensionId } : {}),
+  });
+  if (args.json) {
+    console.log(JSON.stringify({ schemaVersion: 1, command: "install-host", actions }, null, 2));
+  } else {
+    for (const action of actions) {
+      console.log(`${action.status.toUpperCase().padEnd(11)} ${action.browser}: ${action.message}`);
+    }
+  }
+  return actions.some((action) => action.status === "failed") ? 1 : 0;
+}
+
+async function runMcpStdio(): Promise<number> {
+  const layout = await resolveRuntimeLayout();
+  if (layout.configIssue) {
+    console.error(`open-browser-use user config is invalid: ${layout.configIssue.message}. Fix or remove ${layout.configIssue.path}, then run obu doctor.`);
+    return 2;
+  }
+  const runtime = await validateRuntimeDir(layout.runtimeDir);
+  if (!runtime.ok) {
+    console.error(`open-browser-use runtime is not ready: ${runtime.message ?? "invalid runtime directory"}. Run obu setup before wiring agents.`);
+    return 2;
+  }
+  if (!await executableExists(layout.nodeReplBin)) {
+    console.error(`obu-node-repl is not executable at ${layout.nodeReplBin}. Build or install the open-browser-use payload, then rerun obu setup.`);
+    return 2;
+  }
+  const child = spawn(layout.nodeReplBin, ["mcp", "stdio"], {
+    stdio: "inherit",
+    env: {
+      ...process.env,
+      OBU_NODE_BINARY: layout.nodeBin,
+      OBU_NODE_REPL_MODULE_DIRS: layout.nodeModulesRoot,
+      OBU_RUNTIME_DIR: layout.runtimeDir,
+    },
+  });
+  return new Promise((resolve) => {
+    child.on("error", (error) => {
+      console.error(`failed to launch obu-node-repl: ${error.message}`);
+      resolve(2);
+    });
+    child.on("exit", (code, signal) => {
+      if (typeof code === "number") {
+        resolve(code);
+        return;
+      }
+      console.error(`obu-node-repl exited from signal ${signal ?? "unknown"}`);
+      resolve(1);
+    });
+  });
+}
+
+async function runDoctor(args: ParsedArgs): Promise<number> {
+  if (args.subject && args.subject !== "browser") {
+    throw new Error(`unsupported doctor subject: ${args.subject}`);
+  }
+  if (args.subject === "browser" && args.cleanBackups) {
+    throw new Error("doctor browser does not support --clean-backups; run `obu doctor --clean-backups`");
+  }
+  const layout = await resolveRuntimeLayout();
+  const browserOptions = {
+    ...(args.browser === undefined ? {} : { browser: args.browser }),
+    extensionCurrentDir: layout.mode === "repo" ? layout.extensionDir : layout.extensionCurrentDir,
+    repair: args.repair,
+  };
+  const report = args.subject === "browser"
+    ? await doctorBrowser(browserOptions)
+    : await doctorAggregate({ layout, browserOptions, cleanBackups: args.cleanBackups });
+  const command = args.subject === "browser" ? "doctor browser" : "doctor";
+  if (args.json) {
+    console.log(JSON.stringify(doctorJson({
+      report,
+      layout,
+      obuVersion: await packageVersion(),
+      command,
+      strict: args.strict,
+    }), null, 2));
+  } else {
+    console.log(args.subject === "browser" ? formatDoctorReport(report as DoctorReport) : formatAggregateDoctorReport(report));
+  }
+  return doctorExitCode(report, args.strict);
+}
+
+async function runMcpConfig(args: ParsedArgs): Promise<number> {
+  if (!args.agent) throw new Error("mcp-config requires --agent=<id>");
+  if (!args.print) throw new Error("mcp-config currently supports --print only");
+  if (!isAgentId(args.agent)) {
+    throw new Error(`unsupported agent: ${args.agent}. Supported agents: ${supportedAgentIds().join(", ")}`);
+  }
+  const layout = await resolveRuntimeLayout();
+  const invocation = await resolveMcpInvocation(layout.openBrowserUseCommand, layout.cliEntry);
+  const server: McpServerInvocation = {
+    name: "open-browser-use",
+    command: invocation.command,
+    args: invocation.args,
+  };
+  console.log(JSON.stringify(renderAgentMcpConfig(args.agent, server), null, 2));
+  return 0;
+}
+
+async function resolveMcpInvocation(openBrowserUseCommand: string, cliEntry: string): Promise<{ command: string; args: string[] }> {
+  const command = path.isAbsolute(openBrowserUseCommand)
+    ? openBrowserUseCommand
+    : path.resolve(process.cwd(), openBrowserUseCommand);
+  if (await executableExists(command)) {
+    return { command, args: ["mcp", "stdio"] };
+  }
+  return {
+    command: process.execPath,
+    args: [cliEntry, "mcp", "stdio"],
+  };
+}
+
+function doctorExitCode(report: { checks: DoctorReport["checks"] }, strict: boolean): number {
+  if (hasDoctorFailures(report)) return 1;
+  if (strict && report.checks.some((check) => check.status === "warn")) return 1;
+  return 0;
+}
+
+function parseArgs(argv: string[]): ParsedArgs {
+  const args: ParsedArgs = {
+    json: false,
+    repair: false,
+    strict: false,
+    cleanBackups: false,
+    print: false,
+    all: false,
+    dryRun: false,
+    noWait: false,
+    yes: false,
+    agents: [],
+    skipExtension: false,
+    skipAgents: false,
+    help: false,
+    version: false,
+  };
+  const positional: string[] = [];
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index]!;
+    const [flag, inlineValue] = arg.startsWith("--") ? arg.split("=", 2) : [arg, undefined];
+    const readValue = () => {
+      if (inlineValue !== undefined) return inlineValue;
+      index += 1;
+      if (index >= argv.length) throw new Error(`${flag} requires a value`);
+      return argv[index]!;
+    };
+    switch (flag) {
+      case "--browser":
+        args.browser = parseBrowser(readValue());
+        break;
+      case "--agent":
+        args.agent = readValue();
+        break;
+      case "--agents":
+        args.agents = readValue().split(",").map((value) => value.trim()).filter(Boolean);
+        break;
+      case "--json":
+        args.json = true;
+        break;
+      case "--repair":
+        args.repair = true;
+        break;
+      case "--clean-backups":
+        args.cleanBackups = true;
+        break;
+      case "--strict":
+        args.strict = true;
+        break;
+      case "--print":
+        args.print = true;
+        break;
+      case "--all":
+        args.all = true;
+        break;
+      case "--dry-run":
+        args.dryRun = true;
+        break;
+      case "--extension-id":
+        args.extensionId = readValue();
+        break;
+      case "--channel":
+        args.channel = readValue();
+        break;
+      case "--path":
+        args.extensionPath = readValue();
+        break;
+      case "--no-wait":
+        args.noWait = true;
+        break;
+      case "--yes":
+      case "-y":
+        args.yes = true;
+        break;
+      case "--skip-extension":
+        args.skipExtension = true;
+        break;
+      case "--skip-agents":
+        args.skipAgents = true;
+        break;
+      case "--version":
+      case "-V":
+        args.version = true;
+        break;
+      case "--help":
+      case "-h":
+        args.help = true;
+        break;
+      default:
+        if (arg.startsWith("--")) throw new Error(`unknown argument: ${arg}`);
+        positional.push(arg);
+    }
+  }
+  args.command = positional[0];
+  args.subject = positional[1];
+  return args;
+}
+
+function parseBrowser(value: string): BrowserKind {
+  if (["chrome", "chrome-for-testing", "edge", "brave", "arc", "chromium"].includes(value)) {
+    return value as BrowserKind;
+  }
+  throw new Error(`unsupported browser: ${value}`);
+}
+
+function validateChannel(channel: string | undefined): string | undefined {
+  if (channel === undefined || channel === "unpacked-dev") return undefined;
+  return `unsupported extension channel: ${channel}. P4a supports only unpacked-dev.`;
+}
+
+function printHelp(): void {
+  console.log(`Usage:
+  obu --version
+  obu setup [--yes] [--browser chrome|chrome-for-testing|edge|brave|arc|chromium|--all] [--agents=<list>] [--channel unpacked-dev] [--skip-extension] [--skip-agents] [--dry-run] [--json]
+  obu doctor [browser] [--browser chrome|chrome-for-testing|edge|brave|arc|chromium] [--json] [--strict] [--repair] [--clean-backups]
+  obu install-host [--browser chrome|chrome-for-testing|edge|brave|arc|chromium|--all] [--channel unpacked-dev] [--dry-run] [--json]
+  obu update-extension [--path <dir>] [--channel unpacked-dev] [--no-wait] [--dry-run] [--json]
+  obu mcp-config --agent=<id> --print
+  obu mcp stdio`);
+}
+
+main(process.argv.slice(2))
+  .then((code) => {
+    process.exitCode = code;
+  })
+  .catch((error) => {
+    console.error(error instanceof Error ? error.message : String(error));
+    process.exitCode = 2;
+  });

@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>open-browser-use</title>
+    <link rel="stylesheet" href="popup.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="header">
+        <div>
+          <p class="eyebrow">open-browser-use</p>
+          <h1>Browser Control</h1>
+        </div>
+        <span id="status-dot" class="dot" aria-hidden="true"></span>
+      </header>
+
+      <section class="status">
+        <div>
+          <p class="label">Native host</p>
+          <p id="status-text" class="value">Checking...</p>
+        </div>
+        <p id="detail-text" class="detail"></p>
+      </section>
+
+      <div class="actions">
+        <button id="stop-button" class="stop" type="button">Stop browser control</button>
+        <button id="resume-button" class="resume" type="button">Resume</button>
+      </div>
+
+      <footer>
+        <span id="version-text">Version</span>
+      </footer>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

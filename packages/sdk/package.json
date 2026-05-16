@@ -1,0 +1,37 @@
+{
+  "name": "@open-browser-use/sdk",
+  "version": "0.1.0",
+  "description": "open-browser-use agent-facing SDK: Playwright-shaped API over the open-browser-use broker wire.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "types": "./dist/index.d.ts"
+    },
+    "./version.json": "./dist/version.json"
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup && tsx scripts/postbuild-version-json.ts",
+    "coverage": "vitest run --coverage",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.5",
+    "@vitest/coverage-v8": "3.0.4",
+    "tsup": "8.3.5",
+    "tsx": "4.19.2",
+    "typescript": "5.7.3",
+    "vitest": "3.0.4"
+  },
+  "engines": {
+    "node": ">=22.22.0"
+  }
+}

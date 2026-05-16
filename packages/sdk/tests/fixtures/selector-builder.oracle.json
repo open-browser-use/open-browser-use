@@ -1,0 +1,116 @@
+{
+  "schemaVersion": "open-browser-use.selector-fixture/v1",
+  "caseCount": 22,
+  "cases": [
+    {
+      "name": "getByRole basic",
+      "expression": "page.getByRole('button')",
+      "expectedSelector": "internal:role=button"
+    },
+    {
+      "name": "getByRole name lax",
+      "expression": "page.getByRole('button', { name: 'Submit' })",
+      "expectedSelector": "internal:role=button[name=\"Submit\"i]"
+    },
+    {
+      "name": "getByRole name exact",
+      "expression": "page.getByRole('button', { name: 'Submit', exact: true })",
+      "expectedSelector": "internal:role=button[name=\"Submit\"s]"
+    },
+    {
+      "name": "getByText lax",
+      "expression": "page.getByText('Hello')",
+      "expectedSelector": "internal:text=\"Hello\"i"
+    },
+    {
+      "name": "getByText exact",
+      "expression": "page.getByText('Hello', { exact: true })",
+      "expectedSelector": "internal:text=\"Hello\"s"
+    },
+    {
+      "name": "getByText regex",
+      "expression": "page.getByText(/hello/i)",
+      "expectedSelector": "internal:text=/hello/i"
+    },
+    {
+      "name": "getByLabel",
+      "expression": "page.getByLabel('Email')",
+      "expectedSelector": "internal:label=\"Email\"i"
+    },
+    {
+      "name": "getByPlaceholder",
+      "expression": "page.getByPlaceholder('Email')",
+      "expectedSelector": "internal:attr=[placeholder=\"Email\"i]"
+    },
+    {
+      "name": "getByTestId",
+      "expression": "page.getByTestId('submit')",
+      "expectedSelector": "internal:testid=[data-testid=\"submit\"s]"
+    },
+    {
+      "name": "locator child",
+      "expression": "page.locator('form').locator('button')",
+      "expectedSelector": "form >> button"
+    },
+    {
+      "name": "first",
+      "expression": "page.locator('button').first()",
+      "expectedSelector": "button >> nth=0"
+    },
+    {
+      "name": "last",
+      "expression": "page.locator('button').last()",
+      "expectedSelector": "button >> nth=-1"
+    },
+    {
+      "name": "nth",
+      "expression": "page.locator('button').nth(2)",
+      "expectedSelector": "button >> nth=2"
+    },
+    {
+      "name": "and",
+      "expression": "page.locator('button').and(page.getByText('Save'))",
+      "expectedSelector": "button >> internal:and=\"internal:text=\\\"Save\\\"i\""
+    },
+    {
+      "name": "or",
+      "expression": "page.locator('button').or(page.getByText('Cancel'))",
+      "expectedSelector": "button >> internal:or=\"internal:text=\\\"Cancel\\\"i\""
+    },
+    {
+      "name": "filter hasText",
+      "expression": "page.locator('.row').filter({ hasText: 'Ready' })",
+      "expectedSelector": ".row >> internal:has-text=\"Ready\"i"
+    },
+    {
+      "name": "filter hasNotText",
+      "expression": "page.locator('.row').filter({ hasNotText: 'Archived' })",
+      "expectedSelector": ".row >> internal:has-not-text=\"Archived\"i"
+    },
+    {
+      "name": "filter has",
+      "expression": "page.locator('.row').filter({ has: page.getByText('Ready') })",
+      "expectedSelector": ".row >> internal:has=\"internal:text=\\\"Ready\\\"i\""
+    },
+    {
+      "name": "filter hasNot",
+      "expression": "page.locator('.row').filter({ hasNot: page.getByText('Archived') })",
+      "expectedSelector": ".row >> internal:has-not=\"internal:text=\\\"Archived\\\"i\""
+    },
+    {
+      "name": "frameLocator locator",
+      "expression": "page.frameLocator('iframe').locator('button')",
+      "expectedSelector": "iframe >> internal:control=enter-frame >> button"
+    },
+    {
+      "name": "frameLocator getByRole",
+      "expression": "page.frameLocator('iframe').getByRole('button', { name: 'Save' })",
+      "expectedSelector": "iframe >> internal:control=enter-frame >> internal:role=button[name=\"Save\"i]"
+    },
+    {
+      "name": "nested frameLocator",
+      "expression": "page.frameLocator('iframe.outer').frameLocator('iframe.inner').getByText('OK')",
+      "expectedSelector": "iframe.outer >> internal:control=enter-frame >> iframe.inner >> internal:control=enter-frame >> internal:text=\"OK\"i"
+    }
+  ]
+}

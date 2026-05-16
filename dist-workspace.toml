@@ -1,0 +1,24 @@
+# cargo-dist is used for release metadata/checksum/installer orchestration.
+# open-browser-use's P4 payload is assembled by scripts/assemble-payload.mjs because the
+# release artifact contains Rust binaries, bundled Node, TypeScript CLI output,
+# @open-browser-use/sdk, and the WebExtension payload rather than a single Cargo binary.
+
+[workspace]
+resolver = "3"
+members = [
+  "cargo:crates/obu-host",
+  "cargo:crates/obu-node-repl",
+]
+
+[dist]
+cargo-dist-version = "0.31.0"
+ci = ["github"]
+installers = ["shell"]
+targets = [
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+  "x86_64-unknown-linux-gnu",
+  "x86_64-unknown-linux-musl",
+  "aarch64-unknown-linux-gnu",
+]
+pr-run-mode = "plan"

@@ -1,0 +1,342 @@
+{
+  "schemaVersion": "open-browser-use.selector-fixture/v1",
+  "caseCount": 56,
+  "cases": [
+    {
+      "id": "selector-fuzz-001",
+      "kind": "role",
+      "expression": "page.getByRole(\"button\")",
+      "expectedSelector": "internal:role=button"
+    },
+    {
+      "id": "selector-fuzz-002",
+      "kind": "role-name",
+      "expression": "page.getByRole(\"button\", { name: \"Save\", exact: false })",
+      "expectedSelector": "internal:role=button[name=\"Save\"i]"
+    },
+    {
+      "id": "selector-fuzz-003",
+      "kind": "role-name",
+      "expression": "page.getByRole(\"button\", { name: \"Cancel\", exact: true })",
+      "expectedSelector": "internal:role=button[name=\"Cancel\"s]"
+    },
+    {
+      "id": "selector-fuzz-004",
+      "kind": "role",
+      "expression": "page.getByRole(\"link\")",
+      "expectedSelector": "internal:role=link"
+    },
+    {
+      "id": "selector-fuzz-005",
+      "kind": "role-name",
+      "expression": "page.getByRole(\"link\", { name: \"Save\", exact: false })",
+      "expectedSelector": "internal:role=link[name=\"Save\"i]"
+    },
+    {
+      "id": "selector-fuzz-006",
+      "kind": "role-name",
+      "expression": "page.getByRole(\"link\", { name: \"Cancel\", exact: true })",
+      "expectedSelector": "internal:role=link[name=\"Cancel\"s]"
+    },
+    {
+      "id": "selector-fuzz-007",
+      "kind": "role",
+      "expression": "page.getByRole(\"textbox\")",
+      "expectedSelector": "internal:role=textbox"
+    },
+    {
+      "id": "selector-fuzz-008",
+      "kind": "role-name",
+      "expression": "page.getByRole(\"textbox\", { name: \"Save\", exact: false })",
+      "expectedSelector": "internal:role=textbox[name=\"Save\"i]"
+    },
+    {
+      "id": "selector-fuzz-009",
+      "kind": "role-name",
+      "expression": "page.getByRole(\"textbox\", { name: \"Cancel\", exact: true })",
+      "expectedSelector": "internal:role=textbox[name=\"Cancel\"s]"
+    },
+    {
+      "id": "selector-fuzz-010",
+      "kind": "text",
+      "expression": "page.getByText(\"Ready\", { exact: false })",
+      "expectedSelector": "internal:text=\"Ready\"i"
+    },
+    {
+      "id": "selector-fuzz-011",
+      "kind": "text",
+      "expression": "page.getByText(\"Archived\", { exact: true })",
+      "expectedSelector": "internal:text=\"Archived\"s"
+    },
+    {
+      "id": "selector-fuzz-012",
+      "kind": "text",
+      "expression": "page.getByText(/submit|save/i)",
+      "expectedSelector": "internal:text=/submit|save/i"
+    },
+    {
+      "id": "selector-fuzz-013",
+      "kind": "label",
+      "expression": "page.getByLabel(\"Email\")",
+      "expectedSelector": "internal:label=\"Email\"i"
+    },
+    {
+      "id": "selector-fuzz-014",
+      "kind": "placeholder",
+      "expression": "page.getByPlaceholder(\"Email\")",
+      "expectedSelector": "internal:attr=[placeholder=\"Email\"i]"
+    },
+    {
+      "id": "selector-fuzz-015",
+      "kind": "test-id",
+      "expression": "page.getByTestId(\"email\")",
+      "expectedSelector": "internal:testid=[data-testid=\"email\"s]"
+    },
+    {
+      "id": "selector-fuzz-016",
+      "kind": "label",
+      "expression": "page.getByLabel(\"Search\")",
+      "expectedSelector": "internal:label=\"Search\"i"
+    },
+    {
+      "id": "selector-fuzz-017",
+      "kind": "placeholder",
+      "expression": "page.getByPlaceholder(\"Search\")",
+      "expectedSelector": "internal:attr=[placeholder=\"Search\"i]"
+    },
+    {
+      "id": "selector-fuzz-018",
+      "kind": "test-id",
+      "expression": "page.getByTestId(\"search\")",
+      "expectedSelector": "internal:testid=[data-testid=\"search\"s]"
+    },
+    {
+      "id": "selector-fuzz-019",
+      "kind": "locator-child",
+      "expression": "page.locator(\".row\").locator(\"button\")",
+      "expectedSelector": ".row >> button"
+    },
+    {
+      "id": "selector-fuzz-020",
+      "kind": "nth",
+      "expression": "page.locator(\".row\").nth(0)",
+      "expectedSelector": ".row >> nth=0"
+    },
+    {
+      "id": "selector-fuzz-021",
+      "kind": "nth",
+      "expression": "page.locator(\".row\").nth(1)",
+      "expectedSelector": ".row >> nth=1"
+    },
+    {
+      "id": "selector-fuzz-022",
+      "kind": "nth",
+      "expression": "page.locator(\".row\").nth(-1)",
+      "expectedSelector": ".row >> nth=-1"
+    },
+    {
+      "id": "selector-fuzz-023",
+      "kind": "nth",
+      "expression": "page.locator(\".row\").nth(3)",
+      "expectedSelector": ".row >> nth=3"
+    },
+    {
+      "id": "selector-fuzz-024",
+      "kind": "filter-has-text",
+      "expression": "page.locator(\".row\").filter({ hasText: \"Ready\" })",
+      "expectedSelector": ".row >> internal:has-text=\"Ready\"i"
+    },
+    {
+      "id": "selector-fuzz-025",
+      "kind": "filter-has-not-text",
+      "expression": "page.locator(\".row\").filter({ hasNotText: \"Archived\" })",
+      "expectedSelector": ".row >> internal:has-not-text=\"Archived\"i"
+    },
+    {
+      "id": "selector-fuzz-026",
+      "kind": "filter-has",
+      "expression": "page.locator(\".row\").filter({ has: page.getByText(\"Ready\") })",
+      "expectedSelector": ".row >> internal:has=\"internal:text=\\\"Ready\\\"i\""
+    },
+    {
+      "id": "selector-fuzz-027",
+      "kind": "filter-has-not",
+      "expression": "page.locator(\".row\").filter({ hasNot: page.getByText(\"Archived\") })",
+      "expectedSelector": ".row >> internal:has-not=\"internal:text=\\\"Archived\\\"i\""
+    },
+    {
+      "id": "selector-fuzz-028",
+      "kind": "and",
+      "expression": "page.locator(\".row\").and(page.getByText(\"Ready\"))",
+      "expectedSelector": ".row >> internal:and=\"internal:text=\\\"Ready\\\"i\""
+    },
+    {
+      "id": "selector-fuzz-029",
+      "kind": "or",
+      "expression": "page.locator(\".row\").or(page.getByText(\"Archived\"))",
+      "expectedSelector": ".row >> internal:or=\"internal:text=\\\"Archived\\\"i\""
+    },
+    {
+      "id": "selector-fuzz-030",
+      "kind": "locator-child",
+      "expression": "page.locator(\"form\").locator(\"button\")",
+      "expectedSelector": "form >> button"
+    },
+    {
+      "id": "selector-fuzz-031",
+      "kind": "nth",
+      "expression": "page.locator(\"form\").nth(0)",
+      "expectedSelector": "form >> nth=0"
+    },
+    {
+      "id": "selector-fuzz-032",
+      "kind": "nth",
+      "expression": "page.locator(\"form\").nth(1)",
+      "expectedSelector": "form >> nth=1"
+    },
+    {
+      "id": "selector-fuzz-033",
+      "kind": "nth",
+      "expression": "page.locator(\"form\").nth(-1)",
+      "expectedSelector": "form >> nth=-1"
+    },
+    {
+      "id": "selector-fuzz-034",
+      "kind": "nth",
+      "expression": "page.locator(\"form\").nth(3)",
+      "expectedSelector": "form >> nth=3"
+    },
+    {
+      "id": "selector-fuzz-035",
+      "kind": "filter-has-text",
+      "expression": "page.locator(\"form\").filter({ hasText: \"Ready\" })",
+      "expectedSelector": "form >> internal:has-text=\"Ready\"i"
+    },
+    {
+      "id": "selector-fuzz-036",
+      "kind": "filter-has-not-text",
+      "expression": "page.locator(\"form\").filter({ hasNotText: \"Archived\" })",
+      "expectedSelector": "form >> internal:has-not-text=\"Archived\"i"
+    },
+    {
+      "id": "selector-fuzz-037",
+      "kind": "filter-has",
+      "expression": "page.locator(\"form\").filter({ has: page.getByText(\"Ready\") })",
+      "expectedSelector": "form >> internal:has=\"internal:text=\\\"Ready\\\"i\""
+    },
+    {
+      "id": "selector-fuzz-038",
+      "kind": "filter-has-not",
+      "expression": "page.locator(\"form\").filter({ hasNot: page.getByText(\"Archived\") })",
+      "expectedSelector": "form >> internal:has-not=\"internal:text=\\\"Archived\\\"i\""
+    },
+    {
+      "id": "selector-fuzz-039",
+      "kind": "and",
+      "expression": "page.locator(\"form\").and(page.getByText(\"Ready\"))",
+      "expectedSelector": "form >> internal:and=\"internal:text=\\\"Ready\\\"i\""
+    },
+    {
+      "id": "selector-fuzz-040",
+      "kind": "or",
+      "expression": "page.locator(\"form\").or(page.getByText(\"Archived\"))",
+      "expectedSelector": "form >> internal:or=\"internal:text=\\\"Archived\\\"i\""
+    },
+    {
+      "id": "selector-fuzz-041",
+      "kind": "locator-child",
+      "expression": "page.locator(\"section[data-state='ready']\").locator(\"button\")",
+      "expectedSelector": "section[data-state='ready'] >> button"
+    },
+    {
+      "id": "selector-fuzz-042",
+      "kind": "nth",
+      "expression": "page.locator(\"section[data-state='ready']\").nth(0)",
+      "expectedSelector": "section[data-state='ready'] >> nth=0"
+    },
+    {
+      "id": "selector-fuzz-043",
+      "kind": "nth",
+      "expression": "page.locator(\"section[data-state='ready']\").nth(1)",
+      "expectedSelector": "section[data-state='ready'] >> nth=1"
+    },
+    {
+      "id": "selector-fuzz-044",
+      "kind": "nth",
+      "expression": "page.locator(\"section[data-state='ready']\").nth(-1)",
+      "expectedSelector": "section[data-state='ready'] >> nth=-1"
+    },
+    {
+      "id": "selector-fuzz-045",
+      "kind": "nth",
+      "expression": "page.locator(\"section[data-state='ready']\").nth(3)",
+      "expectedSelector": "section[data-state='ready'] >> nth=3"
+    },
+    {
+      "id": "selector-fuzz-046",
+      "kind": "filter-has-text",
+      "expression": "page.locator(\"section[data-state='ready']\").filter({ hasText: \"Ready\" })",
+      "expectedSelector": "section[data-state='ready'] >> internal:has-text=\"Ready\"i"
+    },
+    {
+      "id": "selector-fuzz-047",
+      "kind": "filter-has-not-text",
+      "expression": "page.locator(\"section[data-state='ready']\").filter({ hasNotText: \"Archived\" })",
+      "expectedSelector": "section[data-state='ready'] >> internal:has-not-text=\"Archived\"i"
+    },
+    {
+      "id": "selector-fuzz-048",
+      "kind": "filter-has",
+      "expression": "page.locator(\"section[data-state='ready']\").filter({ has: page.getByText(\"Ready\") })",
+      "expectedSelector": "section[data-state='ready'] >> internal:has=\"internal:text=\\\"Ready\\\"i\""
+    },
+    {
+      "id": "selector-fuzz-049",
+      "kind": "filter-has-not",
+      "expression": "page.locator(\"section[data-state='ready']\").filter({ hasNot: page.getByText(\"Archived\") })",
+      "expectedSelector": "section[data-state='ready'] >> internal:has-not=\"internal:text=\\\"Archived\\\"i\""
+    },
+    {
+      "id": "selector-fuzz-050",
+      "kind": "and",
+      "expression": "page.locator(\"section[data-state='ready']\").and(page.getByText(\"Ready\"))",
+      "expectedSelector": "section[data-state='ready'] >> internal:and=\"internal:text=\\\"Ready\\\"i\""
+    },
+    {
+      "id": "selector-fuzz-051",
+      "kind": "or",
+      "expression": "page.locator(\"section[data-state='ready']\").or(page.getByText(\"Archived\"))",
+      "expectedSelector": "section[data-state='ready'] >> internal:or=\"internal:text=\\\"Archived\\\"i\""
+    },
+    {
+      "id": "selector-fuzz-052",
+      "kind": "frame-locator",
+      "expression": "page.frameLocator(\"iframe\").locator(\"button\")",
+      "expectedSelector": "iframe >> internal:control=enter-frame >> button"
+    },
+    {
+      "id": "selector-fuzz-053",
+      "kind": "frame-locator-role",
+      "expression": "page.frameLocator(\"iframe\").getByRole(\"button\", { name: \"Save\" })",
+      "expectedSelector": "iframe >> internal:control=enter-frame >> internal:role=button[name=\"Save\"i]"
+    },
+    {
+      "id": "selector-fuzz-054",
+      "kind": "frame-locator",
+      "expression": "page.frameLocator(\"iframe[data-kind='outer']\").locator(\"button\")",
+      "expectedSelector": "iframe[data-kind='outer'] >> internal:control=enter-frame >> button"
+    },
+    {
+      "id": "selector-fuzz-055",
+      "kind": "frame-locator-role",
+      "expression": "page.frameLocator(\"iframe[data-kind='outer']\").getByRole(\"button\", { name: \"Save\" })",
+      "expectedSelector": "iframe[data-kind='outer'] >> internal:control=enter-frame >> internal:role=button[name=\"Save\"i]"
+    },
+    {
+      "id": "selector-fuzz-056",
+      "kind": "nested-frame-locator",
+      "expression": "page.frameLocator(\"iframe.outer\").frameLocator(\"iframe.inner\").getByText(\"OK\")",
+      "expectedSelector": "iframe.outer >> internal:control=enter-frame >> iframe.inner >> internal:control=enter-frame >> internal:text=\"OK\"i"
+    }
+  ]
+}

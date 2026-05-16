@@ -1,0 +1,22 @@
+{
+  "name": "@open-browser-use/extension",
+  "version": "0.1.0",
+  "private": true,
+  "description": "open-browser-use Chromium MV3 extension.",
+  "license": "MIT",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node scripts/build.mjs",
+    "coverage": "tsc -p tsconfig.json && node scripts/test-manifest.mjs && node scripts/build.mjs && c8 --all --src dist --include 'dist/**/*.js' --reporter=text --reporter=html --reports-dir coverage node scripts/test-extension.mjs",
+    "dev:manifest": "node scripts/write-dev-native-host-manifest.mjs",
+    "test": "tsc -p tsconfig.json && node scripts/test-manifest.mjs && node scripts/build.mjs && node scripts/test-extension.mjs",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "devDependencies": {
+    "c8": "10.1.3",
+    "typescript": "5.7.3"
+  },
+  "engines": {
+    "node": ">=22.22.0"
+  }
+}

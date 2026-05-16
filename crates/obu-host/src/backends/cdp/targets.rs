@@ -1,0 +1,332 @@
+//! CDP target operations.
+
+use std::collections::HashMap;
+
+use serde_json::{Map, Value, json};
+use uuid::Uuid;
+
+use crate::backends::{BackendRequestContext, cdp::CdpBackend};
+use crate::error::{HostError, Result};
+use crate::tab_state::{TabId, TabOrigin, TabRecord, TabStatus};
+
+/// Create a new page target and register it as an agent-owned tab.
+pub async fn create_tab(backend: &CdpBackend, url: Option<String>) -> Result<Value> {
+    let url = url.unwrap_or_else(|| "about:blank".into());
+    let result = backend
+        .transport()
+        .send_command("Target.createTarget", json!({ "url": url }), None)
+        .await
+        .map_err(HostError::from)?;
+    let target_id = result
+        .get("targetId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| HostError::Protocol("Target.createTarget missing targetId".into()))?
+        .to_string();
+
+    let tab_id = TabId::new(format!("tab-{}", Uuid::new_v4()));
+    let record = TabRecord {
+        id: tab_id.clone(),
+        session_id: None,
+        target_id: target_id.clone(),
+        url: url.clone(),
+        title: String::new(),
+        origin: TabOrigin::Agent,
+        status: TabStatus::Active,
+        attached: false,
+        cdp_session_id: None,
+    };
+    backend.registry().insert(record)?;
+    let tab_id_value = tab_id.0.clone();
+
+    Ok(json!({
+        "id": tab_id_value,
+        "tab_id": tab_id_value,
+        "target_id": target_id,
+        "url": url,
+        "title": "",
+    }))
+}
+
+/// List page targets, refreshing the registry with any user-created tabs.
+pub async fn list_tabs(backend: &CdpBackend) -> Result<Value> {
+    let result = backend
+        .transport()
+        .send_command("Target.getTargets", Value::Object(Map::new()), None)
+        .await
+        .map_err(HostError::from)?;
+    let targets = result
+        .get("targetInfos")
+        .and_then(Value::as_array)
+        .ok_or_else(|| HostError::Protocol("Target.getTargets missing targetInfos".into()))?;
+
+    let mut out = Vec::new();
+    for target in targets {
+        if target.get("type").and_then(Value::as_str) != Some("page") {
+            continue;
+        }
+        let Some(target_id) = target.get("targetId").and_then(Value::as_str) else {
+            continue;
+        };
+        let url = target
+            .get("url")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let title = target
+            .get("title")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let attached = target
+            .get("attached")
+            .and_then(Value::as_bool)
+            .unwrap_or(false);
+        let record = upsert_target_record(backend, target_id, &url, &title, attached)?;
+        out.push(tab_record_to_value(&record));
+    }
+    Ok(Value::Array(out))
+}
+
+/// Close a tab and remove host-side state for it.
+pub async fn close_tab(backend: &CdpBackend, tab_id: &str) -> Result<Value> {
+    let id = TabId::new(tab_id);
+    let record = backend
+        .registry()
+        .get(&id)?
+        .ok_or_else(|| HostError::PageClosed(format!("unknown tab {tab_id}")))?;
+
+    backend
+        .transport()
+        .send_command(
+            "Target.closeTarget",
+            json!({ "targetId": record.target_id }),
+            None,
+        )
+        .await
+        .map_err(HostError::from)?;
+    backend.registry().clear_playwright_injected(&id)?;
+    let _ = backend.registry().remove(&id)?;
+    Ok(Value::Null)
+}
+
+/// Claim an existing CDP tab for the current host session.
+pub async fn claim_user_tab(
+    backend: &CdpBackend,
+    ctx: &BackendRequestContext,
+    tab_id: &str,
+) -> Result<Value> {
+    let session_id = require_session_id(ctx, "claimUserTab")?;
+    backend
+        .registry()
+        .touch_session(session_id, ctx.turn_id.as_deref())?;
+    let id = TabId::new(tab_id);
+    if backend.registry().get(&id)?.is_none() {
+        let _ = list_tabs(backend).await?;
+    }
+    let Some(mut record) = backend.registry().get(&id)? else {
+        return Err(HostError::PageClosed(format!("unknown tab {tab_id}")));
+    };
+    if let Some(owner) = record.session_id.as_deref()
+        && record.status != TabStatus::Deliverable
+        && owner != session_id
+    {
+        return Err(HostError::Protocol(format!(
+            "tab {tab_id} is already owned by another open-browser-use session"
+        )));
+    }
+    record.session_id = Some(session_id.to_string());
+    record.origin = TabOrigin::User;
+    record.status = TabStatus::Active;
+    backend.registry().insert(record.clone())?;
+    Ok(tab_record_to_value(&record))
+}
+
+/// Finalize CDP session tabs using host-owned lifecycle state.
+pub async fn finalize_tabs(
+    backend: &CdpBackend,
+    ctx: &BackendRequestContext,
+    params: Value,
+) -> Result<Value> {
+    let session_id = require_session_id(ctx, "finalizeTabs")?;
+    backend
+        .registry()
+        .touch_session(session_id, ctx.turn_id.as_deref())?;
+    let keep = parse_finalize_keep(&params)?;
+    let session_tabs = backend.registry().tabs_for_session(session_id)?;
+    let mut closed_tab_ids = Vec::new();
+    let mut released_tab_ids = Vec::new();
+    let mut kept_tabs = Vec::new();
+    let mut deliverable_tabs = Vec::new();
+
+    for record in session_tabs {
+        match keep.get(&record.id.0) {
+            Some(TabStatus::Handoff) => {
+                if record.attached {
+                    crate::backends::cdp::attach::detach(backend, &record.id.0).await?;
+                } else {
+                    backend.registry().clear_tab_handles(&record.id)?;
+                }
+                backend.registry().update(&record.id, |record| {
+                    record.status = TabStatus::Handoff;
+                    record.attached = false;
+                    record.cdp_session_id = None;
+                })?;
+                if let Some(record) = backend.registry().get(&record.id)? {
+                    kept_tabs.push(tab_record_to_value(&record));
+                }
+            }
+            Some(TabStatus::Deliverable) => {
+                if record.attached {
+                    crate::backends::cdp::attach::detach(backend, &record.id.0).await?;
+                } else {
+                    backend.registry().clear_tab_handles(&record.id)?;
+                }
+                backend.registry().update(&record.id, |record| {
+                    record.status = TabStatus::Deliverable;
+                    record.attached = false;
+                    record.cdp_session_id = None;
+                })?;
+                if let Some(record) = backend.registry().get(&record.id)? {
+                    let value = tab_record_to_value(&record);
+                    kept_tabs.push(value.clone());
+                    deliverable_tabs.push(value);
+                }
+            }
+            Some(TabStatus::Active) => {
+                return Err(HostError::Protocol(
+                    "finalizeTabs keep status must be handoff or deliverable".into(),
+                ));
+            }
+            None => match record.origin {
+                TabOrigin::Agent => {
+                    close_tab(backend, &record.id.0).await?;
+                    closed_tab_ids.push(Value::String(record.id.0));
+                }
+                TabOrigin::User => {
+                    if record.attached {
+                        crate::backends::cdp::attach::detach(backend, &record.id.0).await?;
+                    } else {
+                        backend.registry().clear_tab_handles(&record.id)?;
+                    }
+                    let _ = backend
+                        .registry()
+                        .remove_with_reason(&record.id, "CDP finalizeTabs released user tab")?;
+                    released_tab_ids.push(Value::String(record.id.0));
+                }
+            },
+        }
+    }
+
+    Ok(json!({
+        "closed_tab_ids": closed_tab_ids,
+        "released_tab_ids": released_tab_ids,
+        "kept_tabs": kept_tabs,
+        "deliverable_tabs": deliverable_tabs,
+    }))
+}
+
+fn upsert_target_record(
+    backend: &CdpBackend,
+    target_id: &str,
+    url: &str,
+    title: &str,
+    attached: bool,
+) -> Result<TabRecord> {
+    if let Some(record) = backend
+        .registry()
+        .list()?
+        .into_iter()
+        .find(|record| record.target_id == target_id)
+    {
+        let mut record = record;
+        record.url = url.to_string();
+        record.title = title.to_string();
+        record.attached = attached;
+        backend.registry().insert(record.clone())?;
+        return Ok(record);
+    }
+
+    let id = TabId::new(format!("tab-{}", Uuid::new_v4()));
+    let record = TabRecord {
+        id: id.clone(),
+        session_id: None,
+        target_id: target_id.to_string(),
+        url: url.to_string(),
+        title: title.to_string(),
+        origin: TabOrigin::User,
+        status: TabStatus::Active,
+        attached,
+        cdp_session_id: None,
+    };
+    backend.registry().insert(record.clone())?;
+    Ok(record)
+}
+
+fn require_session_id<'a>(ctx: &'a BackendRequestContext, method: &str) -> Result<&'a str> {
+    let session_id = ctx.session_id.as_deref().unwrap_or_default();
+    if session_id.is_empty() {
+        return Err(HostError::Protocol(format!(
+            "{method} requires session_id for CDP lifecycle"
+        )));
+    }
+    Ok(session_id)
+}
+
+fn parse_finalize_keep(params: &Value) -> Result<HashMap<String, TabStatus>> {
+    let rows = params
+        .get("keep")
+        .and_then(Value::as_array)
+        .cloned()
+        .unwrap_or_default();
+    let mut keep = HashMap::new();
+    for row in rows {
+        let object = row.as_object().ok_or_else(|| {
+            HostError::Protocol("finalizeTabs keep entries must be objects".into())
+        })?;
+        let tab_id = object
+            .get("tab_id")
+            .or_else(|| object.get("tabId"))
+            .or_else(|| object.get("id"))
+            .and_then(|value| match value {
+                Value::String(value) => Some(value.clone()),
+                Value::Number(value) => value.as_i64().map(|value| value.to_string()),
+                _ => None,
+            })
+            .ok_or_else(|| HostError::Protocol("finalizeTabs keep entry missing tab id".into()))?;
+        let status = match object.get("status").and_then(Value::as_str) {
+            Some("handoff") => TabStatus::Handoff,
+            Some("deliverable") => TabStatus::Deliverable,
+            _ => {
+                return Err(HostError::Protocol(
+                    "finalizeTabs keep status must be handoff or deliverable".into(),
+                ));
+            }
+        };
+        if keep.insert(tab_id.clone(), status).is_some() {
+            return Err(HostError::Protocol(format!(
+                "finalizeTabs keep contains duplicate tab {tab_id}"
+            )));
+        }
+    }
+    Ok(keep)
+}
+
+fn tab_record_to_value(record: &TabRecord) -> Value {
+    json!({
+        "id": record.id.0.clone(),
+        "tab_id": record.id.0.clone(),
+        "target_id": record.target_id.clone(),
+        "url": record.url.clone(),
+        "title": record.title.clone(),
+        "origin": match record.origin {
+            TabOrigin::Agent => "agent",
+            TabOrigin::User => "user",
+        },
+        "status": match record.status {
+            TabStatus::Active => "active",
+            TabStatus::Handoff => "handoff",
+            TabStatus::Deliverable => "deliverable",
+        },
+        "attached": record.attached,
+    })
+}
