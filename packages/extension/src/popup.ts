@@ -1,4 +1,5 @@
 const STATUS_KEY = "OBU_NATIVE_HOST_STATUS";
+const DEBUG_LOG_KEY = "OBU_DEBUG_LOG";
 
 type HostStatus = {
   state: "disconnected" | "connecting" | "connected" | "version_mismatch" | "stopped" | "error";
@@ -20,21 +21,44 @@ type HostDiagnosis =
   | "native_host_unavailable"
   | "version_mismatch";
 
+type DebugLogEntry = {
+  ts: string;
+  level: "debug" | "info" | "warn" | "error";
+  event: string;
+  data?: unknown;
+};
+
+type DebugLogStatus = {
+  enabled: boolean;
+  entries: DebugLogEntry[];
+  maxEntries?: number;
+};
+
 const dot = document.querySelector<HTMLSpanElement>("#status-dot");
 const statusText = document.querySelector<HTMLParagraphElement>("#status-text");
 const detailText = document.querySelector<HTMLParagraphElement>("#detail-text");
 const versionText = document.querySelector<HTMLSpanElement>("#version-text");
 const stopButton = document.querySelector<HTMLButtonElement>("#stop-button");
 const resumeButton = document.querySelector<HTMLButtonElement>("#resume-button");
+const debugText = document.querySelector<HTMLParagraphElement>("#debug-text");
+const debugToggleButton = document.querySelector<HTMLButtonElement>("#debug-toggle-button");
+const copyDebugButton = document.querySelector<HTMLButtonElement>("#copy-debug-button");
+const clearDebugButton = document.querySelector<HTMLButtonElement>("#clear-debug-button");
+
+let currentStatus: HostStatus | undefined;
+let currentDebug: DebugLogStatus = { enabled: false, entries: [] };
 
 versionText!.textContent = `Version ${chrome.runtime.getManifest().version}`;
 
 void refreshStatus();
+void refreshDebugStatus();
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") return;
   const status = changes[STATUS_KEY]?.newValue;
   if (isHostStatus(status)) render(status);
+  const debug = changes[DEBUG_LOG_KEY]?.newValue;
+  if (isDebugLogStatus(debug)) renderDebug(debug);
 });
 
 stopButton!.addEventListener("click", () => {
@@ -43,6 +67,18 @@ stopButton!.addEventListener("click", () => {
 
 resumeButton!.addEventListener("click", () => {
   void sendControlMessage("RESUME_BROWSER_CONTROL", resumeButton!);
+});
+
+debugToggleButton!.addEventListener("click", () => {
+  void setDebugEnabled(!currentDebug.enabled);
+});
+
+copyDebugButton!.addEventListener("click", () => {
+  void copyDebugLogs();
+});
+
+clearDebugButton!.addEventListener("click", () => {
+  void clearDebugLogs();
 });
 
 async function refreshStatus(): Promise<void> {
@@ -55,6 +91,15 @@ async function refreshStatus(): Promise<void> {
     }
   } catch (error) {
     render({ state: "error", message: errorMessage(error) });
+  }
+}
+
+async function refreshDebugStatus(): Promise<void> {
+  try {
+    const debug = await chrome.runtime.sendMessage({ type: "GET_DEBUG_LOG_STATUS" });
+    if (isDebugLogStatus(debug)) renderDebug(debug);
+  } catch {
+    renderDebug({ enabled: false, entries: [] }, "Unavailable");
   }
 }
 
@@ -74,12 +119,64 @@ async function sendControlMessage(type: "STOP_BROWSER_CONTROL" | "RESUME_BROWSER
   }
 }
 
+async function setDebugEnabled(enabled: boolean): Promise<void> {
+  debugToggleButton!.disabled = true;
+  try {
+    const debug = await chrome.runtime.sendMessage({ type: "SET_DEBUG_LOG_ENABLED", enabled });
+    if (isDebugLogStatus(debug)) renderDebug(debug);
+  } finally {
+    debugToggleButton!.disabled = false;
+  }
+}
+
+async function copyDebugLogs(): Promise<void> {
+  copyDebugButton!.disabled = true;
+  try {
+    const debug = await chrome.runtime.sendMessage({ type: "GET_DEBUG_LOG_STATUS" });
+    if (isDebugLogStatus(debug)) {
+      renderDebug(debug);
+      await writeClipboard(debugReport(debug));
+      renderDebug(debug, `Copied ${debug.entries.length} entries`);
+    }
+  } catch (error) {
+    renderDebug(currentDebug, `Copy failed: ${errorMessage(error)}`);
+  } finally {
+    copyDebugButton!.disabled = currentDebug.entries.length === 0;
+  }
+}
+
+async function clearDebugLogs(): Promise<void> {
+  clearDebugButton!.disabled = true;
+  try {
+    const debug = await chrome.runtime.sendMessage({ type: "CLEAR_DEBUG_LOGS" });
+    if (isDebugLogStatus(debug)) renderDebug(debug, "Cleared");
+  } finally {
+    clearDebugButton!.disabled = currentDebug.entries.length === 0;
+  }
+}
+
 function render(status: HostStatus): void {
+  currentStatus = status;
   dot!.className = `dot ${statusClass(status.state)}`;
   statusText!.textContent = statusLabel(status);
   detailText!.textContent = statusDetail(status);
   stopButton!.disabled = status.state !== "connected";
   resumeButton!.disabled = !canResume(status);
+}
+
+function renderDebug(debug: DebugLogStatus, overrideText?: string): void {
+  currentDebug = debug;
+  debugToggleButton!.textContent = debug.enabled ? "Disable" : "Enable";
+  copyDebugButton!.disabled = debug.entries.length === 0;
+  clearDebugButton!.disabled = debug.entries.length === 0;
+  if (overrideText) {
+    debugText!.textContent = overrideText;
+    return;
+  }
+  const max = typeof debug.maxEntries === "number" ? debug.maxEntries : 200;
+  debugText!.textContent = debug.enabled
+    ? `Enabled, ${debug.entries.length}/${max} entries`
+    : `Disabled, ${debug.entries.length} saved entries`;
 }
 
 function canResume(status: HostStatus): boolean {
@@ -204,12 +301,40 @@ function joinSentences(parts: string[]): string {
     .join(" ");
 }
 
+function debugReport(debug: DebugLogStatus): string {
+  return JSON.stringify({
+    schemaVersion: 1,
+    exportedAt: new Date().toISOString(),
+    extensionVersion: chrome.runtime.getManifest().version,
+    status: currentStatus,
+    debug,
+  }, null, 2);
+}
+
+async function writeClipboard(text: string): Promise<void> {
+  const clipboard = (globalThis.navigator as { clipboard?: { writeText(text: string): Promise<void> } } | undefined)?.clipboard;
+  if (clipboard?.writeText) {
+    await clipboard.writeText(text);
+    return;
+  }
+  throw new Error("clipboard API unavailable");
+}
+
 function isHostStatus(value: unknown): value is HostStatus {
   return (
     value !== null &&
     typeof value === "object" &&
     "state" in value &&
     typeof (value as { state?: unknown }).state === "string"
+  );
+}
+
+function isDebugLogStatus(value: unknown): value is DebugLogStatus {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    typeof (value as { enabled?: unknown }).enabled === "boolean" &&
+    Array.isArray((value as { entries?: unknown }).entries)
   );
 }
 

@@ -1,0 +1,220 @@
+name: P4 Packaging CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+jobs:
+  p4-packaging:
+    name: Current-platform packaging smoke
+    runs-on: macos-14
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.0"
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Rust format
+        run: cargo fmt --all -- --check
+
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Typecheck
+        run: pnpm -r typecheck
+
+      - name: JS tests
+        run: pnpm -r test
+
+      - name: Build JS artifacts
+        run: pnpm -r build
+
+      - name: Rust tests
+        run: cargo test -p obu-wire -p obu-node-repl -p obu-host --lib --tests --no-fail-fast
+
+      - name: Install cargo-dist
+        env:
+          CARGO_DIST_NO_MODIFY_PATH: "1"
+          CARGO_HOME: ${{ github.workspace }}/.cache/cargo-dist-home
+        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.31.0/cargo-dist-installer.sh | sh
+
+      - name: cargo-dist plan smoke
+        env:
+          CARGO_DIST_BIN: ${{ github.workspace }}/.cache/cargo-dist-home/bin/cargo-dist
+        run: node scripts/cargo-dist-smoke.mjs
+
+      - name: P4 release-readiness smoke
+        run: node scripts/p4-release-readiness-smoke.mjs
+
+      - name: NPM resolver smoke
+        run: node scripts/npm-wrapper-resolver-smoke.mjs
+
+      - name: Agent adapter fake-home smoke
+        run: node scripts/agent-adapter-smoke.mjs
+
+      - name: Assemble local payload
+        run: |
+          NODE_ROOT="$(node scripts/fetch-node-runtime.mjs --target current)"
+          node scripts/assemble-payload.mjs --node-root "$NODE_ROOT"
+
+      - name: Payload self-check
+        run: node scripts/payload-self-check.mjs --payload dist/payload/current
+
+      - name: Packaged CLI runtime dependency smoke
+        run: node scripts/cli-runtime-deps-smoke.mjs --payload dist/payload/current
+
+      - name: MCP stdio clean-failure smoke
+        run: node scripts/mcp-stdio-clean-smoke.mjs --payload dist/payload/current
+
+      - name: Stage npm packages
+        run: node scripts/stage-npm-packages.mjs --payload dist/payload/current
+
+      - name: Static all-target package smoke
+        run: node scripts/package-local-smoke.mjs --target all --static --expect-payload current
+
+      - name: NPM pack smoke
+        run: node scripts/npm-pack-smoke.mjs --target current
+
+      - name: Curl artifact smoke
+        run: |
+          sh -n scripts/install.sh
+          node scripts/make-curl-artifact.mjs
+          node scripts/curl-install-smoke.mjs
+          node scripts/setup-local-spine-smoke.mjs
+
+      - name: Upload current curl artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-browser-use-current-curl
+          path: dist/curl/*
+
+      - name: Setup WebExtension smoke
+        env:
+          OBU_WEBEXT_E2E_AUTO_INSTALL: "1"
+          OBU_WEBEXT_E2E_HEADLESS: "1"
+        run: node scripts/setup-webext-e2e.mjs
+
+  p4-target-payloads:
+    name: P4a target payload smoke (${{ matrix.target }})
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: darwin-arm64
+            package_dir: cli-darwin-arm64
+            runner: macos-14
+            rust_target: aarch64-apple-darwin
+            apt_packages: ""
+            dynamic_smoke: "true"
+          - target: darwin-x64
+            package_dir: cli-darwin-x64
+            runner: macos-14
+            rust_target: x86_64-apple-darwin
+            apt_packages: ""
+            dynamic_smoke: "false"
+          - target: linux-x64-gnu
+            package_dir: cli-linux-x64-gnu
+            runner: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-gnu
+            apt_packages: ""
+            dynamic_smoke: "true"
+          - target: linux-x64-musl
+            package_dir: cli-linux-x64-musl
+            runner: ubuntu-24.04
+            rust_target: x86_64-unknown-linux-musl
+            apt_packages: musl-tools
+            dynamic_smoke: "false"
+          - target: linux-arm64-gnu
+            package_dir: cli-linux-arm64-gnu
+            runner: ubuntu-24.04-arm
+            rust_target: aarch64-unknown-linux-gnu
+            apt_packages: ""
+            dynamic_smoke: "true"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.0"
+          cache: pnpm
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - name: Install system packages
+        if: matrix.apt_packages != ''
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ${{ matrix.apt_packages }}
+
+      - name: Install JS dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Build JS artifacts
+        run: pnpm -r build
+
+      - name: Build Rust target binaries
+        run: cargo build -p obu-host -p obu-node-repl --target "${{ matrix.rust_target }}"
+
+      - name: Assemble target payload
+        run: |
+          NODE_ROOT="$(node scripts/fetch-node-runtime.mjs --target "${{ matrix.target }}")"
+          node scripts/assemble-payload.mjs \
+            --target "${{ matrix.target }}" \
+            --node-root "$NODE_ROOT" \
+            --host-bin "target/${{ matrix.rust_target }}/debug/obu-host" \
+            --node-repl-bin "target/${{ matrix.rust_target }}/debug/obu-node-repl" \
+            --out "dist/payload/${{ matrix.target }}"
+
+      - name: Payload self-check
+        run: node scripts/payload-self-check.mjs --payload "dist/payload/${{ matrix.target }}"
+
+      - name: Stage target npm package
+        run: node scripts/stage-npm-packages.mjs --payload "dist/payload/${{ matrix.target }}"
+
+      - name: Static package placement smoke
+        run: node scripts/package-local-smoke.mjs --target all --static --expect-payload "${{ matrix.target }}"
+
+      - name: Static npm tarball smoke
+        run: node scripts/npm-pack-smoke.mjs --target "${{ matrix.package_dir }}" --static
+
+      - name: Make curl artifact
+        run: |
+          sh -n scripts/install.sh
+          node scripts/make-curl-artifact.mjs --payload "dist/payload/${{ matrix.target }}"
+
+      - name: Upload target curl artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-browser-use-${{ matrix.target }}-curl
+          path: dist/curl/*
+
+      - name: Dynamic npm tarball smoke
+        if: matrix.dynamic_smoke == 'true'
+        run: node scripts/npm-pack-smoke.mjs --target "${{ matrix.package_dir }}"
+
+      - name: Curl artifact smoke
+        if: matrix.dynamic_smoke == 'true'
+        run: |
+          node scripts/curl-install-smoke.mjs --target "${{ matrix.target }}"

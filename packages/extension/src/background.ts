@@ -2,6 +2,8 @@ const HOST_NAME = "dev.obu.host";
 const STATUS_KEY = "OBU_NATIVE_HOST_STATUS";
 const INSTANCE_KEY = "OBU_EXTENSION_INSTANCE_ID";
 const SESSION_STATE_KEY = "OBU_BROWSER_SESSION_STATE";
+const DEBUG_LOG_KEY = "OBU_DEBUG_LOG";
+const DEBUG_LOG_MAX_ENTRIES = 200;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const HELLO_TIMEOUT_MS = 5_000;
 const HEARTBEAT_INTERVAL_MS = 10_000;
@@ -9,6 +11,10 @@ const HEARTBEAT_TIMEOUT_MS = 5_000;
 const RECONNECT_INITIAL_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 const RECONNECT_ALARM_NAME = "obu.reconnectNativeHost";
+const CURSOR_ARRIVAL_TIMEOUT_MS = 750;
+const CONTENT_PING_TIMEOUT_MS = 1_000;
+const TAKEOVER_IDLE_TIMEOUT_MS = 2_000;
+const CONTENT_SCRIPT_EVENT = "__OBU_CURSOR_MESSAGE__";
 
 type HostStatus = {
   state: "disconnected" | "connecting" | "connected" | "version_mismatch" | "stopped" | "error";
@@ -51,10 +57,26 @@ type JsonRpcNotification = {
   params?: unknown;
 };
 
+type DebugLogLevel = "debug" | "info" | "warn" | "error";
+
+type DebugLogEntry = {
+  ts: string;
+  level: DebugLogLevel;
+  event: string;
+  data?: unknown;
+};
+
+type DebugLogSnapshot = {
+  enabled: boolean;
+  entries: DebugLogEntry[];
+};
+
 let status: HostStatus = { state: "disconnected", updatedAt: Date.now() };
 let port: NativePort | null = null;
 let nextId = 1;
 let stopping = false;
+let debugLog: DebugLogSnapshot = { enabled: false, entries: [] };
+let debugLogSave: Promise<void> = Promise.resolve();
 const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
 const sessions = new Map<string, BrowserSession>();
 const downloadOwnersByUrl = new Map<string, DownloadOwner>();
@@ -64,6 +86,206 @@ let helloTimer: ReturnType<typeof setTimeout> | undefined;
 let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 let reconnectDelayMs = RECONNECT_INITIAL_MS;
+
+class OverlayCoordinator {
+  private nextCursorSequence = 1;
+  private cursorArrivalWaiters = new Map<number, CursorArrivalWaiter>();
+  private takeoverIdleTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  private contentScriptPreparations = new Map<number, Promise<boolean>>();
+
+  async activate(tabId: number, sessionParams: SessionParams): Promise<void> {
+    const sent = await this.sendContentMessage(tabId, {
+      type: "OBU_TAKEOVER_STATE",
+      active: true,
+      lockInputs: true,
+      sessionId: sessionParams.session_id,
+      turnId: sessionParams.turn_id,
+      reason: "browser-control",
+    });
+    if (sent) this.scheduleIdle(tabId);
+  }
+
+  async moveMouse(tabId: number, sessionParams: SessionParams, x: number, y: number): Promise<unknown> {
+    const visible = await this.isTabVisible(tabId);
+    if (!visible) return { visible: false };
+    await this.activate(tabId, sessionParams);
+
+    const sequence = this.nextCursorSequence++;
+    const arrival = this.waitForArrival(tabId, sequence, sessionParams);
+    const sent = await this.sendContentMessage(tabId, {
+      type: "OBU_CURSOR_MOVE",
+      x,
+      y,
+      sequence,
+      sessionId: sessionParams.session_id,
+      turnId: sessionParams.turn_id,
+    });
+    if (!sent) {
+      this.cancelArrival(sequence, false);
+      return { visible: false };
+    }
+    const arrived = await arrival;
+    return { visible: true, arrived, sequence };
+  }
+
+  async sendCursorEvent(tabId: number, sessionParams: SessionParams, event: CursorVisualEvent): Promise<void> {
+    const sent = await this.sendContentMessage(tabId, {
+      type: "OBU_CURSOR_EVENT",
+      kind: event.kind,
+      x: event.x,
+      y: event.y,
+      button: event.button,
+      sessionId: sessionParams.session_id,
+      turnId: sessionParams.turn_id,
+    });
+    if (sent) this.scheduleIdle(tabId);
+  }
+
+  async allowCdpInput(tabId: number, sessionParams: SessionParams, bypass: CdpInputBypass): Promise<void> {
+    await this.sendContentMessage(tabId, {
+      type: "OBU_INPUT_BYPASS",
+      durationMs: bypass.durationMs,
+      sessionId: sessionParams.session_id,
+      turnId: sessionParams.turn_id,
+      reason: bypass.reason,
+    });
+  }
+
+  handleCursorArrived(message: unknown): void {
+    if (!isRecord(message) || typeof message.sequence !== "number") return;
+    const waiter = this.cursorArrivalWaiters.get(message.sequence);
+    if (!waiter) return;
+    if (message.sessionId !== waiter.sessionId) return;
+    if (message.turnId !== waiter.turnId) return;
+    this.cursorArrivalWaiters.delete(message.sequence);
+    clearTimeout(waiter.timer);
+    waiter.resolve(true);
+  }
+
+  async hide(tabId: number): Promise<void> {
+    this.clearIdle(tabId);
+    this.rejectWaitersForTab(tabId);
+    await this.sendContentMessage(tabId, { type: "OBU_CURSOR_HIDE" }, { prepare: false });
+  }
+
+  private async sendContentMessage(tabId: number, message: unknown, options: { prepare?: boolean } = {}): Promise<boolean> {
+    if (options.prepare !== false && !await this.prepareContentScript(tabId)) return false;
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId, allFrames: true },
+        args: [CONTENT_SCRIPT_EVENT, message],
+        func: (eventName: string, payload: unknown) => {
+          globalThis.dispatchEvent(new CustomEvent(eventName, { detail: payload }));
+        },
+      });
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async prepareContentScript(tabId: number): Promise<boolean> {
+    if (await this.pingContentScript(tabId)) return true;
+    let pending = this.contentScriptPreparations.get(tabId);
+    if (!pending) {
+      pending = this.injectContentScript(tabId).finally(() => {
+        this.contentScriptPreparations.delete(tabId);
+      });
+      this.contentScriptPreparations.set(tabId, pending);
+    }
+    return await pending;
+  }
+
+  private async pingContentScript(tabId: number): Promise<boolean> {
+    try {
+      const response = await withTimeout(
+        chrome.tabs.sendMessage(tabId, { type: "OBU_CONTENT_PING" }),
+        CONTENT_PING_TIMEOUT_MS,
+      );
+      return isRecord(response) && response.ok === true;
+    } catch {
+      return false;
+    }
+  }
+
+  private async injectContentScript(tabId: number): Promise<boolean> {
+    try {
+      await chrome.scripting.executeScript({
+        files: ["cursor.js"],
+        injectImmediately: true,
+        target: { tabId, allFrames: true },
+      });
+    } catch {
+      return false;
+    }
+    return await this.pingContentScript(tabId);
+  }
+
+  private async isTabVisible(tabId: number): Promise<boolean> {
+    let tab: ChromeTab;
+    try {
+      tab = await chrome.tabs.get(tabId);
+    } catch {
+      return false;
+    }
+    if (tab.active !== true || typeof tab.windowId !== "number") return false;
+    try {
+      const windowInfo = await chrome.windows.get(tab.windowId);
+      return windowInfo.type === "normal" && windowInfo.state !== "minimized";
+    } catch {
+      return false;
+    }
+  }
+
+  private waitForArrival(tabId: number, sequence: number, sessionParams: SessionParams): Promise<boolean> {
+    return new Promise((resolve) => {
+      const timer = scheduleTimer(() => {
+        this.cursorArrivalWaiters.delete(sequence);
+        resolve(false);
+      }, CURSOR_ARRIVAL_TIMEOUT_MS);
+      this.cursorArrivalWaiters.set(sequence, {
+        tabId,
+        sessionId: sessionParams.session_id,
+        turnId: sessionParams.turn_id,
+        timer,
+        resolve,
+      });
+    });
+  }
+
+  private cancelArrival(sequence: number, value: boolean): void {
+    const waiter = this.cursorArrivalWaiters.get(sequence);
+    if (!waiter) return;
+    this.cursorArrivalWaiters.delete(sequence);
+    clearTimeout(waiter.timer);
+    waiter.resolve(value);
+  }
+
+  private scheduleIdle(tabId: number): void {
+    this.clearIdle(tabId);
+    this.takeoverIdleTimers.set(tabId, scheduleTimer(() => {
+      this.takeoverIdleTimers.delete(tabId);
+      void this.hide(tabId);
+    }, TAKEOVER_IDLE_TIMEOUT_MS));
+  }
+
+  private clearIdle(tabId: number): void {
+    const timer = this.takeoverIdleTimers.get(tabId);
+    if (timer !== undefined) clearTimeout(timer);
+    this.takeoverIdleTimers.delete(tabId);
+  }
+
+  private rejectWaitersForTab(tabId: number): void {
+    for (const [sequence, waiter] of this.cursorArrivalWaiters) {
+      if (waiter.tabId !== tabId) continue;
+      this.cursorArrivalWaiters.delete(sequence);
+      clearTimeout(waiter.timer);
+      waiter.resolve(false);
+    }
+  }
+}
+
+const overlayCoordinator = new OverlayCoordinator();
 
 void bootstrapBackground();
 
@@ -91,6 +313,26 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
       sendResponse(await getStatus());
       return;
     }
+    if (isMessage(message, "GET_DEBUG_LOG_STATUS")) {
+      sendResponse(debugLogStatus());
+      return;
+    }
+    if (isMessage(message, "SET_DEBUG_LOG_ENABLED")) {
+      const enabled = isRecord(message) && message.enabled === true;
+      await setDebugLogEnabled(enabled);
+      sendResponse(debugLogStatus());
+      return;
+    }
+    if (isMessage(message, "CLEAR_DEBUG_LOGS")) {
+      await clearDebugLogs();
+      sendResponse(debugLogStatus());
+      return;
+    }
+    if (isMessage(message, "OBU_CURSOR_ARRIVED")) {
+      overlayCoordinator.handleCursorArrived(message);
+      sendResponse({ ok: true });
+      return;
+    }
     sendResponse({ error: "unknown message" });
   })();
   return true;
@@ -101,6 +343,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   if (!Number.isInteger(tabId)) return;
   const owner = findSessionForTab(tabId!);
   if (!owner || !owner.session.attachedTabIds.has(tabId!)) return;
+  appendDebugLog("debug", "debugger.event", { method, tabId });
   if (method === "Page.downloadWillBegin" && isRecord(params) && typeof params.url === "string") {
     downloadOwnersByUrl.set(params.url, { sessionId: owner.sessionId, tabId });
   }
@@ -117,6 +360,7 @@ chrome.debugger.onDetach.addListener((source) => {
   if (!Number.isInteger(tabId)) return;
   const owner = findSessionForTab(tabId!);
   owner?.session.attachedTabIds.delete(tabId!);
+  appendDebugLog("warn", "debugger.detach", { tabId });
   if (owner) {
     sendNotification("onCDPEvent", {
       session_id: owner.sessionId,
@@ -130,6 +374,7 @@ chrome.debugger.onDetach.addListener((source) => {
 chrome.downloads.onCreated.addListener((item) => {
   const owner = typeof item.url === "string" ? downloadOwnersByUrl.get(item.url) : undefined;
   if (!owner) return;
+  appendDebugLog("debug", "download.created", { id: item.id, tabId: owner.tabId });
   if (typeof item.url === "string") downloadOwnersByUrl.delete(item.url);
   downloadOwnersById.set(item.id, owner);
   sendNotification("onDownloadChange", {
@@ -153,6 +398,7 @@ async function handleDownloadChanged(delta: ChromeDownloadDelta): Promise<void> 
   const state = item?.state ?? delta.state?.current;
   const status = state === "complete" ? "complete" : state === "interrupted" ? "failed" : undefined;
   if (!status) return;
+  appendDebugLog(status === "failed" ? "warn" : "debug", "download.changed", { id: delta.id, status, tabId: owner.tabId });
   sendNotification("onDownloadChange", {
     session_id: owner.sessionId,
     source: owner.tabId === undefined ? undefined : { tabId: owner.tabId },
@@ -172,6 +418,7 @@ async function handleDownloadChanged(delta: ChromeDownloadDelta): Promise<void> 
 async function connectNative(): Promise<void> {
   if (status.state === "connecting" || status.state === "connected") return;
   clearReconnect();
+  appendDebugLog("info", "native.connect.start", { host: HOST_NAME });
   await setStatus({ state: "connecting", updatedAt: Date.now() });
   let targetPort: NativePort;
   try {
@@ -179,6 +426,7 @@ async function connectNative(): Promise<void> {
     port = targetPort;
   } catch (error) {
     const message = errorMessage(error);
+    appendDebugLog("error", "native.connect.failed", { message });
     await setStatus({
       state: "error",
       message,
@@ -203,6 +451,10 @@ async function connectNative(): Promise<void> {
     clearHeartbeat();
     if (status.state !== "stopped" && status.state !== "version_mismatch") {
       const disconnectedMessage = message ?? (wasConnecting ? "native host exited before hello_ack" : "native host disconnected");
+      appendDebugLog(wasConnecting ? "error" : "warn", "native.disconnected", {
+        message: disconnectedMessage,
+        wasConnecting,
+      });
       void setStatus({
         state: wasConnecting ? "error" : "disconnected",
         message: disconnectedMessage,
@@ -227,6 +479,7 @@ async function connectNative(): Promise<void> {
       extension_id: chrome.runtime.id ?? "unknown",
       extension_instance_id: await extensionInstanceId(),
     });
+    appendDebugLog("debug", "native.hello.sent", { host: HOST_NAME });
     scheduleHelloTimeout(targetPort);
   } catch (error) {
     if (port === targetPort) port = null;
@@ -237,6 +490,7 @@ async function connectNative(): Promise<void> {
       // whether Chrome accepts cleanup of the half-open native port.
     }
     const message = errorMessage(error);
+    appendDebugLog("error", "native.hello.failed", { message });
     await setStatus({
       state: "error",
       message,
@@ -252,6 +506,9 @@ async function handleNativeMessage(message: unknown, sourcePort: NativePort): Pr
     clearHelloTimeout();
     stopping = false;
     reconnectDelayMs = RECONNECT_INITIAL_MS;
+    appendDebugLog("info", "native.hello.ack", {
+      hostVersion: typeof message.host_version === "string" ? message.host_version : undefined,
+    });
     await setStatus({
       state: "connected",
       hostVersion: typeof message.host_version === "string" ? message.host_version : undefined,
@@ -263,6 +520,9 @@ async function handleNativeMessage(message: unknown, sourcePort: NativePort): Pr
   if (isRecord(message) && message.type === "version_mismatch") {
     clearHelloTimeout();
     clearHeartbeat();
+    appendDebugLog("error", "native.version_mismatch", {
+      message: typeof message.message === "string" ? message.message : "Version mismatch",
+    });
     await setStatus({
       state: "version_mismatch",
       message: typeof message.message === "string" ? message.message : "Version mismatch",
@@ -273,6 +533,7 @@ async function handleNativeMessage(message: unknown, sourcePort: NativePort): Pr
     return;
   }
   if (isJsonRpcRequest(message)) {
+    appendDebugLog("debug", "native.request", { id: message.id, method: message.method });
     await handleHostRequest(message, sourcePort);
     return;
   }
@@ -281,14 +542,17 @@ async function handleNativeMessage(message: unknown, sourcePort: NativePort): Pr
     if (!waiter) return;
     pending.delete(message.id);
     if (message.error) {
+      appendDebugLog("warn", "native.response.error", { id: message.id, message: message.error.message });
       waiter.reject(new Error(message.error.message));
     } else {
+      appendDebugLog("debug", "native.response.ok", { id: message.id });
       waiter.resolve(message.result);
     }
   }
 }
 
 async function stopBrowserControl(): Promise<void> {
+  appendDebugLog("info", "control.stop");
   stopping = true;
   clearReconnect();
   clearHelloTimeout();
@@ -316,6 +580,7 @@ async function stopBrowserControl(): Promise<void> {
 }
 
 async function resumeBrowserControl(): Promise<void> {
+  appendDebugLog("info", "control.resume");
   stopping = false;
   clearReconnect();
   await setStatus({ state: "disconnected", updatedAt: Date.now() });
@@ -327,18 +592,21 @@ function sendRequest(method: string, params?: unknown): Promise<unknown> {
   const id = nextId++;
   const request: JsonRpcRequest = { jsonrpc: "2.0", id, method, params };
   const targetPort = port;
+  appendDebugLog("debug", "native.outbound.request", { id, method });
   return new Promise((resolve, reject) => {
     pending.set(id, { resolve, reject });
     try {
       targetPort?.postMessage(request);
     } catch (error) {
       pending.delete(id);
+      appendDebugLog("error", "native.outbound.failed", { id, method, message: errorMessage(error) });
       reject(error instanceof Error ? error : new Error(String(error)));
     }
   });
 }
 
 function sendNotification(method: string, params?: unknown): void {
+  appendDebugLog("debug", "native.outbound.notification", { method });
   port?.postMessage({ jsonrpc: "2.0", method, params } satisfies JsonRpcNotification);
 }
 
@@ -348,6 +616,7 @@ async function handleHostRequest(request: JsonRpcRequest, sourcePort: NativePort
     if (port === sourcePort) {
       sourcePort.postMessage({ jsonrpc: "2.0", id: request.id, result } satisfies JsonRpcResponse);
     }
+    appendDebugLog("debug", "host.request.ok", { id: request.id, method: request.method });
   } catch (error) {
     if (port === sourcePort) {
       sourcePort.postMessage({
@@ -356,6 +625,7 @@ async function handleHostRequest(request: JsonRpcRequest, sourcePort: NativePort
         error: { code: -32000, message: errorMessage(error) },
       } satisfies JsonRpcResponse);
     }
+    appendDebugLog("warn", "host.request.error", { id: request.id, method: request.method, message: errorMessage(error) });
   }
 }
 
@@ -382,7 +652,7 @@ async function dispatchHostRequest(method: string, params: unknown): Promise<unk
       await nameSession(requireSessionParams(params), params);
       return {};
     case "turnEnded":
-      markTurnEnded(requireSessionParams(params));
+      await markTurnEnded(requireSessionParams(params));
       return {};
     case "getUserHistory":
       return { items: await getUserHistory(params) };
@@ -409,6 +679,7 @@ async function createSessionTab(sessionParams: SessionParams, params: unknown): 
   session.currentTurnId = sessionParams.turn_id;
   session.tabs.set(tabId, { tabId, origin: "agent", status: "active" });
   await addTabToSessionGroup(session, tabId);
+  appendDebugLog("info", "tab.created", { sessionId: sessionParams.session_id, tabId });
   return tab;
 }
 
@@ -461,12 +732,14 @@ async function claimUserTab(sessionParams: SessionParams, params: unknown): Prom
   session.tabs.set(tabId, { tabId, origin: "user", status: "active" });
   await addTabToSessionGroup(session, tabId);
   await persistSessionState();
+  appendDebugLog("info", "tab.claimed", { sessionId: sessionParams.session_id, tabId });
   return tab;
 }
 
 async function finalizeTabs(sessionParams: SessionParams, params: unknown): Promise<FinalizeTabsResult> {
   const session = sessionFor(sessionParams.session_id);
   session.currentTurnId = sessionParams.turn_id;
+  await hideSessionTakeover(session);
   const keep = parseFinalizeKeep(params);
   const closedTabIds: number[] = [];
   const releasedTabIds: number[] = [];
@@ -515,6 +788,13 @@ async function finalizeTabs(sessionParams: SessionParams, params: unknown): Prom
   }
   if (session.tabs.size === 0) session.groupId = undefined;
   await persistSessionState();
+  appendDebugLog("info", "tabs.finalized", {
+    sessionId: sessionParams.session_id,
+    closed: closedTabIds.length,
+    released: releasedTabIds.length,
+    kept: keptTabs.length,
+    deliverable: deliverableTabs.length,
+  });
 
   return { closedTabIds, releasedTabIds, keptTabs, deliverableTabs };
 }
@@ -530,8 +810,10 @@ async function nameSession(sessionParams: SessionParams, params: unknown): Promi
   await persistSessionState();
 }
 
-function markTurnEnded(sessionParams: SessionParams): void {
-  sessionFor(sessionParams.session_id).currentTurnId = sessionParams.turn_id;
+async function markTurnEnded(sessionParams: SessionParams): Promise<void> {
+  const session = sessionFor(sessionParams.session_id);
+  session.currentTurnId = sessionParams.turn_id;
+  await hideSessionTakeover(session);
 }
 
 async function getUserHistory(params: unknown): Promise<HistoryItemDto[]> {
@@ -562,31 +844,69 @@ async function executeCdp(params: unknown): Promise<unknown> {
   }
   const method = params.method;
   const timeoutMs = timeoutMsFromParams(params);
-  return await withTimeout(
+  const sessionParams = requireSessionParams(params);
+  appendDebugLog("debug", "cdp.execute", { method, tabId, timeoutMs });
+  await overlayCoordinator.activate(tabId, sessionParams);
+  const inputBypass = inputBypassFromCdp(params);
+  if (inputBypass) {
+    await overlayCoordinator.allowCdpInput(tabId, sessionParams, inputBypass);
+  }
+  const cursorEvent = cursorEventFromCdp(params);
+  if (cursorEvent?.kind === "press") {
+    await overlayCoordinator.sendCursorEvent(tabId, sessionParams, cursorEvent);
+  }
+  const result = await withTimeout(
     chrome.debugger.sendCommand({ tabId }, method, params.commandParams),
     timeoutMs,
     `executeCdp ${method} timed out after ${timeoutMs}ms`,
   );
+  if (cursorEvent && cursorEvent.kind !== "press") {
+    await overlayCoordinator.sendCursorEvent(tabId, sessionParams, cursorEvent);
+    if (cursorEvent.kind === "release" && cursorEvent.clickCount > 0) {
+      await overlayCoordinator.sendCursorEvent(tabId, sessionParams, { ...cursorEvent, kind: "click" });
+    }
+  }
+  return result;
 }
 
 async function moveMouse(params: unknown): Promise<unknown> {
   const tabId = requireTabId(params);
+  const sessionParams = requireSessionParams(params);
   requireSessionTab(params);
   const x = requiredNumber(params, "x");
   const y = requiredNumber(params, "y");
-  const tab = await chrome.tabs.get(tabId);
-  if (!tab.active) return { visible: false };
-  try {
-    await chrome.tabs.sendMessage(tabId, {
-      type: "OBU_CURSOR_MOVE",
-      x,
-      y,
-      sequence: isRecord(params) && typeof params.sequence === "number" ? params.sequence : undefined,
-    });
-    return { visible: true };
-  } catch (error) {
-    return { visible: false, error: errorMessage(error) };
+  const result = await overlayCoordinator.moveMouse(tabId, sessionParams, x, y);
+  appendDebugLog("debug", "cursor.move", { tabId, result });
+  return result;
+}
+
+function inputBypassFromCdp(params: Record<string, unknown>): CdpInputBypass | undefined {
+  if (params.method === "Input.dispatchMouseEvent") {
+    return { durationMs: 600, reason: "cdp-mouse" };
   }
+  if (params.method === "Input.dispatchTouchEvent") {
+    return { durationMs: 600, reason: "cdp-touch" };
+  }
+  if (params.method === "Input.dispatchKeyEvent" || params.method === "Input.insertText") {
+    return { durationMs: 600, reason: "cdp-keyboard" };
+  }
+  return undefined;
+}
+
+function cursorEventFromCdp(params: Record<string, unknown>): CursorVisualEvent | undefined {
+  if (params.method !== "Input.dispatchMouseEvent" || !isRecord(params.commandParams)) return undefined;
+  const commandParams = params.commandParams;
+  const type = commandParams.type;
+  if (type !== "mousePressed" && type !== "mouseReleased") return undefined;
+  const x = typeof commandParams.x === "number" ? commandParams.x : undefined;
+  const y = typeof commandParams.y === "number" ? commandParams.y : undefined;
+  return {
+    kind: type === "mousePressed" ? "press" : "release",
+    x,
+    y,
+    button: typeof commandParams.button === "string" ? commandParams.button : undefined,
+    clickCount: typeof commandParams.clickCount === "number" ? Math.max(0, Math.trunc(commandParams.clickCount)) : 0,
+  };
 }
 
 async function attachDebugger(params: unknown): Promise<void> {
@@ -594,6 +914,7 @@ async function attachDebugger(params: unknown): Promise<void> {
   const session = requireSession(params);
   requireSessionTab(params);
   await ensureDebuggerAttached(session, tabId);
+  appendDebugLog("debug", "debugger.attach.requested", { tabId });
 }
 
 async function detachDebugger(params: unknown): Promise<void> {
@@ -606,6 +927,7 @@ async function detachDebugger(params: unknown): Promise<void> {
     await chrome.debugger.detach({ tabId });
     session.attachedTabIds.delete(tabId);
   });
+  appendDebugLog("debug", "debugger.detach.requested", { tabId });
 }
 
 async function ensureDebuggerAttached(session: BrowserSession, tabId: number): Promise<void> {
@@ -746,6 +1068,13 @@ async function cleanupControlledTab(session: BrowserSession, tabId: number): Pro
   session.attachedTabIds.delete(tabId);
 }
 
+async function hideSessionTakeover(session: BrowserSession): Promise<void> {
+  const tabIds = new Set<number>();
+  for (const tabId of session.tabs.keys()) tabIds.add(tabId);
+  for (const tabId of session.attachedTabIds) tabIds.add(tabId);
+  for (const tabId of tabIds) await hideCursor(tabId);
+}
+
 function isClaimableUserTab(tab: ChromeTab): boolean {
   return Number.isInteger(tab.id) && !isRestrictedUrl(tab.url);
 }
@@ -814,11 +1143,7 @@ async function stopActiveBrowserControl(): Promise<void> {
 }
 
 async function hideCursor(tabId: number): Promise<void> {
-  try {
-    await chrome.tabs.sendMessage(tabId, { type: "OBU_CURSOR_HIDE" });
-  } catch {
-    // Content scripts may be absent or the tab may already be gone.
-  }
+  await overlayCoordinator.hide(tabId);
 }
 
 function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
@@ -859,6 +1184,8 @@ function countDeliverableTabs(): number {
 }
 
 async function bootstrapBackground(): Promise<void> {
+  await restoreDebugLogs();
+  appendDebugLog("info", "background.bootstrap");
   await restoreSessionState();
   await bootstrapNativeConnection();
 }
@@ -882,6 +1209,15 @@ async function bootstrapNativeConnection(): Promise<void> {
     if (await restorePendingReconnect(storedStatus)) return;
   }
   await connectNative();
+}
+
+async function restoreDebugLogs(): Promise<void> {
+  try {
+    const stored = await chrome.storage.local.get<Record<string, unknown>>(DEBUG_LOG_KEY);
+    debugLog = parseDebugLogSnapshot(stored[DEBUG_LOG_KEY]) ?? debugLog;
+  } catch {
+    debugLog = { enabled: false, entries: [] };
+  }
 }
 
 async function restoreSessionState(): Promise<void> {
@@ -992,6 +1328,12 @@ async function restorePendingReconnect(storedStatus: HostStatus): Promise<boolea
 
 async function setStatus(next: HostStatus): Promise<void> {
   status = next;
+  appendDebugLog(statusLogLevel(next), "status.changed", {
+    state: next.state,
+    diagnosis: next.diagnosis,
+    message: next.message,
+    retryDelayMs: next.retryDelayMs,
+  });
   await chrome.storage.local.set({ [STATUS_KEY]: next });
 }
 
@@ -1005,6 +1347,7 @@ async function extensionInstanceId(): Promise<string> {
 }
 
 function rejectPending(message: string): void {
+  if (pending.size > 0) appendDebugLog("warn", "native.pending.rejected", { count: pending.size, message });
   for (const waiter of pending.values()) waiter.reject(new Error(message));
   pending.clear();
 }
@@ -1036,6 +1379,7 @@ function scheduleHelloTimeout(targetPort: NativePort): void {
     } catch {
       // The port is already considered failed; cleanup is best effort.
     }
+    appendDebugLog("error", "native.hello.timeout");
     void setStatus({
       state: "error",
       message: "native host hello timed out",
@@ -1060,6 +1404,7 @@ function scheduleHeartbeat(): void {
       () => scheduleHeartbeat(),
       (error) => {
         const message = errorMessage(error);
+        appendDebugLog("warn", "native.heartbeat.failed", { message });
         const failedPort = port;
         port = null;
         failedPort?.disconnect();
@@ -1088,6 +1433,7 @@ function scheduleReconnect(): void {
   const delay = reconnectDelayMs;
   const nextRetryAt = Date.now() + delay;
   reconnectDelayMs = Math.min(RECONNECT_MAX_MS, reconnectDelayMs * 2);
+  appendDebugLog("info", "native.reconnect.scheduled", { delayMs: delay });
   void setStatus({
     ...status,
     retryDelayMs: delay,
@@ -1117,6 +1463,88 @@ function clearReconnect(): void {
   if (reconnectTimer !== undefined) clearTimeout(reconnectTimer);
   reconnectTimer = undefined;
   void chrome.alarms.clear(RECONNECT_ALARM_NAME);
+}
+
+function debugLogStatus(): DebugLogSnapshot & { maxEntries: number } {
+  return {
+    enabled: debugLog.enabled,
+    entries: [...debugLog.entries],
+    maxEntries: DEBUG_LOG_MAX_ENTRIES,
+  };
+}
+
+async function setDebugLogEnabled(enabled: boolean): Promise<void> {
+  if (!enabled && debugLog.enabled) appendDebugLog("info", "debug.disabled");
+  debugLog = { ...debugLog, enabled };
+  if (enabled) appendDebugLog("info", "debug.enabled");
+  await persistDebugLogs();
+}
+
+async function clearDebugLogs(): Promise<void> {
+  debugLog = { ...debugLog, entries: [] };
+  await persistDebugLogs();
+}
+
+function appendDebugLog(level: DebugLogLevel, event: string, data?: unknown): void {
+  if (!debugLog.enabled) return;
+  const entry: DebugLogEntry = {
+    ts: new Date().toISOString(),
+    level,
+    event,
+    ...(data === undefined ? {} : { data: sanitizeDebugData(data) }),
+  };
+  debugLog = {
+    enabled: true,
+    entries: [...debugLog.entries, entry].slice(-DEBUG_LOG_MAX_ENTRIES),
+  };
+  void persistDebugLogs();
+}
+
+async function persistDebugLogs(): Promise<void> {
+  const snapshot = debugLogStatus();
+  debugLogSave = debugLogSave
+    .catch(() => undefined)
+    .then(() => chrome.storage.local.set({ [DEBUG_LOG_KEY]: snapshot }).catch(() => undefined));
+  await debugLogSave;
+}
+
+function parseDebugLogSnapshot(value: unknown): DebugLogSnapshot | undefined {
+  if (!isRecord(value)) return undefined;
+  const enabled = value.enabled === true;
+  const entries = Array.isArray(value.entries)
+    ? value.entries.filter(isDebugLogEntry).slice(-DEBUG_LOG_MAX_ENTRIES)
+    : [];
+  return { enabled, entries };
+}
+
+function isDebugLogEntry(value: unknown): value is DebugLogEntry {
+  if (!isRecord(value)) return false;
+  if (typeof value.ts !== "string" || typeof value.event !== "string") return false;
+  return value.level === "debug" || value.level === "info" || value.level === "warn" || value.level === "error";
+}
+
+function statusLogLevel(next: HostStatus): DebugLogLevel {
+  if (next.state === "error" || next.state === "version_mismatch") return "error";
+  if (next.state === "disconnected") return "warn";
+  return "info";
+}
+
+function sanitizeDebugData(value: unknown, depth = 0): unknown {
+  if (value === null || typeof value === "boolean" || typeof value === "number") return value;
+  if (typeof value === "string") return value.length > 300 ? `${value.slice(0, 300)}...` : value;
+  if (value === undefined) return undefined;
+  if (depth >= 3) return "[truncated]";
+  if (Array.isArray(value)) return value.slice(0, 20).map((item) => sanitizeDebugData(item, depth + 1));
+  if (!isRecord(value)) return String(value);
+  const out: Record<string, unknown> = {};
+  for (const [key, item] of Object.entries(value).slice(0, 30)) {
+    if (/token|password|secret|auth|cookie/i.test(key)) {
+      out[key] = "[redacted]";
+    } else {
+      out[key] = sanitizeDebugData(item, depth + 1);
+    }
+  }
+  return out;
 }
 
 function diagnoseNativeHostFailure(message: string, fallback: HostDiagnosis): HostDiagnosis {
@@ -1194,6 +1622,27 @@ function errorMessage(error: unknown): string {
 type SessionParams = {
   session_id: string;
   turn_id: string;
+};
+
+type CursorArrivalWaiter = {
+  tabId: number;
+  sessionId: string;
+  turnId: string;
+  timer: ReturnType<typeof setTimeout>;
+  resolve(value: boolean): void;
+};
+
+type CursorVisualEvent = {
+  kind: "press" | "release" | "click";
+  x?: number;
+  y?: number;
+  button?: string;
+  clickCount: number;
+};
+
+type CdpInputBypass = {
+  durationMs: number;
+  reason: string;
 };
 
 type BrowserSession = {

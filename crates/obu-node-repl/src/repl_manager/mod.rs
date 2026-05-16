@@ -1109,7 +1109,10 @@ fn seed_sdk_trust(
             if module_dir.file_name().and_then(|name| name.to_str()) == Some("node_modules") {
                 module_dir.join("@open-browser-use").join("sdk")
             } else {
-                module_dir.join("node_modules").join("@open-browser-use").join("sdk")
+                module_dir
+                    .join("node_modules")
+                    .join("@open-browser-use")
+                    .join("sdk")
             };
         if !candidate.join("package.json").exists() {
             continue;

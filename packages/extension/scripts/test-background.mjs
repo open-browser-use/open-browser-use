@@ -6,6 +6,7 @@ const packageRoot = path.dirname(fileURLToPath(new URL("../package.json", import
 const extensionId = "fblnfcjnjklpgnmfnngcihbcgojnpadj";
 const statusKey = "OBU_NATIVE_HOST_STATUS";
 const sessionStateKey = "OBU_BROWSER_SESSION_STATE";
+const debugLogKey = "OBU_DEBUG_LOG";
 
 class EventTarget {
   listeners = [];
@@ -52,22 +53,29 @@ const storageChanges = new EventTarget();
 const storage = {};
 let connectNativeError;
 let postMessageError;
+let suppressNextCursorArrival = false;
 const calls = {
   alarmsClear: [],
   alarmsCreate: [],
   debuggerAttach: [],
   debuggerDetach: [],
   debuggerSendCommand: [],
+  scriptingExecuteScript: [],
   tabGroupsUpdate: [],
   tabsCreate: [],
   tabsGroup: [],
   tabsRemove: [],
+  tabsSendMessage: [],
   tabsUngroup: [],
 };
 let nextTabId = 1;
 let nextGroupId = 10;
+const contentScriptTabs = new Set();
 const tabs = new Map([
   [99, { id: 99, windowId: 1, groupId: -1, url: "https://user.example/", title: "User", active: true, pinned: false }],
+]);
+const windows = new Map([
+  [1, { id: 1, focused: true, state: "normal", type: "normal" }],
 ]);
 
 globalThis.chrome = {
@@ -154,8 +162,63 @@ globalThis.chrome = {
       calls.tabsRemove.push(tabId);
       tabs.delete(tabId);
     },
-    async sendMessage() {
+    async sendMessage(tabId, message) {
+      if (message?.type === "OBU_CONTENT_PING") {
+        if (!contentScriptTabs.has(tabId)) throw new Error(`no content script in tab ${tabId}`);
+        return { ok: true };
+      }
+      if (!contentScriptTabs.has(tabId)) throw new Error(`no content script in tab ${tabId}`);
+      calls.tabsSendMessage.push({ tabId, message });
+      if (message?.type === "OBU_CURSOR_MOVE") {
+        if (suppressNextCursorArrival) {
+          suppressNextCursorArrival = false;
+          return {};
+        }
+        setTimeout(() => {
+          runtimeMessages.emit({
+            type: "OBU_CURSOR_ARRIVED",
+            sequence: message.sequence,
+            sessionId: message.sessionId,
+            turnId: message.turnId,
+          }, {}, () => {});
+        }, 1);
+      }
       return {};
+    },
+  },
+  windows: {
+    async get(windowId) {
+      const windowInfo = windows.get(windowId);
+      if (!windowInfo) throw new Error(`unknown window ${windowId}`);
+      return windowInfo;
+    },
+  },
+  scripting: {
+    async executeScript(injection) {
+      calls.scriptingExecuteScript.push(injection);
+      if (injection.files?.includes("cursor.js")) {
+        contentScriptTabs.add(injection.target.tabId);
+        return [{}];
+      }
+      if (typeof injection.func === "function") {
+        const message = injection.args?.[1];
+        calls.tabsSendMessage.push({ tabId: injection.target.tabId, message });
+        if (message?.type === "OBU_CURSOR_MOVE") {
+          if (suppressNextCursorArrival) {
+            suppressNextCursorArrival = false;
+            return [{}];
+          }
+          setTimeout(() => {
+            runtimeMessages.emit({
+              type: "OBU_CURSOR_ARRIVED",
+              sequence: message.sequence,
+              sessionId: message.sessionId,
+              turnId: message.turnId,
+            }, {}, () => {});
+          }, 1);
+        }
+      }
+      return [{}];
     },
   },
   tabGroups: {
@@ -206,6 +269,23 @@ assert.equal(port.sent[0].browser_kind, "chrome");
 
 port.emit({ type: "hello_ack", host_version: "0.1.0" });
 await waitFor(() => storage[statusKey]?.state === "connected");
+
+let debugStatus = await popupMessage({ type: "GET_DEBUG_LOG_STATUS" });
+assert.equal(debugStatus.enabled, false);
+assert.deepEqual(debugStatus.entries, []);
+debugStatus = await popupMessage({ type: "SET_DEBUG_LOG_ENABLED", enabled: true });
+assert.equal(debugStatus.enabled, true);
+assert.equal(debugStatus.maxEntries, 200);
+assert.ok(debugStatus.entries.some((entry) => entry.event === "debug.enabled"));
+await waitFor(() => storage[debugLogKey]?.entries?.some((entry) => entry.event === "debug.enabled"));
+await hostRequest(port, "ping");
+debugStatus = await popupMessage({ type: "GET_DEBUG_LOG_STATUS" });
+assert.ok(debugStatus.entries.some((entry) => entry.event === "native.request" && entry.data?.method === "ping"));
+assert.ok(debugStatus.entries.some((entry) => entry.event === "host.request.ok" && entry.data?.method === "ping"));
+debugStatus = await popupMessage({ type: "CLEAR_DEBUG_LOGS" });
+assert.equal(debugStatus.entries.length, 0);
+debugStatus = await popupMessage({ type: "SET_DEBUG_LOG_ENABLED", enabled: false });
+assert.equal(debugStatus.enabled, false);
 
 port = await runNativeHostReconnectAfterConnectedCrash(port);
 
@@ -301,6 +381,146 @@ const cdpAfterDetach = await hostRequest(port, "executeCdp", {
 });
 assert.deepEqual(cdpAfterDetach.result, { ok: true });
 assert.equal(calls.debuggerAttach.length, 2);
+assert.ok(calls.tabsSendMessage.some((call) =>
+  call.tabId === 1 &&
+  call.message.type === "OBU_TAKEOVER_STATE" &&
+  call.message.active === true &&
+  call.message.lockInputs === true &&
+  call.message.sessionId === "session" &&
+  call.message.turnId === "turn",
+));
+assert.ok(calls.scriptingExecuteScript.some((call) =>
+  call.target.tabId === 1 &&
+  call.target.allFrames === true &&
+  call.injectImmediately === true &&
+  call.files.includes("cursor.js"),
+));
+
+const moveMouseResult = await hostRequest(port, "moveMouse", {
+  session_id: "session",
+  turn_id: "turn",
+  tabId: 1,
+  x: 33,
+  y: 44,
+});
+assert.equal(moveMouseResult.result.visible, true);
+assert.equal(moveMouseResult.result.arrived, true);
+assert.equal(typeof moveMouseResult.result.sequence, "number");
+assert.ok(calls.tabsSendMessage.some((call) =>
+  call.tabId === 1 &&
+  call.message.type === "OBU_CURSOR_MOVE" &&
+  call.message.x === 33 &&
+  call.message.y === 44 &&
+  call.message.sequence === moveMouseResult.result.sequence,
+));
+
+windows.get(1).state = "minimized";
+const hiddenMoveMouseResult = await hostRequest(port, "moveMouse", {
+  session_id: "session",
+  turn_id: "turn",
+  tabId: 1,
+  x: 77,
+  y: 88,
+});
+assert.equal(hiddenMoveMouseResult.result.visible, false);
+assert.equal(calls.tabsSendMessage.some((call) =>
+  call.tabId === 1 &&
+  call.message.type === "OBU_CURSOR_MOVE" &&
+  call.message.x === 77 &&
+  call.message.y === 88,
+), false);
+windows.get(1).state = "normal";
+
+suppressNextCursorArrival = true;
+const strictArrivalStart = port.sent.length;
+const strictArrivalPromise = hostRequest(port, "moveMouse", {
+  session_id: "session",
+  turn_id: "turn",
+  tabId: 1,
+  x: 55,
+  y: 66,
+});
+const strictMoveCall = await waitFor(() =>
+  calls.tabsSendMessage.find((call) =>
+    call.tabId === 1 &&
+    call.message.type === "OBU_CURSOR_MOVE" &&
+    call.message.x === 55 &&
+    call.message.y === 66,
+  ),
+);
+runtimeMessages.emit({ type: "OBU_CURSOR_ARRIVED", sequence: strictMoveCall.message.sequence }, {}, () => {});
+runtimeMessages.emit({
+  type: "OBU_CURSOR_ARRIVED",
+  sequence: strictMoveCall.message.sequence,
+  sessionId: "other-session",
+  turnId: "turn",
+}, {}, () => {});
+await new Promise((resolve) => setTimeout(resolve, 25));
+assert.equal(
+  port.sent.slice(strictArrivalStart).some((message) => message.jsonrpc === "2.0" && !message.method),
+  false,
+);
+runtimeMessages.emit({
+  type: "OBU_CURSOR_ARRIVED",
+  sequence: strictMoveCall.message.sequence,
+  sessionId: "session",
+  turnId: "turn",
+}, {}, () => {});
+const strictArrivalResult = await strictArrivalPromise;
+assert.equal(strictArrivalResult.result.visible, true);
+assert.equal(strictArrivalResult.result.arrived, true);
+
+suppressNextCursorArrival = true;
+const timedOutArrivalResult = await hostRequest(port, "moveMouse", {
+  session_id: "session",
+  turn_id: "turn",
+  tabId: 1,
+  x: 57,
+  y: 68,
+});
+assert.equal(timedOutArrivalResult.result.visible, true);
+assert.equal(timedOutArrivalResult.result.arrived, false);
+
+await hostRequest(port, "executeCdp", {
+  session_id: "session",
+  turn_id: "turn",
+  target: { tabId: 1 },
+  method: "Input.dispatchMouseEvent",
+  commandParams: { type: "mousePressed", x: 33, y: 44, button: "left", clickCount: 1 },
+});
+await hostRequest(port, "executeCdp", {
+  session_id: "session",
+  turn_id: "turn",
+  target: { tabId: 1 },
+  method: "Input.dispatchMouseEvent",
+  commandParams: { type: "mouseReleased", x: 33, y: 44, button: "left", clickCount: 1 },
+});
+assert.ok(calls.tabsSendMessage.some((call) => call.message.type === "OBU_CURSOR_EVENT" && call.message.kind === "press"));
+assert.ok(calls.tabsSendMessage.some((call) => call.message.type === "OBU_CURSOR_EVENT" && call.message.kind === "release"));
+assert.ok(calls.tabsSendMessage.some((call) => call.message.type === "OBU_CURSOR_EVENT" && call.message.kind === "click"));
+assert.ok(calls.tabsSendMessage.some((call) =>
+  call.message.type === "OBU_INPUT_BYPASS" &&
+  call.message.reason === "cdp-mouse" &&
+  call.message.sessionId === "session" &&
+  call.message.turnId === "turn",
+));
+const mousePressCommandIndex = calls.debuggerSendCommand.findIndex((call) =>
+  call.method === "Input.dispatchMouseEvent" &&
+  call.commandParams?.type === "mousePressed"
+);
+const mouseBypassIndex = calls.tabsSendMessage.findIndex((call) =>
+  call.message.type === "OBU_INPUT_BYPASS" &&
+  call.message.reason === "cdp-mouse"
+);
+assert.ok(mouseBypassIndex >= 0);
+assert.ok(mousePressCommandIndex >= 0);
+
+const hideCountBeforeTurnEnd = calls.tabsSendMessage.filter((call) => call.message.type === "OBU_CURSOR_HIDE").length;
+await hostRequest(port, "turnEnded", {
+  session_id: "session",
+  turn_id: "turn",
+});
+assert.ok(calls.tabsSendMessage.filter((call) => call.message.type === "OBU_CURSOR_HIDE").length > hideCountBeforeTurnEnd);
 
 debuggerEvents.emit({ tabId: 1 }, "Page.downloadWillBegin", {
   url: "https://example.com/file.txt",

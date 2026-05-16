@@ -105,8 +105,26 @@ h1 {
   gap: 8px;
 }
 
+.debug {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 8px;
+  margin-top: 12px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.debug-actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 6px;
+}
+
 .stop,
-.resume {
+.resume,
+.debug-actions button {
   width: 100%;
   min-height: 36px;
   border-radius: 8px;
@@ -127,8 +145,15 @@ h1 {
   color: var(--accent);
 }
 
+.debug-actions button {
+  min-height: 32px;
+  border: 1px solid var(--line);
+  color: var(--ink);
+}
+
 .stop:disabled,
-.resume:disabled {
+.resume:disabled,
+.debug-actions button:disabled {
   opacity: 0.45;
   cursor: not-allowed;
 }

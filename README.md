@@ -176,6 +176,8 @@ finalized as deliverables can be inspected and reclaimed with
 `await browser.deliverables()` and each returned handle's `claim()` method.
 Acknowledged stale lifecycle diagnostics can also be cleared from host apps with
 `await browser.clearLifecycleDiagnostics()`.
+For extension-side debugging, open the extension popup, enable **Debug logs**,
+reproduce the issue, then click **Copy** to collect the local JSON debug report.
 
 ## Local Host Policy
 

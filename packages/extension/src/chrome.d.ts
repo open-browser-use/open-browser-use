@@ -51,6 +51,19 @@ declare const chrome: {
     ungroup(tabIds: number | number[]): Promise<void>;
     sendMessage(tabId: number, message: unknown): Promise<unknown>;
   };
+  windows: {
+    get(windowId: number): Promise<ChromeWindow>;
+  };
+  scripting: {
+    executeScript(injection: {
+      files?: string[];
+      // Chrome executes this function with JSON-serializable args from `args`.
+      func?: (...args: any[]) => unknown;
+      args?: unknown[];
+      injectImmediately?: boolean;
+      target: { tabId: number; frameIds?: number[]; allFrames?: boolean };
+    }): Promise<unknown>;
+  };
   tabGroups: {
     update(groupId: number, updateProperties: { title?: string; color?: string }): Promise<unknown>;
   };
@@ -101,6 +114,13 @@ type ChromeTab = {
   active?: boolean;
   pinned?: boolean;
   status?: string;
+};
+
+type ChromeWindow = {
+  id?: number;
+  focused?: boolean;
+  state?: "normal" | "minimized" | "maximized" | "fullscreen" | "locked-fullscreen";
+  type?: "normal" | "popup" | "panel" | "app" | "devtools";
 };
 
 type ChromeHistoryItem = {

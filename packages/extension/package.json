@@ -9,6 +9,7 @@
     "build": "tsc -p tsconfig.json && node scripts/build.mjs",
     "coverage": "tsc -p tsconfig.json && node scripts/test-manifest.mjs && node scripts/build.mjs && c8 --all --src dist --include 'dist/**/*.js' --reporter=text --reporter=html --reports-dir coverage node scripts/test-extension.mjs",
     "dev:manifest": "node scripts/write-dev-native-host-manifest.mjs",
+    "test:browser": "pnpm build && node scripts/test-takeover-browser.mjs",
     "test": "tsc -p tsconfig.json && node scripts/test-manifest.mjs && node scripts/build.mjs && node scripts/test-extension.mjs",
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },

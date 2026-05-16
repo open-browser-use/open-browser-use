@@ -44,7 +44,10 @@ pub fn prepare_built_sdk_module_root() -> BuiltSdkModuleRoot {
 
     let temp_dir = tempfile::tempdir().expect("create sdk module tempdir");
     let root = temp_dir.path().to_path_buf();
-    let sdk_dir = root.join("node_modules").join("@open-browser-use").join("sdk");
+    let sdk_dir = root
+        .join("node_modules")
+        .join("@open-browser-use")
+        .join("sdk");
     let sdk_dist = sdk_dir.join("dist");
     std::fs::create_dir_all(&sdk_dist).expect("create copied sdk dist");
     std::fs::copy(repo_sdk.join("package.json"), sdk_dir.join("package.json"))

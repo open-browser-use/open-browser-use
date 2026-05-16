@@ -79,6 +79,17 @@ The manifest path should point at an open-browser-use wrapper under
 `~/.obu/native-host/dev.obu.host/<browser>/obu-host-wrapper`, not directly at a
 source-tree helper or versioned payload binary.
 
+## Extension Debug Logs
+
+The unpacked extension popup has local debug logging controls. Open the
+open-browser-use extension popup, enable **Debug logs**, reproduce the issue,
+then click **Copy** to copy a JSON report with the current popup status and the
+recent extension service-worker events. Click **Clear** after collecting the
+report.
+
+Logs stay in `chrome.storage.local` and are not uploaded. Keep debug logging
+off when you are not actively reproducing an issue.
+
 ## Agent Adapter Backups
 
 Direct-edit adapters retain only open-browser-use timestamped backups. To inspect counts:

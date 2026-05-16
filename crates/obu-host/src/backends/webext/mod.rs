@@ -2059,6 +2059,7 @@ async fn overlay_move_mouse(
                     "tabId": parse_tab_id(tab_id)?,
                     "x": x,
                     "y": y,
+                    "waitForArrival": true,
                 }),
             ),
         )

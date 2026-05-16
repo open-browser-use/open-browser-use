@@ -446,6 +446,7 @@ async fn webext_backend_routes_tab_cua_and_clipboard_via_execute_cdp() {
             && params["tabId"] == 42
             && params["x"].as_f64() == Some(10.0)
             && params["y"].as_f64() == Some(20.0)
+            && params["waitForArrival"] == true
     }));
     let execute_methods = calls
         .iter()

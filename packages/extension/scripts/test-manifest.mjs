@@ -22,7 +22,10 @@ assert.deepEqual(manifest.content_scripts, [
   {
     matches: ["<all_urls>"],
     js: ["cursor.js"],
-    run_at: "document_idle",
+    run_at: "document_start",
+    all_frames: true,
+    match_about_blank: true,
+    match_origin_as_fallback: true,
   },
 ]);
 assert.equal(manifest.background.service_worker, "background.js");

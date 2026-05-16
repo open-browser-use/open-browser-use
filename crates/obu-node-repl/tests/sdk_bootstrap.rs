@@ -4,7 +4,11 @@ use serde_json::json;
 #[tokio::test]
 async fn sdk_bootstrap_mounts_agent_and_help_from_trusted_sdk() {
     let root = tempfile::tempdir().unwrap();
-    let sdk_dir = root.path().join("node_modules").join("@open-browser-use").join("sdk");
+    let sdk_dir = root
+        .path()
+        .join("node_modules")
+        .join("@open-browser-use")
+        .join("sdk");
     let dist_dir = sdk_dir.join("dist");
     std::fs::create_dir_all(&dist_dir).unwrap();
     std::fs::write(

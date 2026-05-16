@@ -4,6 +4,7 @@ import path from "node:path";
 
 const packageRoot = path.dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const statusKey = "OBU_NATIVE_HOST_STATUS";
+const debugLogKey = "OBU_DEBUG_LOG";
 
 class EventTarget {
   listeners = [];
@@ -37,6 +38,7 @@ class FakeElement {
 await runPopupHappyPath();
 await runPopupRepairMatrix();
 await runPopupResumeFromFailureStates();
+await runPopupDebugLogs();
 await runPopupInitialFailure("missing status response", [undefined], "Native host status unavailable");
 await runPopupInitialFailure("runtime rejection", [new Error("status boom")], "status boom");
 
@@ -396,6 +398,52 @@ async function runPopupInitialFailure(label, responses, expectedDetail) {
   assert.equal(harness.elements.detailText.textContent, expectedDetail);
 }
 
+async function runPopupDebugLogs() {
+  const harness = installPopupHarness([
+    { state: "connected", hostVersion: "0.1.0" },
+  ]);
+  await importPopup("debug-logs");
+  await waitFor(() => harness.elements.statusText.textContent === "Connected");
+  await waitFor(() => harness.elements.debugText.textContent === "Disabled, 0 saved entries");
+  assert.equal(harness.elements.copyDebugButton.disabled, true);
+  assert.equal(harness.elements.clearDebugButton.disabled, true);
+
+  harness.elements.debugToggleButton.click();
+  await waitFor(() => harness.sent.some((message) => message.type === "SET_DEBUG_LOG_ENABLED" && message.enabled === true));
+  await waitFor(() => harness.elements.debugText.textContent === "Enabled, 1/200 entries");
+  assert.equal(harness.elements.debugToggleButton.textContent, "Disable");
+  assert.equal(harness.elements.copyDebugButton.disabled, false);
+  assert.equal(harness.elements.clearDebugButton.disabled, false);
+
+  harness.elements.copyDebugButton.click();
+  await waitFor(() => harness.clipboardWrites.length === 1);
+  const copied = JSON.parse(harness.clipboardWrites[0]);
+  assert.equal(copied.schemaVersion, 1);
+  assert.equal(copied.extensionVersion, "0.1.0");
+  assert.equal(copied.status.state, "connected");
+  assert.equal(copied.debug.entries[0].event, "debug.enabled");
+  assert.match(harness.elements.debugText.textContent, /Copied 1 entries/);
+
+  harness.elements.clearDebugButton.click();
+  await waitFor(() => harness.elements.debugText.textContent === "Cleared");
+  assert.equal(harness.elements.copyDebugButton.disabled, true);
+  assert.equal(harness.elements.clearDebugButton.disabled, true);
+
+  harness.storageChanges.emit(
+    {
+      [debugLogKey]: {
+        newValue: {
+          enabled: true,
+          maxEntries: 200,
+          entries: [{ ts: "2026-05-16T00:00:00.000Z", level: "info", event: "external" }],
+        },
+      },
+    },
+    "local",
+  );
+  assert.equal(harness.elements.debugText.textContent, "Enabled, 1/200 entries");
+}
+
 function installPopupHarness(responses) {
   const elements = {
     dot: new FakeElement(),
@@ -404,6 +452,10 @@ function installPopupHarness(responses) {
     versionText: new FakeElement(),
     stopButton: new FakeElement(),
     resumeButton: new FakeElement(),
+    debugText: new FakeElement(),
+    debugToggleButton: new FakeElement(),
+    copyDebugButton: new FakeElement(),
+    clearDebugButton: new FakeElement(),
   };
   const selectors = new Map([
     ["#status-dot", elements.dot],
@@ -412,19 +464,50 @@ function installPopupHarness(responses) {
     ["#version-text", elements.versionText],
     ["#stop-button", elements.stopButton],
     ["#resume-button", elements.resumeButton],
+    ["#debug-text", elements.debugText],
+    ["#debug-toggle-button", elements.debugToggleButton],
+    ["#copy-debug-button", elements.copyDebugButton],
+    ["#clear-debug-button", elements.clearDebugButton],
   ]);
   const sent = [];
+  const clipboardWrites = [];
   const storageChanges = new EventTarget();
+  let debugState = { enabled: false, entries: [], maxEntries: 200 };
   globalThis.document = {
     querySelector(selector) {
       return selectors.get(selector) ?? null;
     },
   };
+  Object.defineProperty(globalThis, "navigator", {
+    configurable: true,
+    value: {
+      clipboard: {
+        async writeText(text) {
+          clipboardWrites.push(text);
+        },
+      },
+    },
+  });
   globalThis.chrome = {
     runtime: {
       getManifest: () => ({ version: "0.1.0" }),
       async sendMessage(message) {
         sent.push(message);
+        if (message?.type === "GET_DEBUG_LOG_STATUS") return debugState;
+        if (message?.type === "SET_DEBUG_LOG_ENABLED") {
+          debugState = {
+            ...debugState,
+            enabled: message.enabled === true,
+            entries: message.enabled === true
+              ? [...debugState.entries, { ts: "2026-05-16T00:00:00.000Z", level: "info", event: "debug.enabled" }]
+              : debugState.entries,
+          };
+          return debugState;
+        }
+        if (message?.type === "CLEAR_DEBUG_LOGS") {
+          debugState = { ...debugState, entries: [] };
+          return debugState;
+        }
         const next = responses.shift();
         if (next instanceof Error) throw next;
         return next;
@@ -434,7 +517,7 @@ function installPopupHarness(responses) {
       onChanged: storageChanges,
     },
   };
-  return { elements, sent, storageChanges };
+  return { elements, sent, storageChanges, clipboardWrites };
 }
 
 async function importPopup(label) {

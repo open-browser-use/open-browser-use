@@ -183,6 +183,9 @@ The automated `setup-webext-e2e.mjs` path also wires a fake Codex CLI with
 `obu setup --yes --agents=codex-cli` before launching Chrome for Testing.
 `obu doctor --strict` must exit nonzero on warnings as well as failures; use the
 non-strict command for interactive troubleshooting where warnings are advisory.
+Before manual testing, enable extension popup Debug logs, reproduce one browser
+task, copy the JSON report, and confirm it includes status changes plus
+`native.request` / `host.request.ok` events. Clear logs after capture.
 
 ## Agent Gate
 
