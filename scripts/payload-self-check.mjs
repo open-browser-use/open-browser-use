@@ -5,7 +5,8 @@ import { spawnSync } from "node:child_process";
 import { access, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
 
-const payload = path.resolve(parsePayloadArg(process.argv.slice(2)));
+const args = parseArgs(process.argv.slice(2));
+const payload = path.resolve(args.payload);
 const metadata = JSON.parse(await readFile(path.join(payload, "metadata.json"), "utf8"));
 
 assert.equal(metadata.schemaVersion, 1);
@@ -31,16 +32,18 @@ await mustExist("LICENSE");
 await mustExist("LICENSE-THIRD-PARTY.md");
 
 assert.equal(await hashTree(path.join(payload, "node_modules", "@open-browser-use", "sdk", "dist")), metadata.sdkHash);
-assert.equal(readVersion(path.join(payload, "node", "bin", "node"), ["--version"]).replace(/^v/, ""), metadata.nodeVersion);
-assert.match(readVersion(path.join(payload, "bin", "obu-host"), ["--version"]), new RegExp(`\\b${escapeRegExp(metadata.packageVersion)}\\b`));
-assert.match(readVersion(path.join(payload, "bin", "obu-node-repl"), ["--version"]), new RegExp(`\\b${escapeRegExp(metadata.packageVersion)}\\b`));
-assert.equal(
-  readVersion(path.join(payload, "node", "bin", "node"), [path.join(payload, "cli", "dist", "index.js"), "--version"], {
-    OBU_PAYLOAD_ROOT: payload,
-    OBU_NODE_BINARY: path.join(payload, "node", "bin", "node"),
-  }),
-  metadata.packageVersion,
-);
+if (!args.static) {
+  assert.equal(readVersion(path.join(payload, "node", "bin", "node"), ["--version"]).replace(/^v/, ""), metadata.nodeVersion);
+  assert.match(readVersion(path.join(payload, "bin", "obu-host"), ["--version"]), new RegExp(`\\b${escapeRegExp(metadata.packageVersion)}\\b`));
+  assert.match(readVersion(path.join(payload, "bin", "obu-node-repl"), ["--version"]), new RegExp(`\\b${escapeRegExp(metadata.packageVersion)}\\b`));
+  assert.equal(
+    readVersion(path.join(payload, "node", "bin", "node"), [path.join(payload, "cli", "dist", "index.js"), "--version"], {
+      OBU_PAYLOAD_ROOT: payload,
+      OBU_NODE_BINARY: path.join(payload, "node", "bin", "node"),
+    }),
+    metadata.packageVersion,
+  );
+}
 const extensionManifest = JSON.parse(await readFile(path.join(payload, "extension", "dist", "manifest.json"), "utf8"));
 assert.equal(extensionManifest.version, metadata.extensionVersion);
 
@@ -97,16 +100,21 @@ function escapeRegExp(value) {
   return String(value).replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function parsePayloadArg(argv) {
+function parseArgs(argv) {
+  const parsed = { payload: path.join("dist", "payload", "current"), static: false };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === "--payload") {
       index += 1;
       if (index >= argv.length) throw new Error("--payload requires a directory");
-      return argv[index];
+      parsed.payload = argv[index];
+    } else if (arg === "--static") {
+      parsed.static = true;
+    } else if (arg === "current") {
+      parsed.payload = path.join("dist", "payload", "current");
+    } else {
+      throw new Error(`unknown argument: ${arg}`);
     }
-    if (arg === "current") return path.join("dist", "payload", "current");
-    throw new Error(`unknown argument: ${arg}`);
   }
-  return path.join("dist", "payload", "current");
+  return parsed;
 }

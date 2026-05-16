@@ -195,7 +195,12 @@ jobs:
             --out "dist/payload/${{ matrix.target }}"
 
       - name: Payload self-check
-        run: node scripts/payload-self-check.mjs --payload "dist/payload/${{ matrix.target }}"
+        run: |
+          SELF_CHECK_ARGS=()
+          if [ "${{ matrix.dynamic_smoke }}" != "true" ]; then
+            SELF_CHECK_ARGS+=(--static)
+          fi
+          node scripts/payload-self-check.mjs --payload "dist/payload/${{ matrix.target }}" "${SELF_CHECK_ARGS[@]}"
 
       - name: Stage target npm package
         run: node scripts/stage-npm-packages.mjs --payload "dist/payload/${{ matrix.target }}"
