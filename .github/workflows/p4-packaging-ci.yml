@@ -179,10 +179,17 @@ jobs:
 
       - name: Assemble target payload
         run: |
-          NODE_ROOT="$(node scripts/fetch-node-runtime.mjs --target "${{ matrix.target }}")"
+          FETCH_NODE_ARGS=(--target "${{ matrix.target }}")
+          ASSEMBLE_NODE_ARGS=()
+          if [ "${{ matrix.dynamic_smoke }}" != "true" ]; then
+            FETCH_NODE_ARGS+=(--skip-version-check)
+            ASSEMBLE_NODE_ARGS+=(--node-version "22.22.0")
+          fi
+          NODE_ROOT="$(node scripts/fetch-node-runtime.mjs "${FETCH_NODE_ARGS[@]}")"
           node scripts/assemble-payload.mjs \
             --target "${{ matrix.target }}" \
             --node-root "$NODE_ROOT" \
+            "${ASSEMBLE_NODE_ARGS[@]}" \
             --host-bin "target/${{ matrix.rust_target }}/debug/obu-host" \
             --node-repl-bin "target/${{ matrix.rust_target }}/debug/obu-node-repl" \
             --out "dist/payload/${{ matrix.target }}"

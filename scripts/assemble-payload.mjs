@@ -65,7 +65,7 @@ async function stageNode(payloadRoot, options) {
     await chmod(path.join(nodeOut, "bin", "node"), 0o755);
   }
   const stagedNode = path.join(nodeOut, "bin", "node");
-  const version = nodeVersion(stagedNode);
+  const version = options.nodeVersion ?? nodeVersion(stagedNode);
   if (!isAtLeastNode(version, 22, 22, 0)) {
     throw new Error(`bundled Node must be >=22.22.0, got ${version}`);
   }
@@ -281,6 +281,8 @@ function parseArgs(argv) {
       parsed.target = readValue();
     } else if (flag === "--node-root") {
       parsed.nodeRoot = path.resolve(readValue());
+    } else if (flag === "--node-version") {
+      parsed.nodeVersion = readValue();
     } else if (flag === "--host-bin") {
       parsed.hostBin = path.resolve(readValue());
     } else if (flag === "--node-repl-bin") {

@@ -45,9 +45,11 @@ try {
   await rm(temp, { recursive: true, force: true });
 }
 
-const version = nodeVersion(path.join(nodeRoot, "bin", process.platform === "win32" ? "node.exe" : "node"));
-if (version !== manifest.nodeVersion) {
-  throw new Error(`expected Node ${manifest.nodeVersion}, got ${version}`);
+if (!args.skipVersionCheck) {
+  const version = nodeVersion(path.join(nodeRoot, "bin", process.platform === "win32" ? "node.exe" : "node"));
+  if (version !== manifest.nodeVersion) {
+    throw new Error(`expected Node ${manifest.nodeVersion}, got ${version}`);
+  }
 }
 
 console.log(nodeRoot);
@@ -111,6 +113,8 @@ function parseArgs(argv) {
       parsed.target = readValue();
     } else if (flag === "--out") {
       parsed.out = path.resolve(readValue());
+    } else if (flag === "--skip-version-check") {
+      parsed.skipVersionCheck = true;
     } else {
       throw new Error(`unknown argument: ${arg}`);
     }
