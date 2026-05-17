@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import { createHash } from "node:crypto";
-import { mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
+import { cp, mkdir, readFile, readdir, rm, stat, writeFile } from "node:fs/promises";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,34 +9,40 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const args = parseArgs(process.argv.slice(2));
 const extensionDist = args.dist ?? path.join(root, "packages", "extension", "dist");
 const outDir = args.out ?? path.join(root, "dist", "chrome-web-store");
-const storeExtensionId = args.storeExtensionId ?? process.env.OBU_STORE_EXTENSION_ID;
+const storeExtensionId = args.storeExtensionId ?? process.env.OBU_STORE_EXTENSION_ID ?? undefined;
 
-if (!storeExtensionId || !/^[a-p]{32}$/.test(storeExtensionId)) {
-  throw new Error("make-extension-store-artifact requires --store-extension-id <32-char a-p Chrome extension id>");
+if (storeExtensionId !== undefined && !/^[a-p]{32}$/.test(storeExtensionId)) {
+  throw new Error("--store-extension-id must be a 32-char a-p Chrome extension id");
 }
 
 const files = await listFiles(extensionDist);
 assertStoreContents(files);
 const manifest = JSON.parse(await readFile(path.join(extensionDist, "manifest.json"), "utf8"));
-const version = assertStoreManifest(manifest, storeExtensionId);
+const { sourceManifestKeyId, version } = assertStoreManifest(manifest);
 assertStorePopup(await readFile(path.join(extensionDist, "popup.js"), "utf8"));
 
 await rm(outDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 await mkdir(outDir, { recursive: true });
 
+const stagingDir = path.join(outDir, "__store-staging");
+await stageStoreUpload(extensionDist, stagingDir, files, manifest);
+
 const zipName = `open-browser-use-chrome-web-store-${version}.zip`;
 const zipPath = path.join(outDir, zipName);
-const zip = spawnSync("zip", ["-X", "-q", zipPath, ...files], { cwd: extensionDist, encoding: "utf8" });
+const zip = spawnSync("zip", ["-X", "-q", zipPath, ...files], { cwd: stagingDir, encoding: "utf8" });
 if (zip.error) throw zip.error;
 if (zip.status !== 0) throw new Error(`zip failed: ${zip.stderr || zip.stdout}`);
+await rm(stagingDir, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
 
 const sha256 = await sha256File(zipPath);
 const summary = {
   schemaVersion: 1,
   generatedAt: new Date().toISOString(),
   extensionChannel: "store",
-  storeExtensionId,
-  manifestKeyPolicy: "included",
+  storeExtensionId: storeExtensionId ?? null,
+  storeExtensionIdStatus: storeExtensionId ? "provided" : "pending-chrome-web-store-draft",
+  sourceManifestKeyId: sourceManifestKeyId ?? null,
+  manifestKeyPolicy: "omitted-for-store-upload",
   popupChannel: "store",
   version,
   artifact: zipName,
@@ -47,18 +53,16 @@ const summary = {
 await writeFile(path.join(outDir, "chrome-web-store-artifact.json"), `${JSON.stringify(summary, null, 2)}\n`, "utf8");
 
 console.log(`created Chrome Web Store artifact at ${zipPath}`);
+if (!storeExtensionId) {
+  console.warn("warning: Store extension id is not recorded yet; upload this draft zip, copy the Dashboard item id, then regenerate with --store-extension-id <id>.");
+}
 
-function assertStoreManifest(manifest, expectedStoreExtensionId) {
+function assertStoreManifest(manifest) {
   const issues = [];
   if (manifest.manifest_version !== 3) issues.push("manifest_version must be 3");
   if (typeof manifest.name !== "string" || manifest.name.length === 0) issues.push("name is required");
   if (typeof manifest.description !== "string" || manifest.description.length === 0) issues.push("description is required");
   if (typeof manifest.version !== "string" || !/^\d+\.\d+\.\d+/.test(manifest.version)) issues.push("version must be semver-like");
-  if (typeof manifest.key !== "string" || manifest.key.length === 0) issues.push("Store upload manifest must include key");
-  const derivedId = typeof manifest.key === "string" ? extensionIdFromManifestKey(manifest.key) : undefined;
-  if (derivedId !== expectedStoreExtensionId) {
-    issues.push(`manifest key derives ${derivedId ?? "unknown"}, expected Store extension id ${expectedStoreExtensionId}`);
-  }
   if (manifest.background?.service_worker !== "background.js") issues.push("background.service_worker must be background.js");
   if (manifest.action?.default_popup !== "popup.html") issues.push("action.default_popup must be popup.html");
   if (!Array.isArray(manifest.permissions) || !manifest.permissions.includes("nativeMessaging")) {
@@ -68,7 +72,12 @@ function assertStoreManifest(manifest, expectedStoreExtensionId) {
     issues.push("host_permissions must include <all_urls>");
   }
   if (issues.length > 0) throw new Error(`Store manifest validation failed: ${issues.join("; ")}`);
-  return manifest.version;
+  return {
+    sourceManifestKeyId: typeof manifest.key === "string" && manifest.key.length > 0
+      ? extensionIdFromManifestKey(manifest.key)
+      : undefined,
+    version: manifest.version,
+  };
 }
 
 function assertStorePopup(contents) {
@@ -120,6 +129,20 @@ async function listFiles(dir, base = dir) {
     }
   }
   return files;
+}
+
+async function stageStoreUpload(extensionDist, stagingDir, files, manifest) {
+  await mkdir(stagingDir, { recursive: true });
+  for (const file of files) {
+    const source = path.join(extensionDist, file);
+    const destination = path.join(stagingDir, file);
+    await mkdir(path.dirname(destination), { recursive: true });
+    await cp(source, destination);
+  }
+
+  const uploadManifest = { ...manifest };
+  delete uploadManifest.key;
+  await writeFile(path.join(stagingDir, "manifest.json"), `${JSON.stringify(uploadManifest, null, 2)}\n`, "utf8");
 }
 
 async function sha256File(file) {

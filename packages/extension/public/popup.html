@@ -9,9 +9,12 @@
   <body>
     <main class="shell">
       <header class="header">
-        <div>
-          <p class="eyebrow">open-browser-use</p>
-          <h1>Browser Control</h1>
+        <div class="brand">
+          <img class="brand-mark" src="icons/icon-48.png" width="40" height="40" alt="" aria-hidden="true" />
+          <div>
+            <p class="eyebrow">open-browser-use</p>
+            <h1>Browser Control</h1>
+          </div>
         </div>
         <span id="status-dot" class="dot" aria-hidden="true"></span>
       </header>
@@ -35,11 +38,11 @@
       </section>
 
       <div class="actions">
-        <button id="stop-button" class="stop" type="button">Stop browser control</button>
+        <button id="stop-button" class="stop" type="button">I'll take over</button>
         <button id="resume-button" class="resume" type="button">Resume</button>
       </div>
 
-      <section class="debug">
+      <section class="debug" hidden aria-hidden="true">
         <div>
           <p class="label">Debug logs</p>
           <p id="debug-text" class="detail">Disabled</p>

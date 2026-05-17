@@ -46,7 +46,9 @@ try {
   const summary = JSON.parse(await readFile(path.join(tmp, "store", "chrome-web-store-artifact.json"), "utf8"));
   assert.equal(summary.extensionChannel, "store");
   assert.equal(summary.storeExtensionId, extensionId);
-  assert.equal(summary.manifestKeyPolicy, "included");
+  assert.equal(summary.storeExtensionIdStatus, "provided");
+  assert.equal(summary.sourceManifestKeyId, extensionId);
+  assert.equal(summary.manifestKeyPolicy, "omitted-for-store-upload");
   assert.equal(summary.popupChannel, "store");
   assert.match(summary.artifact, /^open-browser-use-chrome-web-store-.+\.zip$/);
   assert.match(summary.sha256, /^sha256:[0-9a-f]{64}$/);
@@ -62,6 +64,22 @@ try {
     "popup.html",
     "popup.js",
   ]);
+  const zippedManifest = JSON.parse(readZipEntry(path.join(tmp, "store", summary.artifact), "manifest.json"));
+  assert.equal(zippedManifest.key, undefined, "Chrome Web Store upload manifest must omit key");
+
+  const draftResult = spawnSync(
+    process.execPath,
+    [
+      path.join(repoRoot, "scripts", "make-extension-store-artifact.mjs"),
+      "--out",
+      path.join(tmp, "draft"),
+    ],
+    { cwd: repoRoot, encoding: "utf8" },
+  );
+  assert.equal(draftResult.status, 0, draftResult.stderr || draftResult.stdout);
+  const draftSummary = JSON.parse(await readFile(path.join(tmp, "draft", "chrome-web-store-artifact.json"), "utf8"));
+  assert.equal(draftSummary.storeExtensionId, null);
+  assert.equal(draftSummary.storeExtensionIdStatus, "pending-chrome-web-store-draft");
 } finally {
   runBuild("unpacked-dev");
   await rm(tmp, { recursive: true, force: true });
@@ -73,6 +91,12 @@ function runBuild(channel) {
     encoding: "utf8",
   });
   assert.equal(result.status, 0, result.stderr || result.stdout);
+}
+
+function readZipEntry(zipPath, entryName) {
+  const result = spawnSync("unzip", ["-p", zipPath, entryName], { encoding: "utf8" });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+  return result.stdout;
 }
 
 function extensionIdFromManifestKey(key) {

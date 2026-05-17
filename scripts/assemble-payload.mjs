@@ -43,8 +43,9 @@ const metadata = {
   extensionId: extension.id,
   ...(args.storeExtensionId ? {
     storeExtensionId: args.storeExtensionId,
-    storePublicKey: extension.publicKey,
-    storeManifestKeyPolicy: "included",
+    sourceManifestKeyId: extension.id,
+    sourceManifestPublicKey: extension.publicKey,
+    storeManifestKeyPolicy: "omitted-for-store-upload",
   } : {}),
   extensionZip: path.relative(outDir, extension.zipPath),
   extensionZipSha256: await hashFile(extension.zipPath),
@@ -139,9 +140,6 @@ async function stageExtension(payloadRoot) {
   const manifest = JSON.parse(await readFile(path.join(extensionDist, "manifest.json"), "utf8"));
   const version = typeof manifest.version === "string" ? manifest.version : "0.0.0";
   const id = extensionIdFromManifestKey(manifest.key);
-  if (args.storeExtensionId && args.storeExtensionId !== id) {
-    throw new Error(`--store-extension-id ${args.storeExtensionId} does not match manifest key-derived id ${id}`);
-  }
   const zipPath = path.join(extensionOut, `open-browser-use-extension-${version}.zip`);
   await zipDirectory(extensionDist, zipPath);
   return {

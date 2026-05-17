@@ -189,6 +189,7 @@ Implementation boundary:
 | `native_host_hello_timeout` | Yes | Host process did not complete the native-messaging handshake. Repair and retry. | Same command |
 | `native_host_heartbeat_timeout` | Yes | A previously live host stopped responding. Repair and retry. | Same command |
 | `native_host_disconnected` | No by default | Connection was lost after setup had worked or during a transient reconnect. Prefer Resume and doctor; avoid forcing reinstall as the first action. | None |
+| disconnected port object | Yes | Chrome still has the extension running, but the local install or native-host registration may have been deleted. Show the full installer command so users are not blocked if `obu` is gone. | GitHub install + `obu setup --yes --all --skip-agents` + `obu doctor browser --repair` |
 | none + `connecting` | No | Startup in progress. | None |
 | none + `connected` | No | Host ready. | None |
 | none + `stopped` | No | Browser control is intentionally paused. | None |

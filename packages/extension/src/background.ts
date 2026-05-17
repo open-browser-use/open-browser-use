@@ -1550,6 +1550,7 @@ function sanitizeDebugData(value: unknown, depth = 0): unknown {
 function diagnoseNativeHostFailure(message: string, fallback: HostDiagnosis): HostDiagnosis {
   if (/specified native messaging host.*not found/i.test(message)) return "native_host_not_found";
   if (/access to the specified native messaging host is forbidden/i.test(message)) return "native_host_forbidden";
+  if (/disconnected port object/i.test(message)) return "native_host_unavailable";
   if (/native host.*(exited|crash|failed)|host process/i.test(message)) return "native_host_crashed";
   if (/hello timed out/i.test(message)) return "native_host_hello_timeout";
   if (/heartbeat timed out/i.test(message)) return "native_host_heartbeat_timeout";

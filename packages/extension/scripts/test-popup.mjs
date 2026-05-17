@@ -266,7 +266,7 @@ async function runPopupHappyPath() {
 
   harness.elements.stopButton.click();
   await waitFor(() => harness.sent.some((message) => message.type === "STOP_BROWSER_CONTROL"));
-  await waitFor(() => harness.elements.statusText.textContent === "Stopped");
+  await waitFor(() => harness.elements.statusText.textContent === "You are in control");
   assert.equal(harness.elements.resumeButton.disabled, false);
 
   harness.elements.resumeButton.click();
@@ -361,6 +361,29 @@ async function runPopupRepairMatrix() {
     {
       status: {
         state: "error",
+        message: "Attempting to use a disconnected port object",
+        diagnosis: "native_host_disconnected",
+      },
+      label: "Error",
+      patterns: [/local open-browser-use install may be missing/, /click Resume/],
+      setupPatterns: [/Install open-browser-use again/, /register the native host/],
+      setupVisible: true,
+      resumeEnabled: true,
+    },
+    {
+      status: {
+        state: "error",
+        message: "Attempting to use a disconnected port object",
+      },
+      label: "Error",
+      patterns: [/local open-browser-use install may be missing/, /click Resume/],
+      setupPatterns: [/Install open-browser-use again/, /register the native host/],
+      setupVisible: true,
+      resumeEnabled: true,
+    },
+    {
+      status: {
+        state: "error",
         message: "native host unavailable",
         diagnosis: "native_host_unavailable",
       },
@@ -377,7 +400,7 @@ async function runPopupRepairMatrix() {
         diagnosis: "version_mismatch",
       },
       label: "Version mismatch",
-      patterns: [/Rebuild and reinstall the native host/, /resume browser control/],
+      patterns: [/Rebuild and reinstall the native host/, /click Resume/],
       setupPatterns: [/Update the local open-browser-use host from GitHub/],
       setupVisible: true,
       resumeEnabled: true,
@@ -388,7 +411,7 @@ async function runPopupRepairMatrix() {
         message: "host too old",
       },
       label: "Version mismatch",
-      patterns: [/Rebuild and reinstall the native host/, /resume browser control/],
+      patterns: [/Rebuild and reinstall the native host/, /click Resume/],
       setupPatterns: [/Update the local open-browser-use host from GitHub/],
       setupVisible: true,
       resumeEnabled: true,
@@ -418,8 +441,8 @@ async function runPopupRepairMatrix() {
       status: {
         state: "stopped",
       },
-      label: "Stopped",
-      patterns: [/Browser control is paused/],
+      label: "You are in control",
+      patterns: [/Finish sign-in/, /passwords/, /click Resume/],
       setupVisible: false,
       resumeEnabled: true,
     },

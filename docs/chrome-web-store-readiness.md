@@ -18,7 +18,8 @@ command, and ends with a working native-host connection.
   metadata. They fail loudly when the id is missing.
 - Store builds of the popup copy `--channel=store` setup and repair commands.
 - `scripts/make-extension-store-artifact.mjs` generates and validates the Store
-  upload zip separately from the unpacked-dev payload zip.
+  upload zip separately from the unpacked-dev payload zip, and omits
+  `manifest.key` because Chrome Web Store rejects uploads that include it.
 - Permission justifications, data-handling notes, and reviewer instructions are
   drafted in `docs/chrome-web-store-review-pack.md`.
 - The Chrome Web Store draft item creation, final id verification, and
@@ -74,7 +75,7 @@ Extension package:
   `<all_urls>` host access and an all-URLs content script.
 - `scripts/assemble-payload.mjs` builds and zips the extension under the CLI
   payload, records `extensionChannel: "unpacked-dev"` by default, and can
-  include Store id/public-key metadata with `--store-extension-id`.
+  include Store id metadata with `--store-extension-id`.
 
 CLI/setup:
 
@@ -137,8 +138,8 @@ Required work:
    - Store upload artifact behavior must be verified against the dashboard id.
    - Local/unpacked artifacts should use the Store public key only if local dev
      and Store ids are intentionally meant to match.
-4. Add release metadata for `storeExtensionId`, `extensionChannel`, and either
-   `storePublicKey` or an explicit note that the Store artifact omits `key`.
+4. Add release metadata for `storeExtensionId`, `extensionChannel`, and the
+   explicit note that the Store upload artifact omits `manifest.key`.
 5. Add a test that native host manifests for `store` include
    `chrome-extension://<STORE_EXTENSION_ID>/`.
 
@@ -297,8 +298,8 @@ Implemented work:
 - The Store artifact script validates zip contents: `manifest.json`, generated
   JS/CSS/HTML, icons, no source logo previews, no test files, no stale `dist`
   leftovers.
-- The Store upload manifest includes `key`, and the Store artifact smoke
-  enforces that decision.
+- The Store upload manifest omits `key`; Chrome Web Store rejects uploads that
+  include a manifest `key` field.
 - Release checklist steps cover draft upload, item id verification, review
   submission, and rollback.
 

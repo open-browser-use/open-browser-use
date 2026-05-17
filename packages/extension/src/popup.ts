@@ -245,7 +245,7 @@ function statusLabel(status: HostStatus): string {
     case "version_mismatch":
       return "Version mismatch";
     case "stopped":
-      return "Stopped";
+      return "You are in control";
     case "error":
       return "Error";
     case "disconnected":
@@ -264,10 +264,10 @@ function detailLabel(status: HostStatus): string {
     return "Retrying native host connection. Use Resume to retry now after repair.";
   }
   if (status.state === "version_mismatch") {
-    return "Update the native host, then resume browser control.";
+    return "Update the native host, then click Resume.";
   }
   if (status.state === "stopped") {
-    return "Browser control is paused.";
+    return "Finish sign-in, passwords, or any page step, then click Resume to continue automation.";
   }
   if (status.state === "error") {
     return "Native host unavailable. Run obu doctor browser, then use Resume to retry.";
@@ -296,7 +296,7 @@ function nativeHostAdvice(status: HostStatus): NativeHostAdvice {
   switch (diagnosis) {
     case "version_mismatch":
       return withSetup(
-        "Rebuild and reinstall the native host, then resume browser control.",
+        "Rebuild and reinstall the native host, then click Resume.",
         "Update the local open-browser-use host from GitHub, refresh setup, then reconnect.",
       );
     case "native_host_not_found":
@@ -325,11 +325,17 @@ function nativeHostAdvice(status: HostStatus): NativeHostAdvice {
         "Repair the local open-browser-use host, rerun setup, then reconnect.",
       );
     case "native_host_unavailable":
+      if (isDisconnectedPortObject(status.message)) {
+        return disconnectedPortObjectAdvice();
+      }
       return withSetup(
         "Run obu doctor browser --repair, then use Resume to retry native-host startup.",
         "Repair the local open-browser-use host, rerun setup, then reconnect.",
       );
     case "native_host_disconnected":
+      if (isDisconnectedPortObject(status.message)) {
+        return disconnectedPortObjectAdvice();
+      }
       return {
         detail: "Run obu doctor browser to check the runtime descriptor, then use Resume to reconnect.",
         showSetup: false,
@@ -346,6 +352,13 @@ function withSetup(detail: string, setupText: string): NativeHostAdvice {
     setupCommand: SETUP_COMMAND,
     showSetup: true,
   };
+}
+
+function disconnectedPortObjectAdvice(): NativeHostAdvice {
+  return withSetup(
+    "The local open-browser-use install may be missing. Reinstall the native host, then click Resume.",
+    "Install open-browser-use again, register the native host, then return here and click Resume.",
+  );
 }
 
 function setupCommandForChannel(channel: string): string {
@@ -379,10 +392,17 @@ function normalizeDiagnosis(status: HostStatus): HostDiagnosis | undefined {
   if (/access to the specified native messaging host is forbidden/i.test(message)) {
     return "native_host_forbidden";
   }
+  if (isDisconnectedPortObject(message)) {
+    return "native_host_unavailable";
+  }
   if (/native host.*(exited|crash|failed)|host process/i.test(message)) {
     return "native_host_crashed";
   }
   return undefined;
+}
+
+function isDisconnectedPortObject(message: string | undefined): boolean {
+  return /disconnected port object/i.test(message ?? "");
 }
 
 function joinSentences(parts: string[]): string {

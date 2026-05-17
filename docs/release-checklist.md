@@ -178,11 +178,19 @@ The Store item id must be final before public Store instructions are published.
 Required draft checks:
 
 1. Create a Chrome Web Store draft item.
-2. Upload the Store artifact and verify the item id matches the expected
-   `storeExtensionId`.
-3. Set `packages/extension/release-metadata.json` `store.storeExtensionId` to
+2. For the first upload, build the Store artifact without a Store id. The upload
+   manifest omits `key` because Chrome Web Store rejects that field:
+
+   ```bash
+   pnpm -C packages/extension build
+   node packages/extension/scripts/build.mjs --channel store
+   node scripts/make-extension-store-artifact.mjs
+   ```
+
+3. Upload the Store artifact and copy the item id from the Developer Dashboard.
+4. Set `packages/extension/release-metadata.json` `store.storeExtensionId` to
    that id and `store.storeDraftVerified` to `true`.
-4. Assemble GitHub Release payloads with the same id:
+5. Assemble GitHub Release payloads with the same id:
 
    ```bash
    node scripts/assemble-payload.mjs \
@@ -190,7 +198,7 @@ Required draft checks:
      --store-extension-id <STORE_EXTENSION_ID>
    ```
 
-5. Build and validate the Store upload artifact:
+6. Rebuild and validate the Store upload artifact with the recorded Store id:
 
    ```bash
    pnpm -C packages/extension build
@@ -199,7 +207,7 @@ Required draft checks:
      --store-extension-id <STORE_EXTENSION_ID>
    ```
 
-6. Run Store-channel setup on a clean profile:
+7. Run Store-channel setup on a clean profile:
 
    ```bash
    obu setup --yes --all --skip-agents --channel=store
