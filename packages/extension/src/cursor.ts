@@ -59,6 +59,9 @@ const RESTING_ROTATION_DEG = -44;
 const ARRIVAL_TIMEOUT_MS = 650;
 const INPUT_BYPASS_DEFAULT_MS = 450;
 const INPUT_BYPASS_MAX_MS = 1_000;
+const CURSOR_SIZE_PX = 42;
+const CURSOR_TIP_ORIGIN_PX = 4;
+const CLICK_PULSE_SIZE_PX = 36;
 const TAKEOVER_OVERLAY_BLUR = "blur(1.35px) saturate(1.06)";
 const TAKEOVER_OVERLAY_BACKGROUND = [
   "radial-gradient(circle at 18% 24%, rgba(125, 211, 252, 0.34) 0 1px, transparent 1.9px)",
@@ -317,20 +320,20 @@ function ensureCursor(): void {
   cursor.style.position = "fixed";
   cursor.style.left = "0";
   cursor.style.top = "0";
-  cursor.style.width = "32px";
-  cursor.style.height = "32px";
+  cursor.style.width = `${CURSOR_SIZE_PX}px`;
+  cursor.style.height = `${CURSOR_SIZE_PX}px`;
   cursor.style.pointerEvents = "none";
-  cursor.style.transformOrigin = "3px 3px";
+  cursor.style.transformOrigin = `${CURSOR_TIP_ORIGIN_PX}px ${CURSOR_TIP_ORIGIN_PX}px`;
   cursor.style.willChange = "transform, opacity, filter";
-  cursor.style.filter = "drop-shadow(0 8px 16px rgba(15, 23, 42, 0.24))";
+  cursor.style.filter = "drop-shadow(0 10px 20px rgba(15, 23, 42, 0.28))";
 
   cursorGlyph = document.createElement("div");
-  cursorGlyph.style.width = "32px";
-  cursorGlyph.style.height = "32px";
+  cursorGlyph.style.width = `${CURSOR_SIZE_PX}px`;
+  cursorGlyph.style.height = `${CURSOR_SIZE_PX}px`;
   cursorGlyph.style.background = cursorSvgDataUrl();
-  cursorGlyph.style.backgroundSize = "32px 32px";
+  cursorGlyph.style.backgroundSize = `${CURSOR_SIZE_PX}px ${CURSOR_SIZE_PX}px`;
   cursorGlyph.style.backgroundRepeat = "no-repeat";
-  cursorGlyph.style.transformOrigin = "4px 4px";
+  cursorGlyph.style.transformOrigin = `${CURSOR_TIP_ORIGIN_PX}px ${CURSOR_TIP_ORIGIN_PX}px`;
   cursorGlyph.style.willChange = "transform";
   cursor.append(cursorGlyph);
 
@@ -405,11 +408,12 @@ function renderCursor(point: Point, rotation: number, scaleX: number, scaleY: nu
 function addPulse(point: Point): void {
   if (!pulseLayer) return;
   const pulse = document.createElement("div");
+  const pulseOffset = CLICK_PULSE_SIZE_PX / 2;
   pulse.style.position = "fixed";
-  pulse.style.left = `${Math.round(point.x - 14)}px`;
-  pulse.style.top = `${Math.round(point.y - 14)}px`;
-  pulse.style.width = "28px";
-  pulse.style.height = "28px";
+  pulse.style.left = `${Math.round(point.x - pulseOffset)}px`;
+  pulse.style.top = `${Math.round(point.y - pulseOffset)}px`;
+  pulse.style.width = `${CLICK_PULSE_SIZE_PX}px`;
+  pulse.style.height = `${CLICK_PULSE_SIZE_PX}px`;
   pulse.style.borderRadius = "999px";
   pulse.style.border = "2px solid rgba(56, 189, 248, 0.92)";
   pulse.style.background = "rgba(37, 99, 235, 0.16)";
