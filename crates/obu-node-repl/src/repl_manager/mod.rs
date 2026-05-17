@@ -54,6 +54,8 @@ pub struct ManagerOptions {
     pub backend_discovery_diagnostics: Vec<BackendDiscoveryDiagnostic>,
     /// Capability tokens keyed by canonical backend socket path.
     pub backend_auth_tokens: HashMap<PathBuf, String>,
+    /// Whether `js_reset` should refresh runtime descriptors before the next kernel boot.
+    pub dynamic_backend_discovery: bool,
 }
 
 /// Backend inventory item exposed through `globalThis.obuRepl.discoverBackends()`.
@@ -115,6 +117,7 @@ impl ManagerOptions {
             backends: inventory.backends,
             backend_discovery_diagnostics: inventory.diagnostics,
             backend_auth_tokens: inventory.auth_tokens,
+            dynamic_backend_discovery: true,
         })
     }
 
@@ -131,6 +134,7 @@ impl ManagerOptions {
             backends: Vec::new(),
             backend_discovery_diagnostics: Vec::new(),
             backend_auth_tokens: HashMap::new(),
+            dynamic_backend_discovery: false,
         }
     }
 }
@@ -176,6 +180,7 @@ pub struct JsRuntimeManager {
     registry: Arc<Mutex<ExecRegistry>>,
     sink: Arc<Mutex<Option<crate::display_router::ProgressSink>>>,
     module_dirs: StdMutex<Vec<PathBuf>>,
+    backend_state: StdMutex<BackendInventory>,
     broker_policy: BrokerPolicy,
     generation: Mutex<Option<KernelGeneration>>,
 }
@@ -184,8 +189,14 @@ impl JsRuntimeManager {
     /// Construct a manager. Call `boot` to eagerly spawn, or `exec` to spawn on
     /// first use.
     pub async fn new(options: ManagerOptions) -> Result<Self> {
+        let backend_state = BackendInventory {
+            backends: options.backends.clone(),
+            diagnostics: options.backend_discovery_diagnostics.clone(),
+            auth_tokens: options.backend_auth_tokens.clone(),
+        };
         Ok(Self {
             module_dirs: StdMutex::new(options.module_dirs.clone()),
+            backend_state: StdMutex::new(backend_state),
             options,
             state: Mutex::new(KernelState::Idle),
             kernel: Mutex::new(None),
@@ -206,6 +217,7 @@ impl JsRuntimeManager {
             *state = KernelState::Spawning;
         }
 
+        let inventory = self.backend_inventory();
         let spawn_opts = SpawnOptions {
             session_id: self.options.session_id.clone(),
             working_dir: self.options.working_dir.clone(),
@@ -213,8 +225,8 @@ impl JsRuntimeManager {
             trusted_code_paths: self.options.trusted_code_paths.clone(),
             trusted_module_sha256s: self.options.trusted_module_sha256s.clone(),
             trust_all: self.options.trust_all,
-            backends: self.options.backends.clone(),
-            backend_discovery_diagnostics: self.options.backend_discovery_diagnostics.clone(),
+            backends: inventory.backends,
+            backend_discovery_diagnostics: inventory.diagnostics,
         };
         let mut kernel = SpawnedKernel::spawn(spawn_opts)
             .await
@@ -236,7 +248,7 @@ impl JsRuntimeManager {
             self.broker_policy.connect_timeout,
             self.broker_policy.allowed_paths.clone(),
             self.broker_policy.capability_token.clone(),
-            self.options.backend_auth_tokens.clone(),
+            inventory.auth_tokens,
         ));
         let pending_exec_results = Arc::new(Mutex::new(HashMap::new()));
         let handshake_token = Arc::new(Mutex::new(None));
@@ -467,6 +479,7 @@ impl JsRuntimeManager {
         *self.state.lock().await = KernelState::Restarting;
         self.kill_kernel().await;
         *self.registry.lock().await = ExecRegistry::default();
+        self.refresh_backend_inventory();
         *self.state.lock().await = KernelState::Idle;
         self.boot().await
     }
@@ -511,6 +524,28 @@ impl JsRuntimeManager {
             let _ = kernel.child.start_kill();
             let _ = kernel.child.wait().await;
         }
+    }
+
+    fn backend_inventory(&self) -> BackendInventory {
+        if self.options.dynamic_backend_discovery {
+            self.backend_state
+                .lock()
+                .expect("backend inventory lock")
+                .clone()
+        } else {
+            BackendInventory {
+                backends: self.options.backends.clone(),
+                diagnostics: self.options.backend_discovery_diagnostics.clone(),
+                auth_tokens: self.options.backend_auth_tokens.clone(),
+            }
+        }
+    }
+
+    fn refresh_backend_inventory(&self) {
+        if !self.options.dynamic_backend_discovery {
+            return;
+        }
+        *self.backend_state.lock().expect("backend inventory lock") = discover_backend_inventory();
     }
 }
 
@@ -720,7 +755,7 @@ fn split_env_list(name: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct BackendInventory {
     backends: Vec<DiscoveredBackend>,
     diagnostics: Vec<BackendDiscoveryDiagnostic>,
