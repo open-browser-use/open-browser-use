@@ -40,6 +40,8 @@ for (const payload of payloads.values()) {
 if (versions.size !== 1) {
   throw new Error(`all curl payloads must have the same packageVersion, got: ${[...versions].join(", ")}`);
 }
+const sortedArtifacts = artifacts.sort((left, right) => left.target.localeCompare(right.target));
+assertManifestArtifacts(sortedArtifacts);
 await copyFile(path.join(root, "scripts", "install.sh"), path.join(outDir, "install.sh"));
 await chmod(path.join(outDir, "install.sh"), 0o755);
 await writeJson(path.join(outDir, "manifest.json"), {
@@ -47,9 +49,11 @@ await writeJson(path.join(outDir, "manifest.json"), {
   generatedAt: new Date().toISOString(),
   version: [...versions][0],
   artifactPrefix: releaseArtifactPrefix,
-  artifacts: artifacts.sort((left, right) => left.target.localeCompare(right.target)),
+  artifacts: sortedArtifacts,
   installer: "install.sh",
+  shellManifest: "manifest.tsv",
 });
+await writeManifestTsv(path.join(outDir, "manifest.tsv"), sortedArtifacts);
 
 console.log(`created ${artifacts.length} curl artifact${artifacts.length === 1 ? "" : "s"} in ${outDir}`);
 
@@ -109,8 +113,39 @@ function assertSupportedTarget(target) {
   if (!supported.has(target)) throw new Error(`unsupported P4a curl target: ${target}`);
 }
 
+function assertManifestArtifacts(artifacts) {
+  const targets = new Set();
+  for (const artifact of artifacts) {
+    assertSupportedTarget(artifact.target);
+    if (targets.has(artifact.target)) throw new Error(`duplicate curl manifest target: ${artifact.target}`);
+    targets.add(artifact.target);
+    if (artifact.file !== path.basename(artifact.file)) {
+      throw new Error(`curl manifest file must be a basename: ${artifact.file}`);
+    }
+    for (const [field, value] of Object.entries(artifact)) {
+      if (String(value).includes("\t") || String(value).includes("\n")) {
+        throw new Error(`curl manifest ${field} for ${artifact.target} must not contain tabs or newlines`);
+      }
+    }
+    if (!/^[0-9a-f]{64}$/.test(artifact.sha256)) {
+      throw new Error(`curl manifest sha256 for ${artifact.target} must be 64 lowercase hex characters`);
+    }
+    if (!Number.isSafeInteger(artifact.size) || artifact.size <= 0) {
+      throw new Error(`curl manifest size for ${artifact.target} must be a positive integer`);
+    }
+  }
+}
+
 async function writeJson(file, value) {
   await writeFile(file, `${JSON.stringify(value, null, 2)}\n`, "utf8");
+}
+
+async function writeManifestTsv(file, artifacts) {
+  const lines = [
+    "target\tfile\tsha256\tsize",
+    ...artifacts.map((artifact) => `${artifact.target}\t${artifact.file}\t${artifact.sha256}\t${artifact.size}`),
+  ];
+  await writeFile(file, `${lines.join("\n")}\n`, "utf8");
 }
 
 function parseArgs(argv) {

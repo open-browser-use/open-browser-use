@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { access, chmod, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
+import { access, chmod, copyFile, mkdir, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawn, spawnSync } from "node:child_process";
@@ -11,9 +11,11 @@ const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const artifactRoot = path.join(root, "dist", "curl");
 const args = parseArgs(process.argv.slice(2));
 const manifest = JSON.parse(await readFile(path.join(artifactRoot, "manifest.json"), "utf8"));
+const tsvManifest = await readTsvManifest(path.join(artifactRoot, "manifest.tsv"));
 const artifactTarget = args.target === "current" ? currentTargetTriple() : args.target;
 const artifact = manifest.artifacts?.find((row) => row.target === artifactTarget);
 if (!artifact) throw new Error(`curl manifest has no artifact for ${artifactTarget}`);
+assertCurlManifest(manifest, tsvManifest);
 
 const temp = await mkdtemp(path.join(os.tmpdir(), "obu-curl-install-"));
 try {
@@ -93,9 +95,81 @@ try {
   await access(path.join(envArtifactInstallDir, "bin", "obu"));
   await assert.rejects(() => access(path.join(envArtifactHome, ".profile")), { code: "ENOENT" });
 
+  const releaseManifestInstallDir = path.join(temp, "release-manifest-install");
+  const releaseManifestHome = path.join(temp, "release-manifest-home");
+  run("sh", [
+    installer,
+    "--no-modify-path",
+  ], {
+    HOME: releaseManifestHome,
+    OBU_INSTALL_DIR: releaseManifestInstallDir,
+    OBU_RELEASE_BASE_URL: artifactRoot,
+    OBU_TARGET: artifactTarget,
+  });
+  await access(path.join(releaseManifestInstallDir, "bin", "obu"));
+  await assert.rejects(() => access(path.join(releaseManifestHome, ".profile")), { code: "ENOENT" });
+
+  const jsonFallbackRoot = path.join(temp, "json-fallback-release");
+  await mkdir(jsonFallbackRoot, { recursive: true });
+  for (const file of [manifest.installer, "manifest.json", artifact.file, `${artifact.file}.sha256`]) {
+    await copyFile(path.join(artifactRoot, file), path.join(jsonFallbackRoot, file));
+  }
+  const jsonFallbackInstallDir = path.join(temp, "json-fallback-install");
+  const jsonFallbackHome = path.join(temp, "json-fallback-home");
+  run("sh", [
+    installer,
+    "--no-modify-path",
+  ], {
+    HOME: jsonFallbackHome,
+    OBU_INSTALL_DIR: jsonFallbackInstallDir,
+    OBU_RELEASE_BASE_URL: jsonFallbackRoot,
+    OBU_TARGET: artifactTarget,
+  });
+  await access(path.join(jsonFallbackInstallDir, "bin", "obu"));
+
+  const unsupported = run("sh", [
+    installer,
+    "--no-modify-path",
+  ], {
+    HOME: path.join(temp, "unsupported-home"),
+    OBU_INSTALL_DIR: path.join(temp, "unsupported-install"),
+    OBU_RELEASE_BASE_URL: artifactRoot,
+    OBU_TARGET: "linux-arm64-musl",
+  }, { allowFailure: true });
+  assert.equal(unsupported.status, 2);
+  assert.match(unsupported.stderr, /no open-browser-use release artifact for target linux-arm64-musl/);
+
   console.log("curl install smoke passed");
 } finally {
   await rm(temp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
+}
+
+async function readTsvManifest(file) {
+  const rows = (await readFile(file, "utf8")).trimEnd().split("\n");
+  assert.equal(rows[0], "target\tfile\tsha256\tsize");
+  return rows.slice(1).map((row) => {
+    const [target, file, sha256, size] = row.split("\t");
+    return { target, file, sha256, size: Number(size) };
+  });
+}
+
+function assertCurlManifest(manifest, tsvManifest) {
+  assert.equal(manifest.schemaVersion, 1);
+  assert.equal(manifest.installer, "install.sh");
+  assert.equal(manifest.shellManifest, "manifest.tsv");
+  assert.equal(Array.isArray(manifest.artifacts), true);
+  assert.equal(manifest.artifacts.length, tsvManifest.length);
+  const tsvByTarget = new Map(tsvManifest.map((row) => [row.target, row]));
+  const targets = new Set();
+  for (const artifact of manifest.artifacts) {
+    assert.equal(targets.has(artifact.target), false, `duplicate artifact target ${artifact.target}`);
+    targets.add(artifact.target);
+    assert.equal(artifact.file, path.basename(artifact.file));
+    assert.match(artifact.sha256, /^[0-9a-f]{64}$/);
+    assert.equal(Number.isSafeInteger(artifact.size), true);
+    assert.equal(artifact.size > 0, true);
+    assert.deepEqual(tsvByTarget.get(artifact.target), artifact);
+  }
 }
 
 function run(command, args, env = {}, options = {}) {

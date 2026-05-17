@@ -1,5 +1,10 @@
 const STATUS_KEY = "OBU_NATIVE_HOST_STATUS";
 const DEBUG_LOG_KEY = "OBU_DEBUG_LOG";
+const GITHUB_INSTALL_URL = "https://github.com/open-browser-use/open-browser-use/releases/latest/download/install.sh";
+const EXTENSION_CHANNEL = "__OBU_EXTENSION_CHANNEL__";
+const SETUP_COMMAND = setupCommandForChannel(EXTENSION_CHANNEL);
+
+type ExtensionChannel = "unpacked-dev" | "store";
 
 type HostStatus = {
   state: "disconnected" | "connecting" | "connected" | "version_mismatch" | "stopped" | "error";
@@ -21,6 +26,13 @@ type HostDiagnosis =
   | "native_host_unavailable"
   | "version_mismatch";
 
+type NativeHostAdvice = {
+  detail?: string;
+  setupText?: string;
+  setupCommand?: string;
+  showSetup: boolean;
+};
+
 type DebugLogEntry = {
   ts: string;
   level: "debug" | "info" | "warn" | "error";
@@ -37,6 +49,11 @@ type DebugLogStatus = {
 const dot = document.querySelector<HTMLSpanElement>("#status-dot");
 const statusText = document.querySelector<HTMLParagraphElement>("#status-text");
 const detailText = document.querySelector<HTMLParagraphElement>("#detail-text");
+const setupPanel = document.querySelector<HTMLElement>("#setup-panel");
+const setupText = document.querySelector<HTMLParagraphElement>("#setup-text");
+const setupCommand = document.querySelector<HTMLPreElement>("#setup-command");
+const copySetupButton = document.querySelector<HTMLButtonElement>("#copy-setup-button");
+const setupCopyText = document.querySelector<HTMLParagraphElement>("#setup-copy-text");
 const versionText = document.querySelector<HTMLSpanElement>("#version-text");
 const stopButton = document.querySelector<HTMLButtonElement>("#stop-button");
 const resumeButton = document.querySelector<HTMLButtonElement>("#resume-button");
@@ -67,6 +84,10 @@ stopButton!.addEventListener("click", () => {
 
 resumeButton!.addEventListener("click", () => {
   void sendControlMessage("RESUME_BROWSER_CONTROL", resumeButton!);
+});
+
+copySetupButton!.addEventListener("click", () => {
+  void copySetupCommand();
 });
 
 debugToggleButton!.addEventListener("click", () => {
@@ -155,13 +176,39 @@ async function clearDebugLogs(): Promise<void> {
   }
 }
 
+async function copySetupCommand(): Promise<void> {
+  copySetupButton!.disabled = true;
+  try {
+    const command = (setupCommand!.textContent ?? "").trim();
+    if (command.length === 0) throw new Error("setup command unavailable");
+    await writeClipboard(command);
+    setupCopyText!.textContent = "Copied. Paste into Terminal, wait for doctor to finish, then click Resume.";
+  } catch (error) {
+    setupCopyText!.textContent = `Copy failed: ${errorMessage(error)}`;
+  } finally {
+    copySetupButton!.disabled = false;
+  }
+}
+
 function render(status: HostStatus): void {
   currentStatus = status;
+  const advice = nativeHostAdvice(status);
   dot!.className = `dot ${statusClass(status.state)}`;
   statusText!.textContent = statusLabel(status);
-  detailText!.textContent = statusDetail(status);
+  detailText!.textContent = statusDetail(status, advice);
+  renderSetup(advice);
   stopButton!.disabled = status.state !== "connected";
   resumeButton!.disabled = !canResume(status);
+}
+
+function renderSetup(advice: NativeHostAdvice): void {
+  const text = advice.showSetup ? advice.setupText ?? "" : "";
+  const command = advice.showSetup ? advice.setupCommand ?? "" : "";
+  const changed = setupText!.textContent !== text || setupCommand!.textContent !== command;
+  setupPanel!.hidden = !advice.showSetup;
+  setupText!.textContent = text;
+  setupCommand!.textContent = command;
+  if (!advice.showSetup || changed) setupCopyText!.textContent = "";
 }
 
 function renderDebug(debug: DebugLogStatus, overrideText?: string): void {
@@ -228,9 +275,9 @@ function detailLabel(status: HostStatus): string {
   return "";
 }
 
-function statusDetail(status: HostStatus): string {
+function statusDetail(status: HostStatus, advice: NativeHostAdvice): string {
   const retry = retryLabel(status);
-  const repair = repairHint(status);
+  const repair = advice.detail;
   const deliverables = deliverableRecoveryLabel(status);
   const parts = [status.message, retry, repair, deliverables].filter((part): part is string => Boolean(part));
   if (parts.length > 0) return joinSentences(parts);
@@ -244,6 +291,73 @@ function deliverableRecoveryLabel(status: HostStatus): string {
   return `${count} deliverable ${noun} available. Recover with browser.deliverables(), then claim().`;
 }
 
+function nativeHostAdvice(status: HostStatus): NativeHostAdvice {
+  const diagnosis = normalizeDiagnosis(status);
+  switch (diagnosis) {
+    case "version_mismatch":
+      return withSetup(
+        "Rebuild and reinstall the native host, then resume browser control.",
+        "Update the local open-browser-use host from GitHub, refresh setup, then reconnect.",
+      );
+    case "native_host_not_found":
+      return withSetup(
+        "Install the native host manifest, then run obu doctor browser.",
+        "Install open-browser-use from GitHub, register the native host for local Chromium browsers, then reconnect.",
+      );
+    case "native_host_forbidden":
+      return withSetup(
+        "Check the extension id allowed by the native host manifest with obu doctor browser.",
+        "Reinstall the native host manifest so it allows this extension id, then reconnect.",
+      );
+    case "native_host_crashed":
+      return withSetup(
+        "Run obu doctor browser and inspect native host logs.",
+        "Repair the local open-browser-use host, rerun setup, then reconnect.",
+      );
+    case "native_host_hello_timeout":
+      return withSetup(
+        "Run obu doctor browser --repair, then use Resume to restart the native-host handshake.",
+        "Repair the local open-browser-use host, rerun setup, then reconnect.",
+      );
+    case "native_host_heartbeat_timeout":
+      return withSetup(
+        "Run obu doctor browser --repair, then use Resume to restart the native-host connection.",
+        "Repair the local open-browser-use host, rerun setup, then reconnect.",
+      );
+    case "native_host_unavailable":
+      return withSetup(
+        "Run obu doctor browser --repair, then use Resume to retry native-host startup.",
+        "Repair the local open-browser-use host, rerun setup, then reconnect.",
+      );
+    case "native_host_disconnected":
+      return {
+        detail: "Run obu doctor browser to check the runtime descriptor, then use Resume to reconnect.",
+        showSetup: false,
+      };
+    case undefined:
+      return { showSetup: false };
+  }
+}
+
+function withSetup(detail: string, setupText: string): NativeHostAdvice {
+  return {
+    detail,
+    setupText,
+    setupCommand: SETUP_COMMAND,
+    showSetup: true,
+  };
+}
+
+function setupCommandForChannel(channel: string): string {
+  const resolvedChannel: ExtensionChannel = channel === "store" ? "store" : "unpacked-dev";
+  const channelSuffix = resolvedChannel === "store" ? " --channel=store" : "";
+  return [
+    `curl -fsSL ${GITHUB_INSTALL_URL} | sh && \\`,
+    `~/.obu/bin/obu setup --yes --all --skip-agents${channelSuffix} && \\`,
+    `~/.obu/bin/obu doctor browser --repair${channelSuffix}`,
+  ].join("\n");
+}
+
 function retryLabel(status: HostStatus): string {
   if (status.state === "connected" || status.state === "stopped" || status.state === "version_mismatch") return "";
   const nextRetryAt = typeof status.nextRetryAt === "number" ? status.nextRetryAt : undefined;
@@ -254,41 +368,21 @@ function retryLabel(status: HostStatus): string {
   return `Retrying native host connection in ${seconds}s. Run obu doctor browser if setup needs repair.`;
 }
 
-function repairHint(status: HostStatus): string {
-  switch (status.diagnosis) {
-    case "version_mismatch":
-      return "Rebuild and reinstall the native host, then resume browser control.";
-    case "native_host_not_found":
-      return "Install the native host manifest, then run obu doctor browser.";
-    case "native_host_forbidden":
-      return "Check the extension id allowed by the native host manifest with obu doctor browser.";
-    case "native_host_crashed":
-      return "Run obu doctor browser and inspect native host logs.";
-    case "native_host_hello_timeout":
-      return "Run obu doctor browser --repair, then use Resume to restart the native-host handshake.";
-    case "native_host_heartbeat_timeout":
-      return "Run obu doctor browser --repair, then use Resume to restart the native-host connection.";
-    case "native_host_disconnected":
-      return "Run obu doctor browser to check the runtime descriptor, then use Resume to reconnect.";
-    case "native_host_unavailable":
-      return "Run obu doctor browser --repair, then use Resume to retry native-host startup.";
-    case undefined:
-      break;
-  }
+function normalizeDiagnosis(status: HostStatus): HostDiagnosis | undefined {
+  if (status.state === "version_mismatch") return "version_mismatch";
+  if (status.state === "connected" || status.state === "connecting" || status.state === "stopped") return undefined;
+  if (status.diagnosis) return status.diagnosis;
   const message = status.message ?? "";
-  if (status.state === "version_mismatch") {
-    return "Rebuild and reinstall the native host, then resume browser control.";
-  }
   if (/specified native messaging host.*not found/i.test(message)) {
-    return "Install the native host manifest, then run obu doctor browser.";
+    return "native_host_not_found";
   }
   if (/access to the specified native messaging host is forbidden/i.test(message)) {
-    return "Check the extension id allowed by the native host manifest with obu doctor browser.";
+    return "native_host_forbidden";
   }
   if (/native host.*(exited|crash|failed)|host process/i.test(message)) {
-    return "Run obu doctor browser and inspect native host logs.";
+    return "native_host_crashed";
   }
-  return "";
+  return undefined;
 }
 
 function joinSentences(parts: string[]): string {

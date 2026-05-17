@@ -1,6 +1,7 @@
 import { installNativeHosts } from "./native-host.js";
 import { ensureRuntimeDir, type RuntimeLayout, writeUserConfig } from "./runtime-layout.js";
 import { updateExtension, type ExtensionUpdateStep } from "./extension-update.js";
+import { type ExtensionChannel, type ExtensionIdSource, userConfigForExtensionTarget } from "./extension-channel.js";
 import type { BrowserKind } from "./browser-paths.js";
 import { configureAgents } from "./agents/configure.js";
 import type { AgentId, McpServerInvocation } from "./agents/registry.js";
@@ -11,6 +12,9 @@ export type SetupJson = {
   schemaVersion: 1;
   generatedAt: string;
   obuVersion: string;
+  extensionChannel: ExtensionChannel;
+  extensionId: string;
+  extensionIdSource: ExtensionIdSource;
   dryRun: boolean;
   result: "complete" | "manual_action_required" | "failed";
   steps: Array<{
@@ -28,6 +32,9 @@ export type SetupOptions = {
   browsers: BrowserKind[];
   agents: AgentId[];
   server: McpServerInvocation;
+  extensionChannel: ExtensionChannel;
+  extensionId: string;
+  extensionIdSource: ExtensionIdSource;
   dryRun?: boolean;
   skipExtension?: boolean;
   skipAgents?: boolean;
@@ -59,10 +66,11 @@ export async function setupOpenBrowserUse(options: SetupOptions): Promise<SetupJ
       return finalize(options, steps, nextActions);
     }
     await writeUserConfig(options.layout.userConfigPath, {
-      schemaVersion: 1,
-      runtimeDir: options.layout.runtimeDir,
-      extensionCurrentDir: options.layout.extensionCurrentDir,
-      nativeHostInstallRoot: options.layout.nativeHostInstallRoot,
+      ...userConfigForExtensionTarget(options.layout, {
+        channel: options.extensionChannel,
+        extensionId: options.extensionId,
+        extensionIdSource: options.extensionIdSource,
+      }),
     });
     steps.push({
       id: "runtime-dir",
@@ -76,6 +84,7 @@ export async function setupOpenBrowserUse(options: SetupOptions): Promise<SetupJ
     layout: options.layout,
     browsers: options.browsers,
     dryRun,
+    extensionId: options.extensionId,
   });
   for (const action of hostActions) {
     steps.push({
@@ -86,7 +95,18 @@ export async function setupOpenBrowserUse(options: SetupOptions): Promise<SetupJ
     });
   }
 
-  if (options.skipExtension) {
+  if (options.extensionChannel === "store") {
+    steps.push({
+      id: "extension-update",
+      status: "skipped",
+      message: "store channel uses the Chrome Web Store-installed extension",
+      details: {
+        extensionChannel: options.extensionChannel,
+        extensionId: options.extensionId,
+        extensionIdSource: options.extensionIdSource,
+      },
+    });
+  } else if (options.skipExtension) {
     steps.push({
       id: "extension-update",
       status: "skipped",
@@ -126,7 +146,10 @@ export async function setupOpenBrowserUse(options: SetupOptions): Promise<SetupJ
     }
   }
 
-  nextActions.push({ kind: "command", value: "obu doctor" });
+  nextActions.push({
+    kind: "command",
+    value: options.extensionChannel === "store" ? "obu doctor browser --channel=store" : "obu doctor",
+  });
   return finalize(options, steps, dedupeActions(nextActions));
 }
 
@@ -160,6 +183,9 @@ function finalize(
     schemaVersion: 1,
     generatedAt: new Date().toISOString(),
     obuVersion: options.obuVersion,
+    extensionChannel: options.extensionChannel,
+    extensionId: options.extensionId,
+    extensionIdSource: options.extensionIdSource,
     dryRun: options.dryRun === true,
     result,
     steps,

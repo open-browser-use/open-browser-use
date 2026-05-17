@@ -1,14 +1,13 @@
-import { createHash } from "node:crypto";
 import { constants } from "node:fs";
 import { access, chmod, mkdir, readFile, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import { nativeMessagingHostDir, type BrowserKind } from "./browser-paths.js";
+import { extensionManifestPath, readExtensionIdFromManifest } from "./extension-channel.js";
 import type { RuntimeLayout } from "./runtime-layout.js";
 
 const HOST_NAME = "dev.obu.host";
-const EXTENSION_ID_ALPHABET_OFFSET = "a".charCodeAt(0);
 
 export type InstallHostStatus = "applied" | "skipped" | "would_apply" | "failed";
 
@@ -60,7 +59,7 @@ export async function installNativeHosts(options: InstallNativeHostsOptions): Pr
       details: { hostBin: options.layout.hostBin },
     }));
   }
-  const extensionId = options.extensionId ?? await readExtensionId(await extensionManifestPath(options.layout, options.manifestPath));
+  const extensionId = options.extensionId ?? await readExtensionIdFromManifest(await extensionManifestPath(options.layout, options.manifestPath));
   const actions: InstallHostAction[] = [];
   for (const browser of options.browsers) {
     actions.push(await installNativeHost({
@@ -111,7 +110,7 @@ async function installNativeHost(input: {
       browser: input.browser,
       status: "would_apply",
       message: `would write native-host wrapper and manifest for ${input.browser}`,
-      details: { wrapperPath, nativeManifestPath },
+      details: { wrapperPath, nativeManifestPath, extensionId: input.extensionId },
     };
   }
 
@@ -126,7 +125,7 @@ async function installNativeHost(input: {
     message: wrapperChanged || manifestChanged
       ? `installed native-host wrapper and manifest for ${input.browser}`
       : `native-host wrapper and manifest already current for ${input.browser}`,
-    details: { wrapperPath, nativeManifestPath },
+    details: { wrapperPath, nativeManifestPath, extensionId: input.extensionId },
   };
 }
 
@@ -161,31 +160,6 @@ async function writeIfChanged(file: string, content: string, mode: number): Prom
   await writeFile(file, content, { encoding: "utf8", mode });
   await chmod(file, mode);
   return true;
-}
-
-async function extensionManifestPath(layout: RuntimeLayout, overridePath?: string): Promise<string> {
-  if (overridePath) return overridePath;
-  const distManifest = path.join(layout.extensionDir, "manifest.json");
-  if (await access(distManifest, constants.R_OK).then(() => true).catch(() => false)) {
-    return distManifest;
-  }
-  return path.join(layout.root, "packages", "extension", "public", "manifest.json");
-}
-
-async function readExtensionId(manifestPath: string): Promise<string> {
-  const manifest = JSON.parse(await readFile(manifestPath, "utf8")) as { key?: unknown };
-  return extensionIdFromManifestKey(manifest.key);
-}
-
-function extensionIdFromManifestKey(key: unknown): string {
-  if (typeof key !== "string" || key.length === 0) throw new Error("manifest key is required");
-  const der = Buffer.from(key, "base64");
-  const hash = createHash("sha256").update(der).digest().subarray(0, 16);
-  return [...hash].map((byte) => `${nibbleToIdChar(byte >> 4)}${nibbleToIdChar(byte & 0x0f)}`).join("");
-}
-
-function nibbleToIdChar(nibble: number): string {
-  return String.fromCharCode(EXTENSION_ID_ALPHABET_OFFSET + nibble);
 }
 
 function browserRuntimeKind(browser: BrowserKind): string {

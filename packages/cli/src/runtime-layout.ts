@@ -12,6 +12,7 @@ export type RuntimeLayoutMode = "repo" | "packaged";
 export type RuntimeLayout = {
   mode: RuntimeLayoutMode;
   root: string;
+  userConfig?: UserConfig;
   openBrowserUseCommand: string;
   cliEntry: string;
   hostBin: string;
@@ -36,6 +37,8 @@ export type UserConfig = {
   runtimeDir: string;
   extensionCurrentDir: string;
   nativeHostInstallRoot: string;
+  extensionChannel?: "unpacked-dev" | "store";
+  storeExtensionId?: string;
   lastSetup?: { version: string; completedAt: string };
 };
 
@@ -92,6 +95,7 @@ export async function resolveRuntimeLayout(options: RuntimeLayoutOptions = {}): 
   const layout: RuntimeLayout = {
     mode,
     root,
+    ...(config ? { userConfig: config } : {}),
     openBrowserUseCommand: options.openBrowserUseCommand ?? env.OBU_COMMAND ?? process.argv[1] ?? "obu",
     cliEntry: mode === "packaged" ? path.join(root, "cli", "dist", "index.js") : path.join(root, "packages", "cli", "dist", "index.js"),
     hostBin: env.OBU_HOST_BIN ?? (mode === "packaged" ? path.join(root, "bin", hostBinaryName(platform)) : path.join(root, "target", "debug", hostBinaryName(platform))),
@@ -278,6 +282,16 @@ function validateUserConfigShape(value: unknown): string | undefined {
   }
   if (typeof config.nativeHostInstallRoot !== "string" || config.nativeHostInstallRoot.length === 0) {
     return "open-browser-use user config nativeHostInstallRoot must be a non-empty string";
+  }
+  if (
+    config.extensionChannel !== undefined &&
+    config.extensionChannel !== "unpacked-dev" &&
+    config.extensionChannel !== "store"
+  ) {
+    return "open-browser-use user config extensionChannel must be unpacked-dev or store";
+  }
+  if (config.storeExtensionId !== undefined && !/^[a-p]{32}$/.test(config.storeExtensionId)) {
+    return "open-browser-use user config storeExtensionId must be a Chrome extension id";
   }
   return undefined;
 }

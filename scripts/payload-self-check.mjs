@@ -15,6 +15,12 @@ assert.match(metadata.nodeVersion, /^\d+\.\d+\.\d+/);
 assert.match(metadata.sdkHash, /^sha256:[0-9a-f]{64}$/);
 assert.equal(metadata.extensionChannel, "unpacked-dev");
 assert.match(metadata.extensionId, /^[a-p]{32}$/);
+if (metadata.storeExtensionId !== undefined) {
+  assert.match(metadata.storeExtensionId, /^[a-p]{32}$/);
+  assert.equal(metadata.storeExtensionId, metadata.extensionId);
+  assert.equal(metadata.storeManifestKeyPolicy, "included");
+  assert.equal(typeof metadata.storePublicKey, "string");
+}
 assert.match(metadata.extensionZipSha256, /^sha256:[0-9a-f]{64}$/);
 
 await mustExist("bin/obu-host");

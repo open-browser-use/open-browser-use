@@ -25,6 +25,10 @@
   box-sizing: border-box;
 }
 
+[hidden] {
+  display: none !important;
+}
+
 body {
   width: 360px;
   margin: 0;
@@ -99,6 +103,30 @@ h1 {
   overflow-wrap: anywhere;
 }
 
+.setup {
+  display: grid;
+  gap: 10px;
+  margin: -2px 0 14px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+}
+
+.command {
+  max-height: 136px;
+  margin: 0;
+  padding: 10px;
+  overflow: auto;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  background: var(--bg);
+  color: var(--ink);
+  font: inherit;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .actions {
   display: grid;
   grid-template-columns: 1fr auto;
@@ -124,6 +152,7 @@ h1 {
 
 .stop,
 .resume,
+.setup-copy,
 .debug-actions button {
   width: 100%;
   min-height: 36px;
@@ -145,6 +174,11 @@ h1 {
   color: var(--accent);
 }
 
+.setup-copy {
+  border: 1px solid var(--accent);
+  color: var(--accent);
+}
+
 .debug-actions button {
   min-height: 32px;
   border: 1px solid var(--line);
@@ -153,6 +187,7 @@ h1 {
 
 .stop:disabled,
 .resume:disabled,
+.setup-copy:disabled,
 .debug-actions button:disabled {
   opacity: 0.45;
   cursor: not-allowed;

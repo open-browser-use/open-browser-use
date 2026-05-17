@@ -134,6 +134,18 @@ obu install-host --browser chrome
 obu install-host --all
 ```
 
+For a Chrome Web Store-installed extension, repair with the Store channel:
+
+```bash
+obu install-host --channel=store --browser chrome
+obu doctor browser --repair --channel=store
+```
+
+If the Store channel reports that the Store extension id is not configured,
+install a release payload that records `storeExtensionId`, rerun setup from the
+Store popup command, or pass `--extension-id <STORE_EXTENSION_ID>` while testing
+a draft item.
+
 The manifest path should point at an open-browser-use wrapper under
 `~/.obu/native-host/dev.obu.host/<browser>/obu-host-wrapper`, not directly at a
 source-tree helper or versioned payload binary.

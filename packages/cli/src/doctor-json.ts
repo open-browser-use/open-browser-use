@@ -1,6 +1,7 @@
 import os from "node:os";
 
 import type { DoctorCheck, DoctorStatus } from "./doctor-browser.js";
+import type { ExtensionChannel, ExtensionIdSource } from "./extension-channel.js";
 import type { RuntimeLayout } from "./runtime-layout.js";
 
 export type DoctorJson = {
@@ -16,6 +17,11 @@ export type DoctorJson = {
     openBrowserUseCommand: string;
     runtimeDir: string;
   };
+  extension: {
+    channel: ExtensionChannel;
+    id?: string;
+    idSource?: ExtensionIdSource;
+  };
   summary: { pass: number; warn: number; fail: number };
   checks: Array<{
     id: string;
@@ -28,7 +34,12 @@ export type DoctorJson = {
 };
 
 export function doctorJson(input: {
-  report: { checks: DoctorCheck[] };
+  report: {
+    checks: DoctorCheck[];
+    extensionChannel?: ExtensionChannel | undefined;
+    extensionId?: string | undefined;
+    extensionIdSource?: ExtensionIdSource | undefined;
+  };
   layout: RuntimeLayout;
   obuVersion: string;
   command: "doctor" | "doctor browser";
@@ -52,6 +63,11 @@ export function doctorJson(input: {
       root: input.layout.root,
       openBrowserUseCommand: input.layout.openBrowserUseCommand,
       runtimeDir: input.layout.runtimeDir,
+    },
+    extension: {
+      channel: input.report.extensionChannel ?? "unpacked-dev",
+      ...(input.report.extensionId ? { id: input.report.extensionId } : {}),
+      ...(input.report.extensionIdSource ? { idSource: input.report.extensionIdSource } : {}),
     },
     summary: summarize(input.report.checks),
     checks,

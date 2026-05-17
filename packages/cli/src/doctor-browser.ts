@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { browserInstallPath, browserProfileRoot, nativeMessagingHostDir, type BrowserKind } from "./browser-paths.js";
+import { type ExtensionChannel, type ExtensionIdSource } from "./extension-channel.js";
 import { resolveRuntimeLayout, validateRuntimeDir, type RuntimeLayout } from "./runtime-layout.js";
 
 const execFileAsync = promisify(execFile);
@@ -43,7 +44,9 @@ export type DoctorCheck = {
 
 export type DoctorReport = {
   browser: BrowserKind;
+  extensionChannel: ExtensionChannel;
   extensionId: string | undefined;
+  extensionIdSource: ExtensionIdSource | undefined;
   checks: DoctorCheck[];
   repairs?: DoctorRepairAction[];
 };
@@ -57,6 +60,9 @@ export type DoctorRepairAction = {
 
 export type DoctorBrowserOptions = {
   browser?: BrowserKind;
+  channel?: ExtensionChannel;
+  extensionId?: string;
+  extensionIdSource?: ExtensionIdSource;
   platform?: NodeJS.Platform;
   homeDir?: string;
   repoRoot?: string;
@@ -77,6 +83,7 @@ type RuntimeDescriptorProbeResult =
 
 export async function doctorBrowser(options: DoctorBrowserOptions = {}): Promise<DoctorReport> {
   const browser = options.browser ?? DEFAULT_BROWSER;
+  const extensionChannel = options.channel ?? "unpacked-dev";
   const platform = options.platform ?? process.platform;
   const homeDir = options.homeDir ?? os.homedir();
   const env = options.env ?? process.env;
@@ -89,7 +96,9 @@ export async function doctorBrowser(options: DoctorBrowserOptions = {}): Promise
     ...(options.runtimeDir === undefined ? {} : { runtimeDir: options.runtimeDir }),
   });
   const manifestPath = options.manifestPath ?? await extensionManifestPath(layout);
-  const extensionId = await readExtensionId(manifestPath).catch(() => undefined);
+  const manifestExtensionId = await readExtensionId(manifestPath).catch(() => undefined);
+  const extensionId = options.extensionId ?? manifestExtensionId;
+  const extensionIdSource = options.extensionIdSource ?? (manifestExtensionId ? "manifest-key" : undefined);
   const checks: DoctorCheck[] = [];
   const repairs: DoctorRepairAction[] = [];
   const runtimeDir = layout.runtimeDir;
@@ -97,7 +106,9 @@ export async function doctorBrowser(options: DoctorBrowserOptions = {}): Promise
   const nativeManifestDir = options.nativeManifestDir ?? nativeMessagingHostDir(browser, platform, homeDir);
   const nativeManifestPath = path.join(nativeManifestDir, `${HOST_NAME}.json`);
   const hostBinary = options.hostBinary ?? layout.hostBin;
-  const extensionCurrentDir = options.extensionCurrentDir ?? (layout.mode === "repo" ? layout.extensionDir : layout.extensionCurrentDir);
+  const extensionCurrentDir = extensionChannel === "store"
+    ? undefined
+    : options.extensionCurrentDir ?? (layout.mode === "repo" ? layout.extensionDir : layout.extensionCurrentDir);
 
   if (options.repair) {
     repairs.push(...await repairNativeHostManifest({
@@ -116,20 +127,29 @@ export async function doctorBrowser(options: DoctorBrowserOptions = {}): Promise
   checks.push(await checkBrowserInstalled(browser, platform, options.browserInstallPath));
   const profileRoot = options.profileRoot ?? browserProfileRoot(browser, platform, homeDir);
   checks.push(await checkProfilePath(profileRoot));
-  checks.push(await checkExtensionInstalled(profileRoot, extensionId, extensionCurrentDir));
+  checks.push(await checkExtensionInstalled(profileRoot, extensionId, extensionCurrentDir, extensionChannel, extensionIdSource));
   checks.push(await checkNativeHostManifest(nativeManifestPath, extensionId));
   checks.push(await checkHostVersion(hostBinary));
   checks.push(await checkRuntimeDir(runtimeDir));
   checks.push(await checkRuntimeDescriptorDir(runtimeDescriptorDir));
   checks.push(await checkRuntimeDescriptors(runtimeDescriptorDir));
 
-  return { browser, extensionId, checks, ...(repairs.length > 0 ? { repairs } : {}) };
+  return {
+    browser,
+    extensionChannel,
+    extensionId,
+    extensionIdSource,
+    checks,
+    ...(repairs.length > 0 ? { repairs } : {}),
+  };
 }
 
 export function formatDoctorReport(report: DoctorReport): string {
   const rows = [
     `open-browser-use browser doctor: ${report.browser}`,
+    `extension channel: ${report.extensionChannel}`,
     report.extensionId ? `extension id: ${report.extensionId}` : "extension id: unknown",
+    report.extensionIdSource ? `extension id source: ${report.extensionIdSource}` : "extension id source: unknown",
     "",
   ];
   if (report.repairs && report.repairs.length > 0) {
@@ -247,7 +267,7 @@ async function repairNativeHostManifest(input: NativeHostRepairInput): Promise<D
         id: "native-host-manifest",
         status: "skipped",
         message: "native host manifest already valid",
-        details: { path: input.nativeManifestPath },
+        details: { path: input.nativeManifestPath, extensionId: input.extensionId },
       },
     ];
   }
@@ -309,7 +329,7 @@ async function repairNativeHostManifest(input: NativeHostRepairInput): Promise<D
       id: "native-host-manifest",
       status: "applied",
       message: `wrote native host manifest ${input.nativeManifestPath}`,
-      details: { path: input.nativeManifestPath, wrapperPath },
+      details: { path: input.nativeManifestPath, wrapperPath, extensionId: input.extensionId },
     },
   ];
 }
@@ -609,9 +629,11 @@ async function checkExtensionInstalled(
   profileRoot: string,
   extensionId: string | undefined,
   extensionCurrentDir?: string,
+  channel: ExtensionChannel = "unpacked-dev",
+  extensionIdSource?: ExtensionIdSource,
 ): Promise<DoctorCheck> {
   if (!extensionId) {
-    return warn("extension-installed", "Extension installed/enabled", "extension id could not be derived");
+    return warn("extension-installed", "Extension installed/enabled", "extension id could not be derived", { channel });
   }
   const expectedPath = extensionCurrentDir ? await normalizeExistingOrResolvedPath(extensionCurrentDir) : undefined;
   const preferenceFiles = await findPreferenceFiles(profileRoot);
@@ -620,6 +642,9 @@ async function checkExtensionInstalled(
     const settings = preferences?.extensions?.settings?.[extensionId];
     if (!settings) continue;
     const details = await extensionSettingsDetails(settings, file, expectedPath);
+    details.channel = channel;
+    details.extensionId = extensionId;
+    if (extensionIdSource) details.extensionIdSource = extensionIdSource;
     if (settings.state === 0 || hasDisableReasons(settings.disable_reasons)) {
       return warn("extension-installed", "Extension installed/enabled", `extension is present but disabled in ${file}`, details);
     }
@@ -643,7 +668,11 @@ async function checkExtensionInstalled(
     }
     return pass("extension-installed", "Extension installed/enabled", `extension is present in ${file}`, details);
   }
-  return warn("extension-installed", "Extension installed/enabled", `extension ${extensionId} was not found in profile preferences`);
+  return warn("extension-installed", "Extension installed/enabled", `extension ${extensionId} was not found in profile preferences`, {
+    channel,
+    extensionId,
+    ...(extensionIdSource ? { extensionIdSource } : {}),
+  });
 }
 
 async function checkNativeHostManifest(

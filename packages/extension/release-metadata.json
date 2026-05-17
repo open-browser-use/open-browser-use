@@ -1,0 +1,16 @@
+{
+  "schemaVersion": 1,
+  "unpackedDev": {
+    "extensionChannel": "unpacked-dev",
+    "extensionId": "fblnfcjnjklpgnmfnngcihbcgojnpadj",
+    "publicKeySource": "packages/extension/public/manifest.json"
+  },
+  "store": {
+    "extensionChannel": "store",
+    "storeExtensionId": null,
+    "storeDraftVerified": false,
+    "storePublicKeySource": "packages/extension/public/manifest.json",
+    "manifestKeyPolicy": "included",
+    "status": "pending-chrome-web-store-draft"
+  }
+}

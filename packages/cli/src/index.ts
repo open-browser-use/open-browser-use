@@ -6,6 +6,7 @@ import { isAgentId, renderAgentMcpConfig, supportedAgentIds, type AgentId, type 
 import { doctorAggregate, formatAggregateDoctorReport } from "./doctor.js";
 import { doctorJson } from "./doctor-json.js";
 import { doctorBrowser, formatDoctorReport, hasDoctorFailures, type BrowserKind, type DoctorReport } from "./doctor-browser.js";
+import { parseExtensionChannel, resolveExtensionTarget, userConfigForExtensionTarget } from "./extension-channel.js";
 import { updateExtension } from "./extension-update.js";
 import { installNativeHosts, supportedNativeHostBrowsers } from "./native-host.js";
 import { ensureRuntimeDir, executableExists, packageVersion, resolveRuntimeLayout, validateRuntimeDir, writeUserConfig } from "./runtime-layout.js";
@@ -72,14 +73,26 @@ async function main(argv: string[]): Promise<number> {
 }
 
 async function runSetup(args: ParsedArgs): Promise<number> {
-  const channelStatus = validateChannel(args.channel);
-  if (channelStatus) {
-    console.error(channelStatus);
-    return 2;
-  }
   const layout = await resolveRuntimeLayout();
   if (layout.configIssue) {
     console.error(`open-browser-use user config is invalid: ${layout.configIssue.message}. Fix or remove ${layout.configIssue.path}, then rerun obu setup.`);
+    return 2;
+  }
+  let extensionTarget;
+  try {
+    extensionTarget = await resolveExtensionTarget({
+      layout,
+      channel: args.channel,
+      explicitExtensionId: args.extensionId,
+      env: process.env,
+      ...(args.extensionPath ? { manifestPath: path.join(args.extensionPath, "manifest.json") } : {}),
+    });
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 2;
+  }
+  if (extensionTarget.channel === "store" && args.extensionPath) {
+    console.error("setup --channel=store does not support --path; install the extension from Chrome Web Store instead.");
     return 2;
   }
   const supported = supportedNativeHostBrowsers();
@@ -106,6 +119,9 @@ async function runSetup(args: ParsedArgs): Promise<number> {
     browsers,
     agents: args.agents as AgentId[],
     server,
+    extensionChannel: extensionTarget.channel,
+    extensionId: extensionTarget.extensionId,
+    extensionIdSource: extensionTarget.extensionIdSource,
     dryRun: args.dryRun,
     skipExtension: args.skipExtension,
     skipAgents: args.skipAgents,
@@ -126,14 +142,14 @@ async function runSetup(args: ParsedArgs): Promise<number> {
 }
 
 async function runUpdateExtension(args: ParsedArgs): Promise<number> {
-  const channelStatus = validateChannel(args.channel);
-  if (channelStatus) {
-    console.error(channelStatus);
-    return 2;
-  }
   const layout = await resolveRuntimeLayout();
   if (layout.configIssue) {
     console.error(`open-browser-use user config is invalid: ${layout.configIssue.message}. Fix or remove ${layout.configIssue.path}, then rerun obu update-extension.`);
+    return 2;
+  }
+  const channel = parseExtensionChannel(args.channel, layout.userConfig?.extensionChannel);
+  if (channel === "store") {
+    console.error("update-extension is not available for --channel=store; Chrome Web Store manages Store extension updates.");
     return 2;
   }
   if (!args.dryRun) {
@@ -169,14 +185,21 @@ async function runUpdateExtension(args: ParsedArgs): Promise<number> {
 }
 
 async function runInstallHost(args: ParsedArgs): Promise<number> {
-  const channelStatus = validateChannel(args.channel);
-  if (channelStatus) {
-    console.error(channelStatus);
-    return 2;
-  }
   const layout = await resolveRuntimeLayout();
   if (layout.configIssue) {
     console.error(`open-browser-use user config is invalid: ${layout.configIssue.message}. Fix or remove ${layout.configIssue.path}, then rerun obu install-host.`);
+    return 2;
+  }
+  let extensionTarget;
+  try {
+    extensionTarget = await resolveExtensionTarget({
+      layout,
+      channel: args.channel,
+      explicitExtensionId: args.extensionId,
+      env: process.env,
+    });
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
     return 2;
   }
   if (!args.dryRun) {
@@ -185,12 +208,7 @@ async function runInstallHost(args: ParsedArgs): Promise<number> {
       console.error(`open-browser-use runtime is not ready: ${runtime.message ?? "invalid runtime directory"}`);
       return 2;
     }
-    await writeUserConfig(layout.userConfigPath, {
-      schemaVersion: 1,
-      runtimeDir: layout.runtimeDir,
-      extensionCurrentDir: layout.extensionCurrentDir,
-      nativeHostInstallRoot: layout.nativeHostInstallRoot,
-    });
+    await writeUserConfig(layout.userConfigPath, userConfigForExtensionTarget(layout, extensionTarget));
   }
   const supported = supportedNativeHostBrowsers();
   const browsers = args.all ? supported : [args.browser ?? ("chrome" as BrowserKind)];
@@ -203,10 +221,17 @@ async function runInstallHost(args: ParsedArgs): Promise<number> {
     layout,
     browsers,
     dryRun: args.dryRun,
-    ...(args.extensionId ? { extensionId: args.extensionId } : {}),
+    extensionId: extensionTarget.extensionId,
   });
   if (args.json) {
-    console.log(JSON.stringify({ schemaVersion: 1, command: "install-host", actions }, null, 2));
+    console.log(JSON.stringify({
+      schemaVersion: 1,
+      command: "install-host",
+      extensionChannel: extensionTarget.channel,
+      extensionId: extensionTarget.extensionId,
+      extensionIdSource: extensionTarget.extensionIdSource,
+      actions,
+    }, null, 2));
   } else {
     for (const action of actions) {
       console.log(`${action.status.toUpperCase().padEnd(11)} ${action.browser}: ${action.message}`);
@@ -263,9 +288,24 @@ async function runDoctor(args: ParsedArgs): Promise<number> {
     throw new Error("doctor browser does not support --clean-backups; run `obu doctor --clean-backups`");
   }
   const layout = await resolveRuntimeLayout();
+  let extensionTarget;
+  try {
+    extensionTarget = await resolveExtensionTarget({
+      layout,
+      channel: args.channel,
+      explicitExtensionId: args.extensionId,
+      env: process.env,
+    });
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 2;
+  }
   const browserOptions = {
     ...(args.browser === undefined ? {} : { browser: args.browser }),
-    extensionCurrentDir: layout.mode === "repo" ? layout.extensionDir : layout.extensionCurrentDir,
+    channel: extensionTarget.channel,
+    extensionId: extensionTarget.extensionId,
+    extensionIdSource: extensionTarget.extensionIdSource,
+    ...(extensionTarget.channel === "store" ? {} : { extensionCurrentDir: layout.mode === "repo" ? layout.extensionDir : layout.extensionCurrentDir }),
     repair: args.repair,
   };
   const report = args.subject === "browser"
@@ -427,17 +467,12 @@ function parseBrowser(value: string): BrowserKind {
   throw new Error(`unsupported browser: ${value}`);
 }
 
-function validateChannel(channel: string | undefined): string | undefined {
-  if (channel === undefined || channel === "unpacked-dev") return undefined;
-  return `unsupported extension channel: ${channel}. P4a supports only unpacked-dev.`;
-}
-
 function printHelp(): void {
   console.log(`Usage:
   obu --version
-  obu setup [--yes] [--browser chrome|chrome-for-testing|edge|brave|arc|chromium|--all] [--agents=<list>] [--channel unpacked-dev] [--skip-extension] [--skip-agents] [--dry-run] [--json]
-  obu doctor [browser] [--browser chrome|chrome-for-testing|edge|brave|arc|chromium] [--json] [--strict] [--repair] [--clean-backups]
-  obu install-host [--browser chrome|chrome-for-testing|edge|brave|arc|chromium|--all] [--channel unpacked-dev] [--dry-run] [--json]
+  obu setup [--yes] [--browser chrome|chrome-for-testing|edge|brave|arc|chromium|--all] [--agents=<list>] [--channel unpacked-dev|store] [--extension-id <id>] [--skip-extension] [--skip-agents] [--dry-run] [--json]
+  obu doctor [browser] [--browser chrome|chrome-for-testing|edge|brave|arc|chromium] [--channel unpacked-dev|store] [--extension-id <id>] [--json] [--strict] [--repair] [--clean-backups]
+  obu install-host [--browser chrome|chrome-for-testing|edge|brave|arc|chromium|--all] [--channel unpacked-dev|store] [--extension-id <id>] [--dry-run] [--json]
   obu update-extension [--path <dir>] [--channel unpacked-dev] [--no-wait] [--dry-run] [--json]
   obu mcp-config --agent=<id> --print
   obu mcp stdio`);

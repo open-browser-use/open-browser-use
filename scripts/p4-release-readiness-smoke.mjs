@@ -46,6 +46,7 @@ for (const script of [
   "smoke:npm-wrapper",
   "smoke:package-static",
   "smoke:setup-local-spine",
+  "make:extension-store-artifact",
 ]) {
   assert.equal(typeof rootPackage.scripts?.[script], "string", `missing package script ${script}`);
 }
@@ -76,6 +77,15 @@ assertNoWindows([distWorkspace]);
 
 const makeCurlArtifact = await text("scripts/make-curl-artifact.mjs");
 assert.match(makeCurlArtifact, /releaseArtifactPrefix\s*=\s*"open-browser-use"/);
+assert.match(makeCurlArtifact, /manifest\.tsv/);
+const makeStoreArtifact = await text("scripts/make-extension-store-artifact.mjs");
+assert.match(makeStoreArtifact, /store-extension-id/);
+assert.match(makeStoreArtifact, /manifestKeyPolicy/);
+
+const extensionReleaseMetadata = await json("packages/extension/release-metadata.json");
+assert.equal(extensionReleaseMetadata.unpackedDev.extensionId, "fblnfcjnjklpgnmfnngcihbcgojnpadj");
+assert.equal(extensionReleaseMetadata.store.extensionChannel, "store");
+assert.equal(extensionReleaseMetadata.store.storeDraftVerified, false);
 
 const workflow = await text(".github/workflows/p4-packaging-ci.yml");
 for (const target of p4Targets) assert.match(workflow, new RegExp(`target: ${escapeRegExp(target)}\\b`));
@@ -97,10 +107,20 @@ assert.match(releaseChecklist, /Public npm scope\/package access .* is not verif
 assert.match(releaseChecklist, /GitHub Release assets, not a dedicated\s+website URL/is);
 assert.match(releaseChecklist, /open-browser-use/);
 assert.match(releaseChecklist, /p4-target-payloads/);
+assert.match(releaseChecklist, /manifest\.tsv/);
 assert.match(releaseChecklist, /npm publish order/i);
 assert.match(releaseChecklist, /## Rollback/);
 assert.match(releaseChecklist, /last known-good/i);
 assert.match(releaseChecklist, /doctor --strict.*warnings.*failures/is);
+assert.match(releaseChecklist, /Chrome Web Store Gate/);
+assert.match(releaseChecklist, /storeExtensionId/);
+assert.match(releaseChecklist, /make-extension-store-artifact\.mjs/);
+
+const reviewPack = await text("docs/chrome-web-store-review-pack.md");
+assert.match(reviewPack, /Permission Justifications/);
+assert.match(reviewPack, /Data Handling/);
+assert.match(reviewPack, /Reviewer Instructions/);
+assert.match(reviewPack, /--channel=store/);
 
 for (const doc of ["README.md", "docs/install.md", "docs/troubleshooting.md"]) {
   const contents = await text(doc);

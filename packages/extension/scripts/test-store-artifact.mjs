@@ -1,0 +1,83 @@
+import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
+import { spawnSync } from "node:child_process";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+const packageRoot = path.dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
+const repoRoot = path.resolve(packageRoot, "..", "..");
+const tmp = await mkdtemp(path.join(os.tmpdir(), "obu-store-artifact-"));
+
+try {
+  runBuild("unpacked-dev");
+  const manifest = JSON.parse(await readFile(path.join(packageRoot, "dist", "manifest.json"), "utf8"));
+  const extensionId = extensionIdFromManifestKey(manifest.key);
+
+  const unpackedResult = spawnSync(
+    process.execPath,
+    [
+      path.join(repoRoot, "scripts", "make-extension-store-artifact.mjs"),
+      "--store-extension-id",
+      extensionId,
+      "--out",
+      path.join(tmp, "unpacked"),
+    ],
+    { cwd: repoRoot, encoding: "utf8" },
+  );
+  assert.notEqual(unpackedResult.status, 0, "unpacked-dev popup must not pass Store artifact validation");
+  assert.match(unpackedResult.stderr || unpackedResult.stdout, /Store popup validation failed/);
+
+  runBuild("store");
+  const result = spawnSync(
+    process.execPath,
+    [
+      path.join(repoRoot, "scripts", "make-extension-store-artifact.mjs"),
+      "--store-extension-id",
+      extensionId,
+      "--out",
+      path.join(tmp, "store"),
+    ],
+    { cwd: repoRoot, encoding: "utf8" },
+  );
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+
+  const summary = JSON.parse(await readFile(path.join(tmp, "store", "chrome-web-store-artifact.json"), "utf8"));
+  assert.equal(summary.extensionChannel, "store");
+  assert.equal(summary.storeExtensionId, extensionId);
+  assert.equal(summary.manifestKeyPolicy, "included");
+  assert.equal(summary.popupChannel, "store");
+  assert.match(summary.artifact, /^open-browser-use-chrome-web-store-.+\.zip$/);
+  assert.match(summary.sha256, /^sha256:[0-9a-f]{64}$/);
+  assert.deepEqual([...summary.contents].sort(), [
+    "background.js",
+    "cursor.js",
+    "icons/icon-128.png",
+    "icons/icon-16.png",
+    "icons/icon-32.png",
+    "icons/icon-48.png",
+    "manifest.json",
+    "popup.css",
+    "popup.html",
+    "popup.js",
+  ]);
+} finally {
+  runBuild("unpacked-dev");
+  await rm(tmp, { recursive: true, force: true });
+}
+
+function runBuild(channel) {
+  const result = spawnSync(process.execPath, [path.join(packageRoot, "scripts", "build.mjs"), "--channel", channel], {
+    cwd: packageRoot,
+    encoding: "utf8",
+  });
+  assert.equal(result.status, 0, result.stderr || result.stdout);
+}
+
+function extensionIdFromManifestKey(key) {
+  const hash = createHash("sha256").update(Buffer.from(key, "base64")).digest().subarray(0, 16);
+  return [...hash]
+    .map((byte) => `${String.fromCharCode(97 + (byte >> 4))}${String.fromCharCode(97 + (byte & 0x0f))}`)
+    .join("");
+}

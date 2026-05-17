@@ -49,7 +49,9 @@ See [docs/install.md](docs/install.md), [docs/agent-adapters.md](docs/agent-adap
 [docs/agent-browser-mcp-usage.md](docs/agent-browser-mcp-usage.md),
 [docs/mcp-browser-integration-analysis.md](docs/mcp-browser-integration-analysis.md),
 [docs/troubleshooting.md](docs/troubleshooting.md), and
-[docs/release-checklist.md](docs/release-checklist.md).
+[docs/release-checklist.md](docs/release-checklist.md). Chrome Web Store
+submission notes live in
+[docs/chrome-web-store-review-pack.md](docs/chrome-web-store-review-pack.md).
 
 Project source is MIT licensed. See [LICENSE](LICENSE).
 
