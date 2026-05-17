@@ -9,8 +9,9 @@
     "extensionChannel": "store",
     "storeExtensionId": null,
     "storeDraftVerified": false,
-    "storePublicKeySource": "packages/extension/public/manifest.json",
-    "manifestKeyPolicy": "included",
+    "sourceManifestKeyId": "fblnfcjnjklpgnmfnngcihbcgojnpadj",
+    "sourceManifestPublicKeySource": "packages/extension/public/manifest.json",
+    "manifestKeyPolicy": "omitted-for-store-upload",
     "status": "pending-chrome-web-store-draft"
   }
 }

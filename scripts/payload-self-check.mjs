@@ -17,9 +17,9 @@ assert.equal(metadata.extensionChannel, "unpacked-dev");
 assert.match(metadata.extensionId, /^[a-p]{32}$/);
 if (metadata.storeExtensionId !== undefined) {
   assert.match(metadata.storeExtensionId, /^[a-p]{32}$/);
-  assert.equal(metadata.storeExtensionId, metadata.extensionId);
-  assert.equal(metadata.storeManifestKeyPolicy, "included");
-  assert.equal(typeof metadata.storePublicKey, "string");
+  assert.equal(metadata.storeManifestKeyPolicy, "omitted-for-store-upload");
+  assert.equal(metadata.sourceManifestKeyId, metadata.extensionId);
+  assert.equal(typeof metadata.sourceManifestPublicKey, "string");
 }
 assert.match(metadata.extensionZipSha256, /^sha256:[0-9a-f]{64}$/);
 

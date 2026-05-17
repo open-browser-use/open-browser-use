@@ -93,9 +93,20 @@ Reviewer notes:
   channel, extension id, id source, native-host manifest status, and runtime
   descriptor status.
 
-## Store Artifact Command
+## Store Artifact Commands
 
-After the Store draft item id is known:
+For the first draft upload, the Store item id may not exist yet. Generate a
+keyless upload zip, upload it to the Developer Dashboard, then copy the item id
+shown by the dashboard:
+
+```bash
+pnpm -C packages/extension build
+node packages/extension/scripts/build.mjs --channel store
+node scripts/make-extension-store-artifact.mjs
+```
+
+After the Store draft item id is known, regenerate the artifact with the id so
+the summary records the native-host target:
 
 ```bash
 pnpm -C packages/extension build
@@ -103,6 +114,9 @@ node packages/extension/scripts/build.mjs --channel store
 node scripts/make-extension-store-artifact.mjs \
   --store-extension-id <STORE_EXTENSION_ID>
 ```
+
+The upload zip omits `manifest.key`; Chrome Web Store rejects packages that
+include the `key` field.
 
 The artifact summary is written to:
 
