@@ -59,6 +59,16 @@ const RESTING_ROTATION_DEG = -44;
 const ARRIVAL_TIMEOUT_MS = 650;
 const INPUT_BYPASS_DEFAULT_MS = 450;
 const INPUT_BYPASS_MAX_MS = 1_000;
+const TAKEOVER_OVERLAY_BLUR = "blur(1.35px) saturate(1.06)";
+const TAKEOVER_OVERLAY_BACKGROUND = [
+  "radial-gradient(circle at 18% 24%, rgba(125, 211, 252, 0.34) 0 1px, transparent 1.9px)",
+  "radial-gradient(circle at 76% 18%, rgba(191, 219, 254, 0.24) 0 1.15px, transparent 2.3px)",
+  "radial-gradient(circle at 34% 78%, rgba(56, 189, 248, 0.22) 0 1px, transparent 2px)",
+  "radial-gradient(circle at 84% 70%, rgba(147, 197, 253, 0.2) 0 1.35px, transparent 2.4px)",
+  "linear-gradient(118deg, rgba(14, 165, 233, 0.1), rgba(37, 99, 235, 0.16) 46%, rgba(6, 182, 212, 0.1))",
+].join(", ");
+const TAKEOVER_OVERLAY_BACKGROUND_SIZE = "170px 170px, 230px 230px, 290px 290px, 360px 360px, 100% 100%";
+const TAKEOVER_OVERLAY_BACKGROUND_POSITION = "0 0, 44px 28px, 16px 78px, 92px 18px, 0 0";
 const REDUCED_MOTION = matchMediaSafe("(prefers-reduced-motion: reduce)");
 const INSTALL_KEY = "__OBU_CURSOR_CONTENT_SCRIPT_INSTALLED__";
 const SCRIPT_EVENT = "__OBU_CURSOR_MESSAGE__";
@@ -151,7 +161,7 @@ function handleCursorMessage(message: unknown, sendResponse?: (response?: unknow
 
 function setTakeoverState(message: TakeoverStateMessage): void {
   activeTakeover = message.active;
-  lockInputs = Boolean(message.lockInputs && message.active);
+  lockInputs = message.active && message.lockInputs !== false;
   lastSessionId = message.sessionId ?? lastSessionId;
   lastTurnId = message.turnId ?? lastTurnId;
   if (!message.active) {
@@ -279,14 +289,24 @@ function ensureCursor(): void {
   host.style.contain = "layout style paint";
   const shadow = host.attachShadow({ mode: "closed" });
 
+  const style = document.createElement("style");
+  style.textContent = takeoverStyleSheet();
+
   overlay = document.createElement("div");
   overlay.style.position = "fixed";
   overlay.style.inset = "0";
   overlay.style.opacity = "0";
-  overlay.style.background = "rgba(37, 99, 235, 0.105)";
-  overlay.style.backdropFilter = "blur(1.5px) saturate(1.03)";
+  overlay.style.background = TAKEOVER_OVERLAY_BACKGROUND;
+  overlay.style.backgroundSize = TAKEOVER_OVERLAY_BACKGROUND_SIZE;
+  overlay.style.backgroundPosition = TAKEOVER_OVERLAY_BACKGROUND_POSITION;
+  overlay.style.backgroundBlendMode = "screen, screen, screen, screen, normal";
+  overlay.style.backdropFilter = TAKEOVER_OVERLAY_BLUR;
+  (overlay.style as CSSStyleDeclaration & { webkitBackdropFilter?: string }).webkitBackdropFilter = TAKEOVER_OVERLAY_BLUR;
+  overlay.style.boxShadow = "inset 0 0 0 1px rgba(125, 211, 252, 0.16), inset 0 0 48px rgba(37, 99, 235, 0.18)";
   overlay.style.transition = "opacity 160ms ease-out";
   overlay.style.pointerEvents = "none";
+  overlay.style.willChange = REDUCED_MOTION ? "opacity" : "opacity, background-position";
+  overlay.style.animation = REDUCED_MOTION ? "none" : "obu-takeover-particles 14s linear infinite";
 
   pulseLayer = document.createElement("div");
   pulseLayer.style.position = "fixed";
@@ -314,11 +334,24 @@ function ensureCursor(): void {
   cursorGlyph.style.willChange = "transform";
   cursor.append(cursorGlyph);
 
-  shadow.append(overlay, pulseLayer, cursor);
+  shadow.append(style, overlay, pulseLayer, cursor);
   document.documentElement.append(host);
   updateOverlay();
   updateInputLock();
   renderCursor(currentPoint, RESTING_ROTATION_DEG, 1, 1);
+}
+
+function takeoverStyleSheet(): string {
+  return `
+    @keyframes obu-takeover-particles {
+      from {
+        background-position: ${TAKEOVER_OVERLAY_BACKGROUND_POSITION};
+      }
+      to {
+        background-position: 170px 70px, -90px 118px, 116px -96px, -128px -82px, 0 0;
+      }
+    }
+  `;
 }
 
 function updateOverlay(): void {
@@ -475,8 +508,15 @@ function quadraticTangent(start: Point, control: Point, end: Point, t: number): 
 
 function cursorSvgDataUrl(): string {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-    <path d="M5.4 3.8 26.2 14.3c1.6.8 1.4 3.2-.3 3.7l-8.2 2.4-3.9 7.8c-.8 1.6-3.2 1.3-3.6-.5L5.4 3.8Z" fill="rgba(14, 165, 233, 0.94)" stroke="rgba(248, 250, 252, 0.96)" stroke-width="3.2" stroke-linejoin="round"/>
-    <path d="M7.5 6.3 24.3 15l-8 2.3-3.8 7.5L7.5 6.3Z" fill="rgba(15, 23, 42, 0.96)"/>
+    <g fill="#ffc400" stroke="#f2a900" stroke-width=".6" stroke-linejoin="round">
+      <path d="M8.7 7.1 10.4 1.4c.2-.8 1.3-.8 1.6 0l2 5.6 3.1-2.1c.7-.5 1.5.3 1.1 1l-2.1 4.7a10.3 10.3 0 0 0-6.7-.1L6.5 6.3c-.4-.7.4-1.5 1.1-1l1.1 1.8Z"/>
+      <path d="M1.7 6.8c.3-.5.9-.7 1.4-.4l5.3 3.1c.5.3.6.9.3 1.4-.3.5-.9.7-1.4.4L2 8.2c-.5-.3-.6-.9-.3-1.4Z"/>
+      <path d="M.9 12.5c.1-.6.6-1 1.2-.9l5.8.7c.6.1 1 .6.9 1.2-.1.6-.6 1-1.2.9l-5.8-.7c-.6-.1-1-.6-.9-1.2Z"/>
+      <path d="M20.7 3.1c.5.3.7.9.4 1.4l-3.1 5c-.3.5-.9.7-1.4.4-.5-.3-.7-.9-.4-1.4l3.1-5c.3-.5.9-.7 1.4-.4Z"/>
+    </g>
+    <path d="M6.5 8.1c-.2-1.4 1.3-2.5 2.6-1.8l21.2 11.3c1.5.8 1.3 3-.3 3.5l-6.7 2 4.6 4.7c.8.9.8 2.2-.1 3l-2.6 2.4c-.9.8-2.3.7-3-.2l-4.6-5.8-3.5 5.2c-1 1.5-3.3 1-3.6-.8L6.5 8.1Z" fill="#0b1118"/>
+    <path d="M9 9.6 27.8 19.7l-8.7 2.6 6.3 6.5-1.5 1.4-6.6-8.3-4.8 7.3L9 9.6Z" fill="#f8fbff"/>
+    <path d="M9.6 10.8 12.3 27 17.1 20l6.2 7.8" fill="none" stroke="#dfe7ef" stroke-width=".9" stroke-linecap="round" stroke-linejoin="round" opacity=".72"/>
   </svg>`;
   return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
 }

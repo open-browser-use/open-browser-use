@@ -95,6 +95,45 @@ function deepFreeze(value) {
   return value;
 }
 
+function normalizeBackends(value) {
+  return Array.isArray(value)
+    ? value
+        .filter(
+          (backend) =>
+            backend &&
+            typeof backend === "object" &&
+            typeof backend.type === "string" &&
+            typeof backend.name === "string" &&
+            typeof backend.socketPath === "string",
+        )
+        .map((backend) => deepFreeze({
+          type: backend.type,
+          name: backend.name,
+          socketPath: backend.socketPath,
+          ...(backend.metadata && typeof backend.metadata === "object"
+            ? { metadata: deepFreeze({ ...backend.metadata }) }
+            : {}),
+        }))
+    : [];
+}
+
+function normalizeBackendDiagnostics(value) {
+  return Array.isArray(value)
+    ? value
+        .filter(
+          (diagnostic) =>
+            diagnostic &&
+            typeof diagnostic === "object" &&
+            typeof diagnostic.source === "string" &&
+            typeof diagnostic.reason === "string",
+        )
+        .map((diagnostic) => deepFreeze({
+          source: diagnostic.source,
+          reason: diagnostic.reason,
+        }))
+    : [];
+}
+
 function parseKernelBootstrapArgs(argv) {
   const { values } = parseArgs({
     args: argv,
@@ -131,46 +170,13 @@ function parseKernelBootstrapArgs(argv) {
   }
   let backends;
   try {
-    const parsed = JSON.parse(backendsJson);
-    backends = Array.isArray(parsed)
-      ? parsed
-          .filter(
-            (backend) =>
-              backend &&
-              typeof backend === "object" &&
-              typeof backend.type === "string" &&
-              typeof backend.name === "string" &&
-              typeof backend.socketPath === "string",
-          )
-          .map((backend) => deepFreeze({
-            type: backend.type,
-            name: backend.name,
-            socketPath: backend.socketPath,
-            ...(backend.metadata && typeof backend.metadata === "object"
-              ? { metadata: deepFreeze({ ...backend.metadata }) }
-              : {}),
-          }))
-      : [];
+    backends = normalizeBackends(JSON.parse(backendsJson));
   } catch {
     backends = [];
   }
   let backendDiagnostics;
   try {
-    const parsed = JSON.parse(backendDiagnosticsJson);
-    backendDiagnostics = Array.isArray(parsed)
-      ? parsed
-          .filter(
-            (diagnostic) =>
-              diagnostic &&
-              typeof diagnostic === "object" &&
-              typeof diagnostic.source === "string" &&
-              typeof diagnostic.reason === "string",
-          )
-          .map((diagnostic) => deepFreeze({
-            source: diagnostic.source,
-            reason: diagnostic.reason,
-          }))
-      : [];
+    backendDiagnostics = normalizeBackendDiagnostics(JSON.parse(backendDiagnosticsJson));
   } catch {
     backendDiagnostics = [];
   }
@@ -193,6 +199,9 @@ const kernelBootstrap = (() => {
     process.exit(1);
   }
 })();
+
+let currentBackends = kernelBootstrap.backends;
+let currentBackendDiagnostics = kernelBootstrap.backendDiagnostics;
 
 /**
  * @typedef {{ name: string, kind: "const"|"let"|"var"|"function"|"class" }} Binding
@@ -2070,10 +2079,10 @@ const obuRepl = Object.freeze({
     return currentRequestMeta;
   },
   discoverBackends() {
-    return kernelBootstrap.backends.map((backend) => ({ ...backend }));
+    return currentBackends.map((backend) => ({ ...backend }));
   },
   discoverBackendDiagnostics() {
-    return kernelBootstrap.backendDiagnostics.map((diagnostic) => ({ ...diagnostic }));
+    return currentBackendDiagnostics.map((diagnostic) => ({ ...diagnostic }));
   },
 });
 
@@ -2320,6 +2329,7 @@ async function handleExec(message) {
       result: null,
       duration_ms: Math.round(performance.now() - execState.startedAt),
       error: error && error.message ? error.message : String(error),
+      response_meta: currentResponseMeta,
     });
   } finally {
     if (activeExecId === execId) {
@@ -2393,6 +2403,13 @@ function handleNativePipeClosed(message) {
   }
 }
 
+function setBackendInventory(message) {
+  currentBackends = normalizeBackends(message.backends);
+  currentBackendDiagnostics = normalizeBackendDiagnostics(
+    message.backend_diagnostics ?? message.backendDiagnostics,
+  );
+}
+
 let queue = Promise.resolve();
 let pendingInputSegments = [];
 
@@ -2422,6 +2439,10 @@ function handleInputLine(line) {
   }
   if (message.type === "add_module_dir" || message.type === "add_node_module_dir") {
     addModuleSearchBase(message.path);
+    return;
+  }
+  if (message.type === "set_backend_inventory") {
+    setBackendInventory(message);
     return;
   }
   if (message.type === "emit_image_result") {

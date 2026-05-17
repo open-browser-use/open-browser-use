@@ -300,7 +300,15 @@ const created = await hostRequest(port, "createTab", {
 });
 assert.equal(created.result.tab.tabId, 1);
 assert.equal(calls.tabsCreate.length, 1);
+assert.equal(calls.tabsCreate[0].url, "https://example.com/");
 assert.equal(calls.tabsGroup[0].tabIds, 1);
+
+const blankCreated = await hostRequest(port, "createTab", {
+  session_id: "session",
+  turn_id: "turn",
+});
+assert.equal(blankCreated.result.tab.url, "about:blank");
+assert.equal(calls.tabsCreate.at(-1).url, "about:blank");
 
 const unsafeTarget = await hostRequest(port, "executeCdp", {
   session_id: "session",

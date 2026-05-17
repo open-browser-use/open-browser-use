@@ -131,8 +131,15 @@ assert.deepEqual(responses, [{ ok: true, active: true, lockInputs: true }]);
 assert.equal(documentElement.children.length, 1);
 let host = documentElement.children[0];
 assert.equal(host.style.position, "fixed");
-assert.equal(host.shadowChildren.length, 3);
-assert.equal(host.shadowChildren[0].style.opacity, "1");
+assert.equal(host.shadowChildren.length, 4);
+assert.match(host.shadowChildren[0].textContent, /obu-takeover-particles/);
+const overlay = host.shadowChildren[1];
+assert.equal(overlay.style.opacity, "1");
+assert.match(overlay.style.background, /radial-gradient/);
+assert.match(overlay.style.background, /linear-gradient/);
+assert.match(overlay.style.backdropFilter, /blur\(1\.35px\)/);
+assert.equal(overlay.style.pointerEvents, "none");
+assert.equal(overlay.style.animation, "none");
 
 const blocked = fakeDomEvent();
 documentEvents.emitDom("click", blocked);
@@ -154,18 +161,18 @@ assert.equal(blockedAfterBypass.stopped, true);
 responses = runtimeMessages.emit({ type: "OBU_CURSOR_MOVE", x: 10.2, y: 20.8, sequence: 1, sessionId: "session", turnId: "turn" });
 assert.deepEqual(responses, [{ ok: true, sequence: 1 }]);
 host = documentElement.children[0];
-const cursor = host.shadowChildren[2];
+const cursor = host.shadowChildren[3];
 assert.equal(cursor.style.transform, "translate3d(10px, 21px, 0)");
 assert.match(cursor.children[0].style.transform, /rotate\(-44\.00deg\)/);
 await waitFor(() => sentRuntimeMessages.some((message) => message.type === "OBU_CURSOR_ARRIVED" && message.sequence === 1));
 
 responses = runtimeMessages.emit({ type: "OBU_CURSOR_EVENT", kind: "release", x: 10, y: 21, button: "left" });
 assert.deepEqual(responses, [{ ok: true, kind: "release", sequence: undefined }]);
-assert.equal(host.shadowChildren[1].children.length, 0);
+assert.equal(host.shadowChildren[2].children.length, 0);
 
 responses = runtimeMessages.emit({ type: "OBU_CURSOR_EVENT", kind: "click", x: 10, y: 21, button: "left" });
 assert.deepEqual(responses, [{ ok: true, kind: "click", sequence: undefined }]);
-assert.equal(host.shadowChildren[1].children.length, 1);
+assert.equal(host.shadowChildren[2].children.length, 1);
 
 responses = runtimeMessages.emit({ type: "OBU_CURSOR_HIDE" });
 assert.deepEqual(responses, [{ ok: true }]);
@@ -176,9 +183,19 @@ documentEvents.emitDom("click", unblocked);
 assert.equal(unblocked.defaultPrevented, false);
 assert.equal(unblocked.stopped, false);
 
+responses = runtimeMessages.emit({ type: "OBU_TAKEOVER_STATE", active: true });
+assert.deepEqual(responses, [{ ok: true, active: true, lockInputs: true }]);
+const blockedByDefault = fakeDomEvent();
+documentEvents.emitDom("click", blockedByDefault);
+assert.equal(blockedByDefault.defaultPrevented, true);
+assert.equal(blockedByDefault.stopped, true);
+responses = runtimeMessages.emit({ type: "OBU_CURSOR_HIDE" });
+assert.deepEqual(responses, [{ ok: true }]);
+assert.equal(documentElement.children.length, 0);
+
 runtimeMessages.emit({ type: "OBU_CURSOR_MOVE", x: 1, y: 2, sequence: 2 });
 assert.equal(documentElement.children.length, 1);
-assert.equal(documentElement.children[0].shadowChildren[2].style.transform, "translate3d(1px, 2px, 0)");
+assert.equal(documentElement.children[0].shadowChildren[3].style.transform, "translate3d(1px, 2px, 0)");
 
 function fakeDomEvent() {
   return {

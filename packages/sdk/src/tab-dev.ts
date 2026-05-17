@@ -16,7 +16,11 @@ export class TabDev {
     this.tabId = guardsOrTabId instanceof Guards ? (tabId ?? "") : guardsOrTabId;
   }
 
-  async cdp<T = unknown>(method: string, params: Record<string, unknown> = {}): Promise<T> {
+  async cdp<T = unknown>(
+    method: string,
+    params: Record<string, unknown> = {},
+    opts: { timeout?: number } = {},
+  ): Promise<T> {
     const command = {
       command: M.EXECUTE_CDP,
       tab_id: this.tabId,
@@ -36,6 +40,7 @@ export class TabDev {
         method,
         commandParams: params,
       }),
+      opts.timeout,
     );
   }
 }

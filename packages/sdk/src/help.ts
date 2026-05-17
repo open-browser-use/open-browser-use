@@ -7,11 +7,12 @@ agent.browsers.diagnostics() -> ignored backend descriptor setup diagnostics
 Browser:
   .diagnostics / .lifecycleDiagnostics / .capabilities
   .deliverables() -> finalized durable tabs, with .claim()
-  .tabs.create(url?) -> Tab
+  .ensureReady() -> compact backend/capability/diagnostic summary
+  .tabs.create(urlOrOptions?) -> Tab   accepts "https://..." or {url}; defaults to "about:blank"
   .tabs.list() -> Tab[]
   .tabs.get(id) -> Tab
   .user.openTabs() / .user.history() / .user.claimTab()
-  .name(label) / .turnEnded() / .finalizeTabs({keep?}) / .finalize() / .clearLifecycleDiagnostics()
+  .name(label) / .turnEnded() / .finalizeTabs({keep?}) / .finalize() / .finishTurn({keep?}) / .clearLifecycleDiagnostics()
 
 Tab:
   .goto(url) / .back() / .forward() / .reload() / .waitForURL() / .waitForLoadState() / .waitForNavigation()
@@ -20,6 +21,10 @@ Tab:
   .locator(sel) -> Locator
   .frameLocator(sel) -> FrameLocator
   .content.export({format?}) -> bytes
+  .screenshot({type?, quality?, clip?, fullPage?}) -> bytes
+  .screenshotForModel({clip?, artifactMode?}) -> compact screenshot summary or inline bytes
+  .evaluate(expressionOrFn, {maxJsonBytes?}) -> capped JSON-safe page result
+  .snapshotText({maxItems?, maxTextLength?}) -> compact page text summary
   .cua.click() / .dblclick() / .scroll() / .type() / .keypress() / .drag() / .dragPath() / .move()
   .clipboard.readText() / .writeText() / .read() / .write()
   .dev.cdp(method, params)

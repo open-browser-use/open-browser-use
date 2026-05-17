@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use base64::Engine as _;
@@ -23,7 +23,7 @@ pub struct NativePipeBroker {
     connect_limiter: Semaphore,
     allowed_paths: Option<Vec<PathBuf>>,
     capability_token: Option<String>,
-    capability_tokens_by_path: HashMap<PathBuf, String>,
+    capability_tokens_by_path: RwLock<HashMap<PathBuf, String>>,
 }
 
 impl NativePipeBroker {
@@ -67,8 +67,19 @@ impl NativePipeBroker {
             connect_limiter: Semaphore::new(8),
             allowed_paths,
             capability_token,
-            capability_tokens_by_path,
+            capability_tokens_by_path: RwLock::new(capability_tokens_by_path),
         }
+    }
+
+    /// Replace path-specific capability tokens discovered from runtime descriptors.
+    pub fn set_capability_tokens_by_path(
+        &self,
+        capability_tokens_by_path: HashMap<PathBuf, String>,
+    ) {
+        *self
+            .capability_tokens_by_path
+            .write()
+            .expect("native pipe token map lock") = capability_tokens_by_path;
     }
 
     /// Dispatch one kernel request and return its response.
@@ -132,7 +143,7 @@ impl NativePipeBroker {
         let connection =
             Arc::new(NativePipeConnection::connect(&path, self.connect_timeout).await?);
         if let Some(token) = self.token_for_path(&path) {
-            connection.write_all(&encode_auth_frame(token)?).await?;
+            connection.write_all(&encode_auth_frame(&token)?).await?;
             consume_auth_response(&connection, self.connect_timeout).await?;
         }
         let connection_id = format!("conn-{}", Uuid::new_v4().simple());
@@ -265,11 +276,13 @@ impl NativePipeBroker {
         Ok(canonical)
     }
 
-    fn token_for_path(&self, canonical: &Path) -> Option<&str> {
+    fn token_for_path(&self, canonical: &Path) -> Option<String> {
         self.capability_tokens_by_path
+            .read()
+            .expect("native pipe token map lock")
             .get(canonical)
-            .map(String::as_str)
-            .or(self.capability_token.as_deref())
+            .cloned()
+            .or_else(|| self.capability_token.clone())
     }
 }
 

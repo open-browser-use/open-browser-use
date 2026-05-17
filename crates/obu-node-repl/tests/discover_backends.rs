@@ -47,6 +47,47 @@ async fn obu_repl_discovers_parent_seeded_backends() {
 }
 
 #[tokio::test]
+async fn browser_status_reports_missing_sdk_and_no_backend() {
+    let manager = JsRuntimeManager::new(ManagerOptions::for_tests())
+        .await
+        .unwrap();
+
+    let status = manager.browser_status().await.unwrap();
+
+    assert_eq!(status["sdk_bootstrap"], json!("missing"));
+    assert_eq!(status["backends"], json!([]));
+    assert_eq!(status["doctor_hint"], json!("obu doctor browser --repair"));
+}
+
+#[tokio::test]
+async fn browser_status_reports_untrusted_sdk_without_backend_secrets() {
+    let mut options = ManagerOptions::for_tests();
+    options.module_dirs.push(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("sdk-good"),
+    );
+    options.backends.push(DiscoveredBackend {
+        kind: "webextension".to_string(),
+        name: "chrome".to_string(),
+        socket_path: "/tmp/obu/test.sock".to_string(),
+        metadata: Some(json!({ "safe": true })),
+    });
+    options.backend_auth_tokens.insert(
+        std::path::PathBuf::from("/tmp/obu/test.sock"),
+        "secret".to_string(),
+    );
+    let manager = JsRuntimeManager::new(options).await.unwrap();
+
+    let status = manager.browser_status().await.unwrap();
+
+    assert_eq!(status["sdk_bootstrap"], json!("untrusted"));
+    assert_eq!(status["backends"][0]["type"], json!("webextension"));
+    assert!(status.to_string().contains("secret") == false);
+}
+
+#[tokio::test]
 async fn exec_frames_include_obu_turn_metadata() {
     let mut options = ManagerOptions::for_tests();
     options.session_id = "obu-session-for-metadata-test".into();
@@ -166,6 +207,184 @@ async fn runtime_descriptor_discovery_hides_sdk_auth_token() {
     assert!(result.result[0].get("sdk_auth_token").is_none());
     assert!(result.result[0].get("metadata").is_some());
     server.join().unwrap();
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn js_reset_refreshes_runtime_descriptor_inventory() {
+    let _env_guard = ENV_LOCK.lock().await;
+    let runtime_dir = tempfile::tempdir().unwrap();
+    make_runtime_root_owner_only(runtime_dir.path());
+    let _runtime = EnvVarGuard::set("OBU_RUNTIME_DIR", &runtime_dir.path().to_string_lossy());
+    let _backends = EnvVarGuard::remove("OBU_BACKENDS");
+    let _extra = EnvVarGuard::remove("OBU_EXTRA_BACKENDS");
+
+    let descriptor_dir = runtime_dir.path().join("webextension");
+    std::fs::create_dir_all(&descriptor_dir).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&descriptor_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let descriptor_path = descriptor_dir.join("chrome.json");
+
+    let first_socket = runtime_dir.path().join("first.sock");
+    let first_server = start_descriptor_server(
+        &first_socket,
+        "first-token",
+        json!({
+            "type": "webextension",
+            "name": "chrome",
+            "metadata": {
+                "backend": {
+                    "browser_kind": "chrome",
+                    "extension_id": "ext-id",
+                    "extension_version": "0.1.0",
+                    "extension_instance_id": "instance-id"
+                }
+            },
+            "capabilities": {}
+        }),
+    );
+    write_descriptor(&descriptor_path, &first_socket, "first-token");
+
+    let options = ManagerOptions::from_cli(&Cli {
+        verbosity: 0,
+        session_id: Some("descriptor-session".into()),
+        working_dir: None,
+        command: cli::Command::Mcp {
+            transport: cli::McpTransport::Stdio,
+        },
+    })
+    .unwrap();
+    assert_eq!(options.backends.len(), 1);
+    first_server.join().unwrap();
+
+    let manager = JsRuntimeManager::new(options).await.unwrap();
+    let first = manager
+        .exec("globalThis.obuRepl.discoverBackends()[0].socketPath", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        first.result,
+        json!(
+            std::fs::canonicalize(&first_socket)
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        )
+    );
+
+    let second_socket = runtime_dir.path().join("second.sock");
+    let second_server = start_descriptor_server(
+        &second_socket,
+        "second-token",
+        json!({
+            "type": "webextension",
+            "name": "chrome",
+            "metadata": {
+                "backend": {
+                    "browser_kind": "chrome",
+                    "extension_id": "ext-id",
+                    "extension_version": "0.1.0",
+                    "extension_instance_id": "instance-id"
+                }
+            },
+            "capabilities": {}
+        }),
+    );
+    write_descriptor(&descriptor_path, &second_socket, "second-token");
+
+    manager.reset().await.unwrap();
+    second_server.join().unwrap();
+
+    let second = manager
+        .exec("globalThis.obuRepl.discoverBackends()[0].socketPath", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        second.result,
+        json!(
+            std::fs::canonicalize(&second_socket)
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        )
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn browser_status_refreshes_live_kernel_descriptor_inventory() {
+    let _env_guard = ENV_LOCK.lock().await;
+    let runtime_dir = tempfile::tempdir().unwrap();
+    make_runtime_root_owner_only(runtime_dir.path());
+    let _runtime = EnvVarGuard::set("OBU_RUNTIME_DIR", &runtime_dir.path().to_string_lossy());
+    let _backends = EnvVarGuard::remove("OBU_BACKENDS");
+    let _extra = EnvVarGuard::remove("OBU_EXTRA_BACKENDS");
+
+    let options = ManagerOptions::from_cli(&Cli {
+        verbosity: 0,
+        session_id: Some("descriptor-session".into()),
+        working_dir: None,
+        command: cli::Command::Mcp {
+            transport: cli::McpTransport::Stdio,
+        },
+    })
+    .unwrap();
+    assert!(options.backends.is_empty());
+
+    let manager = JsRuntimeManager::new(options).await.unwrap();
+    manager.boot().await.unwrap();
+    let before = manager
+        .exec("globalThis.obuRepl.discoverBackends()", None)
+        .await
+        .unwrap();
+    assert_eq!(before.result, json!([]));
+
+    let descriptor_dir = runtime_dir.path().join("webextension");
+    std::fs::create_dir_all(&descriptor_dir).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&descriptor_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let descriptor_path = descriptor_dir.join("chrome.json");
+    let socket_path = runtime_dir.path().join("live.sock");
+    let server = start_descriptor_server(
+        &socket_path,
+        "live-token",
+        json!({
+            "type": "webextension",
+            "name": "chrome",
+            "metadata": {
+                "backend": {
+                    "browser_kind": "chrome",
+                    "extension_id": "ext-id",
+                    "extension_version": "0.1.0",
+                    "extension_instance_id": "instance-id"
+                }
+            },
+            "capabilities": {}
+        }),
+    );
+    write_descriptor(&descriptor_path, &socket_path, "live-token");
+
+    let status = manager.browser_status().await.unwrap();
+    assert_eq!(status["backends"][0]["type"], json!("webextension"));
+    server.join().unwrap();
+
+    let after = manager
+        .exec("globalThis.obuRepl.discoverBackends()[0].socketPath", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        after.result,
+        json!(
+            std::fs::canonicalize(&socket_path)
+                .unwrap()
+                .to_string_lossy()
+                .to_string()
+        )
+    );
 }
 
 #[cfg(unix)]

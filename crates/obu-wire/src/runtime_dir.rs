@@ -37,7 +37,10 @@ pub fn platform_default_runtime_dir() -> PathBuf {
 /// Ensure `path` exists as an owner-only directory and then validate it.
 pub fn ensure_owner_only_dir(path: &Path) -> io::Result<()> {
     match std::fs::symlink_metadata(path) {
-        Ok(_) => validate_owner_only_dir(path),
+        Ok(metadata) => {
+            repair_owner_only_dir(path, &metadata)?;
+            validate_owner_only_dir(path)
+        }
         Err(error) if error.kind() == io::ErrorKind::NotFound => {
             std::fs::create_dir_all(path)?;
             #[cfg(unix)]
@@ -49,6 +52,36 @@ pub fn ensure_owner_only_dir(path: &Path) -> io::Result<()> {
         }
         Err(error) => Err(error),
     }
+}
+
+#[cfg(unix)]
+fn repair_owner_only_dir(path: &Path, metadata: &std::fs::Metadata) -> io::Result<()> {
+    use std::os::unix::fs::{MetadataExt, PermissionsExt};
+    if metadata.file_type().is_symlink() {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "runtime directory is a symlink",
+        ));
+    }
+    if !metadata.is_dir() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "runtime path is not a directory",
+        ));
+    }
+    let uid = current_uid()?;
+    if metadata.uid() != uid {
+        return Err(io::Error::new(
+            io::ErrorKind::PermissionDenied,
+            "runtime directory is not owned by current user",
+        ));
+    }
+    std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+}
+
+#[cfg(not(unix))]
+fn repair_owner_only_dir(_path: &Path, _metadata: &std::fs::Metadata) -> io::Result<()> {
+    Ok(())
 }
 
 /// Validate that an existing runtime directory is not a symlink, is owned by the

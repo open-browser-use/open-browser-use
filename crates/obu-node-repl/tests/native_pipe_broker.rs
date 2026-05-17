@@ -1,5 +1,6 @@
 #![cfg(unix)]
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -140,6 +141,61 @@ async fn broker_uses_path_specific_capability_token_after_canonicalization() {
             .into_iter()
             .collect(),
     ));
+
+    let response = broker
+        .dispatch(NativePipeRequest {
+            id: "native-pipe-0".into(),
+            token: "tok".into(),
+            op: NativePipeOp::Connect {
+                path: path.display().to_string(),
+            },
+        })
+        .await;
+    assert!(response.ok, "connect response: {response:?}");
+
+    server.await.unwrap();
+}
+
+#[tokio::test]
+async fn broker_uses_refreshed_path_specific_capability_token() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("tokened.sock");
+    let listener = UnixListener::bind(&path).unwrap();
+    let canonical = std::fs::canonicalize(&path).unwrap();
+
+    let server = tokio::spawn(async move {
+        let (stream, _) = listener.accept().await.unwrap();
+        let mut framed = Framed::new(stream, FrameCodec);
+        let bytes = framed.next().await.unwrap().unwrap();
+        let auth: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(auth["method"], "auth");
+        assert_eq!(auth["params"]["capability_token"], "refreshed-token");
+        framed
+            .send(bytes::Bytes::from(
+                serde_json::to_vec(&serde_json::json!({
+                    "jsonrpc": "2.0",
+                    "id": auth["id"].clone(),
+                    "result": null
+                }))
+                .unwrap(),
+            ))
+            .await
+            .unwrap();
+    });
+
+    let (tx, _rx) = mpsc::channel(8);
+    let broker = Arc::new(NativePipeBroker::with_token_map(
+        tx,
+        Duration::from_secs(2),
+        Some(vec![canonical.clone()]),
+        None,
+        HashMap::new(),
+    ));
+    broker.set_capability_tokens_by_path(
+        [(canonical, "refreshed-token".to_string())]
+            .into_iter()
+            .collect(),
+    );
 
     let response = broker
         .dispatch(NativePipeRequest {

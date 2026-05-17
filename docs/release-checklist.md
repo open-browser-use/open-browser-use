@@ -200,6 +200,20 @@ obu setup --yes --agents=cursor
 For direct-edit adapters, rerun setup and confirm unchanged configs do not
 create new backups.
 
+MCP/browser-use compatibility gates:
+
+- `tools/list` shows `js`, `browser_status`, `js_reset`, and
+  `js_add_module_dir`, and `initialize` advertises both tools and resources.
+- `browser_status` returns SDK bootstrap state, discovered backends,
+  diagnostics, runtime dir, and a doctor hint without leaking descriptor auth
+  tokens or capability tokens.
+- A `display({ __obuImage: true, mime_type, data })` call returns a resource
+  link, and `resources/read` fetches the artifact bytes.
+- A huge `console.log` or huge final result stays bounded and sets the matching
+  `structuredContent.truncated` flag.
+- Codex CLI, Claude Code, and Cursor are checked for `structuredContent`,
+  concise text fallback, progress notifications, and resource-link behavior.
+
 ## Rollback
 
 If a preview release is bad:

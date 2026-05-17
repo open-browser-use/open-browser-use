@@ -89,6 +89,7 @@ function asTransport(transport: FakeTransport): Transport {
 describe("SDK wire-shape contracts", () => {
   afterEach(() => {
     delete (globalThis as { display?: unknown }).display;
+    delete (globalThis as { nodeRepl?: unknown }).nodeRepl;
   });
 
   it("Tab delegates navigation, metadata, screenshot, and lifecycle calls with tab id and timeout", async () => {
@@ -104,6 +105,13 @@ describe("SDK wire-shape contracts", () => {
       await expect(tab.url({ timeout: 104 })).resolves.toBe("https://example.test/");
       await expect(tab.title({ timeout: 105 })).resolves.toBe("Example");
       await expect(tab.screenshot({ timeout: 106 })).resolves.toEqual({ data_base64: "base64png", mime_type: "image/png" });
+      await expect(tab.screenshot({
+        type: "jpeg",
+        quality: 60,
+        fullPage: false,
+        clip: { x: 1, y: 2, width: 300, height: 200, scale: 0.5 },
+        timeout: 106,
+      })).resolves.toEqual({ data_base64: "base64png", mime_type: "image/png" });
       await tab.attach({ timeout: 107 });
       await tab.detach({ timeout: 108 });
       await tab.close({ timeout: 109 });
@@ -122,6 +130,18 @@ describe("SDK wire-shape contracts", () => {
       { method: M.TAB_URL, params: { tab_id: "tab-1", ...meta }, timeout: 104 },
       { method: M.TAB_TITLE, params: { tab_id: "tab-1", ...meta }, timeout: 105 },
       { method: M.TAB_SCREENSHOT, params: { tab_id: "tab-1", ...meta }, timeout: 106 },
+      {
+        method: M.TAB_SCREENSHOT,
+        params: {
+          tab_id: "tab-1",
+          type: "jpeg",
+          quality: 60,
+          fullPage: false,
+          clip: { x: 1, y: 2, width: 300, height: 200, scale: 0.5 },
+          ...meta,
+        },
+        timeout: 106,
+      },
       { method: M.ATTACH, params: { tab_id: "tab-1", ...meta }, timeout: 107 },
       { method: M.DETACH, params: { tab_id: "tab-1", ...meta }, timeout: 108 },
       { method: M.TAB_CLOSE, params: { tab_id: "tab-1", ...meta }, timeout: 109 },
@@ -180,7 +200,7 @@ describe("SDK wire-shape contracts", () => {
 
     try {
       const listed = await tabs.list();
-      const created = await tabs.create("https://new.test/");
+      const created = await tabs.create({ url: "https://new.test/" });
       const direct = tabs.get("manual-tab");
 
       expect(listed.map((tab) => tab.id)).toEqual(["tab-a", "tab-b"]);
@@ -207,6 +227,25 @@ describe("SDK wire-shape contracts", () => {
     expect(transport.calls).toEqual([
       { method: M.GET_TABS, params: { ...meta }, timeout: undefined },
       { method: M.CREATE_TAB, params: { url: "https://new.test/", ...meta }, timeout: undefined },
+    ]);
+  });
+
+  it("BrowserTabs creates about:blank by default and rejects malformed options", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    const tabs = new BrowserTabs(asTransport(transport), new Guards());
+
+    try {
+      await tabs.create();
+      await expect(tabs.create({ url: 123 } as never)).rejects.toThrow(
+        "browser.tabs.create expected a URL string or { url: string }",
+      );
+    } finally {
+      restoreMeta();
+    }
+
+    expect(transport.calls).toEqual([
+      { method: M.CREATE_TAB, params: { url: "about:blank", ...meta }, timeout: undefined },
     ]);
   });
 
@@ -562,6 +601,138 @@ describe("SDK wire-shape contracts", () => {
         params: { file_chooser_id: "chooser-1", paths: ["/tmp/a.txt", "/tmp/b.txt"], ...meta },
         timeout: undefined,
       },
+    ]);
+  });
+
+  it("Tab model-safe helpers cap evaluate, emit screenshots, and snapshot text", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    transport.responses.set(M.EXECUTE_CDP, {
+      result: { value: { __obu_evaluate_value: { title: "Example" } } },
+    });
+    const emitted: string[] = [];
+    (globalThis as { nodeRepl?: { emitImage: (image: string) => Promise<void> } }).nodeRepl = {
+      emitImage: async (image) => {
+        emitted.push(image);
+      },
+    };
+    const tab = new Tab(asTransport(transport), new Guards(), "tab-1");
+
+    try {
+      await expect(tab.evaluate("document.title", { timeout: 140, maxJsonBytes: 2000 })).resolves.toEqual({
+        title: "Example",
+      });
+      await expect(tab.screenshotForModel({ artifactMode: "resource", timeout: 141 })).resolves.toMatchObject({
+        kind: "resource",
+        mime_type: "image/png",
+      });
+      await expect(tab.snapshotText({ timeout: 142, maxItems: 3, maxTextLength: 40 })).resolves.toEqual({
+        title: "Example",
+      });
+    } finally {
+      restoreMeta();
+    }
+
+    expect(emitted).toEqual(["data:image/png;base64,base64png"]);
+    expect(transport.calls).toEqual([
+      {
+        method: M.EXECUTE_CDP,
+        params: {
+          tab_id: "tab-1",
+          target: { tabId: "tab-1" },
+          method: "Runtime.evaluate",
+          commandParams: {
+            expression: expect.stringContaining("max_json_bytes"),
+            awaitPromise: true,
+            returnByValue: true,
+          },
+          ...meta,
+        },
+        timeout: 140,
+      },
+      { method: M.TAB_SCREENSHOT, params: { tab_id: "tab-1", type: "jpeg", quality: 60, fullPage: false, ...meta }, timeout: 141 },
+      {
+        method: M.EXECUTE_CDP,
+        params: {
+          tab_id: "tab-1",
+          target: { tabId: "tab-1" },
+          method: "Runtime.evaluate",
+          commandParams: {
+            expression: expect.stringContaining("document.querySelectorAll"),
+            awaitPromise: true,
+            returnByValue: true,
+          },
+          ...meta,
+        },
+        timeout: 142,
+      },
+    ]);
+  });
+
+  it("snapshotText fails clearly when page summary exceeds the evaluate budget", async () => {
+    const transport = new FakeTransport();
+    transport.responses.set(M.EXECUTE_CDP, {
+      result: {
+        value: {
+          __obu_evaluate_summary: {
+            kind: "truncated",
+            type: "object",
+            bytes: 50_000,
+            reason: "max_json_bytes",
+          },
+        },
+      },
+    });
+    const tab = new Tab(asTransport(transport), new Guards(), "tab-1");
+
+    await expect(tab.snapshotText({ maxJsonBytes: 1 })).rejects.toThrow(
+      "tab.snapshotText result exceeded maxJsonBytes",
+    );
+  });
+
+  it("Browser finishTurn and ensureReady compose lifecycle and readiness calls", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    transport.responses.set(M.GET_INFO, {
+      type: "webextension",
+      name: "chrome",
+      metadata: { diagnostics: { lifecycle: { stale_tabs: 0 } } },
+      capabilities: {
+        supported_methods: [M.GET_INFO, M.TAB_SCREENSHOT],
+        unsupported_methods: [],
+      },
+    });
+    const browser = new Browser(
+      asTransport(transport),
+      { type: "webextension", name: "chrome", metadata: {}, capabilities: {} },
+      { type: "webextension", name: "chrome", socketPath: "/tmp/webext", metadata: {} },
+      new Guards(),
+    );
+
+    try {
+      await browser.finishTurn({
+        keep: [{ tabId: "tab-keep", status: "deliverable" }],
+        timeout: 210,
+        turnTimeout: 211,
+      });
+      await expect(browser.ensureReady({ timeout: 212 })).resolves.toMatchObject({
+        type: "webextension",
+        name: "chrome",
+        supportedMethods: [M.GET_INFO, M.TAB_SCREENSHOT],
+        diagnostics: { lifecycle: { stale_tabs: 0 } },
+      });
+    } finally {
+      restoreMeta();
+    }
+
+    expect(transport.calls).toEqual([
+      {
+        method: M.FINALIZE_TABS,
+        params: { keep: [{ tab_id: "tab-keep", status: "deliverable" }], ...meta },
+        timeout: 210,
+      },
+      { method: M.TURN_ENDED, params: { ...meta }, timeout: 211 },
+      { method: M.GET_INFO, params: {}, timeout: 212 },
     ]);
   });
 

@@ -7,6 +7,8 @@ use std::sync::Arc;
 
 use serde_json::Value;
 
+const MAX_PROGRESS_MESSAGE_BYTES: usize = 4096;
+
 /// Progress frame sent to an optional streaming sink.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProgressFrame {
@@ -41,12 +43,25 @@ pub fn classify(payload_type: &str) -> DisplayKind {
 
 /// Convert display payload to a progress message. Returns `None` for images.
 pub fn to_stream_message(kind: DisplayKind, value: &Value) -> Option<String> {
-    match kind {
+    let message = match kind {
         DisplayKind::Image => None,
         DisplayKind::Text => Some(match value {
             Value::String(text) => text.clone(),
             other => other.to_string(),
         }),
         DisplayKind::Json => Some(value.to_string()),
+    }?;
+    Some(truncate_progress_message(message))
+}
+
+fn truncate_progress_message(message: String) -> String {
+    if message.len() <= MAX_PROGRESS_MESSAGE_BYTES {
+        return message;
     }
+    let omitted = message.len() - MAX_PROGRESS_MESSAGE_BYTES;
+    let mut end = MAX_PROGRESS_MESSAGE_BYTES;
+    while !message.is_char_boundary(end) {
+        end -= 1;
+    }
+    format!("{}\n... truncated {} bytes ...", &message[..end], omitted)
 }

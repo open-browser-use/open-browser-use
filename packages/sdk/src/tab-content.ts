@@ -3,6 +3,11 @@ import { Guards } from "./guards.js";
 import type { Transport } from "./wire/transport.js";
 import * as M from "./wire/methods.js";
 
+export type ContentExportOptions = {
+  format?: "html" | "png" | "pdf";
+  timeout?: number;
+};
+
 export class TabContent {
   constructor(
     private readonly transport: Transport,
@@ -10,8 +15,9 @@ export class TabContent {
     private readonly tabId: string,
   ) {}
 
-  async export(opts: { format?: "html" | "png" | "pdf"; timeout?: number } = {}): Promise<{ data: string; data_base64: string; mime_type: string }> {
-    const params = { tab_id: this.tabId, format: opts.format };
+  async export(opts: ContentExportOptions = {}): Promise<{ data: string; data_base64: string; mime_type: string }> {
+    const params: Record<string, unknown> = { tab_id: this.tabId };
+    if (opts.format !== undefined) params.format = opts.format;
     await this.#ensureCommandAllowed(M.TAB_CONTENT_EXPORT, params, opts.timeout);
     return await this.transport.sendRequest(
       M.TAB_CONTENT_EXPORT,

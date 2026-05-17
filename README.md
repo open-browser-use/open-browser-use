@@ -46,6 +46,8 @@ For real release payloads, pass `--node-root /path/to/node-22.22-or-newer` to
 payloads.
 
 See [docs/install.md](docs/install.md), [docs/agent-adapters.md](docs/agent-adapters.md),
+[docs/agent-browser-mcp-usage.md](docs/agent-browser-mcp-usage.md),
+[docs/mcp-browser-integration-analysis.md](docs/mcp-browser-integration-analysis.md),
 [docs/troubleshooting.md](docs/troubleshooting.md), and
 [docs/release-checklist.md](docs/release-checklist.md).
 

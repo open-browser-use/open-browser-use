@@ -54,6 +54,8 @@ pub struct ManagerOptions {
     pub backend_discovery_diagnostics: Vec<BackendDiscoveryDiagnostic>,
     /// Capability tokens keyed by canonical backend socket path.
     pub backend_auth_tokens: HashMap<PathBuf, String>,
+    /// Whether `js_reset` should refresh runtime descriptors before the next kernel boot.
+    pub dynamic_backend_discovery: bool,
 }
 
 /// Backend inventory item exposed through `globalThis.obuRepl.discoverBackends()`.
@@ -115,6 +117,7 @@ impl ManagerOptions {
             backends: inventory.backends,
             backend_discovery_diagnostics: inventory.diagnostics,
             backend_auth_tokens: inventory.auth_tokens,
+            dynamic_backend_discovery: true,
         })
     }
 
@@ -131,6 +134,7 @@ impl ManagerOptions {
             backends: Vec::new(),
             backend_discovery_diagnostics: Vec::new(),
             backend_auth_tokens: HashMap::new(),
+            dynamic_backend_discovery: false,
         }
     }
 }
@@ -176,6 +180,7 @@ pub struct JsRuntimeManager {
     registry: Arc<Mutex<ExecRegistry>>,
     sink: Arc<Mutex<Option<crate::display_router::ProgressSink>>>,
     module_dirs: StdMutex<Vec<PathBuf>>,
+    backend_state: StdMutex<BackendInventory>,
     broker_policy: BrokerPolicy,
     generation: Mutex<Option<KernelGeneration>>,
 }
@@ -184,8 +189,14 @@ impl JsRuntimeManager {
     /// Construct a manager. Call `boot` to eagerly spawn, or `exec` to spawn on
     /// first use.
     pub async fn new(options: ManagerOptions) -> Result<Self> {
+        let backend_state = BackendInventory {
+            backends: options.backends.clone(),
+            diagnostics: options.backend_discovery_diagnostics.clone(),
+            auth_tokens: options.backend_auth_tokens.clone(),
+        };
         Ok(Self {
             module_dirs: StdMutex::new(options.module_dirs.clone()),
+            backend_state: StdMutex::new(backend_state),
             options,
             state: Mutex::new(KernelState::Idle),
             kernel: Mutex::new(None),
@@ -194,6 +205,34 @@ impl JsRuntimeManager {
             broker_policy: BrokerPolicy::from_env()?,
             generation: Mutex::new(None),
         })
+    }
+
+    /// Session identifier for this MCP/kernel session.
+    pub fn session_id(&self) -> &str {
+        &self.options.session_id
+    }
+
+    /// Read-only browser-use readiness status for MCP clients.
+    pub async fn browser_status(&self) -> Result<Value> {
+        if self.options.dynamic_backend_discovery {
+            self.refresh_backend_inventory();
+        }
+        let inventory = self.backend_inventory();
+        self.sync_backend_inventory_to_kernel(&inventory).await?;
+        let (sdk_bootstrap, sdk_bootstrap_detail) = self.sdk_bootstrap_status();
+        let doctor_hint = if inventory.backends.is_empty() {
+            "obu doctor browser --repair"
+        } else {
+            "obu doctor browser"
+        };
+        Ok(json!({
+            "sdk_bootstrap": sdk_bootstrap,
+            "sdk_bootstrap_detail": sdk_bootstrap_detail,
+            "backends": inventory.backends,
+            "diagnostics": inventory.diagnostics,
+            "runtime_dir": runtime_dir().to_string_lossy(),
+            "doctor_hint": doctor_hint,
+        }))
     }
 
     /// Spawn the Node child if it is not already ready.
@@ -206,6 +245,7 @@ impl JsRuntimeManager {
             *state = KernelState::Spawning;
         }
 
+        let inventory = self.backend_inventory();
         let spawn_opts = SpawnOptions {
             session_id: self.options.session_id.clone(),
             working_dir: self.options.working_dir.clone(),
@@ -213,8 +253,8 @@ impl JsRuntimeManager {
             trusted_code_paths: self.options.trusted_code_paths.clone(),
             trusted_module_sha256s: self.options.trusted_module_sha256s.clone(),
             trust_all: self.options.trust_all,
-            backends: self.options.backends.clone(),
-            backend_discovery_diagnostics: self.options.backend_discovery_diagnostics.clone(),
+            backends: inventory.backends,
+            backend_discovery_diagnostics: inventory.diagnostics,
         };
         let mut kernel = SpawnedKernel::spawn(spawn_opts)
             .await
@@ -236,7 +276,7 @@ impl JsRuntimeManager {
             self.broker_policy.connect_timeout,
             self.broker_policy.allowed_paths.clone(),
             self.broker_policy.capability_token.clone(),
-            self.options.backend_auth_tokens.clone(),
+            inventory.auth_tokens,
         ));
         let pending_exec_results = Arc::new(Mutex::new(HashMap::new()));
         let handshake_token = Arc::new(Mutex::new(None));
@@ -253,6 +293,7 @@ impl JsRuntimeManager {
             pending_exec_results.clone(),
             self.registry.clone(),
             self.sink.clone(),
+            kernel_stdin.clone(),
             native_pipe.clone(),
             kernel_inbox_tx,
             handshake_token.clone(),
@@ -421,6 +462,30 @@ impl JsRuntimeManager {
         Ok(())
     }
 
+    async fn sync_backend_inventory_to_kernel(&self, inventory: &BackendInventory) -> Result<()> {
+        let Some((native_pipe, writer)) = self.generation.lock().await.as_ref().map(|generation| {
+            (
+                generation.native_pipe.clone(),
+                generation.kernel_stdin.clone(),
+            )
+        }) else {
+            return Ok(());
+        };
+
+        native_pipe.set_capability_tokens_by_path(inventory.auth_tokens.clone());
+        writer
+            .lock()
+            .await
+            .send(&json!({
+                "type": "set_backend_inventory",
+                "backends": inventory.backends,
+                "backend_diagnostics": inventory.diagnostics,
+            }))
+            .await
+            .context("send backend inventory to kernel")?;
+        Ok(())
+    }
+
     async fn parse_exec_result(&self, exec_id: &str, frame: Value) -> Result<JsExecResult> {
         let frame_exec_id = frame
             .get("exec_id")
@@ -430,15 +495,17 @@ impl JsRuntimeManager {
             tracing::warn!(?frame, expected = exec_id, "exec result id mismatch");
         }
 
-        if frame.get("ok").and_then(Value::as_bool) == Some(false) {
-            let message = frame
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("JavaScript execution failed");
-            let _ = self.registry.lock().await.finish();
-            return Err(anyhow!("JavaScript error: {message}"));
-        }
-
+        let error = if frame.get("ok").and_then(Value::as_bool) == Some(false) {
+            Some(
+                frame
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("JavaScript execution failed")
+                    .to_string(),
+            )
+        } else {
+            None
+        };
         let displays = self.registry.lock().await.finish();
         Ok(JsExecResult {
             stdout: frame
@@ -457,8 +524,13 @@ impl JsRuntimeManager {
                 .get("duration_ms")
                 .and_then(Value::as_u64)
                 .unwrap_or(0),
-            truncated: None,
+            truncated: TruncationInfo::default(),
             displays,
+            response_meta: frame
+                .get("response_meta")
+                .filter(|value| !value.is_null())
+                .cloned(),
+            error,
         })
     }
 
@@ -467,6 +539,7 @@ impl JsRuntimeManager {
         *self.state.lock().await = KernelState::Restarting;
         self.kill_kernel().await;
         *self.registry.lock().await = ExecRegistry::default();
+        self.refresh_backend_inventory();
         *self.state.lock().await = KernelState::Idle;
         self.boot().await
     }
@@ -481,6 +554,65 @@ impl JsRuntimeManager {
         let mut dirs = self.module_dirs.lock().expect("module dir lock");
         if !dirs.contains(&dir) {
             dirs.push(dir);
+        }
+    }
+
+    fn sdk_bootstrap_status(&self) -> (&'static str, Value) {
+        let candidates = sdk_candidate_roots(&self.options.working_dir, &self.options.module_dirs);
+        let searched = candidates
+            .iter()
+            .map(|path| path.to_string_lossy().to_string())
+            .collect::<Vec<_>>();
+        let mut diagnostics = Vec::new();
+        for candidate in candidates {
+            if !candidate.join("package.json").exists() {
+                continue;
+            }
+            match crate::sdk_discovery::discover_at(&candidate) {
+                Ok(info) => {
+                    let trusted_by_path = self
+                        .options
+                        .trusted_code_paths
+                        .iter()
+                        .any(|trusted| is_same_or_within_dir(&info.dir, trusted));
+                    let trusted_by_hash = self.options.trusted_module_sha256s.contains(&info.hash);
+                    let trusted = self.options.trust_all || trusted_by_path || trusted_by_hash;
+                    let detail = json!({
+                        "status": if trusted { "available" } else { "untrusted" },
+                        "path": info.dir.to_string_lossy(),
+                        "version": info.version,
+                        "trusted_by": {
+                            "trust_all": self.options.trust_all,
+                            "path": trusted_by_path,
+                            "hash": trusted_by_hash,
+                        },
+                        "searched": searched,
+                    });
+                    return (if trusted { "available" } else { "untrusted" }, detail);
+                }
+                Err(error) => diagnostics.push(json!({
+                    "path": candidate.to_string_lossy(),
+                    "reason": error.to_string(),
+                })),
+            }
+        }
+        if diagnostics.is_empty() {
+            (
+                "missing",
+                json!({
+                    "status": "missing",
+                    "searched": searched,
+                }),
+            )
+        } else {
+            (
+                "untrusted",
+                json!({
+                    "status": "untrusted",
+                    "searched": searched,
+                    "diagnostics": diagnostics,
+                }),
+            )
         }
     }
 
@@ -511,6 +643,28 @@ impl JsRuntimeManager {
             let _ = kernel.child.start_kill();
             let _ = kernel.child.wait().await;
         }
+    }
+
+    fn backend_inventory(&self) -> BackendInventory {
+        if self.options.dynamic_backend_discovery {
+            self.backend_state
+                .lock()
+                .expect("backend inventory lock")
+                .clone()
+        } else {
+            BackendInventory {
+                backends: self.options.backends.clone(),
+                diagnostics: self.options.backend_discovery_diagnostics.clone(),
+                auth_tokens: self.options.backend_auth_tokens.clone(),
+            }
+        }
+    }
+
+    fn refresh_backend_inventory(&self) {
+        if !self.options.dynamic_backend_discovery {
+            return;
+        }
+        *self.backend_state.lock().expect("backend inventory lock") = discover_backend_inventory();
     }
 }
 
@@ -545,6 +699,7 @@ async fn spawn_stdout_demux(
     pending_exec_results: Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>,
     registry: Arc<Mutex<ExecRegistry>>,
     sink: Arc<Mutex<Option<crate::display_router::ProgressSink>>>,
+    kernel_stdin: Arc<Mutex<stdio_codec::StdioWriter>>,
     broker: Arc<NativePipeBroker>,
     kernel_inbox: mpsc::Sender<KernelIn>,
     handshake_token: Arc<Mutex<Option<String>>>,
@@ -598,7 +753,7 @@ async fn spawn_stdout_demux(
 
         match frame.get("type").and_then(Value::as_str).unwrap_or("") {
             "display" => handle_display_frame(&registry, &sink, frame).await,
-            "emit_image" => handle_emit_image_frame(&registry, frame).await,
+            "emit_image" => handle_emit_image_frame(&registry, &kernel_stdin, frame).await,
             "exec_result" => {
                 let Some(exec_id) = frame
                     .get("exec_id")
@@ -657,8 +812,29 @@ async fn handle_display_frame(
     }
 }
 
-async fn handle_emit_image_frame(registry: &Arc<Mutex<ExecRegistry>>, frame: Value) {
+async fn handle_emit_image_frame(
+    registry: &Arc<Mutex<ExecRegistry>>,
+    kernel_stdin: &Arc<Mutex<stdio_codec::StdioWriter>>,
+    frame: Value,
+) {
+    let Some(id) = frame
+        .get("id")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+    else {
+        return;
+    };
     let Some(image_url) = frame.get("image_url").and_then(Value::as_str) else {
+        let _ = kernel_stdin
+            .lock()
+            .await
+            .send(&json!({
+                "type": "emit_image_result",
+                "id": id,
+                "ok": false,
+                "error": "emit_image missing image_url"
+            }))
+            .await;
         return;
     };
     let mut registry = registry.lock().await;
@@ -668,6 +844,16 @@ async fn handle_emit_image_frame(registry: &Arc<Mutex<ExecRegistry>>, frame: Val
         kind: "image".to_string(),
         value: json!({ "image_url": image_url }),
     });
+    drop(registry);
+    let _ = kernel_stdin
+        .lock()
+        .await
+        .send(&json!({
+            "type": "emit_image_result",
+            "id": id,
+            "ok": true
+        }))
+        .await;
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {
@@ -720,7 +906,7 @@ fn split_env_list(name: &str) -> Vec<String> {
         .unwrap_or_default()
 }
 
-#[derive(Default)]
+#[derive(Clone, Default)]
 struct BackendInventory {
     backends: Vec<DiscoveredBackend>,
     diagnostics: Vec<BackendDiscoveryDiagnostic>,
@@ -1097,6 +1283,51 @@ fn probe_runtime_descriptor(_socket: &Path, _token: &str, _descriptor: &Value) -
 
 fn runtime_dir() -> PathBuf {
     resolve_runtime_dir()
+}
+
+fn sdk_candidate_roots(working_dir: &Path, module_dirs: &[PathBuf]) -> Vec<PathBuf> {
+    let mut candidates = Vec::new();
+    push_unique(
+        &mut candidates,
+        working_dir
+            .join("node_modules")
+            .join("@open-browser-use")
+            .join("sdk"),
+    );
+    for module_dir in module_dirs {
+        if module_dir.file_name().and_then(|name| name.to_str()) == Some("node_modules") {
+            push_unique(
+                &mut candidates,
+                module_dir.join("@open-browser-use").join("sdk"),
+            );
+        } else {
+            push_unique(
+                &mut candidates,
+                module_dir
+                    .join("node_modules")
+                    .join("@open-browser-use")
+                    .join("sdk"),
+            );
+            push_unique(&mut candidates, module_dir.clone());
+        }
+    }
+    candidates
+}
+
+fn push_unique(paths: &mut Vec<PathBuf>, path: PathBuf) {
+    if !paths.contains(&path) {
+        paths.push(path);
+    }
+}
+
+fn is_same_or_within_dir(candidate: &Path, directory: &Path) -> bool {
+    let candidate = canonicalize_lossy(candidate);
+    let directory = canonicalize_lossy(directory);
+    candidate == directory || candidate.starts_with(directory)
+}
+
+fn canonicalize_lossy(path: &Path) -> PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
 }
 
 fn seed_sdk_trust(

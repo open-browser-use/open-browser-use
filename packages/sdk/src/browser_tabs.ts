@@ -14,6 +14,10 @@ type TabWire = {
   status?: "active" | "handoff" | "deliverable";
 };
 
+export type CreateTabOptions = {
+  url?: string;
+};
+
 export class BrowserTabs {
   constructor(
     private readonly transport: Transport,
@@ -25,9 +29,9 @@ export class BrowserTabs {
     return rows.map((row) => this.fromWire(row));
   }
 
-  async create(url?: string): Promise<Tab> {
-    const params: Record<string, unknown> = {};
-    if (url !== undefined) params.url = url;
+  async create(urlOrOptions?: string | CreateTabOptions): Promise<Tab> {
+    const url = normalizeCreateUrl(urlOrOptions);
+    const params: Record<string, unknown> = { url };
     await this.guards.ensureCommandAllowed({ command: M.CREATE_TAB, ...params });
     const row = await this.transport.sendRequest<TabWire>(M.CREATE_TAB, withSessionMeta(params));
     return this.fromWire(row, "createTab response missing tab_id");
@@ -42,6 +46,16 @@ export class BrowserTabs {
     if (!id) throw new Error(missingIdMessage);
     return new Tab(this.transport, this.guards, id, tabMetadata(row));
   }
+}
+
+function normalizeCreateUrl(urlOrOptions: string | CreateTabOptions | undefined): string {
+  if (urlOrOptions === undefined) return "about:blank";
+  if (typeof urlOrOptions === "string") return urlOrOptions;
+  if (typeof urlOrOptions === "object" && urlOrOptions !== null && !Array.isArray(urlOrOptions)) {
+    if (urlOrOptions.url === undefined) return "about:blank";
+    if (typeof urlOrOptions.url === "string") return urlOrOptions.url;
+  }
+  throw new TypeError("browser.tabs.create expected a URL string or { url: string }");
 }
 
 function tabMetadata(row: TabWire): TabMetadata {

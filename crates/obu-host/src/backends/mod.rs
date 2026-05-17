@@ -75,6 +75,15 @@ pub fn capabilities_for_kind(kind: BackendKind) -> Value {
         "backend": kind.as_str(),
         "supported_methods": supported,
         "unsupported_methods": unsupported,
+        "artifact_modes": ["inline"],
+        "budgeted_outputs": {
+            "tab_screenshot": true,
+            "playwright_screenshot": true,
+            "tab_content_export": true,
+            "executeCdp": true,
+            "playwright_locator_read_all": true,
+            "dom_cua_get_visible_dom": true
+        },
     })
 }
 

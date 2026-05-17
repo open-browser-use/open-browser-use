@@ -86,8 +86,23 @@ pub(crate) fn required_tab_id(params: &Value) -> Result<&str> {
 
 pub(crate) fn screenshot_cdp_params(params: &Value) -> Value {
     let mut cdp_params = Map::new();
-    cdp_params.insert("format".into(), Value::String("png".into()));
-    cdp_params.insert("captureBeyondViewport".into(), Value::Bool(true));
+    let format = screenshot_format(params);
+    cdp_params.insert("format".into(), Value::String(format.to_string()));
+    cdp_params.insert(
+        "captureBeyondViewport".into(),
+        Value::Bool(
+            params
+                .get("fullPage")
+                .and_then(Value::as_bool)
+                .unwrap_or(true),
+        ),
+    );
+    if format != "png"
+        && let Some(quality) = params.get("quality").and_then(Value::as_u64)
+        && quality <= 100
+    {
+        cdp_params.insert("quality".into(), Value::Number(quality.into()));
+    }
     if let Some(clip) = screenshot_clip(params) {
         cdp_params.insert("clip".into(), clip);
     }
@@ -123,11 +138,12 @@ async fn capture_screenshot<B>(
 where
     B: ContentExportBackend,
 {
+    let mime_type = screenshot_mime_type(&cdp_params);
     let result = backend
         .capture_screenshot_cdp(ctx, tab_id, cdp_params)
         .await?;
     let data = cdp_data(&result, "Page.captureScreenshot")?;
-    Ok(base64_payload(data, "image/png"))
+    Ok(base64_payload(data, mime_type))
 }
 
 async fn export_html<B>(backend: &B, ctx: &BackendRequestContext, tab_id: &str) -> Result<Value>
@@ -148,29 +164,57 @@ where
 }
 
 fn screenshot_clip(params: &Value) -> Option<Value> {
-    let x = params
-        .get("cropX")
-        .or_else(|| params.get("x"))
-        .and_then(Value::as_f64)?;
-    let y = params
-        .get("cropY")
-        .or_else(|| params.get("y"))
-        .and_then(Value::as_f64)?;
-    let width = params
-        .get("cropWidth")
-        .or_else(|| params.get("width"))
-        .and_then(Value::as_f64)?;
-    let height = params
-        .get("cropHeight")
-        .or_else(|| params.get("height"))
-        .and_then(Value::as_f64)?;
+    let clip = params.get("clip");
+    let x = number_field(clip, "x")
+        .or_else(|| number_field(Some(params), "cropX"))
+        .or_else(|| number_field(Some(params), "x"))?;
+    let y = number_field(clip, "y")
+        .or_else(|| number_field(Some(params), "cropY"))
+        .or_else(|| number_field(Some(params), "y"))?;
+    let width = number_field(clip, "width")
+        .or_else(|| number_field(Some(params), "cropWidth"))
+        .or_else(|| number_field(Some(params), "width"))?;
+    let height = number_field(clip, "height")
+        .or_else(|| number_field(Some(params), "cropHeight"))
+        .or_else(|| number_field(Some(params), "height"))?;
+    let scale = number_field(clip, "scale")
+        .or_else(|| number_field(Some(params), "scale"))
+        .unwrap_or(1.0);
     Some(json!({
         "x": x,
         "y": y,
         "width": width,
         "height": height,
-        "scale": 1,
+        "scale": scale,
     }))
+}
+
+fn screenshot_format(params: &Value) -> &str {
+    match params
+        .get("type")
+        .or_else(|| params.get("format"))
+        .and_then(Value::as_str)
+    {
+        Some("jpeg") => "jpeg",
+        Some("webp") => "webp",
+        _ => "png",
+    }
+}
+
+fn screenshot_mime_type(cdp_params: &Value) -> &'static str {
+    match cdp_params
+        .get("format")
+        .and_then(Value::as_str)
+        .unwrap_or("png")
+    {
+        "jpeg" => "image/jpeg",
+        "webp" => "image/webp",
+        _ => "image/png",
+    }
+}
+
+fn number_field(value: Option<&Value>, key: &str) -> Option<f64> {
+    value?.get(key).and_then(Value::as_f64)
 }
 
 #[cfg(test)]
@@ -215,7 +259,18 @@ mod tests {
         assert_eq!(clipped["clip"]["y"], 2.0);
         assert_eq!(clipped["clip"]["width"], 3.0);
         assert_eq!(clipped["clip"]["height"], 4.0);
-        assert_eq!(clipped["clip"]["scale"], 1);
+        assert_eq!(clipped["clip"]["scale"], 1.0);
+
+        let modern = screenshot_cdp_params(&json!({
+            "type": "jpeg",
+            "quality": 60,
+            "fullPage": false,
+            "clip": { "x": 10, "y": 20, "width": 300, "height": 200, "scale": 0.5 },
+        }));
+        assert_eq!(modern["format"], "jpeg");
+        assert_eq!(modern["quality"], 60);
+        assert_eq!(modern["captureBeyondViewport"], false);
+        assert_eq!(modern["clip"]["scale"], 0.5);
     }
 
     #[test]

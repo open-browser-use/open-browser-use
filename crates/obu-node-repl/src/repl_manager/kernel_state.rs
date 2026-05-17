@@ -43,10 +43,17 @@ pub struct JsExecResult {
     /// Duration measured by the JavaScript kernel in milliseconds.
     pub duration_ms: u64,
     /// Optional truncation metadata.
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub truncated: Option<TruncationInfo>,
+    pub truncated: TruncationInfo,
     /// Display entries emitted during this exec.
     pub displays: Vec<DisplayEntry>,
+    /// Kernel-provided MCP response metadata.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub response_meta: Option<Value>,
+    /// JavaScript execution error. Transport, timeout, and kernel failures are still
+    /// returned as Rust errors; this field is for user-code failures reported by
+    /// the kernel.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Stream truncation metadata.
@@ -56,6 +63,10 @@ pub struct TruncationInfo {
     pub stdout: bool,
     /// True when stderr was capped.
     pub stderr: bool,
+    /// True when the final result was capped or summarized.
+    pub result: bool,
+    /// True when displays were capped or summarized.
+    pub displays: bool,
 }
 
 /// In-flight exec accumulator.

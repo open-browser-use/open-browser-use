@@ -672,7 +672,7 @@ async function dispatchHostRequest(method: string, params: unknown): Promise<unk
 }
 
 async function createSessionTab(sessionParams: SessionParams, params: unknown): Promise<ChromeTab> {
-  const url = isRecord(params) && typeof params.url === "string" ? params.url : undefined;
+  const url = isRecord(params) && typeof params.url === "string" ? params.url : "about:blank";
   const tab = await chrome.tabs.create({ url, active: true });
   const tabId = requireCreatedTabId(tab);
   const session = sessionFor(sessionParams.session_id);

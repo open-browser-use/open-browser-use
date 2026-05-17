@@ -5,7 +5,8 @@ module imports, filesystem inspection, data shaping, or repeated probing. Each
 call runs as a fresh ES module in the same Node child. Top-level `let`/`const`
 bindings from successful calls are carried forward by the kernel, so you can
 define helper functions once and reuse them later. `js_reset` clears that state
-by respawning the child.
+by respawning the child and refreshes runtime browser descriptors before the
+new child starts.
 
 When `@open-browser-use/sdk` is installed in a trusted module directory, the kernel
 automatically installs the global `agent`. Use `agent.browsers.get("cdp")` or
@@ -13,6 +14,12 @@ automatically installs the global `agent`. Use `agent.browsers.get("cdp")` or
 open-browser-use SDK. This is the browser automation surface: do not ask for separate
 `click`, `type`, `screenshot`, or `scroll` tools. Write JavaScript with
 `agent`, `tab`, `locator`, and `tab.cua` instead.
+`agent.browsers.get(...)` is async, so always write
+`const browser = await agent.browsers.get("chrome")`. `browser.tabs.create()`
+accepts either a URL string or `{ url }`; with no URL it creates `about:blank`.
+The WebExtension backend cannot drive `file://` pages. Serve local files over
+HTTP, for example `python3 -m http.server`, and navigate to
+`http://127.0.0.1:...`.
 
 ## Arguments
 
@@ -29,15 +36,26 @@ The structured result contains:
 - `stderr` — reserved for future split capture; currently empty.
 - `result` — the JSON-serializable value of the last expression, or `null`.
 - `duration_ms` — kernel-measured execution time.
+- `truncated` — field-level budget flags for `stdout`, `stderr`, `result`, and
+  `displays`.
 - `displays` — values emitted by `display(value)`.
+- `artifacts` — MCP resource summaries for large payloads spilled out of the
+  structured result.
+- `response_meta` — metadata set with `nodeRepl.setResponseMeta(value)`.
+- `error` — JavaScript user-code error message when the cell fails, otherwise
+  `null`. JavaScript errors are tool results with `isError: true`; invalid MCP
+  arguments, timeouts, and kernel transport failures are protocol errors.
+
+The MCP text `content` is only a short status summary. Read
+`structuredContent` for the actual data.
 
 ## Globals
 
 - `display(value)` — show progress. Strings and JSON-compatible values stream
   live via MCP `notifications/progress` when the client provides a progress
   token, and are also returned in `displays`. Image payloads shaped as
-  `{ __obuImage: true, mime_type, data }` are not streamed; they only appear in
-  the final `displays` array.
+  `{ __obuImage: true, mime_type, data }` are not streamed, and the final result
+  stores them as MCP resource links instead of inline base64.
 - `nodeRepl.cwd` — current working directory.
 - `nodeRepl.homeDir` — user home directory, when available.
 - `nodeRepl.tmpDir` — scratch directory.
@@ -45,6 +63,10 @@ The structured result contains:
 - `nodeRepl.setResponseMeta(value)` — attach response metadata.
 - `nodeRepl.write(string)` — append low-level text output. Prefer `display`
   for user-facing progress.
+- `process` and `node:process` are intentionally unavailable to user code.
+  Filesystem reads are allowed for imports and inspection; filesystem writes are
+  blocked by Node's permission model unless the host launch explicitly allows
+  them.
 - `obuRepl.discoverBackends()` — trusted SDK backend inventory seeded by the
   Rust parent from `OBU_BACKENDS`.
 - `obuRepl.discoverBackendDiagnostics()` — ignored runtime backend descriptor
@@ -53,6 +75,15 @@ The structured result contains:
   `await agent.browsers.get(kind)` to connect lazily.
 - `help()` — prints the SDK API table.
 
+## Token budget
+
+Keep `stdout`, final expression values, and `display()` payloads small. The MCP
+server caps large text/JSON fields and spills image-like base64 payloads to
+resources, but concise summaries are still the best path. Prefer
+`tab.snapshotText()`, `tab.evaluate(...)`, and `tab.screenshotForModel(...)`
+over raw CDP evaluation or raw screenshot returns. Text/JSON `display()` frames
+can stream as progress, but they are also included in the final result.
+
 ## Examples
 
 ```js
@@ -60,7 +91,7 @@ const browser = await agent.browsers.get("cdp");
 const tab = await browser.tabs.create("https://example.com");
 await tab.attach();
 await tab.locator("h1").click();
-await tab.content.export({ format: "png" });
+await tab.screenshotForModel({ clip: { x: 0, y: 0, width: 900, height: 700, scale: 0.5 } });
 ```
 
 ```js

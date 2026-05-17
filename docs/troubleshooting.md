@@ -50,6 +50,65 @@ obu doctor
 
 Then retry the MCP client.
 
+## Agent JavaScript Pitfalls
+
+For the full MCP browser-use call chain and token-budget rules, see
+[`docs/agent-browser-mcp-usage.md`](agent-browser-mcp-usage.md).
+
+Inside the MCP `js` tool, `agent.browsers.get(...)` returns a promise:
+
+```js
+const browser = await agent.browsers.get("chrome");
+```
+
+`browser.tabs.create()` accepts either a URL string or `{ url }`. With no URL it
+opens `about:blank`; pass the target URL at creation time when possible:
+
+```js
+const tab = await browser.tabs.create({ url: "http://127.0.0.1:8000/index.html" });
+```
+
+The WebExtension backend cannot inspect or automate `file://` pages. Serve local
+files over HTTP before navigating, for example:
+
+```bash
+python3 -m http.server 8000
+```
+
+Large Retina screenshots can exceed an MCP response budget. Prefer a clipped or
+compressed screenshot for model inspection:
+
+```js
+const shot = await tab.screenshot({
+  type: "jpeg",
+  quality: 60,
+  clip: { x: 0, y: 0, width: 900, height: 700, scale: 0.5 }
+});
+display({ __obuImage: true, mime_type: shot.mime_type, data: shot.data_base64 });
+```
+
+`tab.evaluate()` is not a first-class SDK method. For page-level JavaScript,
+use CDP directly:
+
+```js
+const result = await tab.dev.cdp("Runtime.evaluate", {
+  expression: "document.title",
+  returnByValue: true,
+  awaitPromise: true
+});
+```
+
+The Node kernel intentionally hides `process` / `node:process`; use
+`nodeRepl.cwd`, `nodeRepl.homeDir`, `nodeRepl.tmpDir`, and
+`nodeRepl.requestMeta` instead. Filesystem writes are blocked in the default
+permission model, so do not rely on `screenshot({ path })` or `writeFile` from
+the MCP JavaScript cell.
+
+If WebExtension navigation fails with a stale native socket path after the
+extension service worker restarts, call `js_reset`. The reset respawns the
+JavaScript kernel and refreshes runtime descriptors before the next `agent`
+connection.
+
 ## Extension Loaded From The Wrong Path
 
 The unpacked extension path should be stable:

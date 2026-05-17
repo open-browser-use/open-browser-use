@@ -40,6 +40,20 @@ export type BrowserFinalizeTabsResult = {
   deliverable_tabs?: BrowserFinalizeTab[];
 };
 
+export type BrowserFinishTurnOptions = BrowserFinalizeTabsOptions & {
+  turnTimeout?: number;
+};
+
+export type BrowserReadySummary = {
+  type: string;
+  name: string;
+  backend: DiscoveredBackend;
+  capabilities: Record<string, unknown>;
+  supportedMethods: readonly string[];
+  unsupportedMethods: readonly string[];
+  diagnostics: Record<string, unknown>;
+};
+
 export type BrowserDeliverable = {
   tabId: string;
   tab_id: string;
@@ -119,6 +133,34 @@ export class Browser {
 
   async finalize(opts: BrowserFinalizeTabsOptions = {}): Promise<BrowserFinalizeTabsResult> {
     return await this.finalizeTabs(opts);
+  }
+
+  async finishTurn(opts: BrowserFinishTurnOptions = {}): Promise<BrowserFinalizeTabsResult> {
+    const finalizeOpts: BrowserFinalizeTabsOptions = {};
+    if (opts.keep !== undefined) finalizeOpts.keep = opts.keep;
+    if (opts.timeout !== undefined) finalizeOpts.timeout = opts.timeout;
+    const result = await this.finalizeTabs(finalizeOpts);
+    const turnOpts: { timeout?: number } = {};
+    const turnTimeout = opts.turnTimeout ?? opts.timeout;
+    if (turnTimeout !== undefined) turnOpts.timeout = turnTimeout;
+    await this.turnEnded(turnOpts);
+    return result;
+  }
+
+  async ensureReady(opts: { timeout?: number } = {}): Promise<BrowserReadySummary> {
+    const info = await this.transport.sendRequest<BrowserInfo>(M.GET_INFO, {}, opts.timeout);
+    const capabilities = info.capabilities ?? {};
+    const metadata = info.metadata ?? {};
+    const diagnostics = recordOrEmpty(recordOrEmpty(metadata).diagnostics);
+    return {
+      type: info.type,
+      name: info.name,
+      backend: this.backend,
+      capabilities,
+      supportedMethods: stringList(capabilities.supported_methods),
+      unsupportedMethods: stringList(capabilities.unsupported_methods),
+      diagnostics,
+    };
   }
 
   async deliverables(opts: { timeout?: number } = {}): Promise<BrowserDeliverable[]> {

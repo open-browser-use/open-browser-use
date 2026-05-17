@@ -6,6 +6,7 @@ packages/*/dist
 packages/*/.turbo
 packages/extension/.dev-native-host/
 dist/
+docs/
 !crates/obu-node-repl/tests/fixtures/**/dist/
 !crates/obu-node-repl/tests/fixtures/**/dist/**
 *.log

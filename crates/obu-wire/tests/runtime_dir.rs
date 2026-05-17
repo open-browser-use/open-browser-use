@@ -28,6 +28,24 @@ fn ensure_owner_only_dir_creates_and_validates_directory() {
 
 #[cfg(unix)]
 #[test]
+fn ensure_owner_only_dir_repairs_owner_readable_directory() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let temp = tempfile::tempdir().unwrap();
+    let path = temp.path().join("runtime");
+    std::fs::create_dir(&path).unwrap();
+    std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o755)).unwrap();
+
+    ensure_owner_only_dir(&path).unwrap();
+
+    let metadata = std::fs::symlink_metadata(&path).unwrap();
+    assert!(metadata.is_dir());
+    assert_eq!(metadata.permissions().mode() & 0o777, 0o700);
+    validate_owner_only_dir(&path).unwrap();
+}
+
+#[cfg(unix)]
+#[test]
 fn validate_owner_only_dir_rejects_symlinks_and_group_readable_dirs() {
     use std::os::unix::fs::PermissionsExt;
 
