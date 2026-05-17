@@ -144,6 +144,8 @@ node scripts/setup-local-spine-smoke.mjs
 Verify installer support for:
 
 - checksum verification;
+- manifest-driven current-platform selection through `OBU_RELEASE_BASE_URL`,
+  preferring `manifest.tsv` and falling back to `manifest.json`;
 - `OBU_INSTALL_DIR`;
 - `OBU_UNMANAGED_INSTALL`;
 - `--no-modify-path`;
@@ -160,6 +162,64 @@ The root MIT `LICENSE` must ship in every payload. `LICENSE-THIRD-PARTY.md`
 must include notices for the bundled Node.js runtime, `jsonc-parser`, and the
 vendored Playwright InjectedScript, and the payload self-check must confirm
 that both license files are present in every payload.
+
+The generated curl release manifests are part of the installer contract. Before
+uploading GitHub Release assets, verify `manifest.json`, `manifest.tsv`,
+`install.sh`, every artifact tarball, and every `.sha256` file are present in
+the same asset set. See
+[`docs/native-host-recovery-ux.md`](native-host-recovery-ux.md) for the manifest
+shape constraints.
+
+## Chrome Web Store Gate
+
+Chrome Web Store release is a separate gate from the unpacked preview payload.
+The Store item id must be final before public Store instructions are published.
+
+Required draft checks:
+
+1. Create a Chrome Web Store draft item.
+2. Upload the Store artifact and verify the item id matches the expected
+   `storeExtensionId`.
+3. Set `packages/extension/release-metadata.json` `store.storeExtensionId` to
+   that id and `store.storeDraftVerified` to `true`.
+4. Assemble GitHub Release payloads with the same id:
+
+   ```bash
+   node scripts/assemble-payload.mjs \
+     --node-root /path/to/node-22.22-or-newer \
+     --store-extension-id <STORE_EXTENSION_ID>
+   ```
+
+5. Build and validate the Store upload artifact:
+
+   ```bash
+   pnpm -C packages/extension build
+   node packages/extension/scripts/build.mjs --channel store
+   node scripts/make-extension-store-artifact.mjs \
+     --store-extension-id <STORE_EXTENSION_ID>
+   ```
+
+6. Run Store-channel setup on a clean profile:
+
+   ```bash
+   obu setup --yes --all --skip-agents --channel=store
+   obu doctor browser --repair --channel=store
+   obu doctor browser --channel=store --json
+   ```
+
+Verify:
+
+- `~/.obu/config.json` records `extensionChannel: "store"` and
+  `storeExtensionId`.
+- native-host manifests include
+  `chrome-extension://<STORE_EXTENSION_ID>/`.
+- `doctor browser --channel=store --json` reports channel, extension id, and id
+  source.
+- the popup copied command includes `--channel=store`.
+- `dist/chrome-web-store/chrome-web-store-artifact.json` lists only
+  `manifest.json`, generated JS/CSS/HTML, and icon files.
+- permission justifications, data handling notes, and reviewer instructions are
+  ready in [`chrome-web-store-review-pack.md`](chrome-web-store-review-pack.md).
 
 ## Manual Browser Gate
 

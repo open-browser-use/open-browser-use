@@ -69,7 +69,29 @@ sh dist/curl/install.sh \
   --install-dir "$HOME/.obu"
 ```
 
-GitHub Release preview install uses the same script and a Release asset URL:
+GitHub Release preview install can auto-select the current platform from the
+Release `manifest.tsv`, with `manifest.json` as an older-release fallback:
+
+```bash
+curl -fsSL https://github.com/open-browser-use/open-browser-use/releases/latest/download/install.sh | sh && \
+~/.obu/bin/obu setup --yes --all --skip-agents && \
+~/.obu/bin/obu doctor browser --repair
+```
+
+For a Chrome Web Store-installed extension, use the Store channel so native-host
+manifests allow the Store extension id instead of the unpacked-dev id:
+
+```bash
+curl -fsSL https://github.com/open-browser-use/open-browser-use/releases/latest/download/install.sh | sh && \
+~/.obu/bin/obu setup --yes --all --skip-agents --channel=store && \
+~/.obu/bin/obu doctor browser --repair --channel=store
+```
+
+Store-channel setup requires a release payload with `storeExtensionId` metadata,
+or an explicit `OBU_STORE_EXTENSION_ID` / `--extension-id` override while
+testing a draft item.
+
+Manual GitHub Release installs can still pin a specific asset and checksum:
 
 ```bash
 curl -fsSLO https://github.com/<org>/open-browser-use/releases/download/<version>/install.sh
@@ -85,6 +107,11 @@ Installer options:
 - `--no-modify-path` disables shell profile edits for that run.
 - `OBU_ARTIFACT` can provide the artifact path or URL.
 - `OBU_ARTIFACT_SHA256` can provide the expected checksum.
+- `OBU_RELEASE_BASE_URL` and `OBU_TARGET` are preview/debug overrides for the
+  GitHub Release `manifest.tsv` / `manifest.json` lookup.
+
+See [native-host-recovery-ux.md](native-host-recovery-ux.md) for the popup
+recovery UX rationale and the release manifest contract.
 
 ## Setup
 
@@ -110,6 +137,14 @@ from `chrome://extensions`, then rerun:
 
 ```bash
 obu doctor
+```
+
+For Chrome Web Store installs, do not run `obu update-extension`; Chrome Web
+Store owns extension updates. Use:
+
+```bash
+obu doctor browser --channel=store
+obu doctor browser --repair --channel=store
 ```
 
 ## Agent Configuration
