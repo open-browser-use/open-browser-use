@@ -6,6 +6,7 @@ import path from "node:path";
 const packageRoot = path.dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const statusKey = "OBU_NATIVE_HOST_STATUS";
 const debugLogKey = "OBU_DEBUG_LOG";
+const runtimeExtensionId = "abcdefghijklmnopabcdefghijklmnop";
 
 class EventTarget {
   listeners = [];
@@ -518,6 +519,7 @@ async function runPopupStoreSetupCommand() {
 
     assert.equal(harness.elements.setupPanel.hidden, false);
     assert.match(harness.elements.setupCommand.textContent, /obu setup --yes --all --skip-agents --channel=store/);
+    assert.match(harness.elements.setupCommand.textContent, new RegExp(`--extension-id=${runtimeExtensionId}`));
     assert.match(harness.elements.setupCommand.textContent, /obu doctor browser --repair --channel=store/);
   } finally {
     runBuild("unpacked-dev");
@@ -669,6 +671,7 @@ function installPopupHarness(responses, options = {}) {
   globalThis.chrome = {
     runtime: {
       getManifest: () => ({ version: "0.1.0" }),
+      id: runtimeExtensionId,
       async sendMessage(message) {
         sent.push(message);
         if (message?.type === "GET_DEBUG_LOG_STATUS") return debugState;

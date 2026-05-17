@@ -2,7 +2,7 @@ const STATUS_KEY = "OBU_NATIVE_HOST_STATUS";
 const DEBUG_LOG_KEY = "OBU_DEBUG_LOG";
 const GITHUB_INSTALL_URL = "https://github.com/open-browser-use/open-browser-use/releases/latest/download/install.sh";
 const EXTENSION_CHANNEL = "__OBU_EXTENSION_CHANNEL__";
-const SETUP_COMMAND = setupCommandForChannel(EXTENSION_CHANNEL);
+const SETUP_COMMAND = setupCommandForChannel(EXTENSION_CHANNEL, chrome.runtime.id);
 
 type ExtensionChannel = "unpacked-dev" | "store";
 
@@ -361,13 +361,16 @@ function disconnectedPortObjectAdvice(): NativeHostAdvice {
   );
 }
 
-function setupCommandForChannel(channel: string): string {
+function setupCommandForChannel(channel: string, runtimeExtensionId?: string): string {
   const resolvedChannel: ExtensionChannel = channel === "store" ? "store" : "unpacked-dev";
   const channelSuffix = resolvedChannel === "store" ? " --channel=store" : "";
+  const extensionIdSuffix = resolvedChannel === "store" && isExtensionId(runtimeExtensionId)
+    ? ` --extension-id=${runtimeExtensionId}`
+    : "";
   return [
     `curl -fsSL ${GITHUB_INSTALL_URL} | sh && \\`,
-    `~/.obu/bin/obu setup --yes --all --skip-agents${channelSuffix} && \\`,
-    `~/.obu/bin/obu doctor browser --repair${channelSuffix}`,
+    `~/.obu/bin/obu setup --yes --all --skip-agents${channelSuffix}${extensionIdSuffix} && \\`,
+    `~/.obu/bin/obu doctor browser --repair${channelSuffix}${extensionIdSuffix}`,
   ].join("\n");
 }
 
@@ -403,6 +406,10 @@ function normalizeDiagnosis(status: HostStatus): HostDiagnosis | undefined {
 
 function isDisconnectedPortObject(message: string | undefined): boolean {
   return /disconnected port object/i.test(message ?? "");
+}
+
+function isExtensionId(value: string | undefined): value is string {
+  return typeof value === "string" && /^[a-p]{32}$/.test(value);
 }
 
 function joinSentences(parts: string[]): string {
