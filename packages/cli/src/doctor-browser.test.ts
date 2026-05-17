@@ -104,6 +104,53 @@ test("doctor JSON envelope uses the stable P4 schema shape", async (t) => {
   ));
 });
 
+test("doctorBrowser finds unpacked extensions recorded in Secure Preferences", async (t) => {
+  const fixture = await createDoctorFixture(t);
+  await rm(path.join(fixture.options.profileRoot!, "Default", "Preferences"), { force: true });
+  await mkdir(path.join(fixture.options.profileRoot!, "Profile 2"), { recursive: true });
+  await writeJson(path.join(fixture.options.profileRoot!, "Profile 2", "Secure Preferences"), {
+    extensions: {
+      settings: {
+        [fixture.extensionId]: {
+          location: 4,
+          path: fixture.extensionCurrentDir,
+          disable_reasons: [],
+          active_permissions: { api: ["nativeMessaging"] },
+        },
+      },
+    },
+  });
+
+  const report = await doctorBrowser(fixture.options);
+  const installed = checksById(report)["extension-installed"];
+
+  assert.equal(installed?.status, "pass");
+  assert.match(installed?.message ?? "", /Secure Preferences/);
+  assert.equal(installed?.details?.rawPath, fixture.extensionCurrentDir);
+});
+
+test("doctorBrowser warns when extension settings have disable reasons", async (t) => {
+  const fixture = await createDoctorFixture(t);
+  await writeJson(path.join(fixture.options.profileRoot!, "Default", "Preferences"), {
+    extensions: {
+      settings: {
+        [fixture.extensionId]: {
+          state: 1,
+          path: fixture.extensionCurrentDir,
+          disable_reasons: 1,
+        },
+      },
+    },
+  });
+
+  const report = await doctorBrowser(fixture.options);
+  const installed = checksById(report)["extension-installed"];
+
+  assert.equal(installed?.status, "warn");
+  assert.match(installed?.message ?? "", /disabled/);
+  assert.equal(installed?.details?.disable_reasons, 1);
+});
+
 test("doctorBrowser fails an extension manifest missing required runtime permissions", async (t) => {
   const fixture = await createDoctorFixture(t);
   await writeJson(path.join(fixture.root, "extension-manifest.json"), {
@@ -844,7 +891,7 @@ function validExtensionManifest() {
       {
         matches: ["<all_urls>"],
         js: ["cursor.js"],
-        run_at: "document_idle",
+        run_at: "document_start",
       },
     ],
   };

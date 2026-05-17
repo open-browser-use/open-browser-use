@@ -38,7 +38,7 @@ export function supportedNativeHostBrowsers(platform: NodeJS.Platform = process.
 
 export async function installNativeHosts(options: InstallNativeHostsOptions): Promise<InstallHostAction[]> {
   const platform = options.platform ?? process.platform;
-  const homeDir = options.homeDir ?? os.homedir();
+  const homeDir = options.homeDir ?? homeDirFromLayout(options.layout) ?? os.homedir();
   if (platform !== "darwin" && platform !== "linux") {
     return options.browsers.map((browser) => ({
       id: "native-host-install",
@@ -73,6 +73,11 @@ export async function installNativeHosts(options: InstallNativeHostsOptions): Pr
     }));
   }
   return actions;
+}
+
+function homeDirFromLayout(layout: RuntimeLayout): string | undefined {
+  const obuDir = path.dirname(layout.userConfigPath);
+  return path.basename(obuDir) === ".obu" ? path.dirname(obuDir) : undefined;
 }
 
 async function installNativeHost(input: {

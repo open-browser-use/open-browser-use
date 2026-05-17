@@ -560,9 +560,9 @@ async function checkExtensionManifest(manifestPath: string): Promise<DoctorCheck
   const hasCursorScript = contentScripts.some((script: any) => {
     const matches = Array.isArray(script?.matches) ? script.matches : [];
     const js = Array.isArray(script?.js) ? script.js : [];
-    return matches.includes("<all_urls>") && js.includes("cursor.js") && script?.run_at === "document_idle";
+    return matches.includes("<all_urls>") && js.includes("cursor.js") && script?.run_at === "document_start";
   });
-  if (!hasCursorScript) issues.push("content_scripts must include cursor.js for <all_urls> at document_idle");
+  if (!hasCursorScript) issues.push("content_scripts must include cursor.js for <all_urls> at document_start");
   const minChrome = Number.parseInt(String(manifest.minimum_chrome_version ?? "0"), 10);
   if (!Number.isFinite(minChrome) || minChrome < 116) issues.push("minimum_chrome_version must be 116 or newer");
 
@@ -620,7 +620,7 @@ async function checkExtensionInstalled(
     const settings = preferences?.extensions?.settings?.[extensionId];
     if (!settings) continue;
     const details = await extensionSettingsDetails(settings, file, expectedPath);
-    if (settings.state === 0 || settings.disable_reasons) {
+    if (settings.state === 0 || hasDisableReasons(settings.disable_reasons)) {
       return warn("extension-installed", "Extension installed/enabled", `extension is present but disabled in ${file}`, details);
     }
     if (expectedPath) {
@@ -964,7 +964,17 @@ async function findPreferenceFiles(profileRoot: string): Promise<string[]> {
   const entries = await readdir(profileRoot, { withFileTypes: true }).catch(() => []);
   return entries
     .filter((entry) => entry.isDirectory() && (entry.name === "Default" || entry.name.startsWith("Profile ")))
-    .map((entry) => path.join(profileRoot, entry.name, "Preferences"));
+    .flatMap((entry) => [
+      path.join(profileRoot, entry.name, "Preferences"),
+      path.join(profileRoot, entry.name, "Secure Preferences"),
+    ]);
+}
+
+function hasDisableReasons(value: unknown): boolean {
+  if (value === undefined || value === null || value === false || value === 0) return false;
+  if (Array.isArray(value)) return value.length > 0;
+  if (typeof value === "object") return Object.keys(value).length > 0;
+  return true;
 }
 
 async function extensionSettingsDetails(

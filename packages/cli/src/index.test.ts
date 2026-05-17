@@ -124,6 +124,8 @@ test("setup CLI runs deterministic steps before extension manual boundary", asyn
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.result, "manual_action_required");
   assert.equal(payload.steps.some((step: any) => step.id === "native-host-chrome" && step.status === "applied"), true);
+  const nativeHost = payload.steps.find((step: any) => step.id === "native-host-chrome");
+  assert.match(nativeHost.details.nativeManifestPath, new RegExp(`^${escapeRegExp(home)}`));
   assert.equal(payload.steps.some((step: any) => step.id === "extension-current" && step.status === "applied"), true);
   assert.equal(await readFile(path.join(home, ".obu", "extension", "current", "marker.txt"), "utf8"), "setup-extension");
 });
@@ -182,4 +184,8 @@ function runCli(args: string[], env: NodeJS.ProcessEnv = {}): Promise<{ code: nu
       resolve({ code, stdout, stderr });
     });
   });
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
