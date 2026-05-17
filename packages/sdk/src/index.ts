@@ -10,6 +10,7 @@ export type {
   BrowserFinalizeTabsResult,
 } from "./browser.js";
 export { BrowserTabs } from "./browser_tabs.js";
+export type { CreateTabOptions } from "./browser_tabs.js";
 export { BrowserUser } from "./browser_user.js";
 export { Browsers } from "./browsers.js";
 export type { DiscoveredBackend, RuntimeConnector } from "./browsers.js";
@@ -41,7 +42,7 @@ export { Locator } from "./locator.js";
 export { setupObuRuntime } from "./runtime.js";
 export type { ConnectedBackend, SetupObuRuntimeOptions } from "./runtime.js";
 export { Tab } from "./tab.js";
-export type { TabMetadata, TabNavigationWaitOptions } from "./tab.js";
+export type { ScreenshotOptions, TabMetadata, TabNavigationWaitOptions } from "./tab.js";
 export { TabClipboard } from "./tab-clipboard.js";
 export { TabContent } from "./tab-content.js";
 export { TabCua } from "./tab-cua.js";

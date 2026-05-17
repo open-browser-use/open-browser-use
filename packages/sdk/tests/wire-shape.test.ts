@@ -104,6 +104,13 @@ describe("SDK wire-shape contracts", () => {
       await expect(tab.url({ timeout: 104 })).resolves.toBe("https://example.test/");
       await expect(tab.title({ timeout: 105 })).resolves.toBe("Example");
       await expect(tab.screenshot({ timeout: 106 })).resolves.toEqual({ data_base64: "base64png", mime_type: "image/png" });
+      await expect(tab.screenshot({
+        type: "jpeg",
+        quality: 60,
+        fullPage: false,
+        clip: { x: 1, y: 2, width: 300, height: 200, scale: 0.5 },
+        timeout: 106,
+      })).resolves.toEqual({ data_base64: "base64png", mime_type: "image/png" });
       await tab.attach({ timeout: 107 });
       await tab.detach({ timeout: 108 });
       await tab.close({ timeout: 109 });
@@ -122,6 +129,18 @@ describe("SDK wire-shape contracts", () => {
       { method: M.TAB_URL, params: { tab_id: "tab-1", ...meta }, timeout: 104 },
       { method: M.TAB_TITLE, params: { tab_id: "tab-1", ...meta }, timeout: 105 },
       { method: M.TAB_SCREENSHOT, params: { tab_id: "tab-1", ...meta }, timeout: 106 },
+      {
+        method: M.TAB_SCREENSHOT,
+        params: {
+          tab_id: "tab-1",
+          type: "jpeg",
+          quality: 60,
+          fullPage: false,
+          clip: { x: 1, y: 2, width: 300, height: 200, scale: 0.5 },
+          ...meta,
+        },
+        timeout: 106,
+      },
       { method: M.ATTACH, params: { tab_id: "tab-1", ...meta }, timeout: 107 },
       { method: M.DETACH, params: { tab_id: "tab-1", ...meta }, timeout: 108 },
       { method: M.TAB_CLOSE, params: { tab_id: "tab-1", ...meta }, timeout: 109 },
@@ -180,7 +199,7 @@ describe("SDK wire-shape contracts", () => {
 
     try {
       const listed = await tabs.list();
-      const created = await tabs.create("https://new.test/");
+      const created = await tabs.create({ url: "https://new.test/" });
       const direct = tabs.get("manual-tab");
 
       expect(listed.map((tab) => tab.id)).toEqual(["tab-a", "tab-b"]);
@@ -207,6 +226,25 @@ describe("SDK wire-shape contracts", () => {
     expect(transport.calls).toEqual([
       { method: M.GET_TABS, params: { ...meta }, timeout: undefined },
       { method: M.CREATE_TAB, params: { url: "https://new.test/", ...meta }, timeout: undefined },
+    ]);
+  });
+
+  it("BrowserTabs creates about:blank by default and rejects malformed options", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    const tabs = new BrowserTabs(asTransport(transport), new Guards());
+
+    try {
+      await tabs.create();
+      await expect(tabs.create({ url: 123 } as never)).rejects.toThrow(
+        "browser.tabs.create expected a URL string or { url: string }",
+      );
+    } finally {
+      restoreMeta();
+    }
+
+    expect(transport.calls).toEqual([
+      { method: M.CREATE_TAB, params: { url: "about:blank", ...meta }, timeout: undefined },
     ]);
   });
 

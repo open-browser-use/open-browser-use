@@ -30,6 +30,20 @@ export type TabMetadata = {
   status?: "active" | "handoff" | "deliverable";
 };
 
+export type ScreenshotOptions = {
+  timeout?: number;
+  type?: "png" | "jpeg" | "webp";
+  quality?: number;
+  fullPage?: boolean;
+  clip?: {
+    x: number;
+    y: number;
+    width: number;
+    height: number;
+    scale?: number;
+  };
+};
+
 export class Tab {
   readonly clipboard: TabClipboard;
   readonly content: TabContent;
@@ -163,11 +177,11 @@ export class Tab {
     return await this.transport.sendRequest<string>(M.TAB_TITLE, withSessionMeta({ tab_id: this.id }), opts.timeout);
   }
 
-  async screenshot(opts: { timeout?: number } = {}): Promise<{ data_base64: string; mime_type: string }> {
+  async screenshot(opts: ScreenshotOptions = {}): Promise<{ data_base64: string; mime_type: string }> {
     await this.#ensureTabCommandAllowed(M.TAB_SCREENSHOT, {}, opts.timeout);
     const row = await this.transport.sendRequest<{ data?: string; data_base64?: string; mime_type?: string }>(
       M.TAB_SCREENSHOT,
-      withSessionMeta({ tab_id: this.id }),
+      withSessionMeta({ tab_id: this.id, ...screenshotParams(opts) }),
       opts.timeout,
     );
     return {
@@ -243,6 +257,15 @@ export class Tab {
       await delay(Math.min(pollInterval, remaining));
     }
   }
+}
+
+function screenshotParams(opts: ScreenshotOptions): Record<string, unknown> {
+  const params: Record<string, unknown> = {};
+  if (opts.type !== undefined) params.type = opts.type;
+  if (opts.quality !== undefined) params.quality = opts.quality;
+  if (opts.fullPage !== undefined) params.fullPage = opts.fullPage;
+  if (opts.clip !== undefined) params.clip = opts.clip;
+  return params;
 }
 
 function navigationUrlMatches(currentUrl: string, expected?: string | RegExp): boolean {

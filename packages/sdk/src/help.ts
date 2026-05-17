@@ -7,7 +7,7 @@ agent.browsers.diagnostics() -> ignored backend descriptor setup diagnostics
 Browser:
   .diagnostics / .lifecycleDiagnostics / .capabilities
   .deliverables() -> finalized durable tabs, with .claim()
-  .tabs.create(url?) -> Tab
+  .tabs.create(urlOrOptions?) -> Tab   accepts "https://..." or {url}; defaults to "about:blank"
   .tabs.list() -> Tab[]
   .tabs.get(id) -> Tab
   .user.openTabs() / .user.history() / .user.claimTab()
@@ -20,6 +20,7 @@ Tab:
   .locator(sel) -> Locator
   .frameLocator(sel) -> FrameLocator
   .content.export({format?}) -> bytes
+  .screenshot({type?, quality?, clip?, fullPage?}) -> bytes
   .cua.click() / .dblclick() / .scroll() / .type() / .keypress() / .drag() / .dragPath() / .move()
   .clipboard.readText() / .writeText() / .read() / .write()
   .dev.cdp(method, params)
