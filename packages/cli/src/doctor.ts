@@ -15,13 +15,16 @@ import {
   type DoctorReport,
   type DoctorStatus,
 } from "./doctor-browser.js";
+import type { ExtensionChannel, ExtensionIdSource } from "./extension-channel.js";
 import { type RuntimeLayout } from "./runtime-layout.js";
 
 const execFileAsync = promisify(execFile);
 
 export type AggregateDoctorReport = {
   browser: DoctorReport["browser"];
+  extensionChannel: ExtensionChannel;
   extensionId: string | undefined;
+  extensionIdSource: ExtensionIdSource | undefined;
   checks: DoctorCheck[];
   repairs?: DoctorRepairAction[];
 };
@@ -41,7 +44,9 @@ export async function doctorAggregate(input: {
   checks.push(...browserReport.checks);
   const report: AggregateDoctorReport = {
     browser: browserReport.browser,
+    extensionChannel: browserReport.extensionChannel,
     extensionId: browserReport.extensionId,
+    extensionIdSource: browserReport.extensionIdSource,
     checks,
   };
   const repairs = [...(browserReport.repairs ?? [])];
@@ -61,7 +66,9 @@ export async function doctorAggregate(input: {
 export function formatAggregateDoctorReport(report: AggregateDoctorReport): string {
   return formatDoctorReport({
     browser: report.browser,
+    extensionChannel: report.extensionChannel,
     extensionId: report.extensionId,
+    extensionIdSource: report.extensionIdSource,
     checks: report.checks,
     ...(report.repairs ? { repairs: report.repairs } : {}),
   }).replace(/^open-browser-use browser doctor:/, "open-browser-use doctor:");
@@ -87,6 +94,7 @@ async function payloadMetadataChecks(layout: RuntimeLayout): Promise<DoctorCheck
 
   const checks: DoctorCheck[] = [metadata.check];
   checks.push(payloadTargetCheck(metadata.value));
+  checks.push(payloadExtensionChannelCheck(metadata.value));
   checks.push(await payloadNodeVersionCheck(layout, metadata.value));
   checks.push(await payloadSdkHashCheck(layout, metadata.value));
   checks.push(await payloadExtensionZipCheck(layout, metadata.value));
@@ -100,6 +108,9 @@ type PayloadMetadata = {
   nodeVersion?: unknown;
   sdkHash?: unknown;
   extensionVersion?: unknown;
+  extensionChannel?: unknown;
+  extensionId?: unknown;
+  storeExtensionId?: unknown;
   extensionZip?: unknown;
   extensionZipSha256?: unknown;
   cliRuntimeDependencies?: unknown;
@@ -139,6 +150,35 @@ function payloadTargetCheck(metadata: PayloadMetadata): DoctorCheck {
     });
   }
   return check("payload-target", "Payload target", "pass", target, { target });
+}
+
+function payloadExtensionChannelCheck(metadata: PayloadMetadata): DoctorCheck {
+  const channel = typeof metadata.extensionChannel === "string" ? metadata.extensionChannel : undefined;
+  const id = typeof metadata.extensionId === "string" ? metadata.extensionId : undefined;
+  const storeExtensionId = typeof metadata.storeExtensionId === "string" ? metadata.storeExtensionId : undefined;
+  if (channel !== "unpacked-dev" && channel !== "store") {
+    return check("payload-extension-channel", "Payload extension channel", "fail", `payload extensionChannel is ${channel ?? "missing"}`, {
+      channel,
+      repair: "Rebuild the open-browser-use payload so metadata records extensionChannel.",
+    });
+  }
+  if (!/^[a-p]{32}$/.test(id ?? "")) {
+    return check("payload-extension-channel", "Payload extension channel", "fail", "payload metadata is missing a valid extensionId", {
+      channel,
+      extensionId: id,
+    });
+  }
+  if (channel === "store" && !/^[a-p]{32}$/.test(storeExtensionId ?? "")) {
+    return check("payload-extension-channel", "Payload extension channel", "fail", "store payload metadata is missing a valid storeExtensionId", {
+      channel,
+      storeExtensionId,
+    });
+  }
+  return check("payload-extension-channel", "Payload extension channel", "pass", channel, {
+    channel,
+    extensionId: id,
+    ...(storeExtensionId ? { storeExtensionId } : {}),
+  });
 }
 
 async function payloadNodeVersionCheck(layout: RuntimeLayout, metadata: PayloadMetadata): Promise<DoctorCheck> {

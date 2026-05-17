@@ -96,6 +96,9 @@ test("doctor JSON envelope uses the stable P4 schema shape", async (t) => {
   assert.equal(envelope.command, "doctor browser");
   assert.equal(envelope.strict, true);
   assert.equal(envelope.layout.runtimeDir, fixture.runtimeDir);
+  assert.equal(envelope.extension.channel, "unpacked-dev");
+  assert.equal(envelope.extension.id, fixture.extensionId);
+  assert.equal(envelope.extension.idSource, "manifest-key");
   assert.equal(envelope.summary.fail, 0);
   assert.ok(envelope.checks.some((check) =>
     check.id === "runtime-descriptor-probe" &&
@@ -333,6 +336,75 @@ test("doctorBrowser uses packaged payload paths when OBU_PAYLOAD_ROOT is set", a
   assert.equal(checks["native-host-version"]?.details?.path, hostBinary);
   assert.equal(checks["extension-manifest"]?.status, "pass");
   assert.equal(checks["native-host-version"]?.status, "pass");
+});
+
+test("doctorBrowser store channel checks enabled extension without requiring unpacked path", async (t) => {
+  const fixture = await createDoctorFixture(t);
+  const storeExtensionId = "abcdefghijklmnopabcdefghijklmnop";
+  await writeJson(path.join(fixture.options.profileRoot!, "Default", "Preferences"), {
+    extensions: {
+      settings: {
+        [storeExtensionId]: {
+          state: 1,
+          location: 5,
+          manifest: { version: "0.1.0" },
+        },
+      },
+    },
+  });
+  await writeJson(fixture.nativeHostManifestPath, {
+    name: HOST_NAME,
+    type: "stdio",
+    path: fixture.options.hostBinary,
+    allowed_origins: [`chrome-extension://${storeExtensionId}/`],
+  });
+
+  const report = await doctorBrowser({
+    ...fixture.options,
+    channel: "store",
+    extensionId: storeExtensionId,
+    extensionIdSource: "explicit-argument",
+  });
+  const checks = checksById(report);
+
+  assert.equal(report.extensionChannel, "store");
+  assert.equal(report.extensionId, storeExtensionId);
+  assert.equal(report.extensionIdSource, "explicit-argument");
+  assert.equal(checks["extension-installed"]?.status, "pass");
+  assert.equal(checks["extension-installed"]?.details?.expectedPath, undefined);
+  assert.equal(checks["native-host-manifest"]?.status, "pass");
+  assert.match(formatDoctorReport(report), /extension channel: store/);
+  assert.match(formatDoctorReport(report), /extension id source: explicit-argument/);
+});
+
+test("doctorBrowser store repair writes native host manifest for Store extension id", async (t) => {
+  const fixture = await createDoctorFixture(t);
+  const storeExtensionId = "abcdefghijklmnopabcdefghijklmnop";
+  await writeJson(fixture.nativeHostManifestPath, {
+    name: "wrong.host",
+    type: "stdio",
+    path: "relative-host-path",
+    allowed_origins: [],
+  });
+
+  const report = await doctorBrowser({
+    ...fixture.options,
+    channel: "store",
+    extensionId: storeExtensionId,
+    extensionIdSource: "explicit-argument",
+    repair: true,
+  });
+  const manifest = JSON.parse(await readFile(fixture.nativeHostManifestPath, "utf8"));
+
+  assert.equal(checksById(report)["native-host-manifest"]?.status, "pass");
+  assert.deepEqual(manifest.allowed_origins, [`chrome-extension://${storeExtensionId}/`]);
+  assertRepair(report, {
+    id: "native-host-manifest",
+    status: "applied",
+    message: /wrote native host manifest/,
+    human: /APPLIED wrote native host manifest/,
+    details: ["path", "wrapperPath", "extensionId"],
+  });
 });
 
 test("doctorBrowser repair fails native host manifest repair without an extension id", async (t) => {
