@@ -10,9 +10,9 @@ use std::sync::{Arc, LazyLock, Mutex as StdMutex};
 
 use anyhow::{Context, Result};
 use rmcp::model::{
-    CallToolRequestMethod, CallToolRequestParams, CallToolResult, ErrorData, Implementation,
-    ListToolsResult, Meta, PaginatedRequestParams, ProgressNotificationParam, ServerCapabilities,
-    ServerInfo, Tool,
+    CallToolRequestMethod, CallToolRequestParams, CallToolResult, Content, ErrorData,
+    Implementation, ListToolsResult, Meta, PaginatedRequestParams, ProgressNotificationParam,
+    ServerCapabilities, ServerInfo, Tool, ToolAnnotations,
 };
 use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ServerHandler, ServiceExt};
@@ -44,10 +44,81 @@ static JS_SCHEMA: LazyLock<Arc<rmcp::model::JsonObject>> = LazyLock::new(|| {
     })))
 });
 
+static JS_OUTPUT_SCHEMA: LazyLock<Arc<rmcp::model::JsonObject>> = LazyLock::new(|| {
+    Arc::new(schema_object(json!({
+        "type": "object",
+        "required": ["stdout", "stderr", "result", "duration_ms", "truncated", "displays", "error"],
+        "properties": {
+            "stdout": {
+                "type": "string",
+                "description": "Captured console and nodeRepl.write output."
+            },
+            "stderr": {
+                "type": "string",
+                "description": "Reserved stderr capture; currently empty."
+            },
+            "result": {
+                "description": "JSON-serializable value of the last expression, or null."
+            },
+            "duration_ms": {
+                "type": "integer",
+                "minimum": 0,
+                "description": "Kernel-measured execution duration."
+            },
+            "truncated": {
+                "anyOf": [
+                    { "type": "null" },
+                    {
+                        "type": "object",
+                        "properties": {
+                            "stdout": { "type": "boolean" },
+                            "stderr": { "type": "boolean" }
+                        },
+                        "required": ["stdout", "stderr"],
+                        "additionalProperties": false
+                    }
+                ]
+            },
+            "displays": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "required": ["at_ms", "type", "value"],
+                    "properties": {
+                        "at_ms": { "type": "integer", "minimum": 0 },
+                        "type": { "type": "string", "enum": ["text", "json", "image"] },
+                        "value": { "description": "Display payload." }
+                    },
+                    "additionalProperties": false
+                }
+            },
+            "error": {
+                "anyOf": [
+                    { "type": "null" },
+                    { "type": "string" }
+                ],
+                "description": "User-code JavaScript error, when execution failed inside the kernel."
+            }
+        },
+        "additionalProperties": false
+    })))
+});
+
 static EMPTY_SCHEMA: LazyLock<Arc<rmcp::model::JsonObject>> = LazyLock::new(|| {
     Arc::new(schema_object(json!({
         "type": "object",
         "properties": {},
+        "additionalProperties": false
+    })))
+});
+
+static OK_OUTPUT_SCHEMA: LazyLock<Arc<rmcp::model::JsonObject>> = LazyLock::new(|| {
+    Arc::new(schema_object(json!({
+        "type": "object",
+        "required": ["ok"],
+        "properties": {
+            "ok": { "type": "boolean", "enum": [true] }
+        },
         "additionalProperties": false
     })))
 });
@@ -100,19 +171,44 @@ impl ObuServer {
 
     fn tools() -> Vec<Tool> {
         vec![
-            Tool::new("js", JS_TOOL_DESCRIPTION, JS_SCHEMA.clone()).with_title("JavaScript"),
+            Tool::new("js", JS_TOOL_DESCRIPTION, JS_SCHEMA.clone())
+                .with_title("JavaScript")
+                .with_raw_output_schema(JS_OUTPUT_SCHEMA.clone())
+                .with_annotations(
+                    ToolAnnotations::new()
+                        .read_only(false)
+                        .destructive(true)
+                        .idempotent(false)
+                        .open_world(true),
+                ),
             Tool::new(
                 "js_reset",
                 "Reset the persistent Node REPL kernel and clear JavaScript state.",
                 EMPTY_SCHEMA.clone(),
             )
-            .with_title("Reset JavaScript Kernel"),
+            .with_title("Reset JavaScript Kernel")
+            .with_raw_output_schema(OK_OUTPUT_SCHEMA.clone())
+            .with_annotations(
+                ToolAnnotations::new()
+                    .read_only(false)
+                    .destructive(true)
+                    .idempotent(false)
+                    .open_world(false),
+            ),
             Tool::new(
                 "js_add_module_dir",
                 Cow::Borrowed("Authorize an additional absolute directory for module imports."),
                 ADD_MODULE_DIR_SCHEMA.clone(),
             )
-            .with_title("Add Module Directory"),
+            .with_title("Add Module Directory")
+            .with_raw_output_schema(OK_OUTPUT_SCHEMA.clone())
+            .with_annotations(
+                ToolAnnotations::new()
+                    .read_only(false)
+                    .destructive(false)
+                    .idempotent(true)
+                    .open_world(false),
+            ),
         ]
     }
 }
@@ -201,14 +297,27 @@ impl ObuServer {
             }
         }
         let result = result.map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        Ok(CallToolResult::structured(json!({
+        let error = result.error.clone();
+        let structured = json!({
             "stdout": result.stdout,
             "stderr": result.stderr,
             "result": result.result,
             "duration_ms": result.duration_ms,
             "truncated": result.truncated,
             "displays": result.displays,
-        })))
+            "error": error,
+        });
+        if result.error.is_some() {
+            Ok(structured_error_result(structured))
+        } else {
+            Ok(structured_result(
+                structured,
+                format!(
+                    "JavaScript execution completed in {}ms.",
+                    result.duration_ms
+                ),
+            ))
+        }
     }
 
     async fn call_js_reset(
@@ -220,7 +329,7 @@ impl ObuServer {
             .reset()
             .await
             .map_err(|error| ErrorData::internal_error(error.to_string(), None))?;
-        Ok(CallToolResult::structured(json!({ "ok": true })))
+        Ok(structured_result(json!({ "ok": true }), "OK"))
     }
 
     async fn call_js_add_module_dir(
@@ -233,7 +342,7 @@ impl ObuServer {
             return Err(ErrorData::invalid_params("path must be absolute", None));
         }
         self.runtime.add_module_dir(path);
-        Ok(CallToolResult::structured(json!({ "ok": true })))
+        Ok(structured_result(json!({ "ok": true }), "OK"))
     }
 }
 
@@ -277,6 +386,24 @@ fn schema_object(value: Value) -> rmcp::model::JsonObject {
         Value::Object(map) => map,
         _ => unreachable!("schema literals are objects"),
     }
+}
+
+fn structured_result(value: Value, summary: impl Into<String>) -> CallToolResult {
+    let mut result = CallToolResult::success(vec![Content::text(summary.into())]);
+    result.structured_content = Some(value);
+    result
+}
+
+fn structured_error_result(value: Value) -> CallToolResult {
+    let message = value
+        .get("error")
+        .and_then(Value::as_str)
+        .unwrap_or("JavaScript execution failed");
+    let mut result = CallToolResult::error(vec![Content::text(format!(
+        "JavaScript execution failed: {message}"
+    ))]);
+    result.structured_content = Some(value);
+    result
 }
 
 #[cfg(test)]

@@ -87,6 +87,14 @@ async fn mcp_stdio_lists_tools_and_executes_js() {
         .map(|tool| tool["name"].as_str().unwrap())
         .collect::<Vec<_>>();
     assert_eq!(names, ["js", "js_reset", "js_add_module_dir"]);
+    let js_tool = tools["result"]["tools"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|tool| tool["name"] == "js")
+        .unwrap();
+    assert_eq!(js_tool["outputSchema"]["type"], "object");
+    assert!(js_tool["outputSchema"]["properties"]["result"].is_object());
 
     let first_after_call = read_json(&mut reader).await;
     let second_after_call = read_json(&mut reader).await;
@@ -103,6 +111,12 @@ async fn mcp_stdio_lists_tools_and_executes_js() {
     assert_eq!(progress["params"]["message"], "hi");
 
     assert_eq!(exec["id"], 3);
+    assert!(
+        exec["result"]["content"][0]["text"]
+            .as_str()
+            .unwrap()
+            .starts_with("JavaScript execution completed in ")
+    );
     assert_eq!(exec["result"]["structuredContent"]["result"]["value"], 42);
     assert_eq!(
         exec["result"]["structuredContent"]["result"]["meta"]["turn_id"],
@@ -115,6 +129,33 @@ async fn mcp_stdio_lists_tools_and_executes_js() {
     assert_eq!(
         exec["result"]["structuredContent"]["displays"][0]["value"],
         "hi"
+    );
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 4,
+            "method": "tools/call",
+            "params": {
+                "name": "js",
+                "arguments": {
+                    "source": "throw new Error('mcp boom')"
+                }
+            }
+        }),
+    )
+    .await;
+    let failed_exec = read_json(&mut reader).await;
+    assert_eq!(failed_exec["id"], 4);
+    assert_eq!(failed_exec["result"]["isError"], true);
+    assert_eq!(
+        failed_exec["result"]["structuredContent"]["error"],
+        "mcp boom"
+    );
+    assert_eq!(
+        failed_exec["result"]["content"][0]["text"],
+        "JavaScript execution failed: mcp boom"
     );
 
     drop(stdin);

@@ -47,6 +47,11 @@ pub struct JsExecResult {
     pub truncated: Option<TruncationInfo>,
     /// Display entries emitted during this exec.
     pub displays: Vec<DisplayEntry>,
+    /// JavaScript execution error. Transport, timeout, and kernel failures are still
+    /// returned as Rust errors; this field is for user-code failures reported by
+    /// the kernel.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error: Option<String>,
 }
 
 /// Stream truncation metadata.

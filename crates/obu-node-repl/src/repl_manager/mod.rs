@@ -265,6 +265,7 @@ impl JsRuntimeManager {
             pending_exec_results.clone(),
             self.registry.clone(),
             self.sink.clone(),
+            kernel_stdin.clone(),
             native_pipe.clone(),
             kernel_inbox_tx,
             handshake_token.clone(),
@@ -442,15 +443,17 @@ impl JsRuntimeManager {
             tracing::warn!(?frame, expected = exec_id, "exec result id mismatch");
         }
 
-        if frame.get("ok").and_then(Value::as_bool) == Some(false) {
-            let message = frame
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("JavaScript execution failed");
-            let _ = self.registry.lock().await.finish();
-            return Err(anyhow!("JavaScript error: {message}"));
-        }
-
+        let error = if frame.get("ok").and_then(Value::as_bool) == Some(false) {
+            Some(
+                frame
+                    .get("error")
+                    .and_then(Value::as_str)
+                    .unwrap_or("JavaScript execution failed")
+                    .to_string(),
+            )
+        } else {
+            None
+        };
         let displays = self.registry.lock().await.finish();
         Ok(JsExecResult {
             stdout: frame
@@ -471,6 +474,7 @@ impl JsRuntimeManager {
                 .unwrap_or(0),
             truncated: None,
             displays,
+            error,
         })
     }
 
@@ -580,6 +584,7 @@ async fn spawn_stdout_demux(
     pending_exec_results: Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>,
     registry: Arc<Mutex<ExecRegistry>>,
     sink: Arc<Mutex<Option<crate::display_router::ProgressSink>>>,
+    kernel_stdin: Arc<Mutex<stdio_codec::StdioWriter>>,
     broker: Arc<NativePipeBroker>,
     kernel_inbox: mpsc::Sender<KernelIn>,
     handshake_token: Arc<Mutex<Option<String>>>,
@@ -633,7 +638,7 @@ async fn spawn_stdout_demux(
 
         match frame.get("type").and_then(Value::as_str).unwrap_or("") {
             "display" => handle_display_frame(&registry, &sink, frame).await,
-            "emit_image" => handle_emit_image_frame(&registry, frame).await,
+            "emit_image" => handle_emit_image_frame(&registry, &kernel_stdin, frame).await,
             "exec_result" => {
                 let Some(exec_id) = frame
                     .get("exec_id")
@@ -692,8 +697,29 @@ async fn handle_display_frame(
     }
 }
 
-async fn handle_emit_image_frame(registry: &Arc<Mutex<ExecRegistry>>, frame: Value) {
+async fn handle_emit_image_frame(
+    registry: &Arc<Mutex<ExecRegistry>>,
+    kernel_stdin: &Arc<Mutex<stdio_codec::StdioWriter>>,
+    frame: Value,
+) {
+    let Some(id) = frame
+        .get("id")
+        .and_then(Value::as_str)
+        .map(ToOwned::to_owned)
+    else {
+        return;
+    };
     let Some(image_url) = frame.get("image_url").and_then(Value::as_str) else {
+        let _ = kernel_stdin
+            .lock()
+            .await
+            .send(&json!({
+                "type": "emit_image_result",
+                "id": id,
+                "ok": false,
+                "error": "emit_image missing image_url"
+            }))
+            .await;
         return;
     };
     let mut registry = registry.lock().await;
@@ -703,6 +729,16 @@ async fn handle_emit_image_frame(registry: &Arc<Mutex<ExecRegistry>>, frame: Val
         kind: "image".to_string(),
         value: json!({ "image_url": image_url }),
     });
+    drop(registry);
+    let _ = kernel_stdin
+        .lock()
+        .await
+        .send(&json!({
+            "type": "emit_image_result",
+            "id": id,
+            "ok": true
+        }))
+        .await;
 }
 
 fn constant_time_eq(left: &[u8], right: &[u8]) -> bool {

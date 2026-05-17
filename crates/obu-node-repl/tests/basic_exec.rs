@@ -25,3 +25,22 @@ async fn carries_repl_state_between_execs() {
     let result = manager.exec("base + 2", None).await.unwrap();
     assert_eq!(result.result, json!(42));
 }
+
+#[tokio::test]
+async fn javascript_errors_are_reported_without_resetting_kernel_state() {
+    let manager = JsRuntimeManager::new(ManagerOptions::for_tests())
+        .await
+        .unwrap();
+    manager.boot().await.unwrap();
+
+    manager.exec("const base = 40; base", None).await.unwrap();
+    let result = manager
+        .exec(r#"throw new Error("boom")"#, None)
+        .await
+        .unwrap();
+    assert_eq!(result.error.as_deref(), Some("boom"));
+    assert_eq!(result.result, json!(null));
+
+    let result = manager.exec("base + 2", None).await.unwrap();
+    assert_eq!(result.result, json!(42));
+}

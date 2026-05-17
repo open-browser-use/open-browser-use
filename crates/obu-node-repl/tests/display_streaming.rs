@@ -42,3 +42,26 @@ async fn display_text_json_and_image_are_captured_and_text_json_stream() {
     assert_eq!(streamed[0].message, "hello");
     assert_eq!(streamed[1].message, r#"{"k":1}"#);
 }
+
+#[tokio::test]
+async fn emit_image_is_acknowledged() {
+    let manager = JsRuntimeManager::new(ManagerOptions::for_tests())
+        .await
+        .unwrap();
+
+    let result = manager
+        .exec(
+            r#"await nodeRepl.emitImage("data:image/png;base64,iVBORw0KGgo="); 42"#,
+            Some(1_000),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.result, json!(42));
+    assert_eq!(result.displays.len(), 1);
+    assert_eq!(result.displays[0].kind, "image");
+    assert_eq!(
+        result.displays[0].value,
+        json!({ "image_url": "data:image/png;base64,iVBORw0KGgo=" })
+    );
+}
