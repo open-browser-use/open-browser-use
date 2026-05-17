@@ -13,6 +13,7 @@
     "coverage:rust": "sh scripts/coverage-rust.sh",
     "coverage:sdk": "pnpm --filter @open-browser-use/sdk coverage",
     "assemble:payload": "node scripts/assemble-payload.mjs",
+    "make:extension-store-artifact": "node scripts/make-extension-store-artifact.mjs",
     "fetch:node-runtime": "node scripts/fetch-node-runtime.mjs",
     "make:curl-artifact": "node scripts/make-curl-artifact.mjs",
     "smoke:agent-adapters": "node scripts/agent-adapter-smoke.mjs",

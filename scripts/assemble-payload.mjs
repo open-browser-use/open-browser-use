@@ -41,6 +41,11 @@ const metadata = {
   extensionVersion: extension.version,
   extensionChannel: "unpacked-dev",
   extensionId: extension.id,
+  ...(args.storeExtensionId ? {
+    storeExtensionId: args.storeExtensionId,
+    storePublicKey: extension.publicKey,
+    storeManifestKeyPolicy: "included",
+  } : {}),
   extensionZip: path.relative(outDir, extension.zipPath),
   extensionZipSha256: await hashFile(extension.zipPath),
   cliRuntimeDependencies: ["jsonc-parser"],
@@ -133,11 +138,16 @@ async function stageExtension(payloadRoot) {
   await cp(path.join(root, "packages", "extension", "dist"), extensionDist, { recursive: true, force: true });
   const manifest = JSON.parse(await readFile(path.join(extensionDist, "manifest.json"), "utf8"));
   const version = typeof manifest.version === "string" ? manifest.version : "0.0.0";
+  const id = extensionIdFromManifestKey(manifest.key);
+  if (args.storeExtensionId && args.storeExtensionId !== id) {
+    throw new Error(`--store-extension-id ${args.storeExtensionId} does not match manifest key-derived id ${id}`);
+  }
   const zipPath = path.join(extensionOut, `open-browser-use-extension-${version}.zip`);
   await zipDirectory(extensionDist, zipPath);
   return {
     version,
-    id: extensionIdFromManifestKey(manifest.key),
+    id,
+    publicKey: manifest.key,
     zipPath,
   };
 }
@@ -289,6 +299,10 @@ function parseArgs(argv) {
       parsed.nodeReplBin = path.resolve(readValue());
     } else if (flag === "--allow-current-node") {
       parsed.allowCurrentNode = true;
+    } else if (flag === "--store-extension-id") {
+      const value = readValue();
+      if (!/^[a-p]{32}$/.test(value)) throw new Error("--store-extension-id must be a 32-character Chrome extension id using letters a-p");
+      parsed.storeExtensionId = value;
     } else {
       throw new Error(`unknown argument: ${arg}`);
     }

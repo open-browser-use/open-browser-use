@@ -24,6 +24,16 @@
         <p id="detail-text" class="detail"></p>
       </section>
 
+      <section id="setup-panel" class="setup" hidden>
+        <div>
+          <p class="label">Setup</p>
+          <p id="setup-text" class="detail"></p>
+        </div>
+        <pre id="setup-command" class="command" aria-label="Terminal setup command"></pre>
+        <button id="copy-setup-button" class="setup-copy" type="button">Copy Terminal command</button>
+        <p id="setup-copy-text" class="detail" aria-live="polite"></p>
+      </section>
+
       <div class="actions">
         <button id="stop-button" class="stop" type="button">Stop browser control</button>
         <button id="resume-button" class="resume" type="button">Resume</button>

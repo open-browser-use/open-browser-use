@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -30,6 +30,19 @@ assert.deepEqual(manifest.content_scripts, [
 ]);
 assert.equal(manifest.background.service_worker, "background.js");
 assert.equal(manifest.action.default_popup, "popup.html");
+assert.deepEqual(manifest.icons, {
+  16: "icons/icon-16.png",
+  32: "icons/icon-32.png",
+  48: "icons/icon-48.png",
+  128: "icons/icon-128.png",
+});
+assert.deepEqual(manifest.action.default_icon, {
+  16: "icons/icon-16.png",
+  32: "icons/icon-32.png",
+});
+for (const icon of Object.values(manifest.icons)) {
+  await access(path.join(packageRoot, "public", icon));
+}
 
 const tmp = await mkdtemp(path.join(os.tmpdir(), "obu-extension-manifest-test-"));
 try {
