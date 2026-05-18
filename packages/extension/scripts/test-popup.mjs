@@ -40,12 +40,29 @@ class FakeElement {
 
 await runPopupHappyPath();
 await runPopupRepairMatrix();
-await runPopupSetupCopyFailure();
-await runPopupStoreSetupCommand();
+await runPopupAgentCopyFailure();
+await runPopupStoreHandoff();
 await runPopupResumeFromFailureStates();
 await runPopupDebugLogs();
 await runPopupInitialFailure("missing status response", [undefined], "Repair setup, then reconnect.");
 await runPopupInitialFailure("runtime rejection", [new Error("status boom")], "Repair setup, then reconnect.");
+
+function assertAgentHandoff(elements, channel = "unpacked-dev") {
+  const handoff = elements.agentHandoff.textContent;
+  assert.match(handoff, /prompts\/agent-install-prompt\.md/);
+  assert.match(handoff, new RegExp(`Extension channel: ${channel}`));
+  assert.match(handoff, new RegExp(`Extension id: ${runtimeExtensionId}`));
+  assert.match(handoff, /generic open-browser-use stdio server/);
+  assert.match(handoff, /primary BrowserUse\/browser automation tool/);
+  assert.match(handoff, /core AGENTS\.md, AGENT\.md, CLAUDE\.md, or equivalent/);
+  assert.match(handoff, /Codex, Cursor, or Claude Code/);
+  assert.doesNotMatch(handoff, /Terminal command/i);
+  assert.doesNotMatch(handoff, /curl -fsSL/);
+  assert.doesNotMatch(handoff, /obu bootstrap/);
+  assert.doesNotMatch(handoff, /~\/\.obu\/bin\/obu/);
+  assert.doesNotMatch(handoff, /Bootstrap:/);
+  assert.doesNotMatch(handoff, /Verify:/);
+}
 
 async function runPopupHappyPath() {
   const harness = installPopupHarness([
@@ -62,7 +79,10 @@ async function runPopupHappyPath() {
   await waitFor(() => harness.elements.statusText.textContent === "Connected");
   assert.equal(harness.elements.dot.className, "dot connected");
   assert.equal(harness.elements.detailText.textContent, "Host 0.1.0");
-  assert.equal(harness.elements.setupPanel.hidden, true);
+  assert.equal(harness.elements.setupPanel.hidden, false);
+  assert.equal(harness.elements.setupLabel.textContent, "Agent setup");
+  assert.match(harness.elements.setupText.textContent, /Connect another coding agent/);
+  assertAgentHandoff(harness.elements);
   assert.equal(harness.elements.stopButton.disabled, false);
   assert.equal(harness.elements.resumeButton.disabled, true);
 
@@ -78,11 +98,8 @@ async function runPopupHappyPath() {
   assert.equal(harness.elements.resumeButton.disabled, false);
   assert.match(harness.elements.detailText.textContent, /Update the local host/);
   assert.equal(harness.elements.setupPanel.hidden, false);
-  assert.match(harness.elements.setupText.textContent, /Run this in Terminal/);
-  assert.match(harness.elements.setupCommand.textContent, /github\.com\/open-browser-use\/open-browser-use\/releases\/latest\/download\/install\.sh/);
-  assert.match(harness.elements.setupCommand.textContent, /obu bootstrap --yes --all/);
-  assert.match(harness.elements.setupCommand.textContent, /--agents=auto/);
-  assert.doesNotMatch(harness.elements.setupCommand.textContent, /\n/);
+  assert.match(harness.elements.setupText.textContent, /coding agent/);
+  assertAgentHandoff(harness.elements);
 
   harness.storageChanges.emit(
     {
@@ -93,7 +110,9 @@ async function runPopupHappyPath() {
     "local",
   );
   assert.equal(harness.elements.statusText.textContent, "Connected");
-  assert.equal(harness.elements.setupPanel.hidden, true);
+  assert.equal(harness.elements.setupPanel.hidden, false);
+  assert.equal(harness.elements.setupLabel.textContent, "Agent setup");
+  assert.match(harness.elements.setupText.textContent, /Connect another coding agent/);
 
   harness.storageChanges.emit(
     {
@@ -152,11 +171,15 @@ async function runPopupHappyPath() {
   assert.equal(harness.elements.setupPanel.hidden, false);
   assert.match(harness.elements.setupText.textContent, /install open-browser-use/);
 
-  harness.elements.copySetupButton.click();
-  await waitFor(() => harness.clipboardWrites.some((text) => text.includes("obu bootstrap --yes --all")));
-  await waitFor(() => harness.elements.copySetupButton.textContent === "Copied");
-  await waitFor(() => /Paste into Terminal/.test(harness.elements.setupCopyText.textContent));
-  assert.match(harness.elements.setupCopyText.textContent, /click Resume/);
+  harness.elements.copyAgentButton.click();
+  await waitFor(() => harness.clipboardWrites.some((text) => text.includes("prompts/agent-install-prompt.md")));
+  await waitFor(() => harness.elements.copyAgentButton.textContent === "Copied");
+  assert.match(harness.clipboardWrites.at(-1), /generic open-browser-use stdio server/);
+  assert.match(harness.clipboardWrites.at(-1), /primary BrowserUse\/browser automation tool/);
+  assert.match(harness.clipboardWrites.at(-1), /core AGENTS\.md, AGENT\.md, CLAUDE\.md, or equivalent/);
+  assert.doesNotMatch(harness.clipboardWrites.at(-1), /obu bootstrap/);
+  assert.doesNotMatch(harness.clipboardWrites.at(-1), /curl -fsSL/);
+  assert.match(harness.elements.setupCopyText.textContent, /coding agent/);
 
   harness.storageChanges.emit(
     {
@@ -166,8 +189,9 @@ async function runPopupHappyPath() {
     },
     "local",
   );
-  assert.equal(harness.elements.setupPanel.hidden, true);
-  assert.equal(harness.elements.setupCommand.textContent, "");
+  assert.equal(harness.elements.setupPanel.hidden, false);
+  assert.equal(harness.elements.setupLabel.textContent, "Agent setup");
+  assertAgentHandoff(harness.elements);
   assert.equal(harness.elements.setupCopyText.textContent, "");
 
   harness.storageChanges.emit(
@@ -404,7 +428,7 @@ async function runPopupRepairMatrix() {
       },
       label: "Update needed",
       patterns: [/Update the local host/, /reconnect/],
-      setupPatterns: [/Run this in Terminal/],
+      setupPatterns: [/coding agent/],
       setupVisible: true,
       resumeEnabled: true,
     },
@@ -415,7 +439,7 @@ async function runPopupRepairMatrix() {
       },
       label: "Update needed",
       patterns: [/Update the local host/, /reconnect/],
-      setupPatterns: [/Run this in Terminal/],
+      setupPatterns: [/coding agent/],
       setupVisible: true,
       resumeEnabled: true,
     },
@@ -468,17 +492,16 @@ async function runPopupRepairMatrix() {
     for (const pattern of entry.patterns) {
       assert.match(harness.elements.detailText.textContent, pattern);
     }
-    assert.equal(harness.elements.setupPanel.hidden, !entry.setupVisible);
+    assert.equal(harness.elements.setupPanel.hidden, false);
+    assertAgentHandoff(harness.elements);
     if (entry.setupVisible) {
-      assert.match(harness.elements.setupCommand.textContent, /github\.com\/open-browser-use\/open-browser-use\/releases\/latest\/download\/install\.sh/);
-      assert.match(harness.elements.setupCommand.textContent, /obu bootstrap --yes --all/);
-      assert.match(harness.elements.setupCommand.textContent, /--agents=auto/);
-      assert.doesNotMatch(harness.elements.setupCommand.textContent, /\n/);
+      assert.equal(harness.elements.setupLabel.textContent, "Setup");
       for (const pattern of entry.setupPatterns ?? []) {
         assert.match(harness.elements.setupText.textContent, pattern);
       }
     } else {
-      assert.equal(harness.elements.setupCommand.textContent, "");
+      assert.equal(harness.elements.setupLabel.textContent, "Agent setup");
+      assert.match(harness.elements.setupText.textContent, /Connect another coding agent/);
       assert.equal(harness.elements.setupCopyText.textContent, "");
     }
   }
@@ -490,7 +513,7 @@ async function runPopupRepairMatrix() {
   assert.equal(harness.elements.resumeButton.disabled, true);
 }
 
-async function runPopupSetupCopyFailure() {
+async function runPopupAgentCopyFailure() {
   const harness = installPopupHarness([
     {
       state: "error",
@@ -498,18 +521,18 @@ async function runPopupSetupCopyFailure() {
       diagnosis: "native_host_not_found",
     },
   ], { clipboardError: new Error("clipboard denied") });
-  await importPopup("setup-copy-failure");
+  await importPopup("agent-copy-failure");
   await waitFor(() => harness.elements.statusText.textContent === "Needs setup");
   assert.equal(harness.elements.setupPanel.hidden, false);
 
-  harness.elements.copySetupButton.click();
-  await waitFor(() => harness.elements.copySetupButton.textContent === "Try again");
+  harness.elements.copyAgentButton.click();
+  await waitFor(() => harness.elements.copyAgentButton.textContent === "Try again");
   await waitFor(() => /Copy unavailable/.test(harness.elements.setupCopyText.textContent));
   assert.equal(harness.clipboardWrites.length, 0);
   assert.equal(harness.elements.setupPanel.hidden, false);
 }
 
-async function runPopupStoreSetupCommand() {
+async function runPopupStoreHandoff() {
   runBuild("store");
   try {
     const harness = installPopupHarness([
@@ -519,14 +542,11 @@ async function runPopupStoreSetupCommand() {
         diagnosis: "native_host_not_found",
       },
     ]);
-    await importPopup("store-setup-command");
+    await importPopup("store-handoff");
     await waitFor(() => harness.elements.statusText.textContent === "Needs setup");
 
     assert.equal(harness.elements.setupPanel.hidden, false);
-    assert.match(harness.elements.setupCommand.textContent, /obu bootstrap --yes --all --channel=store/);
-    assert.match(harness.elements.setupCommand.textContent, new RegExp(`--extension-id=${runtimeExtensionId}`));
-    assert.match(harness.elements.setupCommand.textContent, /--agents=auto/);
-    assert.doesNotMatch(harness.elements.setupCommand.textContent, /\n/);
+    assertAgentHandoff(harness.elements, "store");
   } finally {
     runBuild("unpacked-dev");
   }
@@ -632,9 +652,10 @@ function installPopupHarness(responses, options = {}) {
     copyDebugButton: new FakeElement(),
     clearDebugButton: new FakeElement(),
     setupPanel: new FakeElement(),
+    setupLabel: new FakeElement(),
     setupText: new FakeElement(),
-    setupCommand: new FakeElement(),
-    copySetupButton: new FakeElement(),
+    agentHandoff: new FakeElement(),
+    copyAgentButton: new FakeElement(),
     setupCopyText: new FakeElement(),
   };
   const selectors = new Map([
@@ -649,9 +670,10 @@ function installPopupHarness(responses, options = {}) {
     ["#copy-debug-button", elements.copyDebugButton],
     ["#clear-debug-button", elements.clearDebugButton],
     ["#setup-panel", elements.setupPanel],
+    ["#setup-label", elements.setupLabel],
     ["#setup-text", elements.setupText],
-    ["#setup-command", elements.setupCommand],
-    ["#copy-setup-button", elements.copySetupButton],
+    ["#agent-handoff", elements.agentHandoff],
+    ["#copy-agent-button", elements.copyAgentButton],
     ["#setup-copy-text", elements.setupCopyText],
   ]);
   const sent = [];

@@ -185,6 +185,15 @@ h1 {
   scrollbar-color: oklch(0.76 0.045 255) transparent;
 }
 
+.handoff {
+  min-height: 5.25rem;
+  max-height: 5.25rem;
+  overflow-x: hidden;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
 .actions {
   display: grid;
   grid-template-columns: 1fr 1fr;

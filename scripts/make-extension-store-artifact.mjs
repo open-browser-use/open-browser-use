@@ -85,8 +85,14 @@ function assertStorePopup(contents) {
   if (!/const EXTENSION_CHANNEL = "store";/.test(contents)) {
     issues.push("popup.js must be built with EXTENSION_CHANNEL store");
   }
-  if (!contents.includes("--channel=store")) {
-    issues.push("popup.js must include Store setup and doctor command suffix");
+  if (!contents.includes("prompts/agent-install-prompt.md")) {
+    issues.push("popup.js must include the agent install prompt handoff");
+  }
+  if (!contents.includes("Extension channel:") || !contents.includes("Extension id:")) {
+    issues.push("popup.js must include extension channel/id handoff fields");
+  }
+  if (/curl -fsSL|obu bootstrap|Terminal command|Bootstrap:|Verify:/.test(contents)) {
+    issues.push("popup.js must not expose a Terminal setup command");
   }
   if (issues.length > 0) throw new Error(`Store popup validation failed: ${issues.join("; ")}`);
 }

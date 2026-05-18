@@ -1,9 +1,7 @@
 const STATUS_KEY = "OBU_NATIVE_HOST_STATUS";
 const DEBUG_LOG_KEY = "OBU_DEBUG_LOG";
-const GITHUB_INSTALL_URL = "https://github.com/open-browser-use/open-browser-use/releases/latest/download/install.sh";
 const EXTENSION_CHANNEL = "__OBU_EXTENSION_CHANNEL__";
-const SETUP_COMMAND = setupCommandForChannel(EXTENSION_CHANNEL, chrome.runtime.id);
-const SETUP_COPY_BUTTON_LABEL = "Copy Terminal command";
+const AGENT_COPY_BUTTON_LABEL = "Copy for agent";
 
 type ExtensionChannel = "unpacked-dev" | "store";
 
@@ -30,7 +28,6 @@ type HostDiagnosis =
 type NativeHostAdvice = {
   detail?: string;
   setupText?: string;
-  setupCommand?: string;
   showSetup: boolean;
 };
 
@@ -51,9 +48,10 @@ const dot = document.querySelector<HTMLSpanElement>("#status-dot");
 const statusText = document.querySelector<HTMLParagraphElement>("#status-text");
 const detailText = document.querySelector<HTMLParagraphElement>("#detail-text");
 const setupPanel = document.querySelector<HTMLElement>("#setup-panel");
+const setupLabel = document.querySelector<HTMLParagraphElement>("#setup-label");
 const setupText = document.querySelector<HTMLParagraphElement>("#setup-text");
-const setupCommand = document.querySelector<HTMLPreElement>("#setup-command");
-const copySetupButton = document.querySelector<HTMLButtonElement>("#copy-setup-button");
+const agentHandoff = document.querySelector<HTMLPreElement>("#agent-handoff");
+const copyAgentButton = document.querySelector<HTMLButtonElement>("#copy-agent-button");
 const setupCopyText = document.querySelector<HTMLParagraphElement>("#setup-copy-text");
 const versionText = document.querySelector<HTMLSpanElement>("#version-text");
 const stopButton = document.querySelector<HTMLButtonElement>("#stop-button");
@@ -68,7 +66,7 @@ let currentDebug: DebugLogStatus = { enabled: false, entries: [] };
 let setupCopyResetTimer: ReturnType<typeof setTimeout> | undefined;
 
 versionText!.textContent = `Version ${chrome.runtime.getManifest().version}`;
-copySetupButton!.textContent = SETUP_COPY_BUTTON_LABEL;
+copyAgentButton!.textContent = AGENT_COPY_BUTTON_LABEL;
 
 void refreshStatus();
 void refreshDebugStatus();
@@ -89,8 +87,8 @@ resumeButton!.addEventListener("click", () => {
   void sendControlMessage("RESUME_BROWSER_CONTROL", resumeButton!);
 });
 
-copySetupButton!.addEventListener("click", () => {
-  void copySetupCommand();
+copyAgentButton!.addEventListener("click", () => {
+  void copyAgentHandoff();
 });
 
 debugToggleButton!.addEventListener("click", () => {
@@ -179,22 +177,35 @@ async function clearDebugLogs(): Promise<void> {
   }
 }
 
-async function copySetupCommand(): Promise<void> {
-  copySetupButton!.disabled = true;
+async function copyAgentHandoff(): Promise<void> {
+  await copySetupText({
+    button: copyAgentButton!,
+    text: (agentHandoff!.textContent ?? "").trim(),
+    unavailable: "agent setup handoff unavailable",
+    success: "Copied. Paste into your coding agent, then click Resume when it finishes.",
+  });
+}
+
+async function copySetupText(input: {
+  button: HTMLButtonElement;
+  text: string;
+  unavailable: string;
+  success: string;
+}): Promise<void> {
+  input.button.disabled = true;
   clearSetupCopyResetTimer();
   try {
-    const command = (setupCommand!.textContent ?? "").trim();
-    if (command.length === 0) throw new Error("setup command unavailable");
-    await writeClipboard(command);
-    copySetupButton!.textContent = "Copied";
-    setupCopyText!.textContent = "Copied. Paste into Terminal, then click Resume when it finishes.";
+    if (input.text.length === 0) throw new Error(input.unavailable);
+    await writeClipboard(input.text);
+    input.button.textContent = "Copied";
+    setupCopyText!.textContent = input.success;
   } catch {
-    copySetupButton!.textContent = "Try again";
-    setupCopyText!.textContent = "Copy unavailable. Select the command manually.";
+    input.button.textContent = "Try again";
+    setupCopyText!.textContent = "Copy unavailable. Select the text manually.";
   } finally {
-    copySetupButton!.disabled = false;
+    input.button.disabled = false;
     setupCopyResetTimer = setTimeout(() => {
-      copySetupButton!.textContent = SETUP_COPY_BUTTON_LABEL;
+      copyAgentButton!.textContent = AGENT_COPY_BUTTON_LABEL;
       setupCopyResetTimer = undefined;
     }, 1400);
   }
@@ -218,15 +229,19 @@ function render(status: HostStatus): void {
 }
 
 function renderSetup(advice: NativeHostAdvice): void {
-  const text = advice.showSetup ? advice.setupText ?? "" : "";
-  const command = advice.showSetup ? advice.setupCommand ?? "" : "";
-  const changed = setupText!.textContent !== text || setupCommand!.textContent !== command;
-  setupPanel!.hidden = !advice.showSetup;
+  const text = advice.showSetup ? advice.setupText ?? "" : "Connect another coding agent to this browser.";
+  const handoff = agentHandoffForChannel(EXTENSION_CHANNEL, chrome.runtime.id);
+  const label = advice.showSetup ? "Setup" : "Agent setup";
+  const changed = setupLabel!.textContent !== label
+    || setupText!.textContent !== text
+    || agentHandoff!.textContent !== handoff;
+  setupPanel!.hidden = false;
+  setupLabel!.textContent = label;
   setupText!.textContent = text;
-  setupCommand!.textContent = command;
-  if (!advice.showSetup || changed) {
+  agentHandoff!.textContent = handoff;
+  if (changed) {
     clearSetupCopyResetTimer();
-    copySetupButton!.textContent = SETUP_COPY_BUTTON_LABEL;
+    copyAgentButton!.textContent = AGENT_COPY_BUTTON_LABEL;
     setupCopyText!.textContent = "";
   }
 }
@@ -325,32 +340,32 @@ function nativeHostAdvice(status: HostStatus): NativeHostAdvice {
     case "version_mismatch":
       return withSetup(
         "Update the local host, then reconnect.",
-        "Run this in Terminal, then return here and click Resume.",
+        "Give this to your coding agent, then return here and click Resume.",
       );
     case "native_host_not_found":
       return withSetup(
         "Install the local host, then reconnect.",
-        "Run this in Terminal to install open-browser-use and register the host.",
+        "Ask your coding agent to install open-browser-use and register the host.",
       );
     case "native_host_forbidden":
       return withSetup(
         "Refresh this extension's host permission, then reconnect.",
-        "Run this in Terminal to refresh the native host registration.",
+        "Ask your coding agent to refresh the native host registration.",
       );
     case "native_host_crashed":
       return withSetup(
         "Repair the local host, then reconnect.",
-        "Run this in Terminal to repair open-browser-use setup.",
+        "Ask your coding agent to repair open-browser-use setup.",
       );
     case "native_host_hello_timeout":
       return withSetup(
         "Repair the local host, then reconnect.",
-        "Run this in Terminal to repair open-browser-use setup.",
+        "Ask your coding agent to repair open-browser-use setup.",
       );
     case "native_host_heartbeat_timeout":
       return withSetup(
         "Repair the local host, then reconnect.",
-        "Run this in Terminal to repair open-browser-use setup.",
+        "Ask your coding agent to repair open-browser-use setup.",
       );
     case "native_host_unavailable":
       if (isDisconnectedPortObject(status.message)) {
@@ -358,7 +373,7 @@ function nativeHostAdvice(status: HostStatus): NativeHostAdvice {
       }
       return withSetup(
         "Repair setup, then reconnect.",
-        "Run this in Terminal to repair open-browser-use setup.",
+        "Ask your coding agent to repair open-browser-use setup.",
       );
     case "native_host_disconnected":
       if (isDisconnectedPortObject(status.message)) {
@@ -372,7 +387,7 @@ function nativeHostAdvice(status: HostStatus): NativeHostAdvice {
       if (status.state === "error") {
         return withSetup(
           "Repair setup, then reconnect.",
-          "Run this in Terminal to repair open-browser-use setup.",
+          "Ask your coding agent to repair open-browser-use setup.",
         );
       }
       return { showSetup: false };
@@ -383,7 +398,6 @@ function withSetup(detail: string, setupText: string): NativeHostAdvice {
   return {
     detail,
     setupText,
-    setupCommand: SETUP_COMMAND,
     showSetup: true,
   };
 }
@@ -391,20 +405,28 @@ function withSetup(detail: string, setupText: string): NativeHostAdvice {
 function disconnectedPortObjectAdvice(): NativeHostAdvice {
   return withSetup(
     "The local host is not connected. Reinstall it, then reconnect.",
-    "Run this in Terminal to reinstall open-browser-use and register the host.",
+    "Ask your coding agent to reinstall open-browser-use and register the host.",
   );
 }
 
-function setupCommandForChannel(channel: string, runtimeExtensionId?: string): string {
+function agentHandoffForChannel(channel: string, runtimeExtensionId: string | undefined): string {
   const resolvedChannel: ExtensionChannel = channel === "store" ? "store" : "unpacked-dev";
-  const channelSuffix = resolvedChannel === "store" ? " --channel=store" : "";
-  const extensionIdSuffix = resolvedChannel === "store" && isExtensionId(runtimeExtensionId)
-    ? ` --extension-id=${runtimeExtensionId}`
-    : "";
+  const extensionId = isExtensionId(runtimeExtensionId) ? runtimeExtensionId : "<extension-id>";
+  const version = chrome.runtime.getManifest().version;
+  const promptUrl = `https://github.com/open-browser-use/open-browser-use/blob/v${version}/prompts/agent-install-prompt.md`;
   return [
-    `curl -fsSL ${GITHUB_INSTALL_URL} | sh &&`,
-    `~/.obu/bin/obu bootstrap --yes --all${channelSuffix}${extensionIdSuffix} --agents=auto`,
-  ].join(" ");
+    "Install, repair, or adapt open-browser-use for this browser extension.",
+    `Prompt: ${promptUrl}`,
+    `Extension channel: ${resolvedChannel}`,
+    `Extension id: ${extensionId}`,
+    "Use the exact extension channel and id when native-host repair or browser pairing is needed.",
+    "Let the linked prompt choose the install, repair, MCP config, and agent-instruction steps for this agent and project.",
+    "Configure MCP with the generic open-browser-use stdio server first; use OBU's built-in adapter commands as secondary helpers.",
+    "Make open-browser-use the primary BrowserUse/browser automation tool for this agent.",
+    "Configure the current agent, and any other supported agent the user requests, such as Codex, Cursor, or Claude Code.",
+    "Update the project's core AGENTS.md, AGENT.md, CLAUDE.md, or equivalent agent instructions when one exists; otherwise show the instruction snippet.",
+    "After setup or repair, verify browser/native-host state and return to this popup to click Resume when needed.",
+  ].join("\n");
 }
 
 function retryLabel(status: HostStatus): string {
