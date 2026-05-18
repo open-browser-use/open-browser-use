@@ -15,8 +15,10 @@ through `import.meta.__obuNativePipe` on the trusted module. It does not read
 const browser = await agent.browsers.get("chrome");
 const tab = await browser.tabs.create("https://example.com");
 await tab.attach();
+await tab.goto("https://example.com/docs");
 await tab.locator("h1").click();
 await tab.screenshotForModel({ clip: { x: 0, y: 0, width: 900, height: 700, scale: 0.5 } });
+await browser.turnEnded();
 ```
 
 Backend discovery is lazy. `setupObuRuntime()` installs `agent` without opening
@@ -61,6 +63,19 @@ Call `agent.help()` for the live API table. Main layers:
 
 `browser.tabs.create()` accepts either a URL string or `{ url }`. With no URL it
 creates `about:blank`, not Chrome's extension-restricted new-tab page.
+Keep a `Tab` handle and use `tab.goto(url)` for repeated same-task navigation.
+`browser.turnEnded()` marks a turn boundary while preserving active control;
+`browser.finishTurn(...)` first finalizes tabs and is for close/release/handoff
+or deliverable workflows.
+One session can keep multiple `Tab` handles and move data between them:
+
+```js
+const source = await browser.tabs.create("https://example.com/source");
+const target = await browser.tabs.create("https://example.com/target");
+const text = await source.getByRole("main").innerText();
+await target.getByLabel("Notes").fill(text);
+```
+
 `tab.screenshot()` accepts the Playwright-shaped subset `{ type, quality, clip,
 fullPage }`. Prefer `tab.screenshotForModel()` for agent observations; it
 defaults to compressed JPEG and emits an MCP image resource when the kernel

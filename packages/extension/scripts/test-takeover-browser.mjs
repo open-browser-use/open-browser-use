@@ -297,9 +297,12 @@ new Promise((resolve, reject) => {
     }
     chrome.scripting.executeScript({
       target: { tabId: tab.id, allFrames: true },
-      args: ["__OBU_CURSOR_MESSAGE__", ${JSON.stringify(message)}],
-      func: (eventName, payload) => {
-        globalThis.dispatchEvent(new CustomEvent(eventName, { detail: payload }));
+      world: "ISOLATED",
+      args: ["__OBU_CURSOR_CONTENT_SCRIPT_HANDLE_MESSAGE__", ${JSON.stringify(message)}],
+      func: (handlerName, payload) => {
+        const handler = globalThis[handlerName];
+        if (typeof handler !== "function") throw new Error("open-browser-use cursor handler not installed");
+        handler(payload);
       },
     }).then(() => resolve({ ok: true }), reject);
   });

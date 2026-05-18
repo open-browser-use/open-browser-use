@@ -50,6 +50,9 @@ declare const chrome: {
     group(options: { tabIds: number | number[]; groupId?: number }): Promise<number>;
     ungroup(tabIds: number | number[]): Promise<void>;
     sendMessage(tabId: number, message: unknown): Promise<unknown>;
+    onRemoved: {
+      addListener(listener: (tabId: number, removeInfo?: { windowId?: number; isWindowClosing?: boolean }) => void): void;
+    };
   };
   windows: {
     get(windowId: number): Promise<ChromeWindow>;
@@ -61,8 +64,9 @@ declare const chrome: {
       func?: (...args: any[]) => unknown;
       args?: unknown[];
       injectImmediately?: boolean;
+      world?: "ISOLATED" | "MAIN";
       target: { tabId: number; frameIds?: number[]; allFrames?: boolean };
-    }): Promise<unknown>;
+    }): Promise<Array<{ frameId?: number; result?: unknown }>>;
   };
   tabGroups: {
     update(groupId: number, updateProperties: { title?: string; color?: string }): Promise<unknown>;

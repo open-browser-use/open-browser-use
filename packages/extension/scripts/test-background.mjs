@@ -44,6 +44,7 @@ class FakePort {
 const ports = [];
 const runtimeMessages = new EventTarget();
 const alarmEvents = new EventTarget();
+const tabRemovedEvents = new EventTarget();
 const debuggerEvents = new EventTarget();
 const debuggerDetaches = new EventTarget();
 const downloadCreates = new EventTarget();
@@ -161,6 +162,7 @@ globalThis.chrome = {
     async remove(tabId) {
       calls.tabsRemove.push(tabId);
       tabs.delete(tabId);
+      tabRemovedEvents.emit(tabId, { windowId: 1, isWindowClosing: false });
     },
     async sendMessage(tabId, message) {
       if (message?.type === "OBU_CONTENT_PING") {
@@ -185,6 +187,7 @@ globalThis.chrome = {
       }
       return {};
     },
+    onRemoved: tabRemovedEvents,
   },
   windows: {
     async get(windowId) {
@@ -206,7 +209,7 @@ globalThis.chrome = {
         if (message?.type === "OBU_CURSOR_MOVE") {
           if (suppressNextCursorArrival) {
             suppressNextCursorArrival = false;
-            return [{}];
+            return [{ result: true }];
           }
           setTimeout(() => {
             runtimeMessages.emit({
@@ -217,6 +220,7 @@ globalThis.chrome = {
             }, {}, () => {});
           }, 1);
         }
+        return [{ result: true }];
       }
       return [{}];
     },
@@ -302,6 +306,24 @@ assert.equal(created.result.tab.tabId, 1);
 assert.equal(calls.tabsCreate.length, 1);
 assert.equal(calls.tabsCreate[0].url, "https://example.com/");
 assert.equal(calls.tabsGroup[0].tabIds, 1);
+assert.ok(calls.tabsSendMessage.some((call) =>
+  call.tabId === 1 &&
+  call.message.type === "OBU_TAKEOVER_STATE" &&
+  call.message.active === true &&
+  call.message.lockInputs === true &&
+  call.message.sessionId === "session" &&
+  call.message.turnId === "turn",
+));
+const reassertStart = calls.tabsSendMessage.length;
+assert.deepEqual(await runtimeMessage({ type: "OBU_CONTENT_READY" }, { tab: { id: 1 } }), { ok: true });
+assert.ok(calls.tabsSendMessage.slice(reassertStart).some((call) =>
+  call.tabId === 1 &&
+  call.message.type === "OBU_TAKEOVER_STATE" &&
+  call.message.active === true &&
+  call.message.lockInputs === true &&
+  call.message.sessionId === "session" &&
+  call.message.turnId === "turn",
+));
 
 const blankCreated = await hostRequest(port, "createTab", {
   session_id: "session",
@@ -349,8 +371,10 @@ staleOldPort.emit({
     timeoutMs: 20,
   },
 });
+const hideCountBeforeStaleDisconnect = calls.tabsSendMessage.filter((call) => call.message.type === "OBU_CURSOR_HIDE").length;
 staleOldPort.disconnect();
 await waitFor(() => storage[statusKey]?.state === "disconnected");
+await waitFor(() => calls.tabsSendMessage.filter((call) => call.message.type === "OBU_CURSOR_HIDE").length > hideCountBeforeStaleDisconnect);
 const staleReconnectPortCount = ports.length;
 alarmEvents.emit({ name: "obu.reconnectNativeHost" });
 const staleNewPort = await waitFor(() => ports[staleReconnectPortCount]);
@@ -509,8 +533,45 @@ assert.ok(calls.tabsSendMessage.some((call) => call.message.type === "OBU_CURSOR
 assert.ok(calls.tabsSendMessage.some((call) =>
   call.message.type === "OBU_INPUT_BYPASS" &&
   call.message.reason === "cdp-mouse" &&
+  call.message.eventFamilies?.join(",") === "pointer" &&
   call.message.sessionId === "session" &&
   call.message.turnId === "turn",
+));
+await hostRequest(port, "executeCdp", {
+  session_id: "session",
+  turn_id: "turn",
+  target: { tabId: 1 },
+  method: "Input.dispatchMouseEvent",
+  commandParams: { type: "mouseWheel", x: 33, y: 44, deltaX: 0, deltaY: 120 },
+});
+await hostRequest(port, "executeCdp", {
+  session_id: "session",
+  turn_id: "turn",
+  target: { tabId: 1 },
+  method: "Input.dispatchKeyEvent",
+  commandParams: { type: "keyDown", key: "A" },
+});
+await hostRequest(port, "executeCdp", {
+  session_id: "session",
+  turn_id: "turn",
+  target: { tabId: 1 },
+  method: "Input.insertText",
+  commandParams: { text: "a" },
+});
+assert.ok(calls.tabsSendMessage.some((call) =>
+  call.message.type === "OBU_INPUT_BYPASS" &&
+  call.message.reason === "cdp-mouse" &&
+  call.message.eventFamilies?.join(",") === "wheel"
+));
+assert.ok(calls.tabsSendMessage.some((call) =>
+  call.message.type === "OBU_INPUT_BYPASS" &&
+  call.message.reason === "cdp-keyboard" &&
+  call.message.eventFamilies?.join(",") === "keyboard,text"
+));
+assert.ok(calls.tabsSendMessage.some((call) =>
+  call.message.type === "OBU_INPUT_BYPASS" &&
+  call.message.reason === "cdp-text" &&
+  call.message.eventFamilies?.join(",") === "text"
 ));
 const mousePressCommandIndex = calls.debuggerSendCommand.findIndex((call) =>
   call.method === "Input.dispatchMouseEvent" &&
@@ -524,11 +585,13 @@ assert.ok(mouseBypassIndex >= 0);
 assert.ok(mousePressCommandIndex >= 0);
 
 const hideCountBeforeTurnEnd = calls.tabsSendMessage.filter((call) => call.message.type === "OBU_CURSOR_HIDE").length;
+const moveCountBeforeTurnEnd = calls.tabsSendMessage.filter((call) => call.message.type === "OBU_CURSOR_MOVE").length;
 await hostRequest(port, "turnEnded", {
   session_id: "session",
   turn_id: "turn",
 });
-assert.ok(calls.tabsSendMessage.filter((call) => call.message.type === "OBU_CURSOR_HIDE").length > hideCountBeforeTurnEnd);
+assert.equal(calls.tabsSendMessage.filter((call) => call.message.type === "OBU_CURSOR_HIDE").length, hideCountBeforeTurnEnd);
+assert.equal(calls.tabsSendMessage.filter((call) => call.message.type === "OBU_CURSOR_MOVE").length, moveCountBeforeTurnEnd);
 
 debuggerEvents.emit({ tabId: 1 }, "Page.downloadWillBegin", {
   url: "https://example.com/file.txt",
@@ -598,6 +661,26 @@ const releaseTabs = await hostRequest(port, "getTabs", {
 });
 assert.deepEqual(releaseTabs.result.tabs, []);
 
+const removeCreated = await hostRequest(port, "createTab", {
+  session_id: "remove-session",
+  turn_id: "turn",
+  url: "https://remove.example/",
+});
+const removedTabId = removeCreated.result.tab.tabId;
+const removedReassertStart = calls.tabsSendMessage.length;
+tabs.delete(removedTabId);
+tabRemovedEvents.emit(removedTabId, { windowId: 1, isWindowClosing: false });
+const removedTabs = await hostRequest(port, "getTabs", {
+  session_id: "remove-session",
+  turn_id: "turn",
+});
+assert.deepEqual(removedTabs.result.tabs, []);
+assert.deepEqual(await runtimeMessage({ type: "OBU_CONTENT_READY" }, { tab: { id: removedTabId } }), { ok: true });
+assert.equal(calls.tabsSendMessage.slice(removedReassertStart).some((call) =>
+  call.tabId === removedTabId &&
+  call.message.type === "OBU_TAKEOVER_STATE"
+), false);
+
 const handoffCreated = await hostRequest(port, "createTab", {
   session_id: "keep-session",
   turn_id: "turn",
@@ -646,6 +729,13 @@ const deliverableCdp = await hostRequest(port, "executeCdp", {
   method: "Runtime.evaluate",
 });
 assert.match(deliverableCdp.error.message, /not owned by this open-browser-use session/);
+const handoffCdp = await hostRequest(port, "executeCdp", {
+  session_id: "keep-session",
+  turn_id: "turn",
+  target: { tabId: handoffTabId },
+  method: "Runtime.evaluate",
+});
+assert.match(handoffCdp.error.message, /not actively controlled/);
 assert.deepEqual(
   sessionStateTabs("keep-session").map((tab) => [tab.tabId, tab.status]),
   [
@@ -1010,18 +1100,17 @@ async function hostRequest(targetPort, method, params) {
 }
 
 async function popupMessage(message) {
-  assert.ok(runtimeMessages.listeners[0]);
-  return new Promise((resolve) => {
-    const keepAlive = runtimeMessages.listeners[0](message, {}, resolve);
-    assert.equal(keepAlive, true);
-  });
+  return await runtimeMessage(message);
 }
 
 async function popupMessageFromLatest(message) {
-  const listener = runtimeMessages.listeners.at(-1);
+  return await runtimeMessage(message, {}, runtimeMessages.listeners.at(-1));
+}
+
+async function runtimeMessage(message, sender = {}, listener = runtimeMessages.listeners[0]) {
   assert.ok(listener);
   return new Promise((resolve) => {
-    const keepAlive = listener(message, {}, resolve);
+    const keepAlive = listener(message, sender, resolve);
     assert.equal(keepAlive, true);
   });
 }
