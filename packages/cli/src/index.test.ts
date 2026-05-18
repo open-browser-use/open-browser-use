@@ -234,7 +234,7 @@ test("setup summary preserves manual agent next actions", async (t) => {
 
   assert.equal(result.code, 1);
   assert.equal(result.stderr, "");
-  assert.match(result.stdout, /Setup needs 1 manual step\./);
+  assert.match(result.stdout, /Setup needs 1 follow-up step\./);
   assert.match(result.stdout, /obu mcp-config --agent=continue --print/);
   assert.match(result.stdout, /obu doctor browser --channel=store/);
   assert.doesNotMatch(result.stdout, /agent-continue:/);
@@ -267,11 +267,11 @@ test("setup recovery mode exits zero for manual action but not failed setup", as
 
   const manualDefault = await runCli(["setup", "--yes", "--path", source, "--skip-agents"], env);
   assert.equal(manualDefault.code, 1);
-  assert.match(manualDefault.stdout, /Setup needs 1 manual step\./);
+  assert.match(manualDefault.stdout, /Setup needs 1 follow-up step\./);
 
   const manualRecovery = await runCli(["setup", "--yes", "--path", source, "--skip-agents", "--recovery"], env);
   assert.equal(manualRecovery.code, 0);
-  assert.match(manualRecovery.stdout, /Setup needs 1 manual step\./);
+  assert.match(manualRecovery.stdout, /Setup needs 1 follow-up step\./);
 
   const failedHome = await mkdtemp(path.join(os.tmpdir(), "obu-cli-failed-home-"));
   t.after(() => rm(failedHome, { recursive: true, force: true }));

@@ -19,7 +19,7 @@ export function formatSetupSummary(report: SetupJson): string {
   } else if (report.result === "complete") {
     rows.push("Setup complete.");
   } else if (report.result === "manual_action_required") {
-    rows.push(`Setup needs ${plural(countActions(report.nextActions, "manual") || 1, "manual step")}.`);
+    rows.push(`Setup needs ${plural(countManualFollowUps(report.steps) || 1, "follow-up step")}.`);
   } else {
     rows.push("Setup failed.");
     rows.push(...formatFailedSteps(report.steps));
@@ -171,8 +171,8 @@ function formatNextActions(actions: NextAction[], heading = "Next actions:"): st
   return rows;
 }
 
-function countActions(actions: NextAction[], kind: NextAction["kind"]): number {
-  return actions.filter((action) => action.kind === kind).length;
+function countManualFollowUps(steps: SetupJson["steps"]): number {
+  return steps.filter((step) => step.status === "manual_action_required").length;
 }
 
 function countStatuses(actions: InstallHostAction[]): Record<InstallHostAction["status"], number> {

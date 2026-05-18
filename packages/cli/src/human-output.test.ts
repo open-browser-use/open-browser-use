@@ -94,3 +94,29 @@ test("dry-run summaries still surface failures", () => {
   assert.match(update, /Extension update dry run: no changes made\./);
   assert.match(update, /extension-source: could not validate extension payload/);
 });
+
+test("setup summary counts manual follow-ups from step statuses", () => {
+  const formatted = formatSetupSummary({
+    schemaVersion: 1,
+    generatedAt: "2026-05-18T00:00:00.000Z",
+    obuVersion: "0.1.0",
+    extensionChannel: "store",
+    extensionId: "abcdefghijklmnopabcdefghijklmnop",
+    extensionIdSource: "explicit-argument",
+    dryRun: false,
+    result: "manual_action_required",
+    steps: [
+      { id: "runtime-dir", status: "applied", message: "ensured runtime directory" },
+      { id: "agent-continue", status: "manual_action_required", message: "configure continue manually" },
+      { id: "agent-codex-cli", status: "manual_action_required", message: "configure codex-cli manually" },
+    ],
+    nextActions: [
+      { kind: "command", value: "obu mcp-config --agent=continue --print" },
+      { kind: "command", value: "obu mcp-config --agent=codex-cli --print" },
+    ],
+  });
+
+  assert.match(formatted, /Setup needs 2 follow-up steps\./);
+  assert.match(formatted, /Run:\n  obu mcp-config --agent=continue --print/);
+  assert.match(formatted, /Run:\n  obu mcp-config --agent=codex-cli --print/);
+});
