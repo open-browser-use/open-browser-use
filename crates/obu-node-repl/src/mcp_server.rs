@@ -187,6 +187,7 @@ static ADD_MODULE_DIR_SCHEMA: LazyLock<Arc<rmcp::model::JsonObject>> = LazyLock:
 
 /// `js` arguments.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JsArgs {
     /// JavaScript source.
     pub source: String,
@@ -197,10 +198,12 @@ pub struct JsArgs {
 
 /// `js_reset` arguments.
 #[derive(Debug, Deserialize, Default)]
+#[serde(deny_unknown_fields)]
 pub struct JsResetArgs {}
 
 /// `js_add_module_dir` arguments.
 #[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct JsAddModuleDirArgs {
     /// Absolute directory path.
     pub path: String,
@@ -546,6 +549,7 @@ fn value_to_meta(value: Value) -> Option<Meta> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     #[test]
     fn tool_names_use_stable_public_names() {
@@ -557,5 +561,25 @@ mod tests {
             names,
             ["js", "browser_status", "js_reset", "js_add_module_dir"]
         );
+    }
+
+    #[test]
+    fn decode_args_rejects_unknown_fields_declared_out_of_schema() {
+        let mut empty_args = rmcp::model::JsonObject::new();
+        empty_args.insert("unexpected".to_string(), json!(true));
+        let empty_result = decode_args::<JsResetArgs>(Some(empty_args));
+        assert!(empty_result.is_err());
+
+        let mut js_args = rmcp::model::JsonObject::new();
+        js_args.insert("source".to_string(), json!("1 + 1"));
+        js_args.insert("unexpected".to_string(), json!(true));
+        let js_result = decode_args::<JsArgs>(Some(js_args));
+        assert!(js_result.is_err());
+
+        let mut add_dir_args = rmcp::model::JsonObject::new();
+        add_dir_args.insert("path".to_string(), json!("/tmp"));
+        add_dir_args.insert("unexpected".to_string(), json!(true));
+        let add_dir_result = decode_args::<JsAddModuleDirArgs>(Some(add_dir_args));
+        assert!(add_dir_result.is_err());
     }
 }
