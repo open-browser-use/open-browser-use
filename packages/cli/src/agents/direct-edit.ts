@@ -113,6 +113,16 @@ export async function writeDirectEditAgentConfig(
   };
 }
 
+export async function canAutoConfigureDirectEditAgent(
+  agent: DirectEditAgentId,
+  options: DirectEditOptions = {},
+): Promise<boolean> {
+  const targetPath = directEditConfigPath(agent, options);
+  const existing = await readOptionalFile(targetPath);
+  if (existing !== undefined) return validateJsonc(existing).length === 0;
+  return access(path.dirname(targetPath), constants.F_OK).then(() => true).catch(() => false);
+}
+
 export async function listOpenBrowserUseBackups(
   agents: DirectEditAgentId[],
   options: DirectEditOptions = {},

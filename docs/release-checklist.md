@@ -207,11 +207,10 @@ Required draft checks:
      --store-extension-id <STORE_EXTENSION_ID>
    ```
 
-7. Run Store-channel setup on a clean profile:
+7. Run Store-channel bootstrap on a clean profile:
 
    ```bash
-   obu setup --yes --all --skip-agents --channel=store
-   obu doctor browser --repair --channel=store
+   obu bootstrap --yes --all --channel=store --extension-id <STORE_EXTENSION_ID> --agents=auto
    obu doctor browser --channel=store --json
    ```
 
@@ -234,7 +233,7 @@ Verify:
 Run from a fresh temp home with Chrome or Chrome for Testing:
 
 ```bash
-obu setup --yes --skip-agents
+obu bootstrap --yes --all --agents=auto
 obu doctor --json
 obu doctor --strict --json
 ```

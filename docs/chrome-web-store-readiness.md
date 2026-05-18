@@ -103,16 +103,14 @@ Popup:
 
 ```bash
 curl -fsSL https://github.com/open-browser-use/open-browser-use/releases/latest/download/install.sh | sh && \
-~/.obu/bin/obu setup --yes --all --skip-agents && \
-~/.obu/bin/obu doctor browser --repair
+~/.obu/bin/obu bootstrap --yes --all --agents=auto
 ```
 
 - Store popup builds copy the Store-channel recovery command:
 
 ```bash
 curl -fsSL https://github.com/open-browser-use/open-browser-use/releases/latest/download/install.sh | sh && \
-~/.obu/bin/obu setup --yes --all --skip-agents --channel=store && \
-~/.obu/bin/obu doctor browser --repair --channel=store
+~/.obu/bin/obu bootstrap --yes --all --channel=store --extension-id=<store-extension-id> --agents=auto
 ```
 
 ## P0 Gaps
@@ -172,8 +170,7 @@ Implemented work:
 
 ```bash
 curl -fsSL https://github.com/open-browser-use/open-browser-use/releases/latest/download/install.sh | sh && \
-~/.obu/bin/obu setup --yes --all --skip-agents --channel=store && \
-~/.obu/bin/obu doctor browser --repair --channel=store
+~/.obu/bin/obu bootstrap --yes --all --channel=store --extension-id=<store-extension-id> --agents=auto
 ```
 
 Remaining release dependency: the command depends on a release payload that

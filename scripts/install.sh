@@ -193,8 +193,25 @@ resolve_release_artifact() {
 
 update_profile_path() {
   bin_dir="$1"
-  profile="${HOME:-}/.profile"
   [ -n "${HOME:-}" ] || return 0
+  append_profile_path "${HOME:-}/.profile" "$bin_dir"
+  shell_name=""
+  if [ -n "${SHELL:-}" ]; then
+    shell_name="$(basename "$SHELL")"
+  fi
+  case "$shell_name" in
+    zsh)
+      append_profile_path "${HOME:-}/.zshrc" "$bin_dir"
+      ;;
+    bash)
+      append_profile_path "${HOME:-}/.bashrc" "$bin_dir"
+      ;;
+  esac
+}
+
+append_profile_path() {
+  profile="$1"
+  bin_dir="$2"
   mkdir -p "$(dirname "$profile")"
   marker="# open-browser-use installer PATH"
   if [ -f "$profile" ] && grep -F "$marker" "$profile" >/dev/null 2>&1; then
@@ -205,6 +222,41 @@ update_profile_path() {
     echo "$marker"
     echo "export PATH=\"$bin_dir:\$PATH\""
   } >> "$profile"
+}
+
+install_path_shims() {
+  bin_dir="$1"
+  [ -n "${PATH:-}" ] || return 1
+  old_ifs="$IFS"
+  IFS=:
+  set -- $PATH
+  IFS="$old_ifs"
+  for dir do
+    [ -n "$dir" ] || continue
+    [ -d "$dir" ] || continue
+    [ -w "$dir" ] || continue
+    obu_link="$dir/obu"
+    if [ "$obu_link" = "$bin_dir/obu" ]; then
+      printf '%s\n' "$dir"
+      return 0
+    fi
+    if [ -e "$obu_link" ] || [ -L "$obu_link" ]; then
+      if [ "$(readlink "$obu_link" 2>/dev/null || true)" = "$bin_dir/obu" ]; then
+        printf '%s\n' "$dir"
+        return 0
+      fi
+      continue
+    fi
+    if ln -s "$bin_dir/obu" "$obu_link" 2>/dev/null; then
+      open_link="$dir/open-browser-use"
+      if [ ! -e "$open_link" ] && [ ! -L "$open_link" ]; then
+        ln -s "$bin_dir/open-browser-use" "$open_link" 2>/dev/null || true
+      fi
+      printf '%s\n' "$dir"
+      return 0
+    fi
+  done
+  return 1
 }
 
 while [ "$#" -gt 0 ]; do
@@ -243,7 +295,7 @@ Environment:
   OBU_ARTIFACT_SHA256   Expected artifact SHA-256
   OBU_RELEASE_BASE_URL   Release asset base URL with manifest.tsv or manifest.json
   OBU_TARGET             Override target triple from release manifest
-  OBU_UNMANAGED_INSTALL Disable shell profile PATH edits
+  OBU_UNMANAGED_INSTALL Disable PATH integration
 USAGE
       exit 0
       ;;
@@ -313,7 +365,20 @@ ln -s "$PAYLOAD_NAME" "$INSTALL_DIR/payloads/current"
 cat > "$INSTALL_DIR/bin/obu" <<'SHIM'
 #!/bin/sh
 set -eu
-BIN_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+SOURCE="$0"
+while [ -L "$SOURCE" ]; do
+  SOURCE_DIR="$(CDPATH= cd -- "$(dirname -- "$SOURCE")" && pwd)"
+  SOURCE_TARGET="$(readlink "$SOURCE")"
+  case "$SOURCE_TARGET" in
+    /*)
+      SOURCE="$SOURCE_TARGET"
+      ;;
+    *)
+      SOURCE="$SOURCE_DIR/$SOURCE_TARGET"
+      ;;
+  esac
+done
+BIN_DIR="$(CDPATH= cd -- "$(dirname -- "$SOURCE")" && pwd)"
 PAYLOAD_ROOT="${OBU_PAYLOAD_ROOT:-"$BIN_DIR/../payloads/current"}"
 NODE_BIN="${OBU_NODE_BINARY:-"$PAYLOAD_ROOT/node/bin/node"}"
 export OBU_PAYLOAD_ROOT="$PAYLOAD_ROOT"
@@ -326,10 +391,16 @@ ln -sf obu "$INSTALL_DIR/bin/open-browser-use"
 log_verbose "shim: wrote $INSTALL_DIR/bin/obu"
 
 if [ "$NO_MODIFY_PATH" -eq 0 ] && [ "$UNMANAGED" != "1" ]; then
+  PATH_SHIM_DIR="$(install_path_shims "$INSTALL_DIR/bin" || true)"
+  if [ -n "$PATH_SHIM_DIR" ]; then
+    log_verbose "path: linked obu in $PATH_SHIM_DIR"
+  else
+    log_verbose "path: no writable current PATH directory for an immediate obu shim"
+  fi
   update_profile_path "$INSTALL_DIR/bin"
-  log_verbose "path: ensured $INSTALL_DIR/bin in ${HOME:-}/.profile"
+  log_verbose "path: ensured $INSTALL_DIR/bin in shell profile"
 else
-  log_verbose "path: skipped shell profile update"
+  log_verbose "path: skipped PATH integration"
 fi
 
 if [ -n "$SELECTED_TARGET" ]; then

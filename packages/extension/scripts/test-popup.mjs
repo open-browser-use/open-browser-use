@@ -44,8 +44,8 @@ await runPopupSetupCopyFailure();
 await runPopupStoreSetupCommand();
 await runPopupResumeFromFailureStates();
 await runPopupDebugLogs();
-await runPopupInitialFailure("missing status response", [undefined], "Native host status unavailable");
-await runPopupInitialFailure("runtime rejection", [new Error("status boom")], "status boom");
+await runPopupInitialFailure("missing status response", [undefined], "Repair setup, then reconnect.");
+await runPopupInitialFailure("runtime rejection", [new Error("status boom")], "Repair setup, then reconnect.");
 
 async function runPopupHappyPath() {
   const harness = installPopupHarness([
@@ -74,13 +74,15 @@ async function runPopupHappyPath() {
     },
     "local",
   );
-  assert.equal(harness.elements.statusText.textContent, "Version mismatch");
+  assert.equal(harness.elements.statusText.textContent, "Update needed");
   assert.equal(harness.elements.resumeButton.disabled, false);
-  assert.match(harness.elements.detailText.textContent, /Rebuild and reinstall the native host/);
+  assert.match(harness.elements.detailText.textContent, /Update the local host/);
   assert.equal(harness.elements.setupPanel.hidden, false);
-  assert.match(harness.elements.setupText.textContent, /Update the local open-browser-use host from GitHub/);
+  assert.match(harness.elements.setupText.textContent, /Run this in Terminal/);
   assert.match(harness.elements.setupCommand.textContent, /github\.com\/open-browser-use\/open-browser-use\/releases\/latest\/download\/install\.sh/);
-  assert.match(harness.elements.setupCommand.textContent, /obu setup --yes --all --skip-agents --recovery/);
+  assert.match(harness.elements.setupCommand.textContent, /obu bootstrap --yes --all/);
+  assert.match(harness.elements.setupCommand.textContent, /--agents=auto/);
+  assert.doesNotMatch(harness.elements.setupCommand.textContent, /\n/);
 
   harness.storageChanges.emit(
     {
@@ -128,9 +130,10 @@ async function runPopupHappyPath() {
     },
     "local",
   );
-  assert.equal(harness.elements.statusText.textContent, "Disconnected");
+  assert.equal(harness.elements.statusText.textContent, "Reconnecting");
+  assert.equal(harness.elements.dot.className, "dot reconnecting");
   assert.equal(harness.elements.resumeButton.disabled, false);
-  assert.match(harness.elements.detailText.textContent, /native host disconnected\. Retrying native host connection in 2s/);
+  assert.match(harness.elements.detailText.textContent, /Retrying in 2s/);
 
   harness.storageChanges.emit(
     {
@@ -143,16 +146,17 @@ async function runPopupHappyPath() {
     },
     "local",
   );
-  assert.equal(harness.elements.statusText.textContent, "Error");
+  assert.equal(harness.elements.statusText.textContent, "Needs setup");
   assert.equal(harness.elements.resumeButton.disabled, false);
-  assert.match(harness.elements.detailText.textContent, /Install the native host manifest/);
+  assert.match(harness.elements.detailText.textContent, /Install the local host/);
   assert.equal(harness.elements.setupPanel.hidden, false);
-  assert.match(harness.elements.setupText.textContent, /Install open-browser-use from GitHub/);
+  assert.match(harness.elements.setupText.textContent, /install open-browser-use/);
 
   harness.elements.copySetupButton.click();
-  await waitFor(() => harness.clipboardWrites.some((text) => text.includes("obu doctor browser --repair")));
+  await waitFor(() => harness.clipboardWrites.some((text) => text.includes("obu bootstrap --yes --all")));
+  await waitFor(() => harness.elements.copySetupButton.textContent === "Copied");
   await waitFor(() => /Paste into Terminal/.test(harness.elements.setupCopyText.textContent));
-  assert.match(harness.elements.setupCopyText.textContent, /Paste into Terminal/);
+  assert.match(harness.elements.setupCopyText.textContent, /click Resume/);
 
   harness.storageChanges.emit(
     {
@@ -177,7 +181,7 @@ async function runPopupHappyPath() {
     },
     "local",
   );
-  assert.match(harness.elements.detailText.textContent, /extension id allowed by the native host manifest/);
+  assert.match(harness.elements.detailText.textContent, /Refresh this extension's host permission/);
 
   harness.storageChanges.emit(
     {
@@ -190,7 +194,7 @@ async function runPopupHappyPath() {
     },
     "local",
   );
-  assert.match(harness.elements.detailText.textContent, /inspect native host logs/);
+  assert.match(harness.elements.detailText.textContent, /Repair the local host/);
 
   harness.storageChanges.emit(
     {
@@ -204,7 +208,7 @@ async function runPopupHappyPath() {
     },
     "local",
   );
-  assert.match(harness.elements.detailText.textContent, /extension id allowed by the native host manifest/);
+  assert.match(harness.elements.detailText.textContent, /Refresh this extension's host permission/);
 
   harness.storageChanges.emit(
     {
@@ -218,8 +222,7 @@ async function runPopupHappyPath() {
     },
     "local",
   );
-  assert.match(harness.elements.detailText.textContent, /doctor browser --repair/);
-  assert.match(harness.elements.detailText.textContent, /native-host handshake/);
+  assert.match(harness.elements.detailText.textContent, /Repair the local host/);
 
   harness.storageChanges.emit(
     {
@@ -233,7 +236,7 @@ async function runPopupHappyPath() {
     },
     "local",
   );
-  assert.match(harness.elements.detailText.textContent, /runtime descriptor/);
+  assert.match(harness.elements.detailText.textContent, /Check local setup/);
   assert.match(harness.elements.detailText.textContent, /Resume to reconnect/);
 
   harness.storageChanges.emit(
@@ -248,8 +251,7 @@ async function runPopupHappyPath() {
     },
     "local",
   );
-  assert.match(harness.elements.detailText.textContent, /doctor browser --repair/);
-  assert.match(harness.elements.detailText.textContent, /native-host connection/);
+  assert.match(harness.elements.detailText.textContent, /Repair the local host/);
 
   harness.storageChanges.emit(
     {
@@ -263,7 +265,7 @@ async function runPopupHappyPath() {
     },
     "local",
   );
-  assert.match(harness.elements.detailText.textContent, /Resume to retry native-host startup/);
+  assert.match(harness.elements.detailText.textContent, /Repair setup/);
 
   harness.elements.stopButton.click();
   await waitFor(() => harness.sent.some((message) => message.type === "STOP_BROWSER_CONTROL"));
@@ -275,9 +277,9 @@ async function runPopupHappyPath() {
   await waitFor(() => harness.elements.statusText.textContent === "Connected");
 
   harness.elements.stopButton.click();
-  await waitFor(() => harness.elements.detailText.textContent === "refresh boom");
-  assert.equal(harness.elements.statusText.textContent, "Error");
-  assert.equal(harness.elements.dot.className, "dot error");
+  await waitFor(() => harness.elements.detailText.textContent === "Repair setup, then reconnect.");
+  assert.equal(harness.elements.statusText.textContent, "Needs setup");
+  assert.equal(harness.elements.dot.className, "dot attention");
 }
 
 async function runPopupRepairMatrix() {
@@ -294,9 +296,9 @@ async function runPopupRepairMatrix() {
         message: "native host missing",
         diagnosis: "native_host_not_found",
       },
-      label: "Error",
-      patterns: [/Install the native host manifest/, /obu doctor browser/],
-      setupPatterns: [/Install open-browser-use from GitHub/],
+      label: "Needs setup",
+      patterns: [/Install the local host/],
+      setupPatterns: [/install open-browser-use/],
       setupVisible: true,
       resumeEnabled: true,
     },
@@ -306,9 +308,9 @@ async function runPopupRepairMatrix() {
         message: "native host forbidden",
         diagnosis: "native_host_forbidden",
       },
-      label: "Error",
-      patterns: [/extension id allowed by the native host manifest/, /obu doctor browser/],
-      setupPatterns: [/Reinstall the native host manifest/],
+      label: "Needs setup",
+      patterns: [/Refresh this extension's host permission/],
+      setupPatterns: [/refresh the native host registration/],
       setupVisible: true,
       resumeEnabled: true,
     },
@@ -318,9 +320,9 @@ async function runPopupRepairMatrix() {
         message: "native host crashed",
         diagnosis: "native_host_crashed",
       },
-      label: "Error",
-      patterns: [/obu doctor browser/, /inspect native host logs/],
-      setupPatterns: [/Repair the local open-browser-use host/],
+      label: "Needs setup",
+      patterns: [/Repair the local host/],
+      setupPatterns: [/repair open-browser-use setup/],
       setupVisible: true,
       resumeEnabled: true,
     },
@@ -330,9 +332,9 @@ async function runPopupRepairMatrix() {
         message: "native host hello timed out",
         diagnosis: "native_host_hello_timeout",
       },
-      label: "Error",
-      patterns: [/obu doctor browser --repair/, /Resume to restart the native-host handshake/],
-      setupPatterns: [/Repair the local open-browser-use host/],
+      label: "Needs setup",
+      patterns: [/Repair the local host/],
+      setupPatterns: [/repair open-browser-use setup/],
       setupVisible: true,
       resumeEnabled: true,
     },
@@ -342,9 +344,9 @@ async function runPopupRepairMatrix() {
         message: "native host heartbeat timed out",
         diagnosis: "native_host_heartbeat_timeout",
       },
-      label: "Error",
-      patterns: [/obu doctor browser --repair/, /Resume to restart the native-host connection/],
-      setupPatterns: [/Repair the local open-browser-use host/],
+      label: "Needs setup",
+      patterns: [/Repair the local host/],
+      setupPatterns: [/repair open-browser-use setup/],
       setupVisible: true,
       resumeEnabled: true,
     },
@@ -354,8 +356,8 @@ async function runPopupRepairMatrix() {
         message: "native host disconnected",
         diagnosis: "native_host_disconnected",
       },
-      label: "Disconnected",
-      patterns: [/runtime descriptor/, /Resume to reconnect/],
+      label: "Reconnecting",
+      patterns: [/Check local setup/, /Resume to reconnect/],
       setupVisible: false,
       resumeEnabled: true,
     },
@@ -365,9 +367,9 @@ async function runPopupRepairMatrix() {
         message: "Attempting to use a disconnected port object",
         diagnosis: "native_host_disconnected",
       },
-      label: "Error",
-      patterns: [/local open-browser-use install may be missing/, /click Resume/],
-      setupPatterns: [/Install open-browser-use again/, /register the native host/],
+      label: "Needs setup",
+      patterns: [/local host is not connected/, /reconnect/],
+      setupPatterns: [/reinstall open-browser-use/, /register the host/],
       setupVisible: true,
       resumeEnabled: true,
     },
@@ -376,9 +378,9 @@ async function runPopupRepairMatrix() {
         state: "error",
         message: "Attempting to use a disconnected port object",
       },
-      label: "Error",
-      patterns: [/local open-browser-use install may be missing/, /click Resume/],
-      setupPatterns: [/Install open-browser-use again/, /register the native host/],
+      label: "Needs setup",
+      patterns: [/local host is not connected/, /reconnect/],
+      setupPatterns: [/reinstall open-browser-use/, /register the host/],
       setupVisible: true,
       resumeEnabled: true,
     },
@@ -388,9 +390,9 @@ async function runPopupRepairMatrix() {
         message: "native host unavailable",
         diagnosis: "native_host_unavailable",
       },
-      label: "Error",
-      patterns: [/obu doctor browser --repair/, /Resume to retry native-host startup/],
-      setupPatterns: [/Repair the local open-browser-use host/],
+      label: "Needs setup",
+      patterns: [/Repair setup/],
+      setupPatterns: [/repair open-browser-use setup/],
       setupVisible: true,
       resumeEnabled: true,
     },
@@ -400,9 +402,9 @@ async function runPopupRepairMatrix() {
         message: "host too old",
         diagnosis: "version_mismatch",
       },
-      label: "Version mismatch",
-      patterns: [/Rebuild and reinstall the native host/, /click Resume/],
-      setupPatterns: [/Update the local open-browser-use host from GitHub/],
+      label: "Update needed",
+      patterns: [/Update the local host/, /reconnect/],
+      setupPatterns: [/Run this in Terminal/],
       setupVisible: true,
       resumeEnabled: true,
     },
@@ -411,9 +413,9 @@ async function runPopupRepairMatrix() {
         state: "version_mismatch",
         message: "host too old",
       },
-      label: "Version mismatch",
-      patterns: [/Rebuild and reinstall the native host/, /click Resume/],
-      setupPatterns: [/Update the local open-browser-use host from GitHub/],
+      label: "Update needed",
+      patterns: [/Update the local host/, /reconnect/],
+      setupPatterns: [/Run this in Terminal/],
       setupVisible: true,
       resumeEnabled: true,
     },
@@ -452,8 +454,8 @@ async function runPopupRepairMatrix() {
         state: "disconnected",
         message: "native host disconnected",
       },
-      label: "Disconnected",
-      patterns: [/native host disconnected/],
+      label: "Reconnecting",
+      patterns: [/Trying to reconnect/],
       setupVisible: false,
       resumeEnabled: true,
     },
@@ -469,8 +471,9 @@ async function runPopupRepairMatrix() {
     assert.equal(harness.elements.setupPanel.hidden, !entry.setupVisible);
     if (entry.setupVisible) {
       assert.match(harness.elements.setupCommand.textContent, /github\.com\/open-browser-use\/open-browser-use\/releases\/latest\/download\/install\.sh/);
-      assert.match(harness.elements.setupCommand.textContent, /obu setup --yes --all --skip-agents --recovery/);
-      assert.match(harness.elements.setupCommand.textContent, /obu doctor browser --repair/);
+      assert.match(harness.elements.setupCommand.textContent, /obu bootstrap --yes --all/);
+      assert.match(harness.elements.setupCommand.textContent, /--agents=auto/);
+      assert.doesNotMatch(harness.elements.setupCommand.textContent, /\n/);
       for (const pattern of entry.setupPatterns ?? []) {
         assert.match(harness.elements.setupText.textContent, pattern);
       }
@@ -496,11 +499,12 @@ async function runPopupSetupCopyFailure() {
     },
   ], { clipboardError: new Error("clipboard denied") });
   await importPopup("setup-copy-failure");
-  await waitFor(() => harness.elements.statusText.textContent === "Error");
+  await waitFor(() => harness.elements.statusText.textContent === "Needs setup");
   assert.equal(harness.elements.setupPanel.hidden, false);
 
   harness.elements.copySetupButton.click();
-  await waitFor(() => /Copy failed: clipboard denied/.test(harness.elements.setupCopyText.textContent));
+  await waitFor(() => harness.elements.copySetupButton.textContent === "Try again");
+  await waitFor(() => /Copy unavailable/.test(harness.elements.setupCopyText.textContent));
   assert.equal(harness.clipboardWrites.length, 0);
   assert.equal(harness.elements.setupPanel.hidden, false);
 }
@@ -516,12 +520,13 @@ async function runPopupStoreSetupCommand() {
       },
     ]);
     await importPopup("store-setup-command");
-    await waitFor(() => harness.elements.statusText.textContent === "Error");
+    await waitFor(() => harness.elements.statusText.textContent === "Needs setup");
 
     assert.equal(harness.elements.setupPanel.hidden, false);
-    assert.match(harness.elements.setupCommand.textContent, /obu setup --yes --all --skip-agents --recovery --channel=store/);
+    assert.match(harness.elements.setupCommand.textContent, /obu bootstrap --yes --all --channel=store/);
     assert.match(harness.elements.setupCommand.textContent, new RegExp(`--extension-id=${runtimeExtensionId}`));
-    assert.match(harness.elements.setupCommand.textContent, /obu doctor browser --repair --channel=store/);
+    assert.match(harness.elements.setupCommand.textContent, /--agents=auto/);
+    assert.doesNotMatch(harness.elements.setupCommand.textContent, /\n/);
   } finally {
     runBuild("unpacked-dev");
   }
@@ -542,7 +547,7 @@ async function runPopupResumeFromFailureStates() {
     { state: "connected", hostVersion: "0.1.0" },
   ]);
   await importPopup("resume-disconnected");
-  await waitFor(() => disconnected.elements.statusText.textContent === "Disconnected");
+  await waitFor(() => disconnected.elements.statusText.textContent === "Reconnecting");
   assert.equal(disconnected.elements.resumeButton.disabled, false);
   disconnected.elements.resumeButton.click();
   await waitFor(() => disconnected.sent.some((message) => message.type === "RESUME_BROWSER_CONTROL"));
@@ -554,7 +559,7 @@ async function runPopupResumeFromFailureStates() {
     { state: "connected", hostVersion: "0.1.0" },
   ]);
   await importPopup("resume-error");
-  await waitFor(() => failed.elements.statusText.textContent === "Error");
+  await waitFor(() => failed.elements.statusText.textContent === "Needs setup");
   assert.equal(failed.elements.resumeButton.disabled, false);
   failed.elements.resumeButton.click();
   await waitFor(() => failed.sent.some((message) => message.type === "RESUME_BROWSER_CONTROL"));
@@ -564,7 +569,7 @@ async function runPopupResumeFromFailureStates() {
 async function runPopupInitialFailure(label, responses, expectedDetail) {
   const harness = installPopupHarness(responses);
   await importPopup(label);
-  await waitFor(() => harness.elements.statusText.textContent === "Error");
+  await waitFor(() => harness.elements.statusText.textContent === "Needs setup");
   assert.equal(harness.elements.detailText.textContent, expectedDetail);
 }
 

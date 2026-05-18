@@ -4,7 +4,9 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 
 import { renderAgentMcpConfig, type AgentId, type McpServerInvocation } from "./registry.js";
+import { appendShellArgs } from "../command-line.js";
 import {
+  canAutoConfigureDirectEditAgent,
   isDirectEditAgentId,
   writeDirectEditAgentConfig,
   type DirectEditOptions,
@@ -28,7 +30,35 @@ export type ConfigureAgentsOptions = {
   homeDir?: string;
   platform?: NodeJS.Platform;
   now?: Date;
+  commandPrefix?: string;
 };
+
+export type DetectInstalledAgentsOptions = Pick<ConfigureAgentsOptions, "env" | "homeDir" | "platform">;
+
+const AUTO_DETECT_AGENT_IDS: AgentId[] = [
+  "codex-cli",
+  "claude-code",
+  "gemini-cli",
+  "vscode",
+  "cursor",
+  "cline",
+  "windsurf",
+  "claude-desktop",
+  "zed",
+];
+
+export async function detectInstalledAgents(options: DetectInstalledAgentsOptions = {}): Promise<AgentId[]> {
+  const env = options.env ?? process.env;
+  const directEditOptions: DirectEditOptions = {
+    ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+    ...(options.platform ? { platform: options.platform } : {}),
+  };
+  const detected: AgentId[] = [];
+  for (const agent of AUTO_DETECT_AGENT_IDS) {
+    if (await isAgentInstalled(agent, env, directEditOptions)) detected.push(agent);
+  }
+  return detected;
+}
 
 export async function configureAgents(options: ConfigureAgentsOptions): Promise<AgentConfigureStep[]> {
   const steps: AgentConfigureStep[] = [];
@@ -40,7 +70,10 @@ export async function configureAgents(options: ConfigureAgentsOptions): Promise<
   };
   for (const agent of options.agents) {
     const config = renderAgentMcpConfig(agent, options.server);
-    const manualAction = { kind: "command" as const, value: `obu mcp-config --agent=${agent} --print` };
+    const manualAction = {
+      kind: "command" as const,
+      value: appendShellArgs(options.commandPrefix ?? "obu", ["mcp-config", `--agent=${agent}`, "--print"]),
+    };
     if (agent === "cursor") {
       steps.push(await configureCursor(config, options.server, env, options.dryRun === true, directEditOptions, manualAction));
       continue;
@@ -62,6 +95,13 @@ export async function configureAgents(options: ConfigureAgentsOptions): Promise<
     steps.push(await configureShell(agent, config, env, options.dryRun === true, manualAction));
   }
   return steps;
+}
+
+async function isAgentInstalled(agent: AgentId, env: NodeJS.ProcessEnv, directEditOptions: DirectEditOptions): Promise<boolean> {
+  const config = renderAgentMcpConfig(agent, { name: "open-browser-use", command: "obu", args: ["mcp", "stdio"] });
+  if (config.mode === "shell" && await findExecutable(config.executable, env)) return true;
+  if (isDirectEditAgentId(agent)) return canAutoConfigureDirectEditAgent(agent, directEditOptions);
+  return false;
 }
 
 async function configureCursor(

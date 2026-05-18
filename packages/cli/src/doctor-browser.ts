@@ -1071,14 +1071,14 @@ function check(
   details?: Record<string, unknown>,
 ): DoctorCheck {
   const result: DoctorCheck = { id, label, status, message };
-  const repair = repairHint(id, status);
   const mergedDetails = details === undefined ? {} : { ...details };
+  const repair = repairHint(id, status, mergedDetails);
   if (repair) mergedDetails.repair = repair;
   if (Object.keys(mergedDetails).length > 0) result.details = mergedDetails;
   return result;
 }
 
-function repairHint(id: string, status: DoctorStatus): string | undefined {
+function repairHint(id: string, status: DoctorStatus, details: Record<string, unknown>): string | undefined {
   if (status === "pass") return undefined;
   switch (id) {
     case "extension-manifest":
@@ -1088,6 +1088,9 @@ function repairHint(id: string, status: DoctorStatus): string | undefined {
     case "profile-path":
       return "Launch the selected browser once with the profile you want open-browser-use to inspect.";
     case "extension-installed":
+      if (details.channel === "store") {
+        return "Install or enable the Chrome Web Store extension for this extension id, then reopen its popup.";
+      }
       return "Load packages/extension/dist as an unpacked extension, keep it enabled, then reopen the popup.";
     case "native-host-manifest":
       return "Regenerate the native messaging manifest and confirm it points at an executable obu-host for this extension id.";

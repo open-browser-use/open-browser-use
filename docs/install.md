@@ -74,8 +74,7 @@ Release `manifest.tsv`, with `manifest.json` as an older-release fallback:
 
 ```bash
 curl -fsSL https://github.com/open-browser-use/open-browser-use/releases/latest/download/install.sh | sh && \
-~/.obu/bin/obu setup --yes --all --skip-agents && \
-~/.obu/bin/obu doctor browser --repair
+~/.obu/bin/obu bootstrap --yes --all --agents=auto
 ```
 
 For a Chrome Web Store-installed extension, use the Store channel so native-host
@@ -83,8 +82,7 @@ manifests allow the Store extension id instead of the unpacked-dev id:
 
 ```bash
 curl -fsSL https://github.com/open-browser-use/open-browser-use/releases/latest/download/install.sh | sh && \
-~/.obu/bin/obu setup --yes --all --skip-agents --channel=store && \
-~/.obu/bin/obu doctor browser --repair --channel=store
+~/.obu/bin/obu bootstrap --yes --all --channel=store --extension-id=<store-extension-id> --agents=auto
 ```
 
 Store-channel setup requires a release payload with `storeExtensionId` metadata,
@@ -103,8 +101,8 @@ sh install.sh \
 Installer options:
 
 - `OBU_INSTALL_DIR` or `--install-dir` controls the install root.
-- `OBU_UNMANAGED_INSTALL=1` disables shell profile edits.
-- `--no-modify-path` disables shell profile edits for that run.
+- `OBU_UNMANAGED_INSTALL=1` disables PATH integration.
+- `--no-modify-path` disables PATH integration for that run.
 - `OBU_ARTIFACT` can provide the artifact path or URL.
 - `OBU_ARTIFACT_SHA256` can provide the expected checksum.
 - `OBU_RELEASE_BASE_URL` and `OBU_TARGET` are preview/debug overrides for the
@@ -118,6 +116,7 @@ recovery UX rationale and the release manifest contract.
 After installing an `obu` shim:
 
 ```bash
+obu bootstrap --yes --all --agents=auto
 obu setup --yes --agents=codex-cli,claude-code
 obu doctor
 ```

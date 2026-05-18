@@ -98,6 +98,65 @@ try {
   await access(path.join(envArtifactInstallDir, "bin", "obu"));
   await assert.rejects(() => access(path.join(envArtifactHome, ".profile")), { code: "ENOENT" });
 
+  const pathShimInstallDir = path.join(temp, "path-shim-install");
+  const pathShimHome = path.join(temp, "path-shim-home");
+  const pathShimBin = path.join(temp, "path-shim-bin");
+  await mkdir(pathShimBin, { recursive: true });
+  const pathShimPath = `${pathShimBin}${path.delimiter}${process.env.PATH ?? ""}`;
+  run("sh", [
+    installer,
+    "--artifact",
+    artifactPath,
+    "--checksum",
+    artifact.sha256,
+    "--install-dir",
+    pathShimInstallDir,
+  ], {
+    HOME: pathShimHome,
+    PATH: pathShimPath,
+  });
+  await access(path.join(pathShimBin, "obu"));
+  await access(path.join(pathShimBin, "open-browser-use"));
+  run("sh", [
+    installer,
+    "--artifact",
+    artifactPath,
+    "--checksum",
+    artifact.sha256,
+    "--install-dir",
+    pathShimInstallDir,
+  ], {
+    HOME: pathShimHome,
+    PATH: pathShimPath,
+  });
+  const pathShimVersion = run("obu", ["--version"], {
+    HOME: pathShimHome,
+    PATH: pathShimPath,
+  });
+  assert.match(pathShimVersion.stdout.trim(), /^\d+\.\d+\.\d+/);
+  const pathShimProfile = await readFile(path.join(pathShimHome, ".profile"), "utf8");
+  assert.match(pathShimProfile, new RegExp(`export PATH="${escapeRegExp(path.join(pathShimInstallDir, "bin"))}:\\$PATH"`));
+  assert.equal((pathShimProfile.match(/# open-browser-use installer PATH/g) ?? []).length, 1);
+
+  const profileOnlyInstallDir = path.join(temp, "profile-only-install");
+  const profileOnlyHome = path.join(temp, "profile-only-home");
+  run("/bin/sh", [
+    installer,
+    "--artifact",
+    artifactPath,
+    "--checksum",
+    artifact.sha256,
+    "--install-dir",
+    profileOnlyInstallDir,
+  ], {
+    HOME: profileOnlyHome,
+    PATH: "/usr/bin:/bin",
+    SHELL: "",
+  });
+  const profileOnlyProfile = await readFile(path.join(profileOnlyHome, ".profile"), "utf8");
+  assert.match(profileOnlyProfile, new RegExp(`export PATH="${escapeRegExp(path.join(profileOnlyInstallDir, "bin"))}:\\$PATH"`));
+  await access(path.join(profileOnlyInstallDir, "bin", "obu"));
+
   const releaseManifestInstallDir = path.join(temp, "release-manifest-install");
   const releaseManifestHome = path.join(temp, "release-manifest-home");
   const releaseManifestInstall = run("sh", [
@@ -116,7 +175,7 @@ try {
   assert.match(releaseManifestInstall.stdout, /checksum: ok/);
   assert.match(releaseManifestInstall.stdout, /extract: /);
   assert.match(releaseManifestInstall.stdout, /shim: wrote /);
-  assert.match(releaseManifestInstall.stdout, /path: skipped shell profile update/);
+  assert.match(releaseManifestInstall.stdout, /path: skipped PATH integration/);
   await access(path.join(releaseManifestInstallDir, "bin", "obu"));
   await assert.rejects(() => access(path.join(releaseManifestHome, ".profile")), { code: "ENOENT" });
 
@@ -181,6 +240,10 @@ function assertCurlManifest(manifest, tsvManifest) {
     assert.equal(artifact.size > 0, true);
     assert.deepEqual(tsvByTarget.get(artifact.target), artifact);
   }
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function run(command, args, env = {}, options = {}) {

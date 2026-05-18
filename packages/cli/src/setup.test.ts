@@ -101,7 +101,7 @@ test("setupOpenBrowserUse skips extension staging for Store channel", async (t) 
   await assert.rejects(readFile(path.join(layout.extensionCurrentDir, "marker.txt"), "utf8"));
   const nativeHostStep = result.steps.find((step) => step.id === "native-host-chrome");
   assert.equal(nativeHostStep?.details?.extensionId, storeExtensionId);
-  assert.ok(result.nextActions.some((action) => action.value === "obu doctor browser --channel=store"));
+  assert.ok(result.nextActions.some((action) => action.value === `${layout.openBrowserUseCommand} doctor browser --channel=store`));
 });
 
 async function extensionSource(root: string, version: string): Promise<string> {

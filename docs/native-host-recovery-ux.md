@@ -13,8 +13,7 @@ Current recovery path:
 
 ```bash
 curl -fsSL https://github.com/open-browser-use/open-browser-use/releases/latest/download/install.sh | sh && \
-~/.obu/bin/obu setup --yes --all --skip-agents && \
-~/.obu/bin/obu doctor browser --repair
+~/.obu/bin/obu bootstrap --yes --all --agents=auto
 ```
 
 The popup shows this command when the native host looks missing, stale, too old,
@@ -181,7 +180,7 @@ Implementation boundary:
 
 | Diagnosis | Setup panel | Detail copy intent | Command |
 | --- | --- | --- | --- |
-| `native_host_not_found` | Yes | No manifest or host registration exists. Install open-browser-use, register native hosts, repair, then resume. | GitHub install + `obu setup --yes --all --skip-agents` + `obu doctor browser --repair` |
+| `native_host_not_found` | Yes | No manifest or host registration exists. Install open-browser-use, register native hosts, repair, then resume. | GitHub install + `obu bootstrap --yes --all --agents=auto` |
 | `native_host_forbidden` | Yes | Installed manifest exists but does not allow this extension id, or Chrome rejected access. Reinstall manifests and repair. | Same command |
 | `version_mismatch` | Yes | Extension and native host versions disagree. Update host, refresh setup, then resume. | Same command |
 | `native_host_unavailable` | Yes | Startup failed without a more specific Chrome error. Repair setup and retry. | Same command |
@@ -189,7 +188,7 @@ Implementation boundary:
 | `native_host_hello_timeout` | Yes | Host process did not complete the native-messaging handshake. Repair and retry. | Same command |
 | `native_host_heartbeat_timeout` | Yes | A previously live host stopped responding. Repair and retry. | Same command |
 | `native_host_disconnected` | No by default | Connection was lost after setup had worked or during a transient reconnect. Prefer Resume and doctor; avoid forcing reinstall as the first action. | None |
-| disconnected port object | Yes | Chrome still has the extension running, but the local install or native-host registration may have been deleted. Show the full installer command so users are not blocked if `obu` is gone. | GitHub install + `obu setup --yes --all --skip-agents` + `obu doctor browser --repair` |
+| disconnected port object | Yes | Chrome still has the extension running, but the local install or native-host registration may have been deleted. Show the full installer command so users are not blocked if `obu` is gone. | GitHub install + `obu bootstrap --yes --all --agents=auto` |
 | none + `connecting` | No | Startup in progress. | None |
 | none + `connected` | No | Host ready. | None |
 | none + `stopped` | No | Browser control is intentionally paused. | None |
@@ -200,9 +199,9 @@ connecting, connected, stopped, or transient disconnected states.
 
 ### Related UX Notes
 
-- The copied command uses `--skip-agents` intentionally. The extension recovery
-  path should repair browser/native-host wiring without modifying a user's MCP
-  client configs.
+- The copied command uses `--agents=auto` intentionally. Auto mode only configures
+  high-confidence installed MCP clients, and per-agent manual actions do not
+  block browser/native-host repair.
 - The command uses `--all` intentionally. The popup cannot reliably know which
   Chromium-family browser owns the extension across Chrome, Chrome for Testing,
   Edge, Brave, Arc, and Chromium. `installNativeHosts` writes manifests for the
@@ -224,8 +223,8 @@ Popup tests should exercise:
   `native_host_disconnected`;
 - setup panel visible for every diagnosis in the table that maps to a Terminal
   command;
-- copied command contains the GitHub install URL, `obu setup --yes --all
-  --skip-agents`, and `obu doctor browser --repair`;
+- copied command contains the GitHub install URL, `obu bootstrap --yes --all`,
+  and `--agents=auto`;
 - copy failure reports a visible error without changing native-host state;
 - state transitions from failure to connected clear the setup-panel copy status.
 
