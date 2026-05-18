@@ -4,15 +4,12 @@ use serde_json::{Value, json};
 
 use crate::backends::cdp::CdpBackend;
 use crate::error::{HostError, Result};
-use crate::tab_state::TabId;
+use crate::tab_state::{TabId, TabRecord, TabStatus};
 
 /// Attach a flattened CDP session to a known tab.
 pub async fn attach(backend: &CdpBackend, tab_id: &str) -> Result<()> {
     let id = TabId::new(tab_id);
-    let record = backend
-        .registry()
-        .get(&id)?
-        .ok_or_else(|| HostError::PageClosed(format!("unknown tab {tab_id}")))?;
+    let record = require_active_record(backend, tab_id)?;
     if record.attached && record.cdp_session_id.is_some() {
         return Ok(());
     }
@@ -54,10 +51,7 @@ pub async fn attach(backend: &CdpBackend, tab_id: &str) -> Result<()> {
 /// Detach a flattened CDP session from a tab.
 pub async fn detach(backend: &CdpBackend, tab_id: &str) -> Result<()> {
     let id = TabId::new(tab_id);
-    let record = backend
-        .registry()
-        .get(&id)?
-        .ok_or_else(|| HostError::PageClosed(format!("unknown tab {tab_id}")))?;
+    let record = require_active_record(backend, tab_id)?;
     let Some(session_id) = record.cdp_session_id else {
         return Ok(());
     };
@@ -82,12 +76,31 @@ pub async fn detach(backend: &CdpBackend, tab_id: &str) -> Result<()> {
 
 /// Return the attached CDP session id for a tab.
 pub(crate) fn require_session(backend: &CdpBackend, tab_id: &str) -> Result<String> {
-    let id = TabId::new(tab_id);
-    let record = backend
-        .registry()
-        .get(&id)?
-        .ok_or_else(|| HostError::PageClosed(format!("unknown tab {tab_id}")))?;
+    let record = require_active_record(backend, tab_id)?;
     record
         .cdp_session_id
         .ok_or_else(|| HostError::TabNotAttached(format!("tab {tab_id} not attached")))
+}
+
+/// Return a known active tab record or reject parked lifecycle states.
+pub(crate) fn require_active_record(backend: &CdpBackend, tab_id: &str) -> Result<TabRecord> {
+    let record = backend
+        .registry()
+        .get(&TabId::new(tab_id))?
+        .ok_or_else(|| HostError::PageClosed(format!("unknown tab {tab_id}")))?;
+    if record.status != TabStatus::Active {
+        return Err(HostError::Protocol(format!(
+            "tab {tab_id} is {}, not actively controlled",
+            tab_status_label(&record.status)
+        )));
+    }
+    Ok(record)
+}
+
+fn tab_status_label(status: &TabStatus) -> &'static str {
+    match status {
+        TabStatus::Active => "active",
+        TabStatus::Handoff => "handoff",
+        TabStatus::Deliverable => "deliverable",
+    }
 }

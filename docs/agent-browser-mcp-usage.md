@@ -59,7 +59,7 @@ display({ title: snapshot.title, headings: snapshot.headings.slice(0, 3) });
 const shot = await tab.screenshotForModel({
   clip: { x: 0, y: 0, width: 900, height: 700, scale: 0.5 }
 });
-await browser.turnEnded();
+await browser.finishTurn({ keep: [] });
 ({ snapshot, shot });
 ```
 
@@ -88,13 +88,18 @@ Use this order when possible:
   ```js
   const source = await browser.tabs.create("https://example.com/source");
   const target = await browser.tabs.create("https://example.com/target");
+  await source.attach();
+  await target.attach();
   const text = await source.getByRole("main").innerText();
   await target.getByLabel("Notes").fill(text);
+  await browser.finishTurn({ keep: [] });
   ```
 
-- Use `browser.turnEnded()` to mark a turn boundary while keeping active tabs
-  controlled. `browser.finishTurn(...)` first finalizes tabs and should be used
-  only when closing, releasing, handing off, or producing deliverables.
+- Use `browser.finishTurn({ keep: [] })` when the task is complete and no page
+  needs to be preserved. It finalizes tabs before ending the turn: agent-created
+  tabs close, and user-claimed tabs are released.
+- Use `browser.turnEnded()` only to mark a turn boundary while intentionally
+  keeping active tabs controlled for later work.
 - WebExtension sessions cannot drive `file://` pages. Serve local files over
   HTTP, for example `python3 -m http.server 8000`.
 - `tab.evaluate()` exists and defaults to a capped JSON result. Prefer it over

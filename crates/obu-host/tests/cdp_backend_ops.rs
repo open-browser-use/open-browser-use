@@ -302,6 +302,66 @@ async fn cdp_claim_user_tab_allows_reclaiming_deliverable_from_previous_session(
 }
 
 #[tokio::test]
+async fn cdp_rejects_non_active_tab_records_before_direct_operations() {
+    let (ws_url, _requests) = spawn_fake_cdp().await;
+    let registry = Arc::new(ServiceRegistry::default());
+    let backend = CdpBackend::connect(&ws_url, registry.clone())
+        .await
+        .unwrap();
+    for (tab_id, status, attached, session_id) in [
+        (
+            "handoff",
+            TabStatus::Handoff,
+            true,
+            Some("cdp-session-handoff".to_string()),
+        ),
+        ("deliverable", TabStatus::Deliverable, false, None),
+    ] {
+        registry
+            .insert(TabRecord {
+                id: TabId::new(tab_id),
+                session_id: Some("session".into()),
+                target_id: format!("target-{tab_id}"),
+                url: format!("https://{tab_id}.example"),
+                title: tab_id.into(),
+                origin: TabOrigin::Agent,
+                status,
+                attached,
+                cdp_session_id: session_id,
+            })
+            .unwrap();
+    }
+
+    let handoff_error = backend
+        .execute_cdp("handoff", "Runtime.evaluate", json!({}))
+        .await
+        .unwrap_err();
+    assert!(
+        handoff_error
+            .to_string()
+            .contains("tab handoff is handoff, not actively controlled")
+    );
+
+    let deliverable_attach_error = backend.attach("deliverable").await.unwrap_err();
+    assert!(
+        deliverable_attach_error
+            .to_string()
+            .contains("tab deliverable is deliverable, not actively controlled")
+    );
+
+    let deliverable_close_error = backend
+        .tab_command(methods::TAB_CLOSE, json!({ "tab_id": "deliverable" }))
+        .await
+        .unwrap_err();
+    assert!(
+        deliverable_close_error
+            .to_string()
+            .contains("tab deliverable is deliverable, not actively controlled")
+    );
+    assert!(registry.get(&TabId::new("deliverable")).unwrap().is_some());
+}
+
+#[tokio::test]
 async fn tab_commands_navigate_and_export_content_against_fake_browser() {
     let (ws_url, mut requests) = spawn_fake_cdp().await;
     let backend = CdpBackend::connect(&ws_url, Arc::new(ServiceRegistry::default()))
@@ -363,6 +423,13 @@ async fn tab_commands_navigate_and_export_content_against_fake_browser() {
         .tab_command(methods::TAB_CLOSE, json!({ "tab_id": tab_id }))
         .await
         .unwrap();
+    assert!(
+        backend
+            .registry()
+            .get(&TabId::new(&tab_id))
+            .unwrap()
+            .is_none()
+    );
 
     assert_observed_methods(
         &mut requests,

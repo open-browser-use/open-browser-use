@@ -10,6 +10,7 @@ use obu_host::{
         webext::{ExtensionTransport, WebExtensionBackend},
     },
     error::{HostError, Result},
+    methods,
     service_registry::{DownloadId, DownloadState, FileChooserId, FileChooserState},
     tab_state::{TabId, TabOrigin, TabRecord, TabStatus},
 };
@@ -369,6 +370,54 @@ async fn webext_backend_rejects_claim_for_tab_owned_by_another_session() {
     );
     let calls = transport.calls.lock().unwrap();
     assert!(!calls.iter().any(|(method, _)| method == "claimUserTab"));
+}
+
+#[tokio::test]
+async fn webext_backend_rejects_non_active_host_records_before_direct_operations() {
+    let transport = Arc::new(FakeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+    for (tab_id, status) in [("7", TabStatus::Handoff), ("8", TabStatus::Deliverable)] {
+        backend
+            .registry()
+            .insert(TabRecord {
+                id: TabId::new(tab_id),
+                session_id: Some("session".into()),
+                target_id: tab_id.into(),
+                url: "https://example.com".into(),
+                title: "Example".into(),
+                origin: TabOrigin::Agent,
+                status,
+                attached: false,
+                cdp_session_id: None,
+            })
+            .unwrap();
+    }
+
+    let handoff_error = backend
+        .execute_cdp_with_context(&ctx, "7", "Runtime.evaluate", json!({}))
+        .await
+        .unwrap_err();
+    assert!(
+        handoff_error
+            .to_string()
+            .contains("tab 7 is handoff, not actively controlled")
+    );
+
+    let deliverable_error = backend
+        .tab_command_with_context(&ctx, methods::TAB_CLOSE, json!({ "tab_id": "8" }))
+        .await
+        .unwrap_err();
+    assert!(
+        deliverable_error
+            .to_string()
+            .contains("tab 8 is deliverable, not actively controlled")
+    );
+    assert!(transport.calls.lock().unwrap().is_empty());
 }
 
 #[tokio::test]
@@ -810,6 +859,125 @@ async fn webext_backend_finalize_cleans_virtual_clipboard_state_before_backend_c
         .expect("finalizeTabs should be sent to the extension backend");
     assert!(cleanup_index < finalize_index);
     assert!(remove_index < finalize_index);
+}
+
+#[tokio::test]
+async fn webext_backend_tab_close_removes_host_registry_record_immediately() {
+    let transport = Arc::new(FakeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+
+    backend
+        .create_tab_with_context(&ctx, Some("https://example.com".into()))
+        .await
+        .unwrap();
+    backend
+        .registry()
+        .insert_file_chooser(
+            FileChooserId("chooser-close".into()),
+            FileChooserState {
+                tab_id: TabId::new("42"),
+                owner_session_id: Some("session".into()),
+                created_at: SystemTime::now(),
+                backend_node_id: 3,
+                is_multiple: false,
+            },
+        )
+        .unwrap();
+    backend
+        .registry()
+        .insert_download(
+            DownloadId("download-close".into()),
+            DownloadState {
+                tab_id: TabId::new("42"),
+                owner_session_id: Some("session".into()),
+                created_at: SystemTime::now(),
+                url: "https://example.com/file".into(),
+                suggested_filename: "file.txt".into(),
+                guid: "guid-close".into(),
+                completed_path: None,
+            },
+        )
+        .unwrap();
+    backend
+        .cua_command_with_context(&ctx, "dom_cua_get_visible_dom", json!({ "tab_id": "42" }))
+        .await
+        .unwrap();
+    backend
+        .tab_command_with_context(
+            &ctx,
+            "tab_clipboard_write_text",
+            json!({ "tab_id": "42", "text": "clipboard" }),
+        )
+        .await
+        .unwrap();
+
+    backend
+        .tab_command_with_context(&ctx, methods::TAB_CLOSE, json!({ "tab_id": "42" }))
+        .await
+        .unwrap();
+
+    assert!(backend.registry().get(&TabId::new("42")).unwrap().is_none());
+    assert!(
+        backend
+            .registry()
+            .describe_missing_tab(&TabId::new("42"))
+            .unwrap()
+            .contains("WebExtension tab_close closed the tab")
+    );
+    assert!(
+        backend
+            .registry()
+            .describe_missing_file_chooser(&FileChooserId("chooser-close".into()))
+            .unwrap()
+            .contains("WebExtension tab_close closed the tab")
+    );
+    assert!(
+        backend
+            .registry()
+            .describe_missing_download(&DownloadId("download-close".into()))
+            .unwrap()
+            .contains("WebExtension tab_close closed the tab")
+    );
+
+    let click_after_close = backend
+        .cua_command_with_context(
+            &ctx,
+            "dom_cua_click",
+            json!({ "tab_id": "42", "node_id": "101" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        click_after_close
+            .to_string()
+            .contains("requires a current visible DOM snapshot")
+    );
+
+    backend.detach_with_context(&ctx, "42").await.unwrap();
+    let calls = transport.calls.lock().unwrap();
+    let close_index = calls
+        .iter()
+        .position(|(method, params)| method == "executeCdp" && params["method"] == "Page.close")
+        .expect("tab_close should send Page.close");
+    let post_close_calls = &calls[(close_index + 1)..];
+    assert!(
+        !post_close_calls
+            .iter()
+            .any(|(method, _)| method == "getTabs")
+    );
+    assert!(!post_close_calls.iter().any(|(method, params)| {
+        method == "executeCdp" && params["method"] == "Page.removeScriptToEvaluateOnNewDocument"
+    }));
+    assert!(
+        post_close_calls
+            .iter()
+            .any(|(method, _)| method == "detach")
+    );
 }
 
 #[tokio::test]
