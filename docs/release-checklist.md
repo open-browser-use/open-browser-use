@@ -210,7 +210,7 @@ Required draft checks:
 7. Run Store-channel setup on a clean profile:
 
    ```bash
-   obu setup --yes --all --skip-agents --recovery --channel=store
+   obu setup --yes --all --skip-agents --channel=store
    obu doctor browser --repair --channel=store
    obu doctor browser --channel=store --json
    ```

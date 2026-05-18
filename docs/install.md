@@ -74,7 +74,7 @@ Release `manifest.tsv`, with `manifest.json` as an older-release fallback:
 
 ```bash
 curl -fsSL https://github.com/open-browser-use/open-browser-use/releases/latest/download/install.sh | sh && \
-~/.obu/bin/obu setup --yes --all --skip-agents --recovery && \
+~/.obu/bin/obu setup --yes --all --skip-agents && \
 ~/.obu/bin/obu doctor browser --repair
 ```
 
@@ -83,7 +83,7 @@ manifests allow the Store extension id instead of the unpacked-dev id:
 
 ```bash
 curl -fsSL https://github.com/open-browser-use/open-browser-use/releases/latest/download/install.sh | sh && \
-~/.obu/bin/obu setup --yes --all --skip-agents --recovery --channel=store && \
+~/.obu/bin/obu setup --yes --all --skip-agents --channel=store && \
 ~/.obu/bin/obu doctor browser --repair --channel=store
 ```
 
@@ -109,8 +109,6 @@ Installer options:
 - `OBU_ARTIFACT_SHA256` can provide the expected checksum.
 - `OBU_RELEASE_BASE_URL` and `OBU_TARGET` are preview/debug overrides for the
   GitHub Release `manifest.tsv` / `manifest.json` lookup.
-- `--verbose` prints target, manifest, artifact, checksum, extraction, shim,
-  and PATH update phases. Default installer output stays short.
 
 See [native-host-recovery-ux.md](native-host-recovery-ux.md) for the popup
 recovery UX rationale and the release manifest contract.
@@ -123,13 +121,6 @@ After installing an `obu` shim:
 obu setup --yes --agents=codex-cli,claude-code
 obu doctor
 ```
-
-Default human output is concise: it shows the result, important problems, and
-next action. Use `--verbose` for the full step/check list, and `--json` for
-stable automation output. The extension popup uses `obu setup --recovery` in its
-copied Terminal command so a setup result that only needs manual browser action
-does not stop the follow-up `obu doctor browser --repair`; setup failures and
-non-browser manual work such as agent adapter configuration still exit nonzero.
 
 `obu repl` is deferred in P4a. Use `obu mcp stdio` through an MCP client; a
 direct debug REPL will need its own tested command contract before it is
@@ -155,16 +146,6 @@ Store owns extension updates. Use:
 obu doctor browser --channel=store
 obu doctor browser --repair --channel=store
 ```
-
-Update terms are intentionally separate:
-
-- Update local open-browser-use by rerunning the installer or reinstalling the
-  package wrapper.
-- Update the unpacked extension path with `obu update-extension`, then reload
-  the unpacked extension from `~/.obu/extension/current` in
-  `chrome://extensions`.
-- Store extension updates are handled by Chrome Web Store; use doctor/repair
-  only for native-host registration and diagnostics.
 
 ## Agent Configuration
 

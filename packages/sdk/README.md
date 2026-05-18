@@ -18,7 +18,7 @@ await tab.attach();
 await tab.goto("https://example.com/docs");
 await tab.locator("h1").click();
 await tab.screenshotForModel({ clip: { x: 0, y: 0, width: 900, height: 700, scale: 0.5 } });
-await browser.finishTurn({ keep: [] });
+await browser.turnEnded();
 ```
 
 Backend discovery is lazy. `setupObuRuntime()` installs `agent` without opening
@@ -64,20 +64,16 @@ Call `agent.help()` for the live API table. Main layers:
 `browser.tabs.create()` accepts either a URL string or `{ url }`. With no URL it
 creates `about:blank`, not Chrome's extension-restricted new-tab page.
 Keep a `Tab` handle and use `tab.goto(url)` for repeated same-task navigation.
-Use `browser.finishTurn({ keep: [] })` when the task is complete and no page
-needs to be preserved; it closes agent-created tabs and releases user-claimed
-tabs before ending the turn. `browser.turnEnded()` only marks a turn boundary
-while preserving active control for later work.
+`browser.turnEnded()` marks a turn boundary while preserving active control;
+`browser.finishTurn(...)` first finalizes tabs and is for close/release/handoff
+or deliverable workflows.
 One session can keep multiple `Tab` handles and move data between them:
 
 ```js
 const source = await browser.tabs.create("https://example.com/source");
 const target = await browser.tabs.create("https://example.com/target");
-await source.attach();
-await target.attach();
 const text = await source.getByRole("main").innerText();
 await target.getByLabel("Notes").fill(text);
-await browser.finishTurn({ keep: [] });
 ```
 
 `tab.screenshot()` accepts the Playwright-shaped subset `{ type, quality, clip,

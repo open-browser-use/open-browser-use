@@ -1,10 +1,9 @@
 # obu-node-repl
 
 Per-session MCP server for open-browser-use. It runs JavaScript in a managed Node child
-and exposes four tools over MCP stdio:
+and exposes three tools over MCP stdio:
 
 - `js`
-- `browser_status`
 - `js_reset`
 - `js_add_module_dir`
 
