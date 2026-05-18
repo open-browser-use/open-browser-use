@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readFile, writeFile } from "node:fs/promises";
 
-const sdkVersion = "0.1.0";
+const sdkVersion = "0.1.1";
 const entry = new URL("../dist/index.mjs", import.meta.url);
 const out = new URL("../dist/version.json", import.meta.url);
 const bytes = await readFile(entry);

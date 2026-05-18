@@ -24,7 +24,7 @@ const plan = JSON.parse(run(cargoDist, [
   "plan",
   "--output-format=json",
   "--tag",
-  "v0.1.0",
+  "v0.1.1",
   "--allow-dirty",
 ]).stdout);
 

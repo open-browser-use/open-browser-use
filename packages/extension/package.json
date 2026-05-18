@@ -1,6 +1,6 @@
 {
   "name": "@open-browser-use/extension",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "description": "open-browser-use Chromium MV3 extension.",
   "license": "MIT",
