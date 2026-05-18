@@ -39,6 +39,7 @@ type ContentPingMessage = {
 type InputBypassMessage = {
   type: "OBU_INPUT_BYPASS";
   durationMs?: number;
+  eventFamilies?: InputBypassEventFamily[];
   sessionId?: string;
   turnId?: string;
   reason?: string;
@@ -53,6 +54,7 @@ type CursorMessage =
   | InputBypassMessage;
 
 type Point = { x: number; y: number };
+type InputBypassEventFamily = "pointer" | "wheel" | "touch" | "keyboard" | "text";
 
 const SHORT_MOVE_THRESHOLD = 196;
 const RESTING_ROTATION_DEG = -44;
@@ -62,7 +64,6 @@ const INPUT_BYPASS_MAX_MS = 1_000;
 const CURSOR_SIZE_PX = 42;
 const CURSOR_TIP_ORIGIN_PX = 4;
 const CLICK_PULSE_SIZE_PX = 36;
-const TAKEOVER_OVERLAY_BLUR = "blur(1.35px) saturate(1.06)";
 const TAKEOVER_OVERLAY_BACKGROUND = [
   "radial-gradient(circle at 18% 24%, rgba(125, 211, 252, 0.34) 0 1px, transparent 1.9px)",
   "radial-gradient(circle at 76% 18%, rgba(191, 219, 254, 0.24) 0 1.15px, transparent 2.3px)",
@@ -74,7 +75,7 @@ const TAKEOVER_OVERLAY_BACKGROUND_SIZE = "170px 170px, 230px 230px, 290px 290px,
 const TAKEOVER_OVERLAY_BACKGROUND_POSITION = "0 0, 44px 28px, 16px 78px, 92px 18px, 0 0";
 const REDUCED_MOTION = matchMediaSafe("(prefers-reduced-motion: reduce)");
 const INSTALL_KEY = "__OBU_CURSOR_CONTENT_SCRIPT_INSTALLED__";
-const SCRIPT_EVENT = "__OBU_CURSOR_MESSAGE__";
+const HANDLER_KEY = "__OBU_CURSOR_CONTENT_SCRIPT_HANDLE_MESSAGE__";
 const TOP_FRAME = isTopFrame();
 const LOCK_EVENTS = [
   "pointerdown",
@@ -116,20 +117,23 @@ let animationTurnId: string | undefined;
 let animationFrom: Point = { x: 24, y: 24 };
 let animationTo: Point = { x: 24, y: 24 };
 let animationControl: Point | undefined;
-let thinkingFrame: number | undefined;
-let thinkingStartedAt = 0;
 let arrivalTimer: ReturnType<typeof setTimeout> | undefined;
-let inputBypassUntil = 0;
+const inputBypassUntilByFamily = new Map<InputBypassEventFamily, number>();
 
 const installState = globalThis as typeof globalThis & Record<string, unknown>;
+Object.defineProperty(installState, HANDLER_KEY, {
+  value: (message: unknown) => handleCursorMessage(message),
+  configurable: true,
+  enumerable: false,
+  writable: false,
+});
+
 if (!installState[INSTALL_KEY]) {
   installState[INSTALL_KEY] = true;
   chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     handleCursorMessage(message, sendResponse);
   });
-  windowTarget()?.addEventListener(SCRIPT_EVENT, (event) => {
-    handleCursorMessage((event as CustomEvent).detail);
-  });
+  void chrome.runtime.sendMessage({ type: "OBU_CONTENT_READY", topFrame: TOP_FRAME }).catch(() => undefined);
 }
 
 function handleCursorMessage(message: unknown, sendResponse?: (response?: unknown) => void): void {
@@ -187,14 +191,12 @@ function moveCursor(message: CursorMoveMessage): void {
   animationSequence = message.sequence;
   animationSessionId = message.sessionId ?? lastSessionId;
   animationTurnId = message.turnId ?? lastTurnId;
-  stopThinking();
   clearArrivalTimer();
 
   if (REDUCED_MOTION) {
     currentPoint = targetPoint;
     renderCursor(currentPoint, RESTING_ROTATION_DEG, 1, 1);
     notifyArrived();
-    startThinking();
     return;
   }
 
@@ -210,7 +212,6 @@ function moveCursor(message: CursorMoveMessage): void {
     currentPoint = { ...targetPoint };
     renderCursor(currentPoint, RESTING_ROTATION_DEG, 1, 1);
     notifyArrived();
-    startThinking();
   }, ARRIVAL_TIMEOUT_MS);
 }
 
@@ -238,7 +239,6 @@ function tickMove(now: number): void {
   renderCursor(currentPoint, RESTING_ROTATION_DEG, 1, 1);
   clearArrivalTimer();
   notifyArrived();
-  startThinking();
 }
 
 function handleCursorEvent(message: CursorEventMessage): void {
@@ -262,13 +262,11 @@ function handleCursorEvent(message: CursorEventMessage): void {
 
 function hideCursor(): void {
   if (animationFrame !== undefined) cancelFrame(animationFrame);
-  if (thinkingFrame !== undefined) cancelFrame(thinkingFrame);
   clearArrivalTimer();
   animationFrame = undefined;
-  thinkingFrame = undefined;
   activeTakeover = false;
   lockInputs = false;
-  inputBypassUntil = 0;
+  inputBypassUntilByFamily.clear();
   updateInputLock();
   host?.remove();
   host = null;
@@ -303,8 +301,6 @@ function ensureCursor(): void {
   overlay.style.backgroundSize = TAKEOVER_OVERLAY_BACKGROUND_SIZE;
   overlay.style.backgroundPosition = TAKEOVER_OVERLAY_BACKGROUND_POSITION;
   overlay.style.backgroundBlendMode = "screen, screen, screen, screen, normal";
-  overlay.style.backdropFilter = TAKEOVER_OVERLAY_BLUR;
-  (overlay.style as CSSStyleDeclaration & { webkitBackdropFilter?: string }).webkitBackdropFilter = TAKEOVER_OVERLAY_BLUR;
   overlay.style.boxShadow = "inset 0 0 0 1px rgba(125, 211, 252, 0.16), inset 0 0 48px rgba(37, 99, 235, 0.18)";
   overlay.style.transition = "opacity 160ms ease-out";
   overlay.style.pointerEvents = "none";
@@ -383,7 +379,7 @@ function updateInputLock(): void {
 
 function blockHumanInput(event: Event): void {
   if (!lockInputs) return;
-  if (isInputBypassActive()) return;
+  if (isInputBypassActive(event)) return;
   event.preventDefault();
   event.stopImmediatePropagation();
 }
@@ -392,11 +388,43 @@ function allowInputBypass(message: InputBypassMessage): void {
   lastSessionId = message.sessionId ?? lastSessionId;
   lastTurnId = message.turnId ?? lastTurnId;
   const durationMs = clampNumber(message.durationMs, INPUT_BYPASS_DEFAULT_MS, 1, INPUT_BYPASS_MAX_MS);
-  inputBypassUntil = Math.max(inputBypassUntil, nowMs() + durationMs);
+  const until = nowMs() + durationMs;
+  for (const family of inputBypassFamilies(message.eventFamilies)) {
+    inputBypassUntilByFamily.set(family, Math.max(inputBypassUntilByFamily.get(family) ?? 0, until));
+  }
 }
 
-function isInputBypassActive(): boolean {
-  return nowMs() <= inputBypassUntil;
+function isInputBypassActive(event: Event): boolean {
+  const family = inputFamilyForEvent(event.type);
+  if (!family) return false;
+  return nowMs() <= (inputBypassUntilByFamily.get(family) ?? 0);
+}
+
+function inputBypassFamilies(value: unknown): InputBypassEventFamily[] {
+  if (!Array.isArray(value)) return ["pointer", "wheel", "touch", "keyboard", "text"];
+  const families = value.filter(isInputBypassEventFamily);
+  return families.length > 0 ? families : ["pointer", "wheel", "touch", "keyboard", "text"];
+}
+
+function isInputBypassEventFamily(value: unknown): value is InputBypassEventFamily {
+  return value === "pointer" || value === "wheel" || value === "touch" || value === "keyboard" || value === "text";
+}
+
+function inputFamilyForEvent(type: string): InputBypassEventFamily | undefined {
+  if (type === "wheel") return "wheel";
+  if (type.startsWith("touch")) return "touch";
+  if (type.startsWith("key")) return "keyboard";
+  if (type === "beforeinput") return "text";
+  if (
+    type.startsWith("pointer") ||
+    type.startsWith("mouse") ||
+    type === "click" ||
+    type === "dblclick" ||
+    type === "contextmenu"
+  ) {
+    return "pointer";
+  }
+  return undefined;
 }
 
 function renderCursor(point: Point, rotation: number, scaleX: number, scaleY: number): void {
@@ -427,30 +455,6 @@ function addPulse(point: Point): void {
     pulse.style.opacity = "0";
   });
   setTimeout(() => pulse.remove(), 340);
-}
-
-function startThinking(): void {
-  stopThinking();
-  thinkingStartedAt = nowMs();
-  thinkingFrame = requestFrame(tickThinking);
-}
-
-function stopThinking(): void {
-  if (thinkingFrame !== undefined) cancelFrame(thinkingFrame);
-  thinkingFrame = undefined;
-}
-
-function tickThinking(now: number): void {
-  const t = (now - thinkingStartedAt) / 1000;
-  if (t > 1.41) {
-    thinkingFrame = undefined;
-    renderCursor(currentPoint, RESTING_ROTATION_DEG, 1, 1);
-    return;
-  }
-  const envelope = Math.sin((t / 1.41) * Math.PI);
-  const carrier = Math.sin((t / 0.66) * Math.PI * 2);
-  renderCursor(currentPoint, RESTING_ROTATION_DEG + 8.5 * envelope * carrier, 1, 1);
-  thinkingFrame = requestFrame(tickThinking);
 }
 
 function notifyArrived(): void {

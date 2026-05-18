@@ -7,6 +7,7 @@ const packageRoot = path.dirname(fileURLToPath(new URL("../package.json", import
 const builtCursor = await readFile(path.join(packageRoot, "dist", "cursor.js"), "utf8");
 assert.doesNotMatch(builtCursor, /\bexport\s*\{\s*\}/);
 assert.match(builtCursor, /(?:^|\n)\(\(\) => \{/);
+assert.doesNotMatch(builtCursor, /__OBU_CURSOR_MESSAGE__/);
 
 class EventTarget {
   listeners = [];
@@ -32,6 +33,7 @@ class EventTarget {
   }
 
   emitDom(type, event) {
+    if (event && typeof event === "object" && event.type === undefined) event.type = type;
     for (const row of this.listeners) {
       if (row.type === type) row.listener(event);
     }
@@ -117,6 +119,7 @@ globalThis.chrome = {
 
 await import(`${pathToFileURL(path.join(packageRoot, "dist", "cursor.js")).href}?test=${Date.now()}`);
 
+await waitFor(() => sentRuntimeMessages.some((message) => message.type === "OBU_CONTENT_READY" && message.topFrame === true));
 assert.equal(runtimeMessages.emit({ type: "IGNORED" }).length, 0);
 assert.deepEqual(runtimeMessages.emit({ type: "OBU_CONTENT_PING" }), [{ ok: true }]);
 
@@ -137,7 +140,8 @@ const overlay = host.shadowChildren[1];
 assert.equal(overlay.style.opacity, "1");
 assert.match(overlay.style.background, /radial-gradient/);
 assert.match(overlay.style.background, /linear-gradient/);
-assert.match(overlay.style.backdropFilter, /blur\(1\.35px\)/);
+assert.equal(overlay.style.backdropFilter, undefined);
+assert.equal(overlay.style.webkitBackdropFilter, undefined);
 assert.equal(overlay.style.pointerEvents, "none");
 assert.equal(overlay.style.animation, "none");
 
@@ -146,17 +150,58 @@ documentEvents.emitDom("click", blocked);
 assert.equal(blocked.defaultPrevented, true);
 assert.equal(blocked.stopped, true);
 
-responses = runtimeMessages.emit({ type: "OBU_INPUT_BYPASS", durationMs: 100, sessionId: "session", turnId: "turn" });
+windowEvents.emitDom("__OBU_CURSOR_MESSAGE__", { detail: { type: "OBU_CURSOR_HIDE" } });
+assert.equal(documentElement.children.length, 1);
+const blockedAfterForgedHide = fakeDomEvent();
+documentEvents.emitDom("click", blockedAfterForgedHide);
+assert.equal(blockedAfterForgedHide.defaultPrevented, true);
+assert.equal(blockedAfterForgedHide.stopped, true);
+
+windowEvents.emitDom("__OBU_CURSOR_MESSAGE__", {
+  detail: { type: "OBU_INPUT_BYPASS", durationMs: 100, eventFamilies: ["pointer"] },
+});
+const blockedAfterForgedBypass = fakeDomEvent();
+documentEvents.emitDom("click", blockedAfterForgedBypass);
+assert.equal(blockedAfterForgedBypass.defaultPrevented, true);
+assert.equal(blockedAfterForgedBypass.stopped, true);
+
+responses = runtimeMessages.emit({
+  type: "OBU_INPUT_BYPASS",
+  durationMs: 100,
+  eventFamilies: ["pointer"],
+  sessionId: "session",
+  turnId: "turn",
+});
 assert.deepEqual(responses, [{ ok: true }]);
 const bypassed = fakeDomEvent();
 documentEvents.emitDom("click", bypassed);
 assert.equal(bypassed.defaultPrevented, false);
 assert.equal(bypassed.stopped, false);
+const keyboardDuringPointerBypass = fakeDomEvent();
+documentEvents.emitDom("keydown", keyboardDuringPointerBypass);
+assert.equal(keyboardDuringPointerBypass.defaultPrevented, true);
+assert.equal(keyboardDuringPointerBypass.stopped, true);
 await new Promise((resolve) => setTimeout(resolve, 120));
 const blockedAfterBypass = fakeDomEvent();
 documentEvents.emitDom("click", blockedAfterBypass);
 assert.equal(blockedAfterBypass.defaultPrevented, true);
 assert.equal(blockedAfterBypass.stopped, true);
+responses = runtimeMessages.emit({
+  type: "OBU_INPUT_BYPASS",
+  durationMs: 100,
+  eventFamilies: ["keyboard"],
+  sessionId: "session",
+  turnId: "turn",
+});
+assert.deepEqual(responses, [{ ok: true }]);
+const pointerDuringKeyboardBypass = fakeDomEvent();
+documentEvents.emitDom("click", pointerDuringKeyboardBypass);
+assert.equal(pointerDuringKeyboardBypass.defaultPrevented, true);
+assert.equal(pointerDuringKeyboardBypass.stopped, true);
+const keyboardBypassed = fakeDomEvent();
+documentEvents.emitDom("keydown", keyboardBypassed);
+assert.equal(keyboardBypassed.defaultPrevented, false);
+assert.equal(keyboardBypassed.stopped, false);
 
 responses = runtimeMessages.emit({ type: "OBU_CURSOR_MOVE", x: 10.2, y: 20.8, sequence: 1, sessionId: "session", turnId: "turn" });
 assert.deepEqual(responses, [{ ok: true, sequence: 1 }]);

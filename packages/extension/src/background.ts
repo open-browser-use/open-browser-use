@@ -13,8 +13,7 @@ const RECONNECT_MAX_MS = 30_000;
 const RECONNECT_ALARM_NAME = "obu.reconnectNativeHost";
 const CURSOR_ARRIVAL_TIMEOUT_MS = 750;
 const CONTENT_PING_TIMEOUT_MS = 1_000;
-const TAKEOVER_IDLE_TIMEOUT_MS = 2_000;
-const CONTENT_SCRIPT_EVENT = "__OBU_CURSOR_MESSAGE__";
+const CONTENT_SCRIPT_HANDLER = "__OBU_CURSOR_CONTENT_SCRIPT_HANDLE_MESSAGE__";
 
 type HostStatus = {
   state: "disconnected" | "connecting" | "connected" | "version_mismatch" | "stopped" | "error";
@@ -90,19 +89,43 @@ let reconnectDelayMs = RECONNECT_INITIAL_MS;
 class OverlayCoordinator {
   private nextCursorSequence = 1;
   private cursorArrivalWaiters = new Map<number, CursorArrivalWaiter>();
-  private takeoverIdleTimers = new Map<number, ReturnType<typeof setTimeout>>();
+  private activeTakeovers = new Map<number, ActiveTakeover>();
   private contentScriptPreparations = new Map<number, Promise<boolean>>();
 
   async activate(tabId: number, sessionParams: SessionParams): Promise<void> {
-    const sent = await this.sendContentMessage(tabId, {
-      type: "OBU_TAKEOVER_STATE",
-      active: true,
-      lockInputs: true,
+    const state: ActiveTakeover = {
       sessionId: sessionParams.session_id,
       turnId: sessionParams.turn_id,
+      lockInputs: true,
+    };
+    this.activeTakeovers.set(tabId, state);
+    await this.sendTakeoverState(tabId, state);
+  }
+
+  async reassert(tabId: number): Promise<void> {
+    const state = this.activeTakeovers.get(tabId);
+    if (!state) return;
+    await this.sendTakeoverState(tabId, state);
+  }
+
+  forget(tabId: number): void {
+    this.activeTakeovers.delete(tabId);
+    this.rejectWaitersForTab(tabId);
+  }
+
+  activeTabIds(): number[] {
+    return [...this.activeTakeovers.keys()];
+  }
+
+  private async sendTakeoverState(tabId: number, state: ActiveTakeover): Promise<boolean> {
+    return await this.sendContentMessage(tabId, {
+      type: "OBU_TAKEOVER_STATE",
+      active: true,
+      lockInputs: state.lockInputs,
+      sessionId: state.sessionId,
+      turnId: state.turnId,
       reason: "browser-control",
     });
-    if (sent) this.scheduleIdle(tabId);
   }
 
   async moveMouse(tabId: number, sessionParams: SessionParams, x: number, y: number): Promise<unknown> {
@@ -129,7 +152,7 @@ class OverlayCoordinator {
   }
 
   async sendCursorEvent(tabId: number, sessionParams: SessionParams, event: CursorVisualEvent): Promise<void> {
-    const sent = await this.sendContentMessage(tabId, {
+    await this.sendContentMessage(tabId, {
       type: "OBU_CURSOR_EVENT",
       kind: event.kind,
       x: event.x,
@@ -138,13 +161,13 @@ class OverlayCoordinator {
       sessionId: sessionParams.session_id,
       turnId: sessionParams.turn_id,
     });
-    if (sent) this.scheduleIdle(tabId);
   }
 
   async allowCdpInput(tabId: number, sessionParams: SessionParams, bypass: CdpInputBypass): Promise<void> {
     await this.sendContentMessage(tabId, {
       type: "OBU_INPUT_BYPASS",
       durationMs: bypass.durationMs,
+      eventFamilies: bypass.eventFamilies,
       sessionId: sessionParams.session_id,
       turnId: sessionParams.turn_id,
       reason: bypass.reason,
@@ -163,7 +186,7 @@ class OverlayCoordinator {
   }
 
   async hide(tabId: number): Promise<void> {
-    this.clearIdle(tabId);
+    this.activeTakeovers.delete(tabId);
     this.rejectWaitersForTab(tabId);
     await this.sendContentMessage(tabId, { type: "OBU_CURSOR_HIDE" }, { prepare: false });
   }
@@ -171,14 +194,18 @@ class OverlayCoordinator {
   private async sendContentMessage(tabId: number, message: unknown, options: { prepare?: boolean } = {}): Promise<boolean> {
     if (options.prepare !== false && !await this.prepareContentScript(tabId)) return false;
     try {
-      await chrome.scripting.executeScript({
+      const results = await chrome.scripting.executeScript({
         target: { tabId, allFrames: true },
-        args: [CONTENT_SCRIPT_EVENT, message],
-        func: (eventName: string, payload: unknown) => {
-          globalThis.dispatchEvent(new CustomEvent(eventName, { detail: payload }));
+        world: "ISOLATED",
+        args: [CONTENT_SCRIPT_HANDLER, message],
+        func: (handlerName: string, payload: unknown) => {
+          const handler = (globalThis as Record<string, unknown>)[handlerName];
+          if (typeof handler !== "function") return false;
+          handler(payload);
+          return true;
         },
       });
-      return true;
+      return results.some((result) => result.result === true);
     } catch {
       return false;
     }
@@ -213,6 +240,7 @@ class OverlayCoordinator {
       await chrome.scripting.executeScript({
         files: ["cursor.js"],
         injectImmediately: true,
+        world: "ISOLATED",
         target: { tabId, allFrames: true },
       });
     } catch {
@@ -261,20 +289,6 @@ class OverlayCoordinator {
     waiter.resolve(value);
   }
 
-  private scheduleIdle(tabId: number): void {
-    this.clearIdle(tabId);
-    this.takeoverIdleTimers.set(tabId, scheduleTimer(() => {
-      this.takeoverIdleTimers.delete(tabId);
-      void this.hide(tabId);
-    }, TAKEOVER_IDLE_TIMEOUT_MS));
-  }
-
-  private clearIdle(tabId: number): void {
-    const timer = this.takeoverIdleTimers.get(tabId);
-    if (timer !== undefined) clearTimeout(timer);
-    this.takeoverIdleTimers.delete(tabId);
-  }
-
   private rejectWaitersForTab(tabId: number): void {
     for (const [sequence, waiter] of this.cursorArrivalWaiters) {
       if (waiter.tabId !== tabId) continue;
@@ -297,7 +311,11 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.tabs.onRemoved.addListener((tabId) => {
+  void handleTabRemoved(tabId);
+});
+
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   void (async () => {
     if (isMessage(message, "GET_NATIVE_HOST_STATUS")) {
       sendResponse(await getStatus());
@@ -330,6 +348,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
     }
     if (isMessage(message, "OBU_CURSOR_ARRIVED")) {
       overlayCoordinator.handleCursorArrived(message);
+      sendResponse({ ok: true });
+      return;
+    }
+    if (isMessage(message, "OBU_CONTENT_READY")) {
+      const tabId = sender.tab?.id;
+      if (Number.isInteger(tabId)) await overlayCoordinator.reassert(tabId!);
       sendResponse({ ok: true });
       return;
     }
@@ -464,6 +488,7 @@ async function connectNative(): Promise<void> {
         ),
         updatedAt: Date.now(),
       });
+      void releaseActiveTakeoverForUnavailableHost(wasConnecting ? "native_host_crashed" : "native_host_disconnected");
       scheduleReconnect();
     }
   });
@@ -523,6 +548,7 @@ async function handleNativeMessage(message: unknown, sourcePort: NativePort): Pr
     appendDebugLog("error", "native.version_mismatch", {
       message: typeof message.message === "string" ? message.message : "Version mismatch",
     });
+    await releaseActiveTakeoverForUnavailableHost("version_mismatch");
     await setStatus({
       state: "version_mismatch",
       message: typeof message.message === "string" ? message.message : "Version mismatch",
@@ -679,6 +705,7 @@ async function createSessionTab(sessionParams: SessionParams, params: unknown): 
   session.currentTurnId = sessionParams.turn_id;
   session.tabs.set(tabId, { tabId, origin: "agent", status: "active" });
   await addTabToSessionGroup(session, tabId);
+  await overlayCoordinator.activate(tabId, sessionParams);
   appendDebugLog("info", "tab.created", { sessionId: sessionParams.session_id, tabId });
   return tab;
 }
@@ -731,6 +758,7 @@ async function claimUserTab(sessionParams: SessionParams, params: unknown): Prom
   removeFinalizedTabFromAllSessions(tabId);
   session.tabs.set(tabId, { tabId, origin: "user", status: "active" });
   await addTabToSessionGroup(session, tabId);
+  await overlayCoordinator.activate(tabId, sessionParams);
   await persistSessionState();
   appendDebugLog("info", "tab.claimed", { sessionId: sessionParams.session_id, tabId });
   return tab;
@@ -779,6 +807,9 @@ async function finalizeTabs(sessionParams: SessionParams, params: unknown): Prom
         keptTabs.push(dto);
         deliverableTabs.push(dto);
       } else {
+        if (keepStatus === "handoff") {
+          await cleanupControlledTab(session, tabId);
+        }
         keptTabs.push(toTabDto(await chrome.tabs.get(tabId), row));
       }
     } catch {
@@ -813,7 +844,6 @@ async function nameSession(sessionParams: SessionParams, params: unknown): Promi
 async function markTurnEnded(sessionParams: SessionParams): Promise<void> {
   const session = sessionFor(sessionParams.session_id);
   session.currentTurnId = sessionParams.turn_id;
-  await hideSessionTakeover(session);
 }
 
 async function getUserHistory(params: unknown): Promise<HistoryItemDto[]> {
@@ -882,13 +912,18 @@ async function moveMouse(params: unknown): Promise<unknown> {
 
 function inputBypassFromCdp(params: Record<string, unknown>): CdpInputBypass | undefined {
   if (params.method === "Input.dispatchMouseEvent") {
-    return { durationMs: 600, reason: "cdp-mouse" };
+    const type = isRecord(params.commandParams) ? params.commandParams.type : undefined;
+    const eventFamilies: InputBypassEventFamily[] = type === "mouseWheel" ? ["wheel"] : ["pointer"];
+    return { durationMs: 600, reason: "cdp-mouse", eventFamilies };
   }
   if (params.method === "Input.dispatchTouchEvent") {
-    return { durationMs: 600, reason: "cdp-touch" };
+    return { durationMs: 600, reason: "cdp-touch", eventFamilies: ["touch"] };
   }
-  if (params.method === "Input.dispatchKeyEvent" || params.method === "Input.insertText") {
-    return { durationMs: 600, reason: "cdp-keyboard" };
+  if (params.method === "Input.dispatchKeyEvent") {
+    return { durationMs: 600, reason: "cdp-keyboard", eventFamilies: ["keyboard", "text"] };
+  }
+  if (params.method === "Input.insertText") {
+    return { durationMs: 600, reason: "cdp-text", eventFamilies: ["text"] };
   }
   return undefined;
 }
@@ -977,6 +1012,7 @@ function requireSessionTab(params: unknown): SessionTab {
   const session = requireSession(params);
   const row = session.tabs.get(tabId);
   if (!row) throw new Error(`tab ${tabId} is not owned by this open-browser-use session`);
+  if (row.status !== "active") throw new Error(`tab ${tabId} is ${row.status}, not actively controlled`);
   return row;
 }
 
@@ -1104,6 +1140,25 @@ function findSessionForTab(tabId: number): { sessionId: string; session: Browser
   return undefined;
 }
 
+async function handleTabRemoved(tabId: number): Promise<void> {
+  overlayCoordinator.forget(tabId);
+  let changed = false;
+  for (const session of sessions.values()) {
+    if (session.tabs.delete(tabId)) changed = true;
+    if (session.finalizedTabs.delete(tabId)) changed = true;
+    if (session.attachedTabIds.delete(tabId)) changed = true;
+    if (session.tabs.size === 0) session.groupId = undefined;
+  }
+  for (const [url, owner] of downloadOwnersByUrl) {
+    if (owner.tabId === tabId) downloadOwnersByUrl.delete(url);
+  }
+  for (const [id, owner] of downloadOwnersById) {
+    if (owner.tabId === tabId) downloadOwnersById.delete(id);
+  }
+  if (changed) await persistSessionState();
+  appendDebugLog("info", "tab.removed", { tabId });
+}
+
 function parseFinalizeKeep(params: unknown): Map<number, SessionTab["status"]> {
   const rows = isRecord(params) && Array.isArray(params.keep) ? params.keep : [];
   const keep = new Map<number, SessionTab["status"]>();
@@ -1122,6 +1177,7 @@ function parseFinalizeKeep(params: unknown): Map<number, SessionTab["status"]> {
 
 async function stopActiveBrowserControl(): Promise<void> {
   const controlledTabIds = new Set<number>();
+  for (const tabId of overlayCoordinator.activeTabIds()) controlledTabIds.add(tabId);
   for (const session of sessions.values()) {
     for (const tabId of session.tabs.keys()) controlledTabIds.add(tabId);
     for (const tabId of session.attachedTabIds) controlledTabIds.add(tabId);
@@ -1144,6 +1200,19 @@ async function stopActiveBrowserControl(): Promise<void> {
 
 async function hideCursor(tabId: number): Promise<void> {
   await overlayCoordinator.hide(tabId);
+}
+
+async function releaseActiveTakeoverForUnavailableHost(reason: string): Promise<void> {
+  appendDebugLog("warn", "takeover.release.unavailable_host", { reason });
+  const controlledTabIds = new Set<number>();
+  for (const tabId of overlayCoordinator.activeTabIds()) controlledTabIds.add(tabId);
+  for (const session of sessions.values()) {
+    for (const tabId of session.tabs.keys()) controlledTabIds.add(tabId);
+    for (const tabId of session.attachedTabIds) controlledTabIds.add(tabId);
+  }
+  for (const tabId of controlledTabIds) {
+    await hideCursor(tabId);
+  }
 }
 
 function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
@@ -1187,6 +1256,7 @@ async function bootstrapBackground(): Promise<void> {
   await restoreDebugLogs();
   appendDebugLog("info", "background.bootstrap");
   await restoreSessionState();
+  await releaseOrphanedTakeoverStateOnBootstrap();
   await bootstrapNativeConnection();
 }
 
@@ -1257,6 +1327,19 @@ async function restoreSessionState(): Promise<void> {
     }
   }
   if (changed) await persistSessionState();
+}
+
+async function releaseOrphanedTakeoverStateOnBootstrap(): Promise<void> {
+  let tabs: ChromeTab[];
+  try {
+    tabs = await chrome.tabs.query({});
+  } catch {
+    return;
+  }
+  for (const tab of tabs) {
+    if (!Number.isInteger(tab.id)) continue;
+    await overlayCoordinator.hide(tab.id!);
+  }
 }
 
 async function persistSessionState(): Promise<void> {
@@ -1409,6 +1492,7 @@ function scheduleHeartbeat(): void {
         port = null;
         failedPort?.disconnect();
         rejectPending(message);
+        void releaseActiveTakeoverForUnavailableHost("native_host_heartbeat_timeout");
         void setStatus({
           state: "disconnected",
           message,
@@ -1644,6 +1728,15 @@ type CursorVisualEvent = {
 type CdpInputBypass = {
   durationMs: number;
   reason: string;
+  eventFamilies: InputBypassEventFamily[];
+};
+
+type InputBypassEventFamily = "pointer" | "wheel" | "touch" | "keyboard" | "text";
+
+type ActiveTakeover = {
+  sessionId: string;
+  turnId: string;
+  lockInputs: boolean;
 };
 
 type BrowserSession = {
