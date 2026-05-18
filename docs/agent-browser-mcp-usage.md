@@ -59,7 +59,7 @@ display({ title: snapshot.title, headings: snapshot.headings.slice(0, 3) });
 const shot = await tab.screenshotForModel({
   clip: { x: 0, y: 0, width: 900, height: 700, scale: 0.5 }
 });
-await browser.finishTurn();
+await browser.turnEnded();
 ({ snapshot, shot });
 ```
 
@@ -80,6 +80,21 @@ Use this order when possible:
 - `agent.browsers.get(...)` is async. Always `await` it before reading `.tabs`.
 - `browser.tabs.create()` accepts a URL string or `{ url }`. With no URL it uses
   `about:blank`.
+- Keep a `Tab` handle and use `await tab.goto(url)` for same-task or same-site
+  navigation instead of opening a new tab for every URL.
+- A single browser session can hold multiple `Tab` handles. Keep them in
+  variables and move data explicitly between tabs:
+
+  ```js
+  const source = await browser.tabs.create("https://example.com/source");
+  const target = await browser.tabs.create("https://example.com/target");
+  const text = await source.getByRole("main").innerText();
+  await target.getByLabel("Notes").fill(text);
+  ```
+
+- Use `browser.turnEnded()` to mark a turn boundary while keeping active tabs
+  controlled. `browser.finishTurn(...)` first finalizes tabs and should be used
+  only when closing, releasing, handing off, or producing deliverables.
 - WebExtension sessions cannot drive `file://` pages. Serve local files over
   HTTP, for example `python3 -m http.server 8000`.
 - `tab.evaluate()` exists and defaults to a capped JSON result. Prefer it over

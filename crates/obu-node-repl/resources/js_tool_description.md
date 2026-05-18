@@ -17,6 +17,12 @@ open-browser-use SDK. This is the browser automation surface: do not ask for sep
 `agent.browsers.get(...)` is async, so always write
 `const browser = await agent.browsers.get("chrome")`. `browser.tabs.create()`
 accepts either a URL string or `{ url }`; with no URL it creates `about:blank`.
+Keep the returned `Tab` handle and use `await tab.goto(url)` for repeated
+same-task or same-site navigation instead of creating a new tab for every URL.
+One browser session can hold multiple `Tab` handles; keep them in variables and
+move data explicitly between tabs.
+Use `browser.turnEnded()` when a turn is done but active tabs should remain
+controlled; `browser.finishTurn(...)` finalizes tabs before ending the turn.
 The WebExtension backend cannot drive `file://` pages. Serve local files over
 HTTP, for example `python3 -m http.server`, and navigate to
 `http://127.0.0.1:...`.
@@ -90,8 +96,10 @@ can stream as progress, but they are also included in the final result.
 const browser = await agent.browsers.get("cdp");
 const tab = await browser.tabs.create("https://example.com");
 await tab.attach();
+await tab.goto("https://example.com/docs");
 await tab.locator("h1").click();
 await tab.screenshotForModel({ clip: { x: 0, y: 0, width: 900, height: 700, scale: 0.5 } });
+await browser.turnEnded();
 ```
 
 ```js
@@ -99,6 +107,14 @@ const browser = await agent.browsers.get("chrome");
 const tab = await browser.tabs.create("data:text/html,<button>Save</button>");
 await tab.attach();
 await tab.getByRole("button", { name: "Save" }).click();
+```
+
+```js
+const browser = await agent.browsers.get("chrome");
+const source = await browser.tabs.create("https://example.com/source");
+const target = await browser.tabs.create("https://example.com/target");
+const text = await source.getByRole("main").innerText();
+await target.getByLabel("Notes").fill(text);
 ```
 
 ```js

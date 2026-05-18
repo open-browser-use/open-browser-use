@@ -11,8 +11,11 @@ Browser:
   .tabs.create(urlOrOptions?) -> Tab   accepts "https://..." or {url}; defaults to "about:blank"
   .tabs.list() -> Tab[]
   .tabs.get(id) -> Tab
+  keep multiple Tab handles when a workflow needs more than one tab
   .user.openTabs() / .user.history() / .user.claimTab()
-  .name(label) / .turnEnded() / .finalizeTabs({keep?}) / .finalize() / .finishTurn({keep?}) / .clearLifecycleDiagnostics()
+  .name(label) / .turnEnded() to keep active tabs controlled
+  .finalizeTabs({keep?}) / .finalize() / .finishTurn({keep?}) to release/finalize tabs
+  .clearLifecycleDiagnostics()
 
 Tab:
   .goto(url) / .back() / .forward() / .reload() / .waitForURL() / .waitForLoadState() / .waitForNavigation()

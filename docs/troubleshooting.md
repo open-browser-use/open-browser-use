@@ -87,16 +87,14 @@ const shot = await tab.screenshot({
 display({ __obuImage: true, mime_type: shot.mime_type, data: shot.data_base64 });
 ```
 
-`tab.evaluate()` is not a first-class SDK method. For page-level JavaScript,
-use CDP directly:
+For bounded page-level JavaScript, prefer the first-class `tab.evaluate()`
+helper:
 
 ```js
-const result = await tab.dev.cdp("Runtime.evaluate", {
-  expression: "document.title",
-  returnByValue: true,
-  awaitPromise: true
-});
+const title = await tab.evaluate(() => document.title);
 ```
+
+Keep raw `tab.dev.cdp(...)` for cases that need direct CDP protocol access.
 
 The Node kernel intentionally hides `process` / `node:process`; use
 `nodeRepl.cwd`, `nodeRepl.homeDir`, `nodeRepl.tmpDir`, and
