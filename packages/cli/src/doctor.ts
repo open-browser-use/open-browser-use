@@ -362,7 +362,7 @@ async function fileCheck(
 
 async function inspectNodeVersion(nodeBin: string): Promise<{ ok: true; version: string } | { ok: false; message: string }> {
   try {
-    const result = await execFileAsync(nodeBin, ["--version"], { timeout: 2000, encoding: "utf8" });
+    const result = await execFileAsync(nodeBin, ["--version"], { timeout: 5000, encoding: "utf8" });
     return { ok: true, version: result.stdout.trim().replace(/^v/, "") };
   } catch (error) {
     return { ok: false, message: `failed to inspect bundled Node version: ${String(error)}` };

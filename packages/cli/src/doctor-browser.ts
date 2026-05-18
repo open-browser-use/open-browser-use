@@ -704,7 +704,7 @@ async function checkNativeHostManifest(
 
 async function checkHostVersion(hostBinary: string): Promise<DoctorCheck> {
   try {
-    const { stdout } = await execFileAsync(hostBinary, ["--version"], { timeout: 1000 });
+    const { stdout } = await execFileAsync(hostBinary, ["--version"], { timeout: 5000 });
     return pass("native-host-version", "Native host version", stdout.trim() || hostBinary, { path: hostBinary });
   } catch (error) {
     return warn("native-host-version", "Native host version", `could not execute ${hostBinary} --version`, { error: String(error) });
