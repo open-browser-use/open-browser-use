@@ -328,6 +328,40 @@ test("setup CLI accepts explicit auto and none agent modes", async (t) => {
   assert.equal(nonePayload.steps.find((step: any) => step.id === "agent-adapters")?.message, "skipped agent adapter wiring");
 });
 
+test("setup auto skips unreadable direct-edit agent config instead of aborting", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX permissions are required for this regression test");
+    return;
+  }
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  const configPath = path.join(home, ".cursor", "mcp.json");
+  t.after(async () => {
+    await chmod(configPath, 0o600).catch(() => {});
+    await rm(home, { recursive: true, force: true });
+    await rm(bin, { recursive: true, force: true });
+  });
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(configPath, "{}\n", "utf8");
+  await chmod(configPath, 0o000);
+  const hostBin = path.join(bin, "obu-host");
+  await writeFile(hostBin, "#!/bin/sh\n", "utf8");
+  await chmod(hostBin, 0o755);
+  const storeExtensionId = "abcdefghijklmnopabcdefghijklmnop";
+
+  const result = await runCli(["setup", "--yes", "--channel=store", "--extension-id", storeExtensionId, "--agents=auto", "--json"], {
+    HOME: home,
+    PATH: "",
+    OBU_RUNTIME_DIR: path.join(home, "runtime"),
+    OBU_HOST_BIN: hostBin,
+  });
+
+  assert.equal(result.code, 0);
+  assert.equal(result.stderr, "");
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.steps.find((step: any) => step.id === "agent-adapters")?.message, "no supported coding agents detected");
+});
+
 test("setup recovery mode exits zero for manual action but not failed setup", async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
   const source = await mkdtemp(path.join(os.tmpdir(), "obu-cli-extension-"));

@@ -158,6 +158,33 @@ test("configureAgents skips broken JSONC direct-edit files with a manual action"
   assert.match(steps[0]?.nextActions?.[0]?.value ?? "", /mcp-config --agent=cursor --print/);
 });
 
+test("configureAgents reports unreadable direct-edit files as manual actions", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX permissions are required for this regression test");
+    return;
+  }
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-agent-config-"));
+  const configPath = path.join(root, ".cursor", "mcp.json");
+  t.after(async () => {
+    await chmod(configPath, 0o600).catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  });
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(configPath, "{}\n", "utf8");
+  await chmod(configPath, 0o000);
+
+  const steps = await configureAgents({
+    agents: ["cursor"],
+    server: server(root),
+    env: { PATH: "" },
+    homeDir: root,
+  });
+
+  assert.equal(steps[0]?.status, "manual_action_required");
+  assert.match(steps[0]?.message ?? "", /could not be read or written/);
+  assert.equal(steps[0]?.details?.code, "EACCES");
+});
+
 test("configureAgents uses Cursor shell adapter only when --add-mcp is available", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "obu-agent-config-"));
   t.after(() => rm(root, { recursive: true, force: true }));
