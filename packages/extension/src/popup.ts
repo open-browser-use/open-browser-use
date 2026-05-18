@@ -369,7 +369,7 @@ function setupCommandForChannel(channel: string, runtimeExtensionId?: string): s
     : "";
   return [
     `curl -fsSL ${GITHUB_INSTALL_URL} | sh && \\`,
-    `~/.obu/bin/obu setup --yes --all --skip-agents${channelSuffix}${extensionIdSuffix} && \\`,
+    `~/.obu/bin/obu setup --yes --all --skip-agents --recovery${channelSuffix}${extensionIdSuffix} && \\`,
     `~/.obu/bin/obu doctor browser --repair${channelSuffix}${extensionIdSuffix}`,
   ].join("\n");
 }
