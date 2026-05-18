@@ -7,6 +7,15 @@ import { doctorAggregate, formatAggregateDoctorReport } from "./doctor.js";
 import { doctorJson } from "./doctor-json.js";
 import { doctorBrowser, formatDoctorReport, hasDoctorFailures, type BrowserKind, type DoctorReport } from "./doctor-browser.js";
 import { parseExtensionChannel, resolveExtensionTarget, userConfigForExtensionTarget } from "./extension-channel.js";
+import {
+  formatDoctorSummary,
+  formatInstallHostSummary,
+  formatInstallHostVerbose,
+  formatSetupSummary,
+  formatSetupVerbose,
+  formatUpdateExtensionSummary,
+  formatUpdateExtensionVerbose,
+} from "./human-output.js";
 import { updateExtension } from "./extension-update.js";
 import { installNativeHosts, supportedNativeHostBrowsers } from "./native-host.js";
 import { ensureRuntimeDir, executableExists, packageVersion, resolveRuntimeLayout, validateRuntimeDir, writeUserConfig } from "./runtime-layout.js";
@@ -18,6 +27,8 @@ type ParsedArgs = {
   browser?: BrowserKind;
   agent?: string;
   json: boolean;
+  verbose: boolean;
+  recovery: boolean;
   repair: boolean;
   cleanBackups: boolean;
   strict: boolean;
@@ -131,14 +142,11 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   if (args.json) {
     console.log(JSON.stringify(report, null, 2));
   } else {
-    for (const step of report.steps) {
-      console.log(`${step.status.toUpperCase().padEnd(22)} ${step.id}: ${step.message}`);
-    }
-    for (const action of report.nextActions) {
-      console.log(`${action.kind}: ${action.value}`);
-    }
+    console.log(args.verbose ? formatSetupVerbose(report) : formatSetupSummary(report));
   }
-  return report.result === "complete" ? 0 : 1;
+  if (report.result === "complete") return 0;
+  if (report.result === "manual_action_required" && args.recovery) return 0;
+  return 1;
 }
 
 async function runUpdateExtension(args: ParsedArgs): Promise<number> {
@@ -174,12 +182,7 @@ async function runUpdateExtension(args: ParsedArgs): Promise<number> {
   if (args.json) {
     console.log(JSON.stringify(report, null, 2));
   } else {
-    for (const step of report.steps) {
-      console.log(`${step.status.toUpperCase().padEnd(22)} ${step.id}: ${step.message}`);
-    }
-    for (const action of report.nextActions) {
-      console.log(`${action.kind}: ${action.value}`);
-    }
+    console.log(args.verbose ? formatUpdateExtensionVerbose(report) : formatUpdateExtensionSummary(report));
   }
   return report.result === "complete" ? 0 : 1;
 }
@@ -233,9 +236,7 @@ async function runInstallHost(args: ParsedArgs): Promise<number> {
       actions,
     }, null, 2));
   } else {
-    for (const action of actions) {
-      console.log(`${action.status.toUpperCase().padEnd(11)} ${action.browser}: ${action.message}`);
-    }
+    console.log(args.verbose ? formatInstallHostVerbose(actions) : formatInstallHostSummary(actions));
   }
   return actions.some((action) => action.status === "failed") ? 1 : 0;
 }
@@ -321,7 +322,9 @@ async function runDoctor(args: ParsedArgs): Promise<number> {
       strict: args.strict,
     }), null, 2));
   } else {
-    console.log(args.subject === "browser" ? formatDoctorReport(report as DoctorReport) : formatAggregateDoctorReport(report));
+    console.log(args.verbose
+      ? args.subject === "browser" ? formatDoctorReport(report as DoctorReport) : formatAggregateDoctorReport(report)
+      : formatDoctorSummary(report, command, args.strict, doctorVerboseCommand(args)));
   }
   return doctorExitCode(report, args.strict);
 }
@@ -362,9 +365,24 @@ function doctorExitCode(report: { checks: DoctorReport["checks"] }, strict: bool
   return 0;
 }
 
+function doctorVerboseCommand(args: ParsedArgs): string {
+  const parts = ["obu", "doctor"];
+  if (args.subject === "browser") parts.push("browser");
+  if (args.browser) parts.push(`--browser=${args.browser}`);
+  if (args.channel) parts.push(`--channel=${args.channel}`);
+  if (args.extensionId) parts.push(`--extension-id=${args.extensionId}`);
+  if (args.strict) parts.push("--strict");
+  if (args.repair) parts.push("--repair");
+  if (args.cleanBackups) parts.push("--clean-backups");
+  parts.push("--verbose");
+  return parts.join(" ");
+}
+
 function parseArgs(argv: string[]): ParsedArgs {
   const args: ParsedArgs = {
     json: false,
+    verbose: false,
+    recovery: false,
     repair: false,
     strict: false,
     cleanBackups: false,
@@ -401,6 +419,12 @@ function parseArgs(argv: string[]): ParsedArgs {
         break;
       case "--json":
         args.json = true;
+        break;
+      case "--verbose":
+        args.verbose = true;
+        break;
+      case "--recovery":
+        args.recovery = true;
         break;
       case "--repair":
         args.repair = true;
@@ -470,10 +494,10 @@ function parseBrowser(value: string): BrowserKind {
 function printHelp(): void {
   console.log(`Usage:
   obu --version
-  obu setup [--yes] [--browser chrome|chrome-for-testing|edge|brave|arc|chromium|--all] [--agents=<list>] [--channel unpacked-dev|store] [--extension-id <id>] [--skip-extension] [--skip-agents] [--dry-run] [--json]
-  obu doctor [browser] [--browser chrome|chrome-for-testing|edge|brave|arc|chromium] [--channel unpacked-dev|store] [--extension-id <id>] [--json] [--strict] [--repair] [--clean-backups]
-  obu install-host [--browser chrome|chrome-for-testing|edge|brave|arc|chromium|--all] [--channel unpacked-dev|store] [--extension-id <id>] [--dry-run] [--json]
-  obu update-extension [--path <dir>] [--channel unpacked-dev] [--no-wait] [--dry-run] [--json]
+  obu setup [--yes] [--browser chrome|chrome-for-testing|edge|brave|arc|chromium|--all] [--agents=<list>] [--channel unpacked-dev|store] [--extension-id <id>] [--skip-extension] [--skip-agents] [--dry-run] [--recovery] [--verbose] [--json]
+  obu doctor [browser] [--browser chrome|chrome-for-testing|edge|brave|arc|chromium] [--channel unpacked-dev|store] [--extension-id <id>] [--verbose] [--json] [--strict] [--repair] [--clean-backups]
+  obu install-host [--browser chrome|chrome-for-testing|edge|brave|arc|chromium|--all] [--channel unpacked-dev|store] [--extension-id <id>] [--dry-run] [--verbose] [--json]
+  obu update-extension [--path <dir>] [--channel unpacked-dev] [--no-wait] [--dry-run] [--verbose] [--json]
   obu mcp-config --agent=<id> --print
   obu mcp stdio`);
 }

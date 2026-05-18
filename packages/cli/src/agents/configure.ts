@@ -12,7 +12,7 @@ import {
 
 export type AgentConfigureStep = {
   id: string;
-  status: "applied" | "skipped" | "manual_action_required" | "failed";
+  status: "applied" | "skipped" | "would_apply" | "manual_action_required" | "failed";
   message: string;
   details?: Record<string, unknown>;
   nextActions?: Array<{ kind: "command" | "manual" | "docs"; value: string }>;
@@ -96,7 +96,7 @@ async function configureShell(
   if (dryRun) {
     return {
       id: `agent-${agent}`,
-      status: "skipped",
+      status: "would_apply",
       message: `would run ${config.executable} adapter for ${agent}`,
       details: { shellCommand: config.shellCommand, dryRun: true },
     };
@@ -163,7 +163,7 @@ async function configureDirectEdit(
   if (dryRun) {
     return {
       id: `agent-${agent}`,
-      status: "skipped",
+      status: "would_apply",
       message: `would update ${agent} MCP config`,
       details: { dryRun: true },
     };
