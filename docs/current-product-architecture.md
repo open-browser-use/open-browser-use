@@ -41,7 +41,7 @@ flowchart TB
   Extension["Chromium MV3 extension<br/>service worker + popup + cursor script"]
   Browser["Chromium-family browser<br/>tabs / debugger / downloads / history"]
 
-  Agent -->|"MCP stdio<br/>tools: js, js_reset, js_add_module_dir"| NodeRepl
+  Agent -->|"MCP stdio<br/>tools: js, browser_status, js_reset, js_add_module_dir"| NodeRepl
   NodeRepl -->|"JSONL stdin/stdout"| Kernel
   Kernel -->|"bootstrap trusted @open-browser-use/sdk"| SDK
   SDK -->|"import.meta.__obuNativePipe"| Kernel
@@ -499,7 +499,11 @@ stateDiagram-v2
 
 WebExtension service worker 额外将 durable `handoff` / `deliverable` tab rows 存入 `chrome.storage.local`，在 service worker 或 native host 重启后恢复仍存在的 Chrome tabs。`browser.deliverables()` 会刷新 `getTabs` side channel 和 `getInfo` lifecycle diagnostics，再返回可 `claim()` 的 deliverable handles。
 
-### 9.3 Handles lifecycle
+### 9.3 Tab cleanup and cross-tab operations
+
+See [Tab cleanup and cross-tab operations analysis](./tab-lifecycle-and-cross-tab-analysis.md).
+
+### 9.4 Handles lifecycle
 
 File chooser 和 download 是 request/response handle 模式：
 
@@ -510,7 +514,7 @@ File chooser 和 download 是 request/response handle 模式：
 
 Tab detach/close/finalize 或 registry cleanup 会清理相关 handle，并留下 stale tombstone 以便诊断。
 
-### 9.4 Extension connection lifecycle
+### 9.5 Extension connection lifecycle
 
 WebExtension service worker 是浏览器 profile 内的长期控制面，但 MV3 service worker 会被浏览器挂起/恢复，所以当前实现把 native-host 连接状态和 durable tab rows 持久化到 `chrome.storage.local`。
 
