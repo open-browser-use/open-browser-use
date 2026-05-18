@@ -154,15 +154,17 @@ build the CLI and run the browser doctor:
 ```bash
 pnpm -C packages/cli build
 node packages/cli/dist/index.js doctor browser --browser chrome
+node packages/cli/dist/index.js doctor browser --browser chrome --verbose
 node packages/cli/dist/index.js doctor browser --browser chrome --json
 node packages/cli/dist/index.js doctor browser --browser chrome --repair
 ```
 
-The human output includes repair hints for warnings and failures. The JSON
-output includes check details for automation, including runtime descriptor
-lifecycle diagnostics from `getInfo`; stale session reasons, compact
-deliverable tab summaries, and deliverable recovery hints are also summarized in
-the human report. A reachable
+The default human output is concise and includes repair hints for warnings,
+failures, and passing checks with actionable recovery details. Use `--verbose`
+for the full check list; use `--json` for automation. JSON output includes
+check details, including runtime descriptor lifecycle diagnostics from
+`getInfo`; stale session reasons, compact deliverable tab summaries, and
+deliverable recovery hints are also summarized in the human report. A reachable
 runtime descriptor is reported as `WARN`, not `PASS`, when host lifecycle
 diagnostics contain stale sessions, tabs, file chooser handles, or download
 handles. `--repair` performs conservative local repairs: it can regenerate an

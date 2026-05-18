@@ -78,6 +78,12 @@ Current stance for the first Store draft:
    --channel=store
    ```
 
+   and:
+
+   ```bash
+   --recovery
+   ```
+
 5. Click **Resume** in the popup.
 6. Expected result: popup status changes to `Connected`.
 
@@ -88,7 +94,7 @@ Reviewer notes:
   `allowed_origins` contains the concrete extension id.
 - The extension cannot repair that manifest by itself; the copied Terminal
   command installs the GitHub Release CLI/native host payload and runs
-  `obu setup --channel=store`.
+  `obu setup --recovery --channel=store`.
 - Diagnostics are local. `obu doctor browser --channel=store --json` reports the
   channel, extension id, id source, native-host manifest status, and runtime
   descriptor status.

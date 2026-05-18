@@ -103,7 +103,7 @@ Popup:
 
 ```bash
 curl -fsSL https://github.com/open-browser-use/open-browser-use/releases/latest/download/install.sh | sh && \
-~/.obu/bin/obu setup --yes --all --skip-agents && \
+~/.obu/bin/obu setup --yes --all --skip-agents --recovery && \
 ~/.obu/bin/obu doctor browser --repair
 ```
 
@@ -111,7 +111,7 @@ curl -fsSL https://github.com/open-browser-use/open-browser-use/releases/latest/
 
 ```bash
 curl -fsSL https://github.com/open-browser-use/open-browser-use/releases/latest/download/install.sh | sh && \
-~/.obu/bin/obu setup --yes --all --skip-agents --channel=store && \
+~/.obu/bin/obu setup --yes --all --skip-agents --recovery --channel=store && \
 ~/.obu/bin/obu doctor browser --repair --channel=store
 ```
 
@@ -172,7 +172,7 @@ Implemented work:
 
 ```bash
 curl -fsSL https://github.com/open-browser-use/open-browser-use/releases/latest/download/install.sh | sh && \
-~/.obu/bin/obu setup --yes --all --skip-agents --channel=store && \
+~/.obu/bin/obu setup --yes --all --skip-agents --recovery --channel=store && \
 ~/.obu/bin/obu doctor browser --repair --channel=store
 ```
 

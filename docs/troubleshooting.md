@@ -4,8 +4,14 @@ Start with:
 
 ```bash
 obu doctor
+obu doctor --verbose
 obu doctor --json
 ```
+
+Default `obu doctor` output is a concise health summary: failures, warnings,
+and passing checks with actionable recovery details. Use `--verbose` for the
+full check list, including ordinary passing payload/runtime checks. Use
+`--json` for automation.
 
 Use strict mode in CI:
 

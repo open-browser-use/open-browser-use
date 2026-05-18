@@ -1,7 +1,8 @@
 //! MCP server surface for `obu-node-repl`.
 //!
-//! open-browser-use exposes `js`, `js_reset`, and `js_add_module_dir`. The third tool is
-//! intentionally not named Codex's `js_add_node_module_dir`: OBU keeps the
+//! open-browser-use exposes `js`, `browser_status`, `js_reset`, and
+//! `js_add_module_dir`. The module-directory tool is intentionally not named
+//! Codex's `js_add_node_module_dir`: OBU keeps the
 //! behavior but drops the Node-specific spelling from the public API.
 
 use std::borrow::Cow;

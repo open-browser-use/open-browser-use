@@ -64,7 +64,7 @@ try {
   assert.equal(init.id, 1);
   const tools = await readJson(lines);
   assert.equal(tools.id, 2);
-  assert.deepEqual(tools.result.tools.map((tool) => tool.name), ["js", "js_reset", "js_add_module_dir"]);
+  assert.deepEqual(tools.result.tools.map((tool) => tool.name), ["js", "browser_status", "js_reset", "js_add_module_dir"]);
   const exec = await readJson(lines);
   assert.equal(exec.id, 3);
   assert.equal(exec.result.structuredContent.result.agent, "object");
