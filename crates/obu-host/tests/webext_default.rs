@@ -58,7 +58,7 @@ async fn webext_default_returns_not_implemented_without_transport_on_attach() {
     let value = dispatch_default(
         methods::ATTACH,
         json!({
-            "tab_id": "fake-id",
+            "tab_id": "123",
             "session_id": "session",
             "turn_id": "turn"
         }),
