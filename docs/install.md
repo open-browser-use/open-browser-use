@@ -128,8 +128,8 @@ Default human output is concise: it shows the result, important problems, and
 next action. Use `--verbose` for the full step/check list, and `--json` for
 stable automation output. The extension popup uses `obu setup --recovery` in its
 copied Terminal command so a setup result that only needs manual browser action
-does not stop the follow-up `obu doctor browser --repair`; setup failures still
-exit nonzero.
+does not stop the follow-up `obu doctor browser --repair`; setup failures and
+non-browser manual work such as agent adapter configuration still exit nonzero.
 
 `obu repl` is deferred in P4a. Use `obu mcp stdio` through an MCP client; a
 direct debug REPL will need its own tested command contract before it is

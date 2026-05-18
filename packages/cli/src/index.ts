@@ -19,7 +19,7 @@ import {
 import { updateExtension } from "./extension-update.js";
 import { installNativeHosts, supportedNativeHostBrowsers } from "./native-host.js";
 import { ensureRuntimeDir, executableExists, packageVersion, resolveRuntimeLayout, validateRuntimeDir, writeUserConfig } from "./runtime-layout.js";
-import { setupOpenBrowserUse } from "./setup.js";
+import { setupOpenBrowserUse, type SetupJson } from "./setup.js";
 
 type ParsedArgs = {
   command?: string;
@@ -145,7 +145,7 @@ async function runSetup(args: ParsedArgs): Promise<number> {
     console.log(args.verbose ? formatSetupVerbose(report) : formatSetupSummary(report));
   }
   if (report.result === "complete") return 0;
-  if (report.result === "manual_action_required" && args.recovery) return 0;
+  if (report.result === "manual_action_required" && args.recovery && isBrowserRecoveryBoundary(report)) return 0;
   return 1;
 }
 
@@ -363,6 +363,11 @@ function doctorExitCode(report: { checks: DoctorReport["checks"] }, strict: bool
   if (hasDoctorFailures(report)) return 1;
   if (strict && report.checks.some((check) => check.status === "warn")) return 1;
   return 0;
+}
+
+function isBrowserRecoveryBoundary(report: SetupJson): boolean {
+  const manualSteps = report.steps.filter((step) => step.status === "manual_action_required");
+  return manualSteps.length > 0 && manualSteps.every((step) => step.id === "runtime-descriptor-probe");
 }
 
 function doctorVerboseCommand(args: ParsedArgs): string {

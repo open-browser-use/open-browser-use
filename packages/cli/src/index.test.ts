@@ -238,6 +238,14 @@ test("setup summary preserves manual agent next actions", async (t) => {
   assert.match(result.stdout, /obu mcp-config --agent=continue --print/);
   assert.match(result.stdout, /obu doctor browser --channel=store/);
   assert.doesNotMatch(result.stdout, /agent-continue:/);
+
+  const recovery = await runCli(["setup", "--yes", "--recovery", "--channel=store", "--extension-id", storeExtensionId, "--agents=continue"], {
+    HOME: home,
+    OBU_RUNTIME_DIR: path.join(home, "runtime"),
+    OBU_HOST_BIN: hostBin,
+  });
+  assert.equal(recovery.code, 1);
+  assert.match(recovery.stdout, /obu mcp-config --agent=continue --print/);
 });
 
 test("setup recovery mode exits zero for manual action but not failed setup", async (t) => {
