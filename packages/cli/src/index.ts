@@ -64,6 +64,9 @@ async function main(argv: string[]): Promise<number> {
   if (args.command === "mcp-config") {
     return runMcpConfig(args);
   }
+  if (args.command === "shellenv") {
+    return runShellenv(args);
+  }
   if (args.command === "mcp" && args.subject === "stdio") {
     return runMcpStdio();
   }
@@ -254,6 +257,14 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   if (report.result === "complete") return 0;
   if (report.result === "manual_action_required" && args.recovery && isBrowserRecoveryBoundary(report)) return 0;
   return 1;
+}
+
+async function runShellenv(args: ParsedArgs): Promise<number> {
+  const layout = await resolveRuntimeLayout();
+  const shell = parseShellEnv(args.subject ?? process.env.SHELL?.split(/[\\/]/).filter(Boolean).at(-1) ?? "sh");
+  const output = formatShellEnv(shell, shellEnvInstallDir(layout), process.env);
+  if (output.length > 0) console.log(output);
+  return 0;
 }
 
 async function runUpdateExtension(args: ParsedArgs): Promise<number> {
@@ -481,6 +492,49 @@ function doctorExitCode(report: { checks: DoctorReport["checks"] }, strict: bool
   return 0;
 }
 
+type ShellEnvKind = "sh" | "bash" | "zsh" | "fish";
+
+function parseShellEnv(value: string): ShellEnvKind {
+  if (value === "sh" || value === "bash" || value === "zsh" || value === "fish") return value;
+  return "sh";
+}
+
+function shellEnvInstallDir(layout: Awaited<ReturnType<typeof resolveRuntimeLayout>>): string {
+  if (layout.mode === "packaged") return path.resolve(layout.root, "..", "..");
+  const command = layout.openBrowserUseCommand;
+  if (path.isAbsolute(command)) return path.dirname(path.dirname(command));
+  if (command.includes(path.sep)) return path.dirname(path.dirname(path.resolve(process.cwd(), command)));
+  return path.dirname(path.dirname(layout.cliEntry));
+}
+
+function formatShellEnv(shell: ShellEnvKind, installDir: string, env: NodeJS.ProcessEnv): string {
+  const binDir = path.join(installDir, "bin");
+  if (env.OBU_INSTALL_DIR === installDir && firstPathEntry(env.PATH) === binDir) return "";
+  if (shell === "fish") {
+    return [
+      `set --global --export OBU_INSTALL_DIR ${doubleQuoted(installDir)};`,
+      `fish_add_path --global --move --path ${doubleQuoted(binDir)};`,
+    ].join("\n");
+  }
+  return [
+    `export OBU_INSTALL_DIR=${shellSingleQuoted(installDir)};`,
+    'export PATH="${OBU_INSTALL_DIR}/bin${PATH+:$PATH}";',
+  ].join("\n");
+}
+
+function firstPathEntry(pathValue: string | undefined): string | undefined {
+  const first = pathValue?.split(path.delimiter).find((entry) => entry.length > 0);
+  return first ? path.resolve(first) : undefined;
+}
+
+function shellSingleQuoted(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function doubleQuoted(value: string): string {
+  return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("$", "\\$").replaceAll("`", "\\`")}"`;
+}
+
 function formatBootstrapSummary(setupReport: SetupJson, browserReport: DoctorReport | undefined): string {
   if (setupReport.result === "failed") return formatSetupSummary(setupReport);
 
@@ -688,6 +742,7 @@ function printHelp(): void {
   obu install-host [--browser chrome|chrome-for-testing|edge|brave|arc|chromium|--all] [--channel unpacked-dev|store] [--extension-id <id>] [--dry-run] [--verbose] [--json]
   obu update-extension [--path <dir>] [--channel unpacked-dev] [--no-wait] [--dry-run] [--verbose] [--json]
   obu mcp-config --agent=<id> --print
+  obu shellenv [shell]
   obu mcp stdio`);
 }
 

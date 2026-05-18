@@ -52,6 +52,42 @@ test("mcp-config rejects unknown agents", async (t) => {
   assert.match(result.stderr, /unsupported agent/);
 });
 
+test("shellenv emits packaged install environment snippets", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const installRoot = path.join(home, "install");
+  const payloadRoot = path.join(installRoot, "payloads", "current");
+  await mkdir(payloadRoot, { recursive: true });
+  const env = {
+    HOME: home,
+    OBU_PAYLOAD_ROOT: payloadRoot,
+    OBU_COMMAND: path.join(installRoot, "bin", "obu"),
+  };
+
+  const sh = await runCli(["shellenv", "sh"], env);
+  assert.equal(sh.code, 0);
+  assert.equal(sh.stderr, "");
+  assert.match(sh.stdout, new RegExp(`export OBU_INSTALL_DIR='${escapeRegExp(installRoot)}';`));
+  assert.match(sh.stdout, /export PATH="\$\{OBU_INSTALL_DIR\}\/bin\$\{PATH\+:\$PATH\}";/);
+
+  const fish = await runCli(["shellenv", "fish"], env);
+  assert.equal(fish.code, 0);
+  assert.match(fish.stdout, new RegExp(`set --global --export OBU_INSTALL_DIR "${escapeRegExp(installRoot)}";`));
+  assert.match(fish.stdout, /fish_add_path --global --move --path /);
+
+  const active = await runCli(["shellenv", "zsh"], {
+    ...env,
+    OBU_INSTALL_DIR: installRoot,
+    PATH: `${path.join(installRoot, "bin")}${path.delimiter}/usr/bin`,
+  });
+  assert.equal(active.code, 0);
+  assert.equal(active.stdout, "");
+
+  const unknown = await runCli(["shellenv", "nu"], env);
+  assert.equal(unknown.code, 0);
+  assert.match(unknown.stdout, /export OBU_INSTALL_DIR=/);
+});
+
 test("mcp stdio missing setup fails before writing stdout", async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
   t.after(() => rm(home, { recursive: true, force: true }));
