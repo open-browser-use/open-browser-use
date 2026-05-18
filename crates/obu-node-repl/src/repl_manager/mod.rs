@@ -1045,13 +1045,11 @@ fn read_runtime_descriptor(path: &std::path::Path) -> Result<RuntimeDescriptorRe
     };
     let canonical_socket = validate_descriptor_socket(socket_path)?;
     if !descriptor_process_alive(&value) {
-        let _ = std::fs::remove_file(path);
         return Ok(RuntimeDescriptorRead::Ignored(
             "descriptor process is not alive".to_string(),
         ));
     }
     if !probe_runtime_descriptor(&canonical_socket, token, &value) {
-        let _ = std::fs::remove_file(path);
         return Ok(RuntimeDescriptorRead::Ignored(
             "descriptor probe failed".to_string(),
         ));

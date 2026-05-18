@@ -389,7 +389,7 @@ async fn browser_status_refreshes_live_kernel_descriptor_inventory() {
 
 #[cfg(unix)]
 #[tokio::test]
-async fn runtime_descriptor_discovery_removes_stale_descriptor() {
+async fn runtime_descriptor_discovery_reports_stale_descriptor_without_removing_it() {
     let _env_guard = ENV_LOCK.lock().await;
     let runtime_dir = tempfile::tempdir().unwrap();
     make_runtime_root_owner_only(runtime_dir.path());
@@ -431,7 +431,7 @@ async fn runtime_descriptor_discovery_removes_stale_descriptor() {
             .reason
             .contains("descriptor probe failed")
     );
-    assert!(!descriptor_path.exists());
+    assert!(descriptor_path.exists());
 }
 
 #[tokio::test]
