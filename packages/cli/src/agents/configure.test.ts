@@ -67,6 +67,25 @@ test("configureAgents returns manual action when shell executable is missing", a
   assert.match(steps[0]?.nextActions?.[0]?.value ?? "", /mcp-config --agent=claude-code --print/);
 });
 
+test("configureAgents dry-run reports planned shell and direct-edit work", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-agent-config-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const steps = await configureAgents({
+    agents: ["codex-cli", "zed"],
+    server: server(root),
+    env: { PATH: "" },
+    homeDir: root,
+    platform: "linux",
+    dryRun: true,
+  });
+
+  assert.equal(steps.find((step) => step.id === "agent-codex-cli")?.status, "would_apply");
+  assert.match(steps.find((step) => step.id === "agent-codex-cli")?.message ?? "", /would run codex adapter/);
+  assert.equal(steps.find((step) => step.id === "agent-zed")?.status, "would_apply");
+  assert.match(steps.find((step) => step.id === "agent-zed")?.message ?? "", /would update zed MCP config/);
+});
+
 test("configureAgents writes JSONC direct-edit adapters and skips unchanged reruns", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "obu-agent-config-"));
   t.after(() => rm(root, { recursive: true, force: true }));

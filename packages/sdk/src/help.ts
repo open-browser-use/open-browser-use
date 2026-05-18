@@ -13,8 +13,8 @@ Browser:
   .tabs.get(id) -> Tab
   keep multiple Tab handles when a workflow needs more than one tab
   .user.openTabs() / .user.history() / .user.claimTab()
-  .name(label) / .turnEnded() to keep active tabs controlled
-  .finalizeTabs({keep?}) / .finalize() / .finishTurn({keep?}) to release/finalize tabs
+  .name(label) / .turnEnded() to mark a turn boundary while keeping active tabs controlled
+  .finalizeTabs({keep?}) / .finalize() / .finishTurn({keep?}) to close, release, hand off, or preserve tabs
   .clearLifecycleDiagnostics()
 
 Tab:

@@ -80,7 +80,7 @@ async function runPopupHappyPath() {
   assert.equal(harness.elements.setupPanel.hidden, false);
   assert.match(harness.elements.setupText.textContent, /Update the local open-browser-use host from GitHub/);
   assert.match(harness.elements.setupCommand.textContent, /github\.com\/open-browser-use\/open-browser-use\/releases\/latest\/download\/install\.sh/);
-  assert.match(harness.elements.setupCommand.textContent, /obu setup --yes --all --skip-agents/);
+  assert.match(harness.elements.setupCommand.textContent, /obu setup --yes --all --skip-agents --recovery/);
 
   harness.storageChanges.emit(
     {
@@ -469,6 +469,7 @@ async function runPopupRepairMatrix() {
     assert.equal(harness.elements.setupPanel.hidden, !entry.setupVisible);
     if (entry.setupVisible) {
       assert.match(harness.elements.setupCommand.textContent, /github\.com\/open-browser-use\/open-browser-use\/releases\/latest\/download\/install\.sh/);
+      assert.match(harness.elements.setupCommand.textContent, /obu setup --yes --all --skip-agents --recovery/);
       assert.match(harness.elements.setupCommand.textContent, /obu doctor browser --repair/);
       for (const pattern of entry.setupPatterns ?? []) {
         assert.match(harness.elements.setupText.textContent, pattern);
@@ -518,7 +519,7 @@ async function runPopupStoreSetupCommand() {
     await waitFor(() => harness.elements.statusText.textContent === "Error");
 
     assert.equal(harness.elements.setupPanel.hidden, false);
-    assert.match(harness.elements.setupCommand.textContent, /obu setup --yes --all --skip-agents --channel=store/);
+    assert.match(harness.elements.setupCommand.textContent, /obu setup --yes --all --skip-agents --recovery --channel=store/);
     assert.match(harness.elements.setupCommand.textContent, new RegExp(`--extension-id=${runtimeExtensionId}`));
     assert.match(harness.elements.setupCommand.textContent, /obu doctor browser --repair --channel=store/);
   } finally {

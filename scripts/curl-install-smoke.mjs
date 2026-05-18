@@ -23,7 +23,7 @@ try {
   const home = path.join(temp, "home");
   const installer = path.join(artifactRoot, manifest.installer);
   const artifactPath = path.join(artifactRoot, artifact.file);
-  run("sh", [
+  const defaultInstall = run("sh", [
     installer,
     "--artifact",
     artifactPath,
@@ -33,6 +33,9 @@ try {
     installDir,
     "--no-modify-path",
   ], { HOME: home });
+  assert.match(defaultInstall.stdout, /open-browser-use installed at /);
+  assert.match(defaultInstall.stdout, /Run: .*\/bin\/obu setup/);
+  assert.doesNotMatch(defaultInstall.stdout, /checksum:/);
 
   const obu = path.join(installDir, "bin", "obu");
   await access(obu);
@@ -97,15 +100,23 @@ try {
 
   const releaseManifestInstallDir = path.join(temp, "release-manifest-install");
   const releaseManifestHome = path.join(temp, "release-manifest-home");
-  run("sh", [
+  const releaseManifestInstall = run("sh", [
     installer,
     "--no-modify-path",
+    "--verbose",
   ], {
     HOME: releaseManifestHome,
     OBU_INSTALL_DIR: releaseManifestInstallDir,
     OBU_RELEASE_BASE_URL: artifactRoot,
     OBU_TARGET: artifactTarget,
   });
+  assert.match(releaseManifestInstall.stdout, new RegExp(`target: ${artifactTarget}`));
+  assert.match(releaseManifestInstall.stdout, /manifest: .*manifest\.tsv/);
+  assert.match(releaseManifestInstall.stdout, /artifact: .*open-browser-use-.+\.tar\.gz/);
+  assert.match(releaseManifestInstall.stdout, /checksum: ok/);
+  assert.match(releaseManifestInstall.stdout, /extract: /);
+  assert.match(releaseManifestInstall.stdout, /shim: wrote /);
+  assert.match(releaseManifestInstall.stdout, /path: skipped shell profile update/);
   await access(path.join(releaseManifestInstallDir, "bin", "obu"));
   await assert.rejects(() => access(path.join(releaseManifestHome, ".profile")), { code: "ENOENT" });
 

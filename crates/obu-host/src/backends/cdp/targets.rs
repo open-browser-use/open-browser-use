@@ -90,10 +90,7 @@ pub async fn list_tabs(backend: &CdpBackend) -> Result<Value> {
 /// Close a tab and remove host-side state for it.
 pub async fn close_tab(backend: &CdpBackend, tab_id: &str) -> Result<Value> {
     let id = TabId::new(tab_id);
-    let record = backend
-        .registry()
-        .get(&id)?
-        .ok_or_else(|| HostError::PageClosed(format!("unknown tab {tab_id}")))?;
+    let record = crate::backends::cdp::attach::require_active_record(backend, tab_id)?;
 
     backend
         .transport()

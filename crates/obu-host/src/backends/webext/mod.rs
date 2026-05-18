@@ -190,6 +190,9 @@ impl BrowserBackend for WebExtensionBackend {
     async fn attach_with_context(&self, ctx: &BackendRequestContext, _tab_id: &str) -> Result<()> {
         self.ensure_active()?;
         Self::require_session_context(ctx, "attach")?;
+        let parsed_tab_id = parse_tab_id(_tab_id)?;
+        let normalized_tab_id = parsed_tab_id.to_string();
+        ensure_active_tab_if_recorded(self, &normalized_tab_id)?;
         record_session_context(self, ctx)?;
         self.transport("attach")?
             .request(
@@ -197,14 +200,15 @@ impl BrowserBackend for WebExtensionBackend {
                 json!({
                     "session_id": ctx.session_id.clone(),
                     "turn_id": ctx.turn_id.clone(),
-                    "tabId": parse_tab_id(_tab_id)?,
+                    "tabId": parsed_tab_id,
                     "timeoutMs": ctx.client_timeout_ms,
                 }),
             )
             .await?;
-        self.registry().update(&TabId::new(_tab_id), |record| {
-            record.attached = true;
-        })?;
+        self.registry()
+            .update(&TabId::new(&normalized_tab_id), |record| {
+                record.attached = true;
+            })?;
         forget_tab_state(self, ctx, _tab_id).await;
         Ok(())
     }
@@ -212,6 +216,9 @@ impl BrowserBackend for WebExtensionBackend {
     async fn detach_with_context(&self, ctx: &BackendRequestContext, _tab_id: &str) -> Result<()> {
         self.ensure_active()?;
         Self::require_session_context(ctx, "detach")?;
+        let parsed_tab_id = parse_tab_id(_tab_id)?;
+        let normalized_tab_id = parsed_tab_id.to_string();
+        ensure_active_tab_if_recorded(self, &normalized_tab_id)?;
         record_session_context(self, ctx)?;
         cleanup_virtual_clipboard_script(self, ctx, _tab_id).await;
         self.transport("detach")?
@@ -220,15 +227,17 @@ impl BrowserBackend for WebExtensionBackend {
                 json!({
                     "session_id": ctx.session_id.clone(),
                     "turn_id": ctx.turn_id.clone(),
-                    "tabId": parse_tab_id(_tab_id)?,
+                    "tabId": parsed_tab_id,
                     "timeoutMs": ctx.client_timeout_ms,
                 }),
             )
             .await?;
-        self.registry().update(&TabId::new(_tab_id), |record| {
-            record.attached = false;
-        })?;
-        self.registry().clear_tab_handles(&TabId::new(_tab_id))?;
+        self.registry()
+            .update(&TabId::new(&normalized_tab_id), |record| {
+                record.attached = false;
+            })?;
+        self.registry()
+            .clear_tab_handles(&TabId::new(&normalized_tab_id))?;
         forget_tab_state(self, ctx, _tab_id).await;
         Ok(())
     }
@@ -242,6 +251,9 @@ impl BrowserBackend for WebExtensionBackend {
     ) -> Result<Value> {
         self.ensure_active()?;
         Self::require_session_context(ctx, "executeCdp")?;
+        let parsed_tab_id = parse_tab_id(tab_id)?;
+        let normalized_tab_id = parsed_tab_id.to_string();
+        ensure_active_tab_if_recorded(self, &normalized_tab_id)?;
         record_session_context(self, ctx)?;
         self.transport("executeCdp")?
             .request(
@@ -249,7 +261,7 @@ impl BrowserBackend for WebExtensionBackend {
                 json!({
                     "session_id": ctx.session_id.clone(),
                     "turn_id": ctx.turn_id.clone(),
-                    "target": { "tabId": parse_tab_id(tab_id)? },
+                    "target": { "tabId": parsed_tab_id },
                     "method": method,
                     "commandParams": params,
                     "timeoutMs": ctx.client_timeout_ms,
@@ -488,6 +500,7 @@ impl BrowserBackend for WebExtensionBackend {
     ) -> Result<Value> {
         self.ensure_active()?;
         Self::require_session_context(ctx, method)?;
+        ensure_active_tab_param_if_recorded(self, &params)?;
         record_session_context(self, ctx)?;
         run_cua_command(self, ctx, method, params).await
     }
@@ -500,6 +513,7 @@ impl BrowserBackend for WebExtensionBackend {
     ) -> Result<Value> {
         self.ensure_active()?;
         Self::require_session_context(ctx, method)?;
+        ensure_active_tab_param_if_recorded(self, &params)?;
         record_session_context(self, ctx)?;
         run_playwright_command(self, ctx, method, params).await
     }
@@ -512,6 +526,7 @@ impl BrowserBackend for WebExtensionBackend {
     ) -> Result<Value> {
         self.ensure_active()?;
         Self::require_session_context(ctx, method)?;
+        ensure_active_tab_param_if_recorded(self, &params)?;
         record_session_context(self, ctx)?;
         run_tab_command(self, ctx, method, params).await
     }
@@ -525,6 +540,58 @@ fn record_session_context(
         ctx.session_id.as_deref().unwrap_or_default(),
         ctx.turn_id.as_deref(),
     )
+}
+
+fn ensure_active_tab_param_if_recorded(
+    backend: &WebExtensionBackend,
+    params: &Value,
+) -> Result<()> {
+    if let Some(tab_id) = params_tab_id(params) {
+        ensure_active_tab_if_recorded(backend, &tab_id)?;
+    }
+    Ok(())
+}
+
+fn ensure_active_tab_if_recorded(backend: &WebExtensionBackend, tab_id: &str) -> Result<()> {
+    let Some(record) = backend.registry().get(&TabId::new(tab_id))? else {
+        return Ok(());
+    };
+    if record.status != TabStatus::Active {
+        return Err(HostError::Protocol(format!(
+            "tab {tab_id} is {}, not actively controlled",
+            tab_status_label(&record.status)
+        )));
+    }
+    Ok(())
+}
+
+fn params_tab_id(params: &Value) -> Option<String> {
+    params
+        .get("tab_id")
+        .or_else(|| params.get("tabId"))
+        .and_then(|value| match value {
+            Value::String(value) => Some(value.clone()),
+            Value::Number(value) => value.as_i64().map(|value| value.to_string()),
+            _ => None,
+        })
+        .or_else(|| {
+            params
+                .get("target")
+                .and_then(|target| target.get("tabId"))
+                .and_then(|value| match value {
+                    Value::String(value) => Some(value.clone()),
+                    Value::Number(value) => value.as_i64().map(|value| value.to_string()),
+                    _ => None,
+                })
+        })
+}
+
+fn tab_status_label(status: &TabStatus) -> &'static str {
+    match status {
+        TabStatus::Active => "active",
+        TabStatus::Handoff => "handoff",
+        TabStatus::Deliverable => "deliverable",
+    }
 }
 
 fn registry_lifecycle_metadata(registry: &ServiceRegistry) -> Value {
@@ -1012,6 +1079,9 @@ async fn run_tab_command(
                 .execute_cdp_with_context(ctx, tab_id, "Page.close", json!({}))
                 .await?;
             forget_tab_state(backend, ctx, tab_id).await;
+            let _ = backend
+                .registry()
+                .remove_with_reason(&TabId::new(tab_id), "WebExtension tab_close closed the tab")?;
             Ok(Value::Null)
         }
         methods::TAB_SCREENSHOT => capture_screenshot(backend, ctx, params).await,

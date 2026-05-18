@@ -6,8 +6,16 @@ ARTIFACT="${OBU_ARTIFACT:-}"
 CHECKSUM="${OBU_ARTIFACT_SHA256:-}"
 RELEASE_BASE_URL="${OBU_RELEASE_BASE_URL:-"https://github.com/open-browser-use/open-browser-use/releases/latest/download"}"
 TARGET="${OBU_TARGET:-}"
+SELECTED_TARGET="$TARGET"
 NO_MODIFY_PATH=0
 UNMANAGED="${OBU_UNMANAGED_INSTALL:-0}"
+VERBOSE=0
+
+log_verbose() {
+  if [ "$VERBOSE" -eq 1 ]; then
+    printf '%s\n' "$*"
+  fi
+}
 
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
@@ -31,7 +39,8 @@ download_to() {
   src="$1"
   dest="$2"
   if ! try_download_to "$src" "$dest"; then
-    echo "failed to download $src" >&2
+    echo "download failed: $src" >&2
+    echo "Check network access or pass --artifact <path> with a local release artifact." >&2
     exit 2
   fi
 }
@@ -138,16 +147,20 @@ resolve_release_artifact() {
   if [ -z "$target" ]; then
     target="$(detect_target)"
   fi
+  SELECTED_TARGET="$target"
+  log_verbose "target: $target"
 
   manifest_name="manifest.tsv"
   manifest_file="$TMP_DIR/$manifest_name"
   if try_download_to "$(join_release_path "$RELEASE_BASE_URL" "$manifest_name")" "$manifest_file" >/dev/null 2>&1; then
+    log_verbose "manifest: $(join_release_path "$RELEASE_BASE_URL" "$manifest_name")"
     artifact_file="$(manifest_tsv_field "$manifest_file" "$target" "file")"
     artifact_sha="$(manifest_tsv_field "$manifest_file" "$target" "sha256")"
   else
     manifest_name="manifest.json"
     manifest_file="$TMP_DIR/$manifest_name"
     download_to "$(join_release_path "$RELEASE_BASE_URL" "$manifest_name")" "$manifest_file"
+    log_verbose "manifest: $(join_release_path "$RELEASE_BASE_URL" "$manifest_name")"
     artifact_file="$(manifest_artifact_field "$manifest_file" "$target" "file")"
     artifact_sha="$(manifest_artifact_field "$manifest_file" "$target" "sha256")"
   fi
@@ -172,6 +185,7 @@ resolve_release_artifact() {
     exit 2
   fi
   ARTIFACT="$(join_release_path "$RELEASE_BASE_URL" "$artifact_file")"
+  log_verbose "artifact: $ARTIFACT"
   if [ -z "$CHECKSUM" ]; then
     CHECKSUM="$artifact_sha"
   fi
@@ -213,12 +227,15 @@ while [ "$#" -gt 0 ]; do
     --no-modify-path)
       NO_MODIFY_PATH=1
       ;;
+    --verbose)
+      VERBOSE=1
+      ;;
     --unmanaged)
       UNMANAGED=1
       ;;
     -h|--help)
       cat <<'USAGE'
-Usage: install.sh [--artifact <path-or-url>] [--checksum <sha256>] [--install-dir <dir>] [--no-modify-path] [--unmanaged]
+Usage: install.sh [--artifact <path-or-url>] [--checksum <sha256>] [--install-dir <dir>] [--no-modify-path] [--verbose] [--unmanaged]
 
 Environment:
   OBU_INSTALL_DIR        Install root, defaults to $HOME/.obu
@@ -251,25 +268,31 @@ fi
 case "$ARTIFACT" in
   http://*|https://*)
     ARTIFACT_FILE="$TMP_DIR/$(basename "$ARTIFACT")"
+    log_verbose "download: $ARTIFACT -> $ARTIFACT_FILE"
     download_to "$ARTIFACT" "$ARTIFACT_FILE"
     ;;
   file://*)
     ARTIFACT_FILE="$TMP_DIR/$(basename "$ARTIFACT")"
+    log_verbose "copy: $ARTIFACT -> $ARTIFACT_FILE"
     download_to "$ARTIFACT" "$ARTIFACT_FILE"
     ;;
   *)
     ARTIFACT_FILE="$ARTIFACT"
+    log_verbose "artifact file: $ARTIFACT_FILE"
     ;;
 esac
 
 if [ -n "$CHECKSUM" ]; then
+  log_verbose "checksum: verifying $ARTIFACT_FILE"
   ACTUAL="$(sha256_file "$ARTIFACT_FILE")"
   if [ "$ACTUAL" != "$CHECKSUM" ]; then
-    echo "checksum mismatch for $ARTIFACT_FILE" >&2
+    echo "checksum verification failed for $ARTIFACT_FILE" >&2
     echo "expected: $CHECKSUM" >&2
     echo "actual:   $ACTUAL" >&2
+    echo "Download the artifact again or pass the checksum that matches the artifact." >&2
     exit 1
   fi
+  log_verbose "checksum: ok"
 fi
 
 mkdir -p "$INSTALL_DIR/payloads" "$INSTALL_DIR/bin"
@@ -277,7 +300,12 @@ PAYLOAD_NAME="$(artifact_name "$ARTIFACT_FILE")"
 PAYLOAD_DIR="$INSTALL_DIR/payloads/$PAYLOAD_NAME"
 rm -rf "$PAYLOAD_DIR.tmp" "$PAYLOAD_DIR"
 mkdir -p "$PAYLOAD_DIR.tmp"
-tar -xzf "$ARTIFACT_FILE" -C "$PAYLOAD_DIR.tmp"
+log_verbose "extract: $ARTIFACT_FILE -> $PAYLOAD_DIR"
+if ! tar -xzf "$ARTIFACT_FILE" -C "$PAYLOAD_DIR.tmp"; then
+  echo "extract failed: could not unpack $ARTIFACT_FILE" >&2
+  echo "Check that the artifact is a valid open-browser-use .tar.gz file." >&2
+  exit 1
+fi
 mv "$PAYLOAD_DIR.tmp" "$PAYLOAD_DIR"
 rm -f "$INSTALL_DIR/payloads/current"
 ln -s "$PAYLOAD_NAME" "$INSTALL_DIR/payloads/current"
@@ -295,10 +323,17 @@ exec "$NODE_BIN" "$PAYLOAD_ROOT/cli/dist/index.js" "$@"
 SHIM
 chmod 755 "$INSTALL_DIR/bin/obu"
 ln -sf obu "$INSTALL_DIR/bin/open-browser-use"
+log_verbose "shim: wrote $INSTALL_DIR/bin/obu"
 
 if [ "$NO_MODIFY_PATH" -eq 0 ] && [ "$UNMANAGED" != "1" ]; then
   update_profile_path "$INSTALL_DIR/bin"
+  log_verbose "path: ensured $INSTALL_DIR/bin in ${HOME:-}/.profile"
+else
+  log_verbose "path: skipped shell profile update"
 fi
 
+if [ -n "$SELECTED_TARGET" ]; then
+  echo "Selected target: $SELECTED_TARGET"
+fi
 echo "open-browser-use installed at $INSTALL_DIR"
 echo "Run: $INSTALL_DIR/bin/obu setup"

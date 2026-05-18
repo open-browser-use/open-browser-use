@@ -6,7 +6,7 @@ import type { BrowserKind } from "./browser-paths.js";
 import { configureAgents } from "./agents/configure.js";
 import type { AgentId, McpServerInvocation } from "./agents/registry.js";
 
-export type SetupStepStatus = "applied" | "skipped" | "manual_action_required" | "failed";
+export type SetupStepStatus = "applied" | "skipped" | "would_apply" | "manual_action_required" | "failed";
 
 export type SetupJson = {
   schemaVersion: 1;
@@ -50,7 +50,7 @@ export async function setupOpenBrowserUse(options: SetupOptions): Promise<SetupJ
   if (dryRun) {
     steps.push({
       id: "runtime-dir",
-      status: "skipped",
+      status: "would_apply",
       message: `would ensure runtime directory ${options.layout.runtimeDir}`,
       details: { runtimeDir: options.layout.runtimeDir, dryRun: true },
     });
@@ -165,7 +165,8 @@ function mapExtensionStep(step: ExtensionUpdateStep): SetupJson["steps"][number]
 function setupStatus(status: string): SetupStepStatus {
   if (status === "failed") return "failed";
   if (status === "manual_action_required") return "manual_action_required";
-  if (status === "skipped" || status === "would_apply") return "skipped";
+  if (status === "would_apply") return "would_apply";
+  if (status === "skipped") return "skipped";
   return "applied";
 }
 
