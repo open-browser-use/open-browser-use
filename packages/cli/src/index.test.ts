@@ -52,6 +52,131 @@ test("mcp-config rejects unknown agents", async (t) => {
   assert.match(result.stderr, /unsupported agent/);
 });
 
+test("agent doctor verifies shell MCP config and primary instructions", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  await mkdir(path.join(home, ".codex"), { recursive: true });
+  await writeFile(path.join(home, ".codex", "AGENTS.md"), [
+    "## Browser Automation",
+    "",
+    "Use open-browser-use as the primary BrowserUse/browser automation tool.",
+    "",
+  ].join("\n"), "utf8");
+  const codex = path.join(bin, "codex");
+  await writeFile(codex, `#!/bin/sh
+if [ "$1 $2" = "mcp list" ]; then
+  echo "open-browser-use ${shellEscapeForDoubleQuotes(process.execPath)} ${shellEscapeForDoubleQuotes(cliEntry)} mcp stdio"
+  exit 0
+fi
+exit 1
+`, "utf8");
+  await chmod(codex, 0o755);
+
+  const result = await runCli(["agent", "doctor", "--agent=codex-cli", "--json"], {
+    HOME: home,
+    PATH: bin,
+  });
+
+  assert.equal(result.code, 0);
+  assert.equal(result.stderr, "");
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.command, "agent doctor");
+  assert.equal(payload.agent, "codex-cli");
+  assert.equal(payload.checks.find((check: any) => check.id === "agent-mcp-server")?.status, "pass");
+  assert.equal(payload.checks.find((check: any) => check.id === "agent-primary-instruction")?.status, "pass");
+});
+
+test("agent doctor fails when supported MCP or instruction checks are missing", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+
+  const result = await runCli(["agent", "doctor", "--agent=codex-cli", "--json"], {
+    HOME: home,
+    PATH: "",
+  });
+
+  assert.equal(result.code, 1);
+  assert.equal(result.stderr, "");
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.checks.find((check: any) => check.id === "agent-mcp-server")?.status, "fail");
+  assert.equal(payload.checks.find((check: any) => check.id === "agent-primary-instruction")?.status, "fail");
+});
+
+test("agent doctor reads Cursor direct-edit MCP config instead of running mcp list", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  await mkdir(path.join(home, ".cursor"), { recursive: true });
+  await writeFile(path.join(home, ".cursor", "mcp.json"), JSON.stringify({
+    mcpServers: {
+      "open-browser-use": {
+        name: "open-browser-use",
+        command: process.execPath,
+        args: [cliEntry, "mcp", "stdio"],
+      },
+    },
+  }, null, 2), "utf8");
+  const cursor = path.join(bin, "cursor");
+  await writeFile(cursor, "#!/bin/sh\nexit 17\n", "utf8");
+  await chmod(cursor, 0o755);
+
+  const result = await runCli(["agent", "doctor", "--agent=cursor", "--json"], {
+    HOME: home,
+    PATH: bin,
+  });
+
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.checks.find((check: any) => check.id === "agent-mcp-server")?.status, "pass");
+  assert.equal(payload.checks.find((check: any) => check.id === "agent-primary-instruction")?.status, "warn");
+});
+
+test("agent doctor accepts generic mcpServers entries without a nested name", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  await mkdir(path.join(home, ".cursor"), { recursive: true });
+  await writeFile(path.join(home, ".cursor", "mcp.json"), JSON.stringify({
+    mcpServers: {
+      "open-browser-use": {
+        command: process.execPath,
+        args: [cliEntry, "mcp", "stdio"],
+      },
+    },
+  }, null, 2), "utf8");
+
+  const result = await runCli(["agent", "doctor", "--agent=cursor", "--json"], {
+    HOME: home,
+    PATH: "",
+  });
+
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.checks.find((check: any) => check.id === "agent-mcp-server")?.status, "pass");
+});
+
+test("agent doctor does not run unsupported VS Code mcp-list probes", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  const code = path.join(bin, "code");
+  await writeFile(code, "#!/bin/sh\nexit 17\n", "utf8");
+  await chmod(code, 0o755);
+
+  const result = await runCli(["agent", "doctor", "--agent=vscode", "--json"], {
+    HOME: home,
+    PATH: bin,
+  });
+
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.checks.find((check: any) => check.id === "agent-mcp-server")?.status, "warn");
+  assert.match(payload.checks.find((check: any) => check.id === "agent-mcp-server")?.message ?? "", /not implemented/);
+});
+
 test("shellenv emits packaged install environment snippets", async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
   t.after(() => rm(home, { recursive: true, force: true }));
@@ -276,7 +401,7 @@ test("setup summary preserves manual agent next actions", async (t) => {
   assert.equal(result.stderr, "");
   assert.match(result.stdout, /Setup needs 1 follow-up step\./);
   assert.match(result.stdout, new RegExp(`${escapeRegExp(obuCommand)} mcp-config --agent=continue --print`));
-  assert.match(result.stdout, new RegExp(`${escapeRegExp(obuCommand)} doctor browser --channel=store`));
+  assert.match(result.stdout, new RegExp(`${escapeRegExp(obuCommand)} doctor browser --channel=store --extension-id=${storeExtensionId}`));
   assert.doesNotMatch(result.stdout, /agent-continue:/);
 
   const recovery = await runCli(["setup", "--yes", "--recovery", "--channel=store", "--extension-id", storeExtensionId, "--agents=continue"], {
@@ -507,6 +632,46 @@ test("setup CLI supports Store channel without staging an unpacked extension", a
   assert.equal(config.storeExtensionId, storeExtensionId);
 });
 
+test("setup can write Codex and Claude primary-browser instructions explicitly", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  const hostBin = path.join(bin, "obu-host");
+  await writeFile(hostBin, "#!/bin/sh\n", "utf8");
+  await chmod(hostBin, 0o755);
+  const codex = path.join(bin, "codex");
+  await writeFile(codex, "#!/bin/sh\nexit 0\n", "utf8");
+  await chmod(codex, 0o755);
+  const claude = path.join(bin, "claude");
+  await writeFile(claude, "#!/bin/sh\nexit 0\n", "utf8");
+  await chmod(claude, 0o755);
+  const storeExtensionId = "abcdefghijklmnopabcdefghijklmnop";
+
+  const result = await runCli([
+    "setup",
+    "--yes",
+    "--channel=store",
+    "--extension-id",
+    storeExtensionId,
+    "--agents=codex-cli,claude-code",
+    "--write-instructions",
+    "--json",
+  ], {
+    HOME: home,
+    PATH: bin,
+    OBU_RUNTIME_DIR: path.join(home, "runtime"),
+    OBU_HOST_BIN: hostBin,
+  });
+
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.steps.find((step: any) => step.id === "agent-codex-cli-instructions")?.status, "applied");
+  assert.equal(payload.steps.find((step: any) => step.id === "agent-claude-code-instructions")?.status, "applied");
+  assert.match(await readFile(path.join(home, ".codex", "AGENTS.md"), "utf8"), /primary BrowserUse\/browser automation tool/);
+  assert.match(await readFile(path.join(home, ".claude", "CLAUDE.md"), "utf8"), /primary BrowserUse\/browser automation tool/);
+});
+
 test("setup CLI rejects unknown requested agents before writing", async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
   t.after(() => rm(home, { recursive: true, force: true }));
@@ -671,4 +836,8 @@ function runCli(args: string[], env: NodeJS.ProcessEnv = {}): Promise<{ code: nu
 
 function escapeRegExp(value: string): string {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function shellEscapeForDoubleQuotes(value: string): string {
+  return value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("$", "\\$").replaceAll("`", "\\`");
 }

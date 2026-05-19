@@ -154,8 +154,9 @@ Verify installer support for:
   arbitrary current-`PATH` shims.
 - packaged `obu doctor --json` payload integrity checks and `obu mcp stdio`
   initialize/list-tools through the installed shim.
-- installed-payload `obu setup --yes --skip-agents` and
-  `obu setup --yes --agents=codex-cli` using a fake Codex CLI.
+- installed-payload `obu setup --yes --skip-agents`,
+  `obu setup --yes --agents=codex-cli --write-instructions` using a fake Codex
+  CLI, and `obu agent doctor --agent=codex-cli`.
 
 Payload metadata must include `extensionZip`, `extensionZipSha256`,
 `extensionId`, and `extensionChannel`; `node scripts/payload-self-check.mjs`
@@ -211,7 +212,7 @@ Required draft checks:
 
    ```bash
    obu bootstrap --yes --all --channel=store --extension-id <STORE_EXTENSION_ID> --agents=auto
-   obu doctor browser --channel=store --json
+   obu doctor browser --channel=store --extension-id <STORE_EXTENSION_ID> --json
    ```
 
 Verify:
@@ -220,8 +221,9 @@ Verify:
   `storeExtensionId`.
 - native-host manifests include
   `chrome-extension://<STORE_EXTENSION_ID>/`.
-- `doctor browser --channel=store --json` reports channel, extension id, and id
-  source.
+- `doctor browser --channel=store --extension-id <STORE_EXTENSION_ID> --json`
+  reports channel, extension id, id source, and `resume_required` on the runtime
+  descriptor probe.
 - the popup agent handoff preserves `Extension channel: store`, the exact Store
   extension id, and does not expose a Terminal command.
 - the popup agent handoff links to the version-tagged
@@ -256,7 +258,8 @@ Then load or reload the unpacked extension from:
 The extension must publish a WebExtension runtime descriptor, and
 `agent.browsers.get("chrome")` must complete a browser task.
 The automated `setup-webext-e2e.mjs` path also wires a fake Codex CLI with
-`obu setup --yes --agents=codex-cli` before launching Chrome for Testing.
+`obu setup --yes --agents=codex-cli --write-instructions` before launching
+Chrome for Testing.
 `obu doctor --strict` must exit nonzero on warnings as well as failures; use the
 non-strict command for interactive troubleshooting where warnings are advisory.
 Before manual testing, enable extension popup Debug logs, reproduce one browser
@@ -268,9 +271,10 @@ task, copy the JSON report, and confirm it includes status changes plus
 At minimum, test:
 
 ```bash
-obu setup --yes --agents=codex-cli
-obu setup --yes --agents=claude-code
+obu setup --yes --agents=codex-cli --write-instructions
+obu setup --yes --agents=claude-code --write-instructions
 obu setup --yes --agents=cursor
+obu agent doctor --agent=codex-cli
 ```
 
 For direct-edit adapters, rerun setup and confirm unchanged configs do not

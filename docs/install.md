@@ -149,9 +149,12 @@ agent to choose the right install/repair, verification, MCP wiring, and
 persistent instruction steps for the current client. The agent should make
 open-browser-use the primary BrowserUse/browser automation tool in the core
 `AGENTS.md`, `AGENT.md`, `CLAUDE.md`, Cursor/Claude/Codex project instructions,
-or equivalent agent memory when one exists. The OBU adapter commands are
-secondary helpers for known clients. The popup keeps this entry available after
-the native host connects so users can connect another agent later.
+or equivalent agent memory when one exists. Agents should also check known
+global instruction files before falling back to a snippet, especially
+`~/.codex/AGENTS.md` for Codex and `~/.claude/CLAUDE.md` for Claude Code.
+The OBU adapter commands are secondary helpers for known clients. The popup
+keeps this entry available after the native host connects so users can connect
+another agent later.
 
 ## Setup
 
@@ -160,9 +163,15 @@ After installing an `obu` shim:
 ```bash
 eval "$("$HOME/.obu/bin/obu" shellenv zsh)"
 obu bootstrap --yes --all --agents=auto
-obu setup --yes --agents=codex-cli,claude-code
+obu setup --yes --agents=codex-cli,claude-code --write-instructions
 obu doctor
 ```
+
+`--write-instructions` is opt-in. It appends the primary-browser instruction to
+an existing project instruction file when one is present, otherwise it uses the
+known global instruction file for supported agents such as Codex
+(`~/.codex/AGENTS.md`) and Claude Code (`~/.claude/CLAUDE.md`). It preserves
+existing content and skips reruns when the instruction is already present.
 
 `obu repl` is deferred in P4a. Use `obu mcp stdio` through an MCP client; a
 direct debug REPL will need its own tested command contract before it is
@@ -201,6 +210,12 @@ Inspect the exact MCP config for any supported client:
 
 ```bash
 obu mcp-config --agent=codex-cli --print
+```
+
+Verify that an agent has both MCP wiring and the primary browser instruction:
+
+```bash
+obu agent doctor --agent=codex-cli
 ```
 
 Supported adapter IDs are `codex-cli`, `claude-code`, `gemini-cli`, `vscode`,

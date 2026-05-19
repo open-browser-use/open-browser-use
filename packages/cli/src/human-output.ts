@@ -195,9 +195,11 @@ function countDoctorStatuses(checks: DoctorCheck[]): Record<DoctorCheck["status"
 function hasActionableDetails(check: DoctorCheck): boolean {
   const repair = check.details?.repair;
   const deliverableRecovery = check.details?.deliverable_recovery;
+  const resumeRequired = check.details?.resume_required;
   return (
     (typeof repair === "string" && repair.length > 0) ||
-    (typeof deliverableRecovery === "string" && deliverableRecovery.length > 0)
+    (typeof deliverableRecovery === "string" && deliverableRecovery.length > 0) ||
+    typeof resumeRequired === "boolean"
   );
 }
 
@@ -221,6 +223,14 @@ function formatCheckDetails(check: DoctorCheck): string[] {
   const deliverableRecovery = check.details?.deliverable_recovery;
   if (typeof deliverableRecovery === "string" && deliverableRecovery.length > 0) {
     rows.push(`recover deliverables: ${deliverableRecovery}`);
+  }
+  const resumeRequired = check.details?.resume_required;
+  if (typeof resumeRequired === "boolean") {
+    rows.push(`resume required: ${resumeRequired ? "yes" : "no"}`);
+  }
+  const resumeAction = check.details?.resume_action;
+  if (typeof resumeAction === "string" && resumeAction.length > 0) {
+    rows.push(`resume action: ${resumeAction}`);
   }
   const repair = check.details?.repair;
   if (typeof repair === "string" && repair.length > 0) rows.push(`repair: ${repair}`);

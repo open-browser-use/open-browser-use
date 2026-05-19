@@ -196,6 +196,14 @@ function formatCheckDetails(check: DoctorCheck): string[] {
   if (typeof deliverableRecovery === "string" && deliverableRecovery.length > 0) {
     rows.push(`  recover deliverables: ${deliverableRecovery}`);
   }
+  const resumeRequired = check.details?.resume_required;
+  if (typeof resumeRequired === "boolean") {
+    rows.push(`  resume required: ${resumeRequired ? "yes" : "no"}`);
+  }
+  const resumeAction = check.details?.resume_action;
+  if (typeof resumeAction === "string" && resumeAction.length > 0) {
+    rows.push(`  resume action: ${resumeAction}`);
+  }
   const repair = check.details?.repair;
   if (typeof repair === "string" && repair.length > 0) rows.push(`  repair: ${repair}`);
   return rows;
@@ -764,7 +772,7 @@ async function checkRuntimeDescriptors(descriptorDir: string): Promise<DoctorChe
   const files = await readdir(descriptorDir).catch(() => []);
   const descriptors = files.filter((file) => file.endsWith(".json"));
   if (descriptors.length === 0) {
-    return warn("runtime-descriptor-probe", "Runtime descriptor probe", "no active WebExtension descriptor found");
+    return warn("runtime-descriptor-probe", "Runtime descriptor probe", "no active WebExtension descriptor found", resumeRequiredDetails());
   }
   const errors: string[] = [];
   for (const file of descriptors) {
@@ -783,6 +791,7 @@ async function checkRuntimeDescriptors(descriptorDir: string): Promise<DoctorChe
     if (result.ok) {
       const details = {
         descriptor: file,
+        resume_required: false,
         ...result.details,
       };
       const staleLifecycle = staleLifecycleSummary(result.details.lifecycle);
@@ -798,7 +807,17 @@ async function checkRuntimeDescriptors(descriptorDir: string): Promise<DoctorChe
     }
     errors.push(`${file}: ${result.message}`);
   }
-  return fail("runtime-descriptor-probe", "Runtime descriptor probe", errors.join("; "));
+  return fail("runtime-descriptor-probe", "Runtime descriptor probe", errors.join("; "), {
+    ...resumeRequiredDetails(),
+    descriptor_errors: errors,
+  });
+}
+
+function resumeRequiredDetails(): Record<string, unknown> {
+  return {
+    resume_required: true,
+    resume_action: "open the open-browser-use extension popup and click Resume",
+  };
 }
 
 async function probeDescriptor(descriptor: Record<string, unknown>): Promise<RuntimeDescriptorProbeResult> {

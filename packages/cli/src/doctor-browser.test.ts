@@ -52,6 +52,7 @@ test("doctorBrowser reports a valid local browser setup without failures", async
   assert.equal(checks["runtime-dir"]?.status, "pass");
   assert.equal(checks["runtime-descriptor-dir"]?.status, "pass");
   assert.equal(checks["runtime-descriptor-probe"]?.status, "warn");
+  assert.equal(checks["runtime-descriptor-probe"]?.details?.resume_required, true);
   assert.match(String(checks["runtime-descriptor-probe"]?.details?.repair ?? ""), /click Resume/);
   assert.equal(hasDoctorFailures(report), false);
 
@@ -59,6 +60,7 @@ test("doctorBrowser reports a valid local browser setup without failures", async
   assert.match(formatted, /open-browser-use browser doctor: chrome/);
   assert.match(formatted, /PASS Native host manifest:/);
   assert.match(formatted, /WARN Runtime descriptor probe:/);
+  assert.match(formatted, /resume required: yes/);
   assert.match(formatted, /repair: .*click Resume/);
 });
 

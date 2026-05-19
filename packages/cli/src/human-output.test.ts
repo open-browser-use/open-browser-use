@@ -35,6 +35,7 @@ test("doctor summary hides ordinary passing checks and keeps actionable recovery
         status: "pass",
         message: "chrome.json responded to getInfo",
         details: {
+          resume_required: false,
           lifecycle: {
             stale_sessions: 0,
             stale_tabs: 0,
@@ -57,6 +58,7 @@ test("doctor summary hides ordinary passing checks and keeps actionable recovery
   assert.match(formatted, /repair: Run `obu setup`/);
   assert.match(formatted, /WARN Profile path: profile root not found/);
   assert.match(formatted, /PASS Runtime descriptor probe: chrome\.json responded to getInfo/);
+  assert.match(formatted, /resume required: no/);
   assert.match(formatted, /deliverable tabs: 8:Deliverable \(session\)/);
   assert.match(formatted, /recover deliverables: .*browser\.deliverables\(\).*claim\(\)/);
   assert.match(formatted, /For full diagnostics, run: obu doctor --verbose/);

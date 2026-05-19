@@ -11,6 +11,7 @@ import {
   writeDirectEditAgentConfig,
   type DirectEditOptions,
 } from "./direct-edit.js";
+import { configureAgentInstructions } from "./instructions.js";
 
 export type AgentConfigureStep = {
   id: string;
@@ -32,6 +33,8 @@ export type ConfigureAgentsOptions = {
   now?: Date;
   commandPrefix?: string;
   adapterTimeoutMs?: number;
+  writeInstructions?: boolean;
+  projectDir?: string;
 };
 
 export type DetectInstalledAgentsOptions = Pick<ConfigureAgentsOptions, "env" | "homeDir" | "platform">;
@@ -76,8 +79,9 @@ export async function configureAgents(options: ConfigureAgentsOptions): Promise<
       kind: "command" as const,
       value: appendShellArgs(options.commandPrefix ?? "obu", ["mcp-config", `--agent=${agent}`, "--print"]),
     };
+    let step: AgentConfigureStep;
     if (agent === "cursor") {
-      steps.push(await configureCursor(
+      step = await configureCursor(
         config,
         options.server,
         env,
@@ -85,24 +89,30 @@ export async function configureAgents(options: ConfigureAgentsOptions): Promise<
         directEditOptions,
         manualAction,
         options.adapterTimeoutMs ?? DEFAULT_ADAPTER_TIMEOUT_MS,
-      ));
+      );
+      steps.push(step);
+      steps.push(...await maybeConfigureInstructions(options, agent));
       continue;
     }
     if (config.mode !== "shell") {
       if (config.mode === "json" && isDirectEditAgentId(agent)) {
-        steps.push(await configureDirectEdit(agent, options.server, options.dryRun === true, directEditOptions, manualAction));
+        step = await configureDirectEdit(agent, options.server, options.dryRun === true, directEditOptions, manualAction);
+        steps.push(step);
+        steps.push(...await maybeConfigureInstructions(options, agent));
         continue;
       }
-      steps.push({
+      step = {
         id: `agent-${agent}`,
         status: "manual_action_required",
         message: `manual MCP configuration is required for ${agent}`,
         details: { mode: config.mode, config },
         nextActions: [manualAction],
-      });
+      };
+      steps.push(step);
+      steps.push(...await maybeConfigureInstructions(options, agent));
       continue;
     }
-    steps.push(await configureShell(
+    step = await configureShell(
       agent,
       config,
       env,
@@ -110,9 +120,23 @@ export async function configureAgents(options: ConfigureAgentsOptions): Promise<
       manualAction,
       undefined,
       options.adapterTimeoutMs ?? DEFAULT_ADAPTER_TIMEOUT_MS,
-    ));
+    );
+    steps.push(step);
+    steps.push(...await maybeConfigureInstructions(options, agent));
   }
   return steps;
+}
+
+async function maybeConfigureInstructions(options: ConfigureAgentsOptions, agent: AgentId): Promise<AgentConfigureStep[]> {
+  if (!options.writeInstructions) return [];
+  return [
+    await configureAgentInstructions({
+      agent,
+      ...(options.dryRun === undefined ? {} : { dryRun: options.dryRun }),
+      ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+      ...(options.projectDir ? { projectDir: options.projectDir } : {}),
+    }),
+  ];
 }
 
 async function isAgentInstalled(agent: AgentId, env: NodeJS.ProcessEnv, directEditOptions: DirectEditOptions): Promise<boolean> {
