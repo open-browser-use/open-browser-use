@@ -77,6 +77,18 @@ curl -fsSL https://github.com/open-browser-use/open-browser-use/releases/latest/
 ~/.obu/bin/obu bootstrap --yes --all --agents=auto
 ```
 
+**Fresh install is better for preview releases.** The current installer does
+not compare the already installed payload version with the latest GitHub
+Release before deciding what to do. If the local install may be stale, rerun the
+fresh install command above so the latest release asset is downloaded and the
+native host, extension payload, and agent wiring are refreshed together.
+
+The future update path should make that decision explicitly: compare the local
+`obu --version` / payload metadata with the latest release version, download and
+install only when the release is newer, and otherwise keep the existing local
+install and reconnect or repair it with `obu bootstrap`, `obu setup`, or
+`obu doctor`.
+
 For a Chrome Web Store-installed extension, use the Store channel so native-host
 manifests allow the Store extension id instead of the unpacked-dev id:
 
@@ -88,6 +100,24 @@ curl -fsSL https://github.com/open-browser-use/open-browser-use/releases/latest/
 Store-channel setup requires a release payload with `storeExtensionId` metadata,
 or an explicit `OBU_STORE_EXTENSION_ID` / `--extension-id` override while
 testing a draft item.
+Use the exact id copied from the extension popup. Do not substitute the
+unpacked-dev id or infer an id from another profile; Chrome native messaging
+requires the manifest `allowed_origins` entry to match the installed extension:
+`chrome-extension://<store-extension-id>/`.
+
+If the CLI and MCP server are installed but browser automation is still
+unavailable, check both layers:
+
+```bash
+~/.obu/bin/obu doctor browser --channel=store --extension-id=<store-extension-id>
+~/.obu/bin/obu doctor browser --repair --channel=store --extension-id=<store-extension-id>
+```
+
+After repair, open the open-browser-use extension popup and click **Resume** if
+the browser is not connected yet. Repair can update native-host manifests and
+runtime descriptor permissions, but Chrome publishes the active WebExtension
+runtime descriptor only after the extension connects to the native host. Rerun
+doctor with the same channel/id after opening the popup.
 
 Manual GitHub Release installs can still pin a specific asset and checksum:
 
@@ -155,9 +185,15 @@ For Chrome Web Store installs, do not run `obu update-extension`; Chrome Web
 Store owns extension updates. Use:
 
 ```bash
-obu doctor browser --channel=store
-obu doctor browser --repair --channel=store
+obu doctor browser --channel=store --extension-id=<store-extension-id>
+obu doctor browser --repair --channel=store --extension-id=<store-extension-id>
 ```
+
+If `browser_status` in an MCP client reports that the SDK is available but
+`backends` is empty, MCP is configured but the browser backend is not connected.
+Run the Store-channel doctor command with the exact extension id, repair if
+needed, then open the extension popup and click **Resume** so Chrome reconnects
+the native host.
 
 ## Agent Configuration
 

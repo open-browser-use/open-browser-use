@@ -66,7 +66,9 @@ creates `about:blank`, not Chrome's extension-restricted new-tab page.
 Keep a `Tab` handle and use `tab.goto(url)` for repeated same-task navigation.
 `browser.turnEnded()` marks a turn boundary while preserving active control;
 `browser.finishTurn(...)` first finalizes tabs and is for close/release/handoff
-or deliverable workflows.
+or deliverable workflows. For setup verification and browser readiness probes,
+prefer `turnEnded()` so follow-up checks keep using the same WebExtension
+session.
 One session can keep multiple `Tab` handles and move data between them:
 
 ```js

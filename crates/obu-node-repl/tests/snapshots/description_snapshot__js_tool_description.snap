@@ -25,9 +25,11 @@ Keep the returned `Tab` handle and use `await tab.goto(url)` for repeated
 same-task or same-site navigation instead of creating a new tab for every URL.
 One browser session can hold multiple `Tab` handles; keep them in variables and
 move data explicitly between tabs.
-Use `browser.finishTurn({ keep: [] })` when the task is complete and no page
-needs to be preserved. Use `browser.turnEnded()` only when a turn is done but
-active tabs should intentionally remain controlled for later work.
+For setup verification, browser readiness probes, and repeated work in the same
+browser session, use `browser.turnEnded()` so active tabs remain controlled.
+Use `browser.finishTurn({ keep: [] })` only when cleanup is intentional; it
+first finalizes tabs, which closes agent-created tabs or releases user-claimed
+tabs before ending the turn.
 The WebExtension backend cannot drive `file://` pages. Serve local files over
 HTTP, for example `python3 -m http.server`, and navigate to
 `http://127.0.0.1:...`.
@@ -104,7 +106,7 @@ await tab.attach();
 await tab.goto("https://example.com/docs");
 await tab.locator("h1").click();
 await tab.screenshotForModel({ clip: { x: 0, y: 0, width: 900, height: 700, scale: 0.5 } });
-await browser.finishTurn({ keep: [] });
+await browser.turnEnded();
 ```
 
 ```js
@@ -112,7 +114,7 @@ const browser = await agent.browsers.get("chrome");
 const tab = await browser.tabs.create("data:text/html,<button>Save</button>");
 await tab.attach();
 await tab.getByRole("button", { name: "Save" }).click();
-await browser.finishTurn({ keep: [] });
+await browser.turnEnded();
 ```
 
 ```js
@@ -123,7 +125,7 @@ await source.attach();
 await target.attach();
 const text = await source.getByRole("main").innerText();
 await target.getByLabel("Notes").fill(text);
-await browser.finishTurn({ keep: [] });
+await browser.turnEnded();
 ```
 
 ```js
