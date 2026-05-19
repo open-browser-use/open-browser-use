@@ -7,34 +7,52 @@
     <link rel="stylesheet" href="popup.css" />
   </head>
   <body>
-    <main class="shell">
+    <main id="shell" class="shell">
       <header class="header">
         <div class="brand">
-          <img class="brand-mark" src="icons/icon-48.png" width="40" height="40" alt="" aria-hidden="true" />
-          <div>
+          <span class="brand-mark-wrap" aria-hidden="true">
+            <img class="brand-mark" src="icons/icon-48.png" width="40" height="40" alt="" />
+          </span>
+          <div class="brand-copy">
             <p class="eyebrow">open-browser-use</p>
             <h1>Browser Control</h1>
           </div>
         </div>
-        <span id="status-dot" class="dot" aria-hidden="true"></span>
+        <div class="version-pill" aria-label="Installed extension version">
+          <span id="version-text">Version</span>
+        </div>
       </header>
 
-      <section class="status">
-        <div>
-          <p class="label">Native host</p>
-          <p id="status-text" class="value">Checking...</p>
+      <section id="status-panel" class="status-panel" aria-live="polite">
+        <div class="status-head">
+          <div>
+            <p class="label">Native host</p>
+            <p id="status-text" class="value">Checking...</p>
+          </div>
+          <span id="status-dot" class="dot" aria-hidden="true"></span>
         </div>
         <p id="detail-text" class="detail"></p>
+        <div class="signal-rail" aria-hidden="true">
+          <span></span>
+          <span></span>
+          <span></span>
+          <span></span>
+        </div>
       </section>
 
-      <section id="setup-panel" class="setup" hidden>
-        <div>
-          <p id="setup-label" class="label">Setup</p>
+      <section id="setup-panel" class="setup-panel" hidden>
+        <div class="panel-head">
+          <div>
+            <p id="setup-label" class="label">Setup</p>
+            <h2>Agent handoff</h2>
+          </div>
+          <button id="copy-agent-button" class="setup-copy" type="button">Copy for agent</button>
+        </div>
+        <div class="handoff-copy">
           <p id="setup-text" class="detail"></p>
+          <p id="setup-copy-text" class="detail" aria-live="polite"></p>
         </div>
         <pre id="agent-handoff" class="command handoff" aria-label="Agent setup handoff"></pre>
-        <button id="copy-agent-button" class="setup-copy" type="button">Copy for agent</button>
-        <p id="setup-copy-text" class="detail" aria-live="polite"></p>
       </section>
 
       <div class="actions">
@@ -53,10 +71,6 @@
           <button id="clear-debug-button" type="button">Clear</button>
         </div>
       </section>
-
-      <footer>
-        <span id="version-text">Version</span>
-      </footer>
     </main>
     <script type="module" src="popup.js"></script>
   </body>

@@ -45,6 +45,8 @@ type DebugLogStatus = {
 };
 
 const dot = document.querySelector<HTMLSpanElement>("#status-dot");
+const shell = document.querySelector<HTMLElement>("#shell");
+const statusPanel = document.querySelector<HTMLElement>("#status-panel");
 const statusText = document.querySelector<HTMLParagraphElement>("#status-text");
 const detailText = document.querySelector<HTMLParagraphElement>("#detail-text");
 const setupPanel = document.querySelector<HTMLElement>("#setup-panel");
@@ -182,7 +184,7 @@ async function copyAgentHandoff(): Promise<void> {
     button: copyAgentButton!,
     text: (agentHandoff!.textContent ?? "").trim(),
     unavailable: "agent setup handoff unavailable",
-    success: "Copied. Paste into your coding agent, then click Resume when it finishes.",
+    success: "Copied. Paste into your coding agent, then click Resume when setup finishes.",
   });
 }
 
@@ -199,15 +201,19 @@ async function copySetupText(input: {
     await writeClipboard(input.text);
     input.button.textContent = "Copied";
     setupCopyText!.textContent = input.success;
+    setDataAttribute(setupPanel, "data-copy-state", "copied");
   } catch {
     input.button.textContent = "Try again";
-    setupCopyText!.textContent = "Copy unavailable. Select the text manually.";
+    setupCopyText!.textContent = "Copy unavailable. Select the handoff text manually.";
+    setDataAttribute(setupPanel, "data-copy-state", "error");
   } finally {
     input.button.disabled = false;
     setupCopyResetTimer = setTimeout(() => {
       copyAgentButton!.textContent = AGENT_COPY_BUTTON_LABEL;
+      setupCopyText!.textContent = "";
+      removeDataAttribute(setupPanel, "data-copy-state");
       setupCopyResetTimer = undefined;
-    }, 1400);
+    }, 2200);
   }
 }
 
@@ -220,6 +226,8 @@ function clearSetupCopyResetTimer(): void {
 function render(status: HostStatus): void {
   currentStatus = status;
   const advice = nativeHostAdvice(status);
+  setDataAttribute(shell, "data-state", status.state);
+  setDataAttribute(statusPanel, "data-state", status.state);
   dot!.className = `dot ${statusClass(status.state)}`;
   statusText!.textContent = statusLabel(status);
   detailText!.textContent = statusDetail(status, advice);
@@ -229,7 +237,9 @@ function render(status: HostStatus): void {
 }
 
 function renderSetup(advice: NativeHostAdvice): void {
-  const text = advice.showSetup ? advice.setupText ?? "" : "Connect another coding agent to this browser.";
+  const text = advice.showSetup
+    ? advice.setupText ?? ""
+    : "Connect another coding agent with this handoff. Keep this popup open until pairing finishes.";
   const handoff = agentHandoffForChannel(EXTENSION_CHANNEL, chrome.runtime.id);
   const label = advice.showSetup ? "Setup" : "Agent setup";
   const changed = setupLabel!.textContent !== label
@@ -243,7 +253,18 @@ function renderSetup(advice: NativeHostAdvice): void {
     clearSetupCopyResetTimer();
     copyAgentButton!.textContent = AGENT_COPY_BUTTON_LABEL;
     setupCopyText!.textContent = "";
+    removeDataAttribute(setupPanel, "data-copy-state");
   }
+}
+
+function setDataAttribute(element: HTMLElement | null, name: string, value: string): void {
+  const target = element as (HTMLElement & { setAttribute?: (name: string, value: string) => void }) | null;
+  target?.setAttribute?.(name, value);
+}
+
+function removeDataAttribute(element: HTMLElement | null, name: string): void {
+  const target = element as (HTMLElement & { removeAttribute?: (name: string) => void }) | null;
+  target?.removeAttribute?.(name);
 }
 
 function renderDebug(debug: DebugLogStatus, overrideText?: string): void {
@@ -300,7 +321,7 @@ function detailLabel(status: HostStatus): string {
     return "Trying to reconnect. Use Resume after setup is repaired.";
   }
   if (status.state === "version_mismatch") {
-    return "Update the local host, then click Resume.";
+    return "Update the local host, then click Resume to reconnect.";
   }
   if (status.state === "stopped") {
     return "Finish sign-in, passwords, or any page step, then click Resume to continue automation.";
@@ -331,7 +352,8 @@ function deliverableRecoveryLabel(status: HostStatus): string {
   const count = typeof status.deliverableTabs === "number" ? Math.trunc(status.deliverableTabs) : 0;
   if (count <= 0) return "";
   const noun = count === 1 ? "tab" : "tabs";
-  return `${count} deliverable ${noun} available. Recover with browser.deliverables(), then claim().`;
+  const object = count === 1 ? "it" : "them";
+  return `${count} deliverable ${noun} available. Use browser.deliverables(), then claim() to recover ${object}.`;
 }
 
 function nativeHostAdvice(status: HostStatus): NativeHostAdvice {
@@ -340,32 +362,32 @@ function nativeHostAdvice(status: HostStatus): NativeHostAdvice {
     case "version_mismatch":
       return withSetup(
         "Update the local host, then reconnect.",
-        "Give this to your coding agent, then return here and click Resume.",
+        "Give this handoff to your coding agent. Return here and click Resume after the update finishes.",
       );
     case "native_host_not_found":
       return withSetup(
         "Install the local host, then reconnect.",
-        "Ask your coding agent to install open-browser-use and register the host.",
+        "Ask your coding agent to install open-browser-use and register the native host for this extension.",
       );
     case "native_host_forbidden":
       return withSetup(
         "Refresh this extension's host permission, then reconnect.",
-        "Ask your coding agent to refresh the native host registration.",
+        "Ask your coding agent to refresh the native host registration for this extension ID.",
       );
     case "native_host_crashed":
       return withSetup(
         "Repair the local host, then reconnect.",
-        "Ask your coding agent to repair open-browser-use setup.",
+        "Ask your coding agent to repair open-browser-use setup and verify the native host.",
       );
     case "native_host_hello_timeout":
       return withSetup(
         "Repair the local host, then reconnect.",
-        "Ask your coding agent to repair open-browser-use setup.",
+        "Ask your coding agent to repair open-browser-use setup and verify the native host.",
       );
     case "native_host_heartbeat_timeout":
       return withSetup(
         "Repair the local host, then reconnect.",
-        "Ask your coding agent to repair open-browser-use setup.",
+        "Ask your coding agent to repair open-browser-use setup and verify the native host.",
       );
     case "native_host_unavailable":
       if (isDisconnectedPortObject(status.message)) {
@@ -373,21 +395,21 @@ function nativeHostAdvice(status: HostStatus): NativeHostAdvice {
       }
       return withSetup(
         "Repair setup, then reconnect.",
-        "Ask your coding agent to repair open-browser-use setup.",
+        "Ask your coding agent to repair open-browser-use setup and verify browser pairing.",
       );
     case "native_host_disconnected":
       if (isDisconnectedPortObject(status.message)) {
         return disconnectedPortObjectAdvice();
       }
       return {
-        detail: "Check local setup, then use Resume to reconnect.",
+        detail: "Check local setup, then click Resume to reconnect.",
         showSetup: false,
       };
     case undefined:
       if (status.state === "error") {
         return withSetup(
           "Repair setup, then reconnect.",
-          "Ask your coding agent to repair open-browser-use setup.",
+          "Ask your coding agent to repair open-browser-use setup and verify browser pairing.",
         );
       }
       return { showSetup: false };
@@ -405,7 +427,7 @@ function withSetup(detail: string, setupText: string): NativeHostAdvice {
 function disconnectedPortObjectAdvice(): NativeHostAdvice {
   return withSetup(
     "The local host is not connected. Reinstall it, then reconnect.",
-    "Ask your coding agent to reinstall open-browser-use and register the host.",
+    "Ask your coding agent to reinstall open-browser-use and register the host for this extension.",
   );
 }
 
