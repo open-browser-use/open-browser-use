@@ -204,8 +204,12 @@ async function copySetupText(input: {
   unavailable: string;
   success: string;
 }): Promise<void> {
+  if (input.button.disabled) return;
   input.button.disabled = true;
   clearSetupCopyResetTimer();
+  input.button.textContent = "Copying";
+  setupCopyText!.textContent = "";
+  setDataAttribute(setupPanel, "data-copy-state", "copying");
   try {
     if (input.text.length === 0) throw new Error(input.unavailable);
     await writeClipboard(input.text);

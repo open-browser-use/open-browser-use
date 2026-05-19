@@ -423,6 +423,15 @@ h2 {
   background: var(--green-ink);
 }
 
+.setup-panel[data-copy-state="copying"] .setup-copy {
+  background: var(--ink-soft);
+}
+
+.setup-panel[data-copy-state="copying"] .handoff-surface {
+  background: oklch(0.95 0.008 230);
+  color: var(--ink-soft);
+}
+
 .setup-panel[data-copy-state="copied"] .handoff-surface {
   background: var(--green-soft);
   box-shadow: inset 0 0 0 0.0625rem oklch(0.72 0.075 155 / 0.75);
