@@ -211,6 +211,56 @@ test("configureAgents reports unreadable direct-edit files as manual actions", a
   assert.equal(steps[0]?.details?.code, "EACCES");
 });
 
+test("configureAgents writes primary-browser instructions only when requested", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-agent-config-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const steps = await configureAgents({
+    agents: ["codex-cli"],
+    server: server(root),
+    env: { PATH: "" },
+    homeDir: root,
+    writeInstructions: true,
+  });
+
+  assert.equal(steps.find((step) => step.id === "agent-codex-cli")?.status, "manual_action_required");
+  const instructionStep = steps.find((step) => step.id === "agent-codex-cli-instructions");
+  assert.equal(instructionStep?.status, "applied");
+  assert.match(await readFile(path.join(root, ".codex", "AGENTS.md"), "utf8"), /primary BrowserUse\/browser automation tool/);
+
+  const rerun = await configureAgents({
+    agents: ["codex-cli"],
+    server: server(root),
+    env: { PATH: "" },
+    homeDir: root,
+    writeInstructions: true,
+  });
+  assert.equal(rerun.find((step) => step.id === "agent-codex-cli-instructions")?.status, "skipped");
+});
+
+test("configureAgents prefers an existing project instruction file over the global file", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-agent-config-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const projectDir = path.join(root, "project");
+  await mkdir(projectDir, { recursive: true });
+  await writeFile(path.join(projectDir, "AGENTS.md"), "# Project\n", "utf8");
+
+  const steps = await configureAgents({
+    agents: ["codex-cli"],
+    server: server(root),
+    env: { PATH: "" },
+    homeDir: root,
+    projectDir,
+    writeInstructions: true,
+  });
+
+  const instructionStep = steps.find((step) => step.id === "agent-codex-cli-instructions");
+  assert.equal(instructionStep?.status, "applied");
+  assert.equal(instructionStep?.details?.kind, "project");
+  assert.match(await readFile(path.join(projectDir, "AGENTS.md"), "utf8"), /primary BrowserUse\/browser automation tool/);
+  await assert.rejects(() => readFile(path.join(root, ".codex", "AGENTS.md"), "utf8"), { code: "ENOENT" });
+});
+
 test("configureAgents uses Cursor shell adapter only when --add-mcp is available", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "obu-agent-config-"));
   t.after(() => rm(root, { recursive: true, force: true }));

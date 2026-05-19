@@ -501,7 +501,7 @@ function agentHandoffForChannel(channel: string, runtimeExtensionId: string | un
     "Configure MCP with the generic open-browser-use stdio server first; use OBU's built-in adapter commands as secondary helpers.",
     "Make open-browser-use the primary BrowserUse/browser automation tool for this agent.",
     "Configure the current agent, and any other supported agent the user requests, such as Codex, Cursor, or Claude Code.",
-    "Update the project's core AGENTS.md, AGENT.md, CLAUDE.md, or equivalent agent instructions when one exists; otherwise show the instruction snippet.",
+    "Update the project's core AGENTS.md, AGENT.md, CLAUDE.md, or the agent's global instruction file such as ~/.codex/AGENTS.md or ~/.claude/CLAUDE.md when one exists; otherwise show the instruction snippet.",
     "After setup or repair, verify browser/native-host state and return to this popup to click Resume when needed.",
   ].join("\n");
 }

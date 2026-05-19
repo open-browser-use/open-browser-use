@@ -41,9 +41,11 @@ export type SetupOptions = {
   dryRun?: boolean;
   skipExtension?: boolean;
   skipAgents?: boolean;
+  writeInstructions?: boolean;
   extensionPath?: string;
   env?: NodeJS.ProcessEnv;
   commandPrefix?: string;
+  projectDir?: string;
 };
 
 export async function setupOpenBrowserUse(options: SetupOptions): Promise<SetupJson> {
@@ -150,6 +152,8 @@ export async function setupOpenBrowserUse(options: SetupOptions): Promise<SetupJ
       ...(options.env ? { env: options.env } : {}),
       homeDir: agentHomeDir,
       ...(options.commandPrefix ? { commandPrefix: options.commandPrefix } : {}),
+      ...(options.writeInstructions ? { writeInstructions: options.writeInstructions } : {}),
+      ...(options.projectDir ? { projectDir: options.projectDir } : {}),
     });
     for (const step of agentSteps) {
       steps.push({
@@ -164,11 +168,14 @@ export async function setupOpenBrowserUse(options: SetupOptions): Promise<SetupJ
 
   nextActions.push({
     kind: "command",
-    value: formatSetupCommand(options, options.extensionChannel === "store"
-      ? ["doctor", "browser", "--channel=store"]
-      : ["doctor"]),
+    value: formatSetupCommand(options, doctorCommandArgs(options)),
   });
   return finalize(options, steps, dedupeActions(nextActions));
+}
+
+function doctorCommandArgs(options: SetupOptions): string[] {
+  if (options.extensionChannel !== "store") return ["doctor"];
+  return ["doctor", "browser", "--channel=store", `--extension-id=${options.extensionId}`];
 }
 
 function formatSetupCommand(options: SetupOptions, args: string[]): string {

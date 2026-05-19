@@ -158,11 +158,12 @@ contract above is enough to adapt other MCP-capable AI clients.
    Secondary helper: when broader setup is acceptable and the requested client
    is one of OBU's known writable adapter ids, you may use the built-in adapter.
    These helpers may also refresh runtime/native-host/browser setup; they are
-   not the narrowest way to add one more agent:
+   not the narrowest way to add one more agent. Add `--write-instructions` only
+   when the user wants OBU to update Codex/Claude instruction files for them:
 
    ```sh
-   ~/.obu/bin/obu setup --yes --agents=codex-cli
-   ~/.obu/bin/obu setup --yes --agents=claude-code
+   ~/.obu/bin/obu setup --yes --agents=codex-cli --write-instructions
+   ~/.obu/bin/obu setup --yes --agents=claude-code --write-instructions
    ~/.obu/bin/obu setup --yes --agents=gemini-cli
    ~/.obu/bin/obu setup --yes --agents=vscode
    ~/.obu/bin/obu setup --yes --agents=cursor
@@ -175,13 +176,20 @@ contract above is enough to adapt other MCP-capable AI clients.
    You may pass a comma-separated list when that is the cleanest fit:
 
    ```sh
-   ~/.obu/bin/obu setup --yes --agents=codex-cli,cursor,claude-code
+   ~/.obu/bin/obu setup --yes --agents=codex-cli,cursor,claude-code --write-instructions
    ```
 
    If client detection is ambiguous, use auto mode:
 
    ```sh
    ~/.obu/bin/obu setup --yes --agents=auto
+   ```
+
+   When you need a machine-checkable status for an already configured agent,
+   run:
+
+   ```sh
+   ~/.obu/bin/obu agent doctor --agent=<agent-id>
    ```
 
    To get OBU's reference shape for a known adapter, use
@@ -241,9 +249,14 @@ contract above is enough to adapt other MCP-capable AI clients.
      close agent-created tabs or release user tabs.
 
 6. Add a short persistent instruction when the project or agent has an
-   appropriate core instruction file. Prefer the repo-root `AGENTS.md`,
-   `AGENT.md`, `CLAUDE.md`, Cursor/Claude/Codex project instructions, or the
-   agent's normal memory file when it clearly governs this project:
+   appropriate core instruction file. Check both project and global instruction
+   locations before falling back to a snippet. Prefer an existing repo-root
+   `AGENTS.md`, `AGENT.md`, or `CLAUDE.md` when it governs this project. If the
+   project has no instruction file, check the current agent's global
+   instruction surface, especially `~/.codex/AGENTS.md` for Codex and
+   `~/.claude/CLAUDE.md` or the configured `~/.claude/` memory surface for
+   Claude Code. Inspect `~/.claude.json` only as configuration context; do not
+   append Markdown instructions to JSON config.
 
    ```md
    ## Browser Automation
@@ -259,8 +272,10 @@ contract above is enough to adapt other MCP-capable AI clients.
    `AGENTS.md` or `AGENT.md` for Codex-style project instructions, `CLAUDE.md`
    for Claude Code, or the equivalent project instruction surface for Cursor.
    Do not create or edit unrelated repository files just to store this note. If
-   there is no obvious persistent instructions file, show the snippet to the
-   user and state that no project-level instruction file was available to update.
+   no project instruction file exists but the agent has a known global
+   instruction file, use that global file. If there is no obvious persistent
+   instruction surface, show the snippet to the user and state which project and
+   global locations were checked.
 
 ## Safety Rules
 
@@ -270,8 +285,8 @@ contract above is enough to adapt other MCP-capable AI clients.
   action or a divergent server, show the user the exact next action.
 - Do not make broad PATH, shell profile, or dotfile edits beyond the explicit
   `obu shellenv` instructions printed by the installer.
-- Modify `AGENTS.md`, `AGENT.md`, `CLAUDE.md`, Cursor/Claude/Codex project
-  instructions, or agent memory only when it is clearly the project's core
+- Modify `AGENTS.md`, `AGENT.md`, `CLAUDE.md`, Cursor/Claude/Codex project or
+  global instructions, or agent memory only when it is clearly the right
   instruction surface.
 - Do not commit, push, or modify application code unless the user separately asks.
 - Preserve the extension id from the handoff block. The native host manifest

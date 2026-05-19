@@ -82,7 +82,9 @@ Rerun:
 obu doctor browser --channel=store --extension-id=<STORE_EXTENSION_ID>
 ```
 
-Then retry `browser_status`.
+Then retry `browser_status`. Current `doctor browser` output includes
+`resume required: yes/no` on the runtime descriptor probe so agents do not need
+to infer popup state from deliverable counts or low-level descriptor details.
 
 ## Agent JavaScript Pitfalls
 

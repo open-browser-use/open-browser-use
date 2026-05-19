@@ -57,7 +57,8 @@ function assertAgentHandoff(elements, channel = "unpacked-dev") {
   assert.match(handoff, new RegExp(`Extension id: ${runtimeExtensionId}`));
   assert.match(handoff, /generic open-browser-use stdio server/);
   assert.match(handoff, /primary BrowserUse\/browser automation tool/);
-  assert.match(handoff, /core AGENTS\.md, AGENT\.md, CLAUDE\.md, or equivalent/);
+  assert.match(handoff, /~\/\.codex\/AGENTS\.md/);
+  assert.match(handoff, /~\/\.claude\/CLAUDE\.md/);
   assert.match(handoff, /Codex, Cursor, or Claude Code/);
   assert.doesNotMatch(handoff, /Terminal command/i);
   assert.doesNotMatch(handoff, /curl -fsSL/);
@@ -181,7 +182,8 @@ async function runPopupHappyPath() {
   await waitFor(() => harness.elements.copyAgentButton.textContent === "Copied");
   assert.match(harness.clipboardWrites.at(-1), /generic open-browser-use stdio server/);
   assert.match(harness.clipboardWrites.at(-1), /primary BrowserUse\/browser automation tool/);
-  assert.match(harness.clipboardWrites.at(-1), /core AGENTS\.md, AGENT\.md, CLAUDE\.md, or equivalent/);
+  assert.match(harness.clipboardWrites.at(-1), /~\/\.codex\/AGENTS\.md/);
+  assert.match(harness.clipboardWrites.at(-1), /~\/\.claude\/CLAUDE\.md/);
   assert.doesNotMatch(harness.clipboardWrites.at(-1), /obu bootstrap/);
   assert.doesNotMatch(harness.clipboardWrites.at(-1), /curl -fsSL/);
   assert.match(harness.elements.setupCopyText.textContent, /Agent/);

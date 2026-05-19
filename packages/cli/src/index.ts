@@ -2,6 +2,7 @@
 import { spawn } from "node:child_process";
 import path from "node:path";
 
+import { doctorAgent, formatAgentDoctorReport, hasAgentDoctorFailures } from "./agents/doctor.js";
 import { isAgentId, renderAgentMcpConfig, supportedAgentIds, type AgentId, type McpServerInvocation } from "./agents/registry.js";
 import { appendShellArgs, formatShellCommand } from "./command-line.js";
 import { doctorAggregate, formatAggregateDoctorReport } from "./doctor.js";
@@ -46,6 +47,7 @@ type ParsedArgs = {
   agents: string[];
   skipExtension: boolean;
   skipAgents: boolean;
+  writeInstructions: boolean;
 };
 
 async function main(argv: string[]): Promise<number> {
@@ -63,6 +65,9 @@ async function main(argv: string[]): Promise<number> {
   }
   if (args.command === "mcp-config") {
     return runMcpConfig(args);
+  }
+  if (args.command === "agent" && args.subject === "doctor") {
+    return runAgentDoctor(args);
   }
   if (args.command === "shellenv") {
     return runShellenv(args);
@@ -144,8 +149,10 @@ async function runBootstrap(args: ParsedArgs): Promise<number> {
     dryRun: args.dryRun,
     skipExtension: args.skipExtension,
     skipAgents: args.skipAgents,
+    writeInstructions: args.writeInstructions,
     env: process.env,
     commandPrefix,
+    projectDir: process.cwd(),
     ...(args.extensionPath ? { extensionPath: args.extensionPath } : {}),
   });
 
@@ -245,8 +252,10 @@ async function runSetup(args: ParsedArgs): Promise<number> {
     dryRun: args.dryRun,
     skipExtension: args.skipExtension,
     skipAgents: args.skipAgents,
+    writeInstructions: args.writeInstructions,
     env: process.env,
     commandPrefix,
+    projectDir: process.cwd(),
     ...(args.extensionPath ? { extensionPath: args.extensionPath } : {}),
   });
   if (args.json) {
@@ -465,6 +474,37 @@ async function runMcpConfig(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+async function runAgentDoctor(args: ParsedArgs): Promise<number> {
+  if (!args.agent) throw new Error("agent doctor requires --agent=<id>");
+  if (!isAgentId(args.agent)) {
+    throw new Error(`unsupported agent: ${args.agent}. Supported agents: ${supportedAgentIds().join(", ")}`);
+  }
+  const layout = await resolveRuntimeLayout();
+  const invocation = await resolveMcpInvocation(layout.openBrowserUseCommand, layout.cliEntry);
+  const server: McpServerInvocation = {
+    name: "open-browser-use",
+    command: invocation.command,
+    args: invocation.args,
+  };
+  const report = await doctorAgent({
+    agent: args.agent,
+    server,
+    env: process.env,
+    homeDir: path.dirname(path.dirname(layout.userConfigPath)),
+    projectDir: process.cwd(),
+  });
+  if (args.json) {
+    console.log(JSON.stringify({
+      schemaVersion: 1,
+      command: "agent doctor",
+      ...report,
+    }, null, 2));
+  } else {
+    console.log(formatAgentDoctorReport(report));
+  }
+  return hasAgentDoctorFailures(report) ? 1 : 0;
+}
+
 async function resolveHumanCommandPrefix(layout: Awaited<ReturnType<typeof resolveRuntimeLayout>>): Promise<string> {
   const command = layout.openBrowserUseCommand;
   if (!path.isAbsolute(command) && !command.includes(path.sep)) return formatShellCommand(command);
@@ -562,7 +602,9 @@ function formatBootstrapSummary(setupReport: SetupJson, browserReport: DoctorRep
 }
 
 function bootstrapAgentSummary(setupReport: SetupJson): string | undefined {
-  const agentSteps = setupReport.steps.filter((step) => step.id.startsWith("agent-"));
+  const agentSteps = setupReport.steps.filter((step) =>
+    step.id.startsWith("agent-") && !step.id.endsWith("-instructions")
+  );
   const manualAgents = agentSteps
     .filter((step) => step.status === "manual_action_required")
     .map((step) => step.id.replace(/^agent-/, ""));
@@ -623,6 +665,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     agents: [],
     skipExtension: false,
     skipAgents: false,
+    writeInstructions: false,
     help: false,
     version: false,
   };
@@ -708,6 +751,9 @@ function parseArgs(argv: string[]): ParsedArgs {
         args.agents = [];
         args.skipAgents = true;
         break;
+      case "--write-instructions":
+        args.writeInstructions = true;
+        break;
       case "--version":
       case "-V":
         args.version = true;
@@ -736,12 +782,13 @@ function parseBrowser(value: string): BrowserKind {
 function printHelp(): void {
   console.log(`Usage:
   obu --version
-  obu bootstrap [--yes] [--browser chrome|chrome-for-testing|edge|brave|arc|chromium|--all] [--agents=auto|none|<list>] [--channel unpacked-dev|store] [--extension-id <id>] [--skip-extension] [--dry-run] [--json]
-  obu setup [--yes] [--browser chrome|chrome-for-testing|edge|brave|arc|chromium|--all] [--agents=auto|none|<list>] [--channel unpacked-dev|store] [--extension-id <id>] [--skip-extension] [--skip-agents] [--dry-run] [--recovery] [--verbose] [--json]
+  obu bootstrap [--yes] [--browser chrome|chrome-for-testing|edge|brave|arc|chromium|--all] [--agents=auto|none|<list>] [--channel unpacked-dev|store] [--extension-id <id>] [--skip-extension] [--write-instructions] [--dry-run] [--json]
+  obu setup [--yes] [--browser chrome|chrome-for-testing|edge|brave|arc|chromium|--all] [--agents=auto|none|<list>] [--channel unpacked-dev|store] [--extension-id <id>] [--skip-extension] [--skip-agents] [--write-instructions] [--dry-run] [--recovery] [--verbose] [--json]
   obu doctor [browser] [--browser chrome|chrome-for-testing|edge|brave|arc|chromium] [--channel unpacked-dev|store] [--extension-id <id>] [--verbose] [--json] [--strict] [--repair] [--clean-backups]
   obu install-host [--browser chrome|chrome-for-testing|edge|brave|arc|chromium|--all] [--channel unpacked-dev|store] [--extension-id <id>] [--dry-run] [--verbose] [--json]
   obu update-extension [--path <dir>] [--channel unpacked-dev] [--no-wait] [--dry-run] [--verbose] [--json]
   obu mcp-config --agent=<id> --print
+  obu agent doctor --agent=<id> [--json]
   obu shellenv [shell]
   obu mcp stdio`);
 }
