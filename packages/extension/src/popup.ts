@@ -194,7 +194,7 @@ async function copyAgentHandoff(): Promise<void> {
     button: copyAgentButton!,
     text: (agentHandoff!.textContent ?? "").trim(),
     unavailable: "agent setup handoff unavailable",
-    success: "Copied. Paste into your coding agent, then click Resume when setup finishes.",
+    success: "Copied. Paste into your coding agent. Return here and click Resume when setup finishes.",
   });
 }
 
@@ -253,7 +253,7 @@ function render(status: HostStatus): void {
 function renderSetup(advice: NativeHostAdvice): void {
   const text = advice.showSetup
     ? advice.setupText ?? ""
-    : "Connect another coding agent with this handoff. Keep this popup open until pairing finishes.";
+    : "Connect another coding agent with this handoff. Copy it into the agent, then keep this popup open while it pairs.";
   const handoff = agentHandoffForChannel(EXTENSION_CHANNEL, chrome.runtime.id);
   const label = advice.showSetup ? "Setup" : "Agent setup";
   const changed = setupLabel!.textContent !== label
@@ -376,32 +376,32 @@ function nativeHostAdvice(status: HostStatus): NativeHostAdvice {
     case "version_mismatch":
       return withSetup(
         "Update the local host, then reconnect.",
-        "Give this handoff to your coding agent. Return here and click Resume after the update finishes.",
+        "Copy this handoff into your coding agent. Return here and click Resume after the update finishes.",
       );
     case "native_host_not_found":
       return withSetup(
         "Install the local host, then reconnect.",
-        "Ask your coding agent to install open-browser-use and register the native host for this extension.",
+        "Copy this handoff into your coding agent to install open-browser-use and register the native host for this extension.",
       );
     case "native_host_forbidden":
       return withSetup(
         "Refresh this extension's host permission, then reconnect.",
-        "Ask your coding agent to refresh the native host registration for this extension ID.",
+        "Copy this handoff into your coding agent to refresh the native host registration for this extension ID.",
       );
     case "native_host_crashed":
       return withSetup(
         "Repair the local host, then reconnect.",
-        "Ask your coding agent to repair open-browser-use setup and verify the native host.",
+        "Copy this handoff into your coding agent to repair open-browser-use setup and verify the native host.",
       );
     case "native_host_hello_timeout":
       return withSetup(
         "Repair the local host, then reconnect.",
-        "Ask your coding agent to repair open-browser-use setup and verify the native host.",
+        "Copy this handoff into your coding agent to repair open-browser-use setup and verify the native host.",
       );
     case "native_host_heartbeat_timeout":
       return withSetup(
         "Repair the local host, then reconnect.",
-        "Ask your coding agent to repair open-browser-use setup and verify the native host.",
+        "Copy this handoff into your coding agent to repair open-browser-use setup and verify the native host.",
       );
     case "native_host_unavailable":
       if (isDisconnectedPortObject(status.message)) {
@@ -409,7 +409,7 @@ function nativeHostAdvice(status: HostStatus): NativeHostAdvice {
       }
       return withSetup(
         "Repair setup, then reconnect.",
-        "Ask your coding agent to repair open-browser-use setup and verify browser pairing.",
+        "Copy this handoff into your coding agent to repair open-browser-use setup and verify browser pairing.",
       );
     case "native_host_disconnected":
       if (isDisconnectedPortObject(status.message)) {
@@ -423,7 +423,7 @@ function nativeHostAdvice(status: HostStatus): NativeHostAdvice {
       if (status.state === "error") {
         return withSetup(
           "Repair setup, then reconnect.",
-          "Ask your coding agent to repair open-browser-use setup and verify browser pairing.",
+          "Copy this handoff into your coding agent to repair open-browser-use setup and verify browser pairing.",
         );
       }
       return { showSetup: false };
@@ -441,7 +441,7 @@ function withSetup(detail: string, setupText: string): NativeHostAdvice {
 function disconnectedPortObjectAdvice(): NativeHostAdvice {
   return withSetup(
     "The local host is not connected. Reinstall it, then reconnect.",
-    "Ask your coding agent to reinstall open-browser-use and register the host for this extension.",
+    "Copy this handoff into your coding agent to reinstall open-browser-use and register the host for this extension.",
   );
 }
 
