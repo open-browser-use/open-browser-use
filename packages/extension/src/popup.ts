@@ -1,7 +1,8 @@
+import { LANGUAGE_SETTING_KEY, applyDocumentLocale, applyStaticMessages, initI18n, msg, msgPlural } from "./i18n.js";
+
 const STATUS_KEY = "OBU_NATIVE_HOST_STATUS";
 const DEBUG_LOG_KEY = "OBU_DEBUG_LOG";
 const EXTENSION_CHANNEL = "__OBU_EXTENSION_CHANNEL__";
-const AGENT_COPY_BUTTON_LABEL = "Copy for agent";
 
 type ExtensionChannel = "unpacked-dev" | "store";
 
@@ -58,6 +59,7 @@ const setupCopyText = document.querySelector<HTMLParagraphElement>("#setup-copy-
 const versionText = document.querySelector<HTMLSpanElement>("#version-text");
 const stopButton = document.querySelector<HTMLButtonElement>("#stop-button");
 const resumeButton = document.querySelector<HTMLButtonElement>("#resume-button");
+const settingsButton = document.querySelector<HTMLButtonElement>("#settings-button");
 const debugText = document.querySelector<HTMLParagraphElement>("#debug-text");
 const debugToggleButton = document.querySelector<HTMLButtonElement>("#debug-toggle-button");
 const copyDebugButton = document.querySelector<HTMLButtonElement>("#copy-debug-button");
@@ -67,14 +69,13 @@ let currentStatus: HostStatus | undefined;
 let currentDebug: DebugLogStatus = { enabled: false, entries: [] };
 let setupCopyResetTimer: ReturnType<typeof setTimeout> | undefined;
 
-versionText!.textContent = `Version ${chrome.runtime.getManifest().version}`;
-copyAgentButton!.textContent = AGENT_COPY_BUTTON_LABEL;
-
-void refreshStatus();
-void refreshDebugStatus();
+void start();
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") return;
+  if (changes[LANGUAGE_SETTING_KEY]) {
+    void refreshLanguage();
+  }
   const status = changes[STATUS_KEY]?.newValue;
   if (isHostStatus(status)) render(status);
   const debug = changes[DEBUG_LOG_KEY]?.newValue;
@@ -87,6 +88,10 @@ stopButton!.addEventListener("click", () => {
 
 resumeButton!.addEventListener("click", () => {
   void sendControlMessage("RESUME_BROWSER_CONTROL", resumeButton!);
+});
+
+settingsButton?.addEventListener("click", () => {
+  void openSettings();
 });
 
 copyAgentButton!.addEventListener("click", () => {
@@ -115,13 +120,42 @@ clearDebugButton!.addEventListener("click", () => {
   void clearDebugLogs();
 });
 
+async function start(): Promise<void> {
+  await initI18n();
+  renderStaticShell();
+  void refreshStatus();
+  void refreshDebugStatus();
+}
+
+async function refreshLanguage(): Promise<void> {
+  await initI18n();
+  renderStaticShell();
+  if (currentStatus) render(currentStatus);
+  renderDebug(currentDebug);
+}
+
+function renderStaticShell(): void {
+  applyDocumentLocale();
+  applyStaticMessages();
+  versionText!.textContent = msg("versionLabel", [chrome.runtime.getManifest().version]);
+  copyAgentButton!.textContent = agentCopyButtonLabel();
+}
+
+async function openSettings(): Promise<void> {
+  if (chrome.runtime.openOptionsPage) {
+    await chrome.runtime.openOptionsPage();
+    return;
+  }
+  await chrome.tabs.create({ url: chrome.runtime.getURL("options.html"), active: true });
+}
+
 async function refreshStatus(): Promise<void> {
   try {
     const status = await chrome.runtime.sendMessage({ type: "GET_NATIVE_HOST_STATUS" });
     if (isHostStatus(status)) {
       render(status);
     } else {
-      render({ state: "error", message: "Native host status unavailable" });
+      render({ state: "error", message: msg("nativeHostStatusUnavailable") });
     }
   } catch (error) {
     render({ state: "error", message: errorMessage(error) });
@@ -133,7 +167,7 @@ async function refreshDebugStatus(): Promise<void> {
     const debug = await chrome.runtime.sendMessage({ type: "GET_DEBUG_LOG_STATUS" });
     if (isDebugLogStatus(debug)) renderDebug(debug);
   } catch {
-    renderDebug({ enabled: false, entries: [] }, "Unavailable");
+    renderDebug({ enabled: false, entries: [] }, msg("debugUnavailable"));
   }
 }
 
@@ -144,7 +178,7 @@ async function sendControlMessage(type: "STOP_BROWSER_CONTROL" | "RESUME_BROWSER
     if (isHostStatus(status)) {
       render(status);
     } else {
-      render({ state: "error", message: "Native host status unavailable" });
+      render({ state: "error", message: msg("nativeHostStatusUnavailable") });
     }
   } catch (error) {
     render({ state: "error", message: errorMessage(error) });
@@ -170,10 +204,10 @@ async function copyDebugLogs(): Promise<void> {
     if (isDebugLogStatus(debug)) {
       renderDebug(debug);
       await writeClipboard(debugReport(debug));
-      renderDebug(debug, `Copied ${debug.entries.length} entries`);
+      renderDebug(debug, debugCopiedLabel(debug.entries.length));
     }
   } catch (error) {
-    renderDebug(currentDebug, `Copy failed: ${errorMessage(error)}`);
+    renderDebug(currentDebug, msg("debugCopyFailed", [errorMessage(error)]));
   } finally {
     copyDebugButton!.disabled = currentDebug.entries.length === 0;
   }
@@ -183,7 +217,7 @@ async function clearDebugLogs(): Promise<void> {
   clearDebugButton!.disabled = true;
   try {
     const debug = await chrome.runtime.sendMessage({ type: "CLEAR_DEBUG_LOGS" });
-    if (isDebugLogStatus(debug)) renderDebug(debug, "Cleared");
+    if (isDebugLogStatus(debug)) renderDebug(debug, msg("debugCleared"));
   } finally {
     clearDebugButton!.disabled = currentDebug.entries.length === 0;
   }
@@ -193,8 +227,8 @@ async function copyAgentHandoff(): Promise<void> {
   await copySetupText({
     button: copyAgentButton!,
     text: (agentHandoff!.textContent ?? "").trim(),
-    unavailable: "agent setup handoff unavailable",
-    success: "Copied. Paste into your coding agent. Return here and click Resume when setup finishes.",
+    unavailable: msg("copyAgentUnavailable"),
+    success: msg("copyAgentSuccess"),
   });
 }
 
@@ -207,23 +241,23 @@ async function copySetupText(input: {
   if (input.button.disabled) return;
   input.button.disabled = true;
   clearSetupCopyResetTimer();
-  input.button.textContent = "Copying";
+  input.button.textContent = msg("copying");
   setupCopyText!.textContent = "";
   setDataAttribute(setupPanel, "data-copy-state", "copying");
   try {
     if (input.text.length === 0) throw new Error(input.unavailable);
     await writeClipboard(input.text);
-    input.button.textContent = "Copied";
+    input.button.textContent = msg("copied");
     setupCopyText!.textContent = input.success;
     setDataAttribute(setupPanel, "data-copy-state", "copied");
   } catch {
-    input.button.textContent = "Try again";
-    setupCopyText!.textContent = "Copy unavailable. Check clipboard permission, then try again.";
+    input.button.textContent = msg("tryAgain");
+    setupCopyText!.textContent = msg("copyUnavailable");
     setDataAttribute(setupPanel, "data-copy-state", "error");
   } finally {
     input.button.disabled = false;
     setupCopyResetTimer = setTimeout(() => {
-      copyAgentButton!.textContent = AGENT_COPY_BUTTON_LABEL;
+      copyAgentButton!.textContent = agentCopyButtonLabel();
       setupCopyText!.textContent = "";
       removeDataAttribute(setupPanel, "data-copy-state");
       setupCopyResetTimer = undefined;
@@ -253,9 +287,11 @@ function render(status: HostStatus): void {
 function renderSetup(advice: NativeHostAdvice): void {
   const text = advice.showSetup
     ? advice.setupText ?? ""
-    : "Connect another coding agent with this handoff. Copy it into the agent, then keep this popup open while it pairs.";
+    : msg("agentSetupDefaultText");
   const handoff = agentHandoffForChannel(EXTENSION_CHANNEL, chrome.runtime.id);
-  const label = advice.showSetup ? "Setup" : "Agent setup";
+  const label = advice.showSetup
+    ? msg("setupLabel")
+    : msg("agentSetupLabel");
   const changed = setupLabel!.textContent !== label
     || setupText!.textContent !== text
     || agentHandoff!.textContent !== handoff;
@@ -265,7 +301,7 @@ function renderSetup(advice: NativeHostAdvice): void {
   agentHandoff!.textContent = handoff;
   if (changed) {
     clearSetupCopyResetTimer();
-    copyAgentButton!.textContent = AGENT_COPY_BUTTON_LABEL;
+    copyAgentButton!.textContent = agentCopyButtonLabel();
     setupCopyText!.textContent = "";
     removeDataAttribute(setupPanel, "data-copy-state");
   }
@@ -283,7 +319,9 @@ function removeDataAttribute(element: HTMLElement | null, name: string): void {
 
 function renderDebug(debug: DebugLogStatus, overrideText?: string): void {
   currentDebug = debug;
-  debugToggleButton!.textContent = debug.enabled ? "Disable" : "Enable";
+  debugToggleButton!.textContent = debug.enabled
+    ? msg("debugDisable")
+    : msg("debugEnable");
   copyDebugButton!.disabled = debug.entries.length === 0;
   clearDebugButton!.disabled = debug.entries.length === 0;
   if (overrideText) {
@@ -292,8 +330,8 @@ function renderDebug(debug: DebugLogStatus, overrideText?: string): void {
   }
   const max = typeof debug.maxEntries === "number" ? debug.maxEntries : 200;
   debugText!.textContent = debug.enabled
-    ? `Enabled, ${debug.entries.length}/${max} entries`
-    : `Disabled, ${debug.entries.length} saved entries`;
+    ? debugEnabledLabel(debug.entries.length, max)
+    : debugDisabledLabel(debug.entries.length);
 }
 
 function canResume(status: HostStatus): boolean {
@@ -310,38 +348,40 @@ function statusClass(state: HostStatus["state"]): string {
 function statusLabel(status: HostStatus): string {
   switch (status.state) {
     case "connected":
-      return "Connected";
+      return msg("statusConnected");
     case "connecting":
-      return "Connecting";
+      return msg("statusConnecting");
     case "version_mismatch":
-      return "Update needed";
+      return msg("statusUpdateNeeded");
     case "stopped":
-      return "You are in control";
+      return msg("statusStopped");
     case "error":
-      return "Needs setup";
+      return msg("statusNeedsSetup");
     case "disconnected":
-      return "Reconnecting";
+      return msg("statusReconnecting");
   }
 }
 
 function detailLabel(status: HostStatus): string {
   if (status.state === "connected") {
-    return status.hostVersion ? `Host ${status.hostVersion}` : "Host ready";
+    return status.hostVersion
+      ? msg("hostVersionLabel", [status.hostVersion])
+      : msg("hostReady");
   }
   if (status.state === "connecting") {
-    return "Connecting to the native host.";
+    return msg("connectingNativeHost");
   }
   if (status.state === "disconnected") {
-    return "Trying to reconnect. Use Resume after setup is repaired.";
+    return msg("disconnectedDetail");
   }
   if (status.state === "version_mismatch") {
-    return "Update the local host, then click Resume to reconnect.";
+    return msg("versionMismatchDetail");
   }
   if (status.state === "stopped") {
-    return "Finish sign-in, passwords, or any page step, then click Resume to continue automation.";
+    return msg("stoppedDetail");
   }
   if (status.state === "error") {
-    return "Run setup, then click Resume to reconnect.";
+    return msg("errorDetail");
   }
   return "";
 }
@@ -358,16 +398,18 @@ function statusDetail(status: HostStatus, advice: NativeHostAdvice): string {
 }
 
 function visibleStatusMessage(status: HostStatus): string {
-  if (status.state === "connecting" || status.state === "stopped") return status.message ?? "";
+  if (status.state === "connecting" || status.state === "stopped") return knownStatusMessage(status.message);
   return "";
 }
 
 function deliverableRecoveryLabel(status: HostStatus): string {
   const count = typeof status.deliverableTabs === "number" ? Math.trunc(status.deliverableTabs) : 0;
   if (count <= 0) return "";
-  const noun = count === 1 ? "tab" : "tabs";
-  const object = count === 1 ? "it" : "them";
-  return `${count} deliverable ${noun} available. Use browser.deliverables(), then claim() to recover ${object}.`;
+  return msgPlural(
+    "deliverableRecovery",
+    count,
+    [String(count)],
+  );
 }
 
 function nativeHostAdvice(status: HostStatus): NativeHostAdvice {
@@ -375,55 +417,55 @@ function nativeHostAdvice(status: HostStatus): NativeHostAdvice {
   switch (diagnosis) {
     case "version_mismatch":
       return withSetup(
-        "Update the local host, then reconnect.",
-        "Copy this handoff into your coding agent. Return here and click Resume after the update finishes.",
+        msg("adviceUpdateHost"),
+        msg("setupTextUpdateHost"),
       );
     case "native_host_not_found":
       return withSetup(
-        "Install the local host, then reconnect.",
-        "Copy this handoff into your coding agent to install open-browser-use and register the native host for this extension.",
+        msg("adviceInstallHost"),
+        msg("setupTextInstallHost"),
       );
     case "native_host_forbidden":
       return withSetup(
-        "Refresh this extension's host permission, then reconnect.",
-        "Copy this handoff into your coding agent to refresh the native host registration for this extension ID.",
+        msg("adviceRefreshHostPermission"),
+        msg("setupTextRefreshHostPermission"),
       );
     case "native_host_crashed":
       return withSetup(
-        "Repair the local host, then reconnect.",
-        "Copy this handoff into your coding agent to repair open-browser-use setup and verify the native host.",
+        msg("adviceRepairHost"),
+        msg("setupTextRepairHost"),
       );
     case "native_host_hello_timeout":
       return withSetup(
-        "Repair the local host, then reconnect.",
-        "Copy this handoff into your coding agent to repair open-browser-use setup and verify the native host.",
+        msg("adviceRepairHost"),
+        msg("setupTextRepairHost"),
       );
     case "native_host_heartbeat_timeout":
       return withSetup(
-        "Repair the local host, then reconnect.",
-        "Copy this handoff into your coding agent to repair open-browser-use setup and verify the native host.",
+        msg("adviceRepairHost"),
+        msg("setupTextRepairHost"),
       );
     case "native_host_unavailable":
       if (isDisconnectedPortObject(status.message)) {
         return disconnectedPortObjectAdvice();
       }
       return withSetup(
-        "Repair setup, then reconnect.",
-        "Copy this handoff into your coding agent to repair open-browser-use setup and verify browser pairing.",
+        msg("adviceRepairSetup"),
+        msg("setupTextRepairSetup"),
       );
     case "native_host_disconnected":
       if (isDisconnectedPortObject(status.message)) {
         return disconnectedPortObjectAdvice();
       }
       return {
-        detail: "Check local setup, then click Resume to reconnect.",
+        detail: msg("adviceCheckSetup"),
         showSetup: false,
       };
     case undefined:
       if (status.state === "error") {
         return withSetup(
-          "Repair setup, then reconnect.",
-          "Copy this handoff into your coding agent to repair open-browser-use setup and verify browser pairing.",
+          msg("adviceRepairSetup"),
+          msg("setupTextRepairSetup"),
         );
       }
       return { showSetup: false };
@@ -440,8 +482,8 @@ function withSetup(detail: string, setupText: string): NativeHostAdvice {
 
 function disconnectedPortObjectAdvice(): NativeHostAdvice {
   return withSetup(
-    "The local host is not connected. Reinstall it, then reconnect.",
-    "Copy this handoff into your coding agent to reinstall open-browser-use and register the host for this extension.",
+    msg("adviceDisconnectedPortObject"),
+    msg("setupTextDisconnectedPortObject"),
   );
 }
 
@@ -472,7 +514,7 @@ function retryLabel(status: HostStatus): string {
   if (nextRetryAt === undefined && retryDelayMs === undefined) return "";
   const remainingMs = Math.max(0, (nextRetryAt ?? Date.now() + (retryDelayMs ?? 0)) - Date.now());
   const seconds = Math.max(1, Math.ceil(remainingMs / 1000));
-  return `Retrying in ${seconds}s.`;
+  return msg("retryingInSeconds", [String(seconds)]);
 }
 
 function normalizeDiagnosis(status: HostStatus): HostDiagnosis | undefined {
@@ -509,8 +551,39 @@ function joinSentences(parts: string[]): string {
     .filter((part, index, rows) => part.length > 0 && rows.indexOf(part) === index);
   if (rows.length === 1) return rows[0]!;
   return rows
-    .map((part) => (/[.!?]$/.test(part) ? part : `${part}.`))
-    .join(" ");
+    .map((part) => (/[.!?。！？؟]$/.test(part) ? part : `${part}.`))
+    .reduce((joined, part) => {
+      if (joined.length === 0) return part;
+      return `${joined}${sentenceSeparator(joined, part)}${part}`;
+    }, "");
+}
+
+function sentenceSeparator(left: string, right: string): string {
+  if (/[。！？]$/.test(left) && /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(right)) return "";
+  return " ";
+}
+
+function agentCopyButtonLabel(): string {
+  return msg("copyForAgent");
+}
+
+function knownStatusMessage(message: string | undefined): string {
+  if (message === "Stopping...") return msg("statusStopping");
+  if (message === "Stopped by user") return msg("statusStoppedByUser");
+  if (message === "Version mismatch") return msg("statusVersionMismatch");
+  return message ?? "";
+}
+
+function debugEnabledLabel(count: number, max: number): string {
+  return msgPlural("debugEnabledEntries", count, [String(count), String(max)]);
+}
+
+function debugDisabledLabel(count: number): string {
+  return msgPlural("debugDisabledEntries", count, [String(count)]);
+}
+
+function debugCopiedLabel(count: number): string {
+  return msgPlural("debugCopiedEntries", count, [String(count)]);
 }
 
 function debugReport(debug: DebugLogStatus): string {

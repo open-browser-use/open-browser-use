@@ -1,12 +1,14 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath, pathToFileURL } from "node:url";
+import { readFile } from "node:fs/promises";
 import path from "node:path";
 
 const packageRoot = path.dirname(fileURLToPath(new URL("../package.json", import.meta.url)));
 const statusKey = "OBU_NATIVE_HOST_STATUS";
 const debugLogKey = "OBU_DEBUG_LOG";
 const runtimeExtensionId = "abcdefghijklmnopabcdefghijklmnop";
+const englishMessages = JSON.parse(await readFile(path.join(packageRoot, "public", "_locales", "en", "messages.json"), "utf8"));
 
 class EventTarget {
   listeners = [];
@@ -81,10 +83,12 @@ async function runPopupHappyPath() {
   assert.equal(harness.elements.detailText.textContent, "Host 0.1.0");
   assert.equal(harness.elements.setupPanel.hidden, false);
   assert.equal(harness.elements.setupLabel.textContent, "Agent setup");
-  assert.match(harness.elements.setupText.textContent, /Connect another coding agent/);
+  assert.match(harness.elements.setupText.textContent, /Connect another Agent/);
   assertAgentHandoff(harness.elements);
   assert.equal(harness.elements.stopButton.disabled, false);
   assert.equal(harness.elements.resumeButton.disabled, true);
+  harness.elements.settingsButton.click();
+  await waitFor(() => harness.sent.some((message) => message?.type === "OPEN_OPTIONS_PAGE"));
 
   harness.storageChanges.emit(
     {
@@ -98,7 +102,7 @@ async function runPopupHappyPath() {
   assert.equal(harness.elements.resumeButton.disabled, false);
   assert.match(harness.elements.detailText.textContent, /Update the local host/);
   assert.equal(harness.elements.setupPanel.hidden, false);
-  assert.match(harness.elements.setupText.textContent, /coding agent/);
+  assert.match(harness.elements.setupText.textContent, /Agent/);
   assertAgentHandoff(harness.elements);
 
   harness.storageChanges.emit(
@@ -112,7 +116,7 @@ async function runPopupHappyPath() {
   assert.equal(harness.elements.statusText.textContent, "Connected");
   assert.equal(harness.elements.setupPanel.hidden, false);
   assert.equal(harness.elements.setupLabel.textContent, "Agent setup");
-  assert.match(harness.elements.setupText.textContent, /Connect another coding agent/);
+  assert.match(harness.elements.setupText.textContent, /Connect another Agent/);
 
   harness.storageChanges.emit(
     {
@@ -179,7 +183,7 @@ async function runPopupHappyPath() {
   assert.match(harness.clipboardWrites.at(-1), /core AGENTS\.md, AGENT\.md, CLAUDE\.md, or equivalent/);
   assert.doesNotMatch(harness.clipboardWrites.at(-1), /obu bootstrap/);
   assert.doesNotMatch(harness.clipboardWrites.at(-1), /curl -fsSL/);
-  assert.match(harness.elements.setupCopyText.textContent, /coding agent/);
+  assert.match(harness.elements.setupCopyText.textContent, /Agent/);
 
   harness.storageChanges.emit(
     {
@@ -435,7 +439,7 @@ async function runPopupRepairMatrix() {
       },
       label: "Update needed",
       patterns: [/Update the local host/, /reconnect/],
-      setupPatterns: [/coding agent/],
+      setupPatterns: [/Agent/],
       setupVisible: true,
       resumeEnabled: true,
     },
@@ -446,7 +450,7 @@ async function runPopupRepairMatrix() {
       },
       label: "Update needed",
       patterns: [/Update the local host/, /reconnect/],
-      setupPatterns: [/coding agent/],
+      setupPatterns: [/Agent/],
       setupVisible: true,
       resumeEnabled: true,
     },
@@ -508,7 +512,7 @@ async function runPopupRepairMatrix() {
       }
     } else {
       assert.equal(harness.elements.setupLabel.textContent, "Agent setup");
-      assert.match(harness.elements.setupText.textContent, /Connect another coding agent/);
+      assert.match(harness.elements.setupText.textContent, /Connect another Agent/);
       assert.equal(harness.elements.setupCopyText.textContent, "");
     }
   }
@@ -612,7 +616,7 @@ async function runPopupDebugLogs() {
 
   harness.elements.debugToggleButton.click();
   await waitFor(() => harness.sent.some((message) => message.type === "SET_DEBUG_LOG_ENABLED" && message.enabled === true));
-  await waitFor(() => harness.elements.debugText.textContent === "Enabled, 1/200 entries");
+  await waitFor(() => harness.elements.debugText.textContent === "Enabled, 1/200 entry");
   assert.equal(harness.elements.debugToggleButton.textContent, "Disable");
   assert.equal(harness.elements.copyDebugButton.disabled, false);
   assert.equal(harness.elements.clearDebugButton.disabled, false);
@@ -624,7 +628,7 @@ async function runPopupDebugLogs() {
   assert.equal(copied.extensionVersion, "0.1.0");
   assert.equal(copied.status.state, "connected");
   assert.equal(copied.debug.entries[0].event, "debug.enabled");
-  assert.match(harness.elements.debugText.textContent, /Copied 1 entries/);
+  assert.match(harness.elements.debugText.textContent, /Copied 1 entry/);
 
   harness.elements.clearDebugButton.click();
   await waitFor(() => harness.elements.debugText.textContent === "Cleared");
@@ -643,7 +647,7 @@ async function runPopupDebugLogs() {
     },
     "local",
   );
-  assert.equal(harness.elements.debugText.textContent, "Enabled, 1/200 entries");
+  assert.equal(harness.elements.debugText.textContent, "Enabled, 1/200 entry");
 }
 
 function installPopupHarness(responses, options = {}) {
@@ -654,6 +658,7 @@ function installPopupHarness(responses, options = {}) {
     versionText: new FakeElement(),
     stopButton: new FakeElement(),
     resumeButton: new FakeElement(),
+    settingsButton: new FakeElement(),
     debugText: new FakeElement(),
     debugToggleButton: new FakeElement(),
     copyDebugButton: new FakeElement(),
@@ -672,6 +677,7 @@ function installPopupHarness(responses, options = {}) {
     ["#version-text", elements.versionText],
     ["#stop-button", elements.stopButton],
     ["#resume-button", elements.resumeButton],
+    ["#settings-button", elements.settingsButton],
     ["#debug-text", elements.debugText],
     ["#debug-toggle-button", elements.debugToggleButton],
     ["#copy-debug-button", elements.copyDebugButton],
@@ -707,6 +713,12 @@ function installPopupHarness(responses, options = {}) {
     runtime: {
       getManifest: () => ({ version: "0.1.0" }),
       id: runtimeExtensionId,
+      getURL(path) {
+        return `chrome-extension://${runtimeExtensionId}/${path}`;
+      },
+      async openOptionsPage() {
+        sent.push({ type: "OPEN_OPTIONS_PAGE" });
+      },
       async sendMessage(message) {
         sent.push(message);
         if (message?.type === "GET_DEBUG_LOG_STATUS") return debugState;
@@ -729,11 +741,43 @@ function installPopupHarness(responses, options = {}) {
         return next;
       },
     },
+    i18n: {
+      getMessage(messageName, substitutions) {
+        if (messageName === "@@ui_locale") return options.uiLocale ?? "en";
+        if (messageName === "@@bidi_dir") return (options.uiLocale ?? "en").startsWith("ar") ? "rtl" : "ltr";
+        return getEnglishMessage(messageName, substitutions);
+      },
+      getUILanguage() {
+        return options.uiLocale ?? "en";
+      },
+    },
     storage: {
       onChanged: storageChanges,
     },
   };
   return { elements, sent, storageChanges, clipboardWrites };
+}
+
+function getEnglishMessage(key, substitutions) {
+  const entry = englishMessages[key];
+  if (!entry?.message) return "";
+  const values = Array.isArray(substitutions)
+    ? substitutions
+    : substitutions === undefined
+      ? []
+      : [substitutions];
+  let message = entry.message;
+  for (const [name, placeholder] of Object.entries(entry.placeholders ?? {})) {
+    const match = /^\$(\d+)$/.exec(placeholder.content ?? "");
+    if (!match) continue;
+    const value = values[Number(match[1]) - 1] ?? "";
+    message = message.replace(new RegExp(`\\$${escapeRegExp(name)}\\$`, "gi"), value);
+  }
+  return message;
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 async function importPopup(label) {
