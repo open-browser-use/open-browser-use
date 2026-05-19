@@ -1205,6 +1205,7 @@ async function hideCursor(tabId: number): Promise<void> {
 async function releaseActiveTakeoverForUnavailableHost(reason: string): Promise<void> {
   appendDebugLog("warn", "takeover.release.unavailable_host", { reason });
   const controlledTabIds = new Set<number>();
+  let changed = false;
   for (const tabId of overlayCoordinator.activeTabIds()) controlledTabIds.add(tabId);
   for (const session of sessions.values()) {
     for (const tabId of session.tabs.keys()) controlledTabIds.add(tabId);
@@ -1213,6 +1214,18 @@ async function releaseActiveTakeoverForUnavailableHost(reason: string): Promise<
   for (const tabId of controlledTabIds) {
     await hideCursor(tabId);
   }
+  for (const session of sessions.values()) {
+    for (const tabId of [...session.attachedTabIds]) {
+      try {
+        await chrome.debugger.detach({ tabId });
+      } catch {
+        // Ignore detach races during unavailable-host recovery.
+      }
+      session.attachedTabIds.delete(tabId);
+      changed = true;
+    }
+  }
+  if (changed) await persistSessionState();
 }
 
 function clampNumber(value: unknown, fallback: number, min: number, max: number): number {

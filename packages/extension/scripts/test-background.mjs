@@ -397,6 +397,7 @@ const cdp = await hostRequest(port, "executeCdp", {
 });
 assert.deepEqual(cdp.result, { ok: true });
 assert.equal(calls.debuggerAttach[0].target.tabId, 1);
+const attachCountBeforeManualDetach = calls.debuggerAttach.length;
 
 debuggerDetaches.emit({ tabId: 1 });
 const detachEvent = await waitFor(() =>
@@ -412,7 +413,29 @@ const cdpAfterDetach = await hostRequest(port, "executeCdp", {
   method: "Runtime.evaluate",
 });
 assert.deepEqual(cdpAfterDetach.result, { ok: true });
-assert.equal(calls.debuggerAttach.length, 2);
+assert.equal(calls.debuggerAttach.length, attachCountBeforeManualDetach + 1);
+
+const detachCountBeforeNativeDisconnect = calls.debuggerDetach.length;
+const attachedPort = port;
+const reconnectAfterAttachedDisconnectCount = ports.length;
+attachedPort.disconnect();
+await waitFor(() => storage[statusKey]?.state === "disconnected");
+await waitFor(() => calls.debuggerDetach.length > detachCountBeforeNativeDisconnect);
+assert.equal(calls.debuggerDetach.at(-1).tabId, 1);
+alarmEvents.emit({ name: "obu.reconnectNativeHost" });
+const reconnectedAfterDetachPort = await waitFor(() => ports[reconnectAfterAttachedDisconnectCount]);
+await waitFor(() => reconnectedAfterDetachPort.sent.find((message) => message.type === "hello"));
+reconnectedAfterDetachPort.emit({ type: "hello_ack", host_version: "0.1.0" });
+await waitFor(() => storage[statusKey]?.state === "connected");
+port = reconnectedAfterDetachPort;
+const cdpAfterNativeDisconnect = await hostRequest(port, "executeCdp", {
+  session_id: "session",
+  turn_id: "turn",
+  target: { tabId: 1 },
+  method: "Runtime.evaluate",
+});
+assert.deepEqual(cdpAfterNativeDisconnect.result, { ok: true });
+assert.equal(calls.debuggerAttach.length, attachCountBeforeManualDetach + 2);
 assert.ok(calls.tabsSendMessage.some((call) =>
   call.tabId === 1 &&
   call.message.type === "OBU_TAKEOVER_STATE" &&
