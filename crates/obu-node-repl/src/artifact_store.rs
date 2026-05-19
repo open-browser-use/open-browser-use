@@ -13,6 +13,8 @@ use serde::Serialize;
 use uuid::Uuid;
 
 const ARTIFACT_TTL: Duration = Duration::from_secs(60 * 60);
+/// Largest artifact the MCP store will persist from one result payload.
+pub const MAX_ARTIFACT_BYTES: usize = 8 * 1024 * 1024;
 
 /// Compact artifact reference returned in structured tool output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -85,6 +87,13 @@ impl ArtifactStore {
         bytes: &[u8],
         summary: impl Into<String>,
     ) -> Result<ArtifactSummary> {
+        if bytes.len() > MAX_ARTIFACT_BYTES {
+            return Err(anyhow!(
+                "artifact is too large: {} bytes exceeds {} byte limit",
+                bytes.len(),
+                MAX_ARTIFACT_BYTES
+            ));
+        }
         self.cleanup_expired();
         let id = format!("artifact-{}", Uuid::new_v4().simple());
         let path = self
@@ -122,6 +131,14 @@ impl ArtifactStore {
         data_base64: &str,
         summary: impl Into<String>,
     ) -> Result<ArtifactSummary> {
+        let estimated = estimated_decoded_len(data_base64);
+        if estimated > MAX_ARTIFACT_BYTES {
+            return Err(anyhow!(
+                "artifact is too large: estimated {} bytes exceeds {} byte limit",
+                estimated,
+                MAX_ARTIFACT_BYTES
+            ));
+        }
         let bytes = base64::engine::general_purpose::STANDARD
             .decode(data_base64)
             .context("decode artifact base64")?;
@@ -232,6 +249,22 @@ fn create_owner_only_dir(path: &Path) -> Result<()> {
     Ok(())
 }
 
+fn estimated_decoded_len(data_base64: &str) -> usize {
+    let padding = data_base64
+        .as_bytes()
+        .iter()
+        .rev()
+        .take_while(|byte| **byte == b'=')
+        .take(2)
+        .count();
+    data_base64
+        .len()
+        .saturating_add(3)
+        .saturating_div(4)
+        .saturating_mul(3)
+        .saturating_sub(padding)
+}
+
 trait NoAnnotation {
     fn no_annotation(self) -> Resource;
 }
@@ -276,6 +309,19 @@ mod tests {
                 "blob": "cG5nLWJ5dGVz"
             })
         );
+    }
+
+    #[test]
+    fn artifact_store_rejects_oversize_bytes_before_write() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = ArtifactStore::new_at(dir.path(), "test/session").unwrap();
+        let bytes = vec![0_u8; MAX_ARTIFACT_BYTES + 1];
+
+        let error = store
+            .write_bytes("application/octet-stream", &bytes, "too large")
+            .unwrap_err();
+        assert!(error.to_string().contains("artifact is too large"));
+        assert!(store.list_resources().is_empty());
     }
 
     #[cfg(unix)]

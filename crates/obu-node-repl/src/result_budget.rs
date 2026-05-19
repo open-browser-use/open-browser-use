@@ -5,7 +5,7 @@ use base64::Engine;
 use rmcp::model::{Content, RawResource};
 use serde_json::{Map, Value, json};
 
-use crate::artifact_store::{ArtifactStore, ArtifactSummary};
+use crate::artifact_store::{ArtifactStore, ArtifactSummary, MAX_ARTIFACT_BYTES};
 use crate::repl_manager::{JsExecResult, TruncationInfo};
 
 const MAX_STDOUT_BYTES: usize = 64 * 1024;
@@ -43,7 +43,13 @@ pub fn prepare_js_result(
     truncated.stdout = stdout_truncated;
     truncated.stderr = stderr_truncated;
 
-    let mut final_result = rewrite_artifacts(result.result, artifacts, &mut links, false)?;
+    let mut final_result = rewrite_artifacts(
+        result.result,
+        artifacts,
+        &mut links,
+        false,
+        &mut truncated.result,
+    )?;
     if json_size(&final_result) > MAX_RESULT_JSON_BYTES {
         let bytes = json_size(&final_result);
         final_result = summarize_value(&final_result, bytes);
@@ -58,6 +64,7 @@ pub fn prepare_js_result(
             artifacts,
             &mut links,
             display.kind == "image",
+            &mut truncated.displays,
         )?;
         if json_size(&display.value) > MAX_DISPLAY_JSON_BYTES {
             let bytes = json_size(&display.value);
@@ -133,22 +140,34 @@ fn rewrite_artifacts(
     artifacts: &ArtifactStore,
     links: &mut Vec<Content>,
     force_artifact: bool,
+    truncated: &mut bool,
 ) -> Result<Value> {
     if let Some(summary) = spill_if_artifact(&value, artifacts, force_artifact)? {
-        links.push(content_link(&summary));
-        return serde_json::to_value(summary).context("serialize artifact summary");
+        return match summary {
+            ArtifactRewrite::Resource(summary) => {
+                links.push(content_link(&summary));
+                serde_json::to_value(summary).context("serialize artifact summary")
+            }
+            ArtifactRewrite::Truncated(value) => {
+                *truncated = true;
+                Ok(value)
+            }
+        };
     }
 
     match value {
         Value::Array(items) => items
             .into_iter()
-            .map(|item| rewrite_artifacts(item, artifacts, links, false))
+            .map(|item| rewrite_artifacts(item, artifacts, links, false, truncated))
             .collect::<Result<Vec<_>>>()
             .map(Value::Array),
         Value::Object(map) => {
             let mut out = Map::new();
             for (key, child) in map {
-                out.insert(key, rewrite_artifacts(child, artifacts, links, false)?);
+                out.insert(
+                    key,
+                    rewrite_artifacts(child, artifacts, links, false, truncated)?,
+                );
             }
             Ok(Value::Object(out))
         }
@@ -160,7 +179,7 @@ fn spill_if_artifact(
     value: &Value,
     artifacts: &ArtifactStore,
     force_artifact: bool,
-) -> Result<Option<ArtifactSummary>> {
+) -> Result<Option<ArtifactRewrite>> {
     let Some(map) = value.as_object() else {
         return Ok(None);
     };
@@ -168,10 +187,21 @@ fn spill_if_artifact(
     if let Some(image_url) = map.get("image_url").and_then(Value::as_str)
         && let Some((mime_type, data_base64)) = parse_data_url(image_url)
     {
-        let bytes = decoded_len(data_base64)?;
-        if force_artifact || bytes > ARTIFACT_INLINE_THRESHOLD_BYTES {
+        let payload = decode_artifact_payload(&mime_type, data_base64)?;
+        let DecodedArtifact::Bytes(bytes) = payload else {
+            return Ok(Some(ArtifactRewrite::Truncated(oversized_artifact_value(
+                &mime_type,
+                data_base64,
+            ))));
+        };
+        if force_artifact || bytes.len() > ARTIFACT_INLINE_THRESHOLD_BYTES {
             return artifacts
-                .write_base64(&mime_type, data_base64, artifact_summary(&mime_type, bytes))
+                .write_bytes(
+                    &mime_type,
+                    &bytes,
+                    artifact_summary(&mime_type, bytes.len()),
+                )
+                .map(ArtifactRewrite::Resource)
                 .map(Some);
         }
     }
@@ -191,13 +221,44 @@ fn spill_if_artifact(
     if !is_resource_mime_type(mime_type) {
         return Ok(None);
     }
-    let bytes = decoded_len(data_base64)?;
-    if !force_artifact && bytes <= ARTIFACT_INLINE_THRESHOLD_BYTES {
+    let payload = decode_artifact_payload(mime_type, data_base64)?;
+    let DecodedArtifact::Bytes(bytes) = payload else {
+        return Ok(Some(ArtifactRewrite::Truncated(oversized_artifact_value(
+            mime_type,
+            data_base64,
+        ))));
+    };
+    if !force_artifact && bytes.len() <= ARTIFACT_INLINE_THRESHOLD_BYTES {
         return Ok(None);
     }
     artifacts
-        .write_base64(mime_type, data_base64, artifact_summary(mime_type, bytes))
+        .write_bytes(mime_type, &bytes, artifact_summary(mime_type, bytes.len()))
+        .map(ArtifactRewrite::Resource)
         .map(Some)
+}
+
+enum ArtifactRewrite {
+    Resource(ArtifactSummary),
+    Truncated(Value),
+}
+
+enum DecodedArtifact {
+    Bytes(Vec<u8>),
+    TooLarge,
+}
+
+fn decode_artifact_payload(mime_type: &str, data_base64: &str) -> Result<DecodedArtifact> {
+    let estimated = estimated_decoded_len(data_base64);
+    if estimated > MAX_ARTIFACT_BYTES {
+        return Ok(DecodedArtifact::TooLarge);
+    }
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(data_base64)
+        .with_context(|| format!("decode {mime_type} artifact base64"))?;
+    if bytes.len() > MAX_ARTIFACT_BYTES {
+        return Ok(DecodedArtifact::TooLarge);
+    }
+    Ok(DecodedArtifact::Bytes(bytes))
 }
 
 fn content_link(summary: &ArtifactSummary) -> Content {
@@ -247,11 +308,30 @@ fn parse_data_url(value: &str) -> Option<(String, &str)> {
     Some((mime_type.to_string(), data))
 }
 
-fn decoded_len(data_base64: &str) -> Result<usize> {
-    base64::engine::general_purpose::STANDARD
-        .decode(data_base64)
-        .map(|bytes| bytes.len())
-        .context("decode artifact base64")
+fn estimated_decoded_len(data_base64: &str) -> usize {
+    let padding = data_base64
+        .as_bytes()
+        .iter()
+        .rev()
+        .take_while(|byte| **byte == b'=')
+        .take(2)
+        .count();
+    data_base64
+        .len()
+        .saturating_add(3)
+        .saturating_div(4)
+        .saturating_mul(3)
+        .saturating_sub(padding)
+}
+
+fn oversized_artifact_value(mime_type: &str, data_base64: &str) -> Value {
+    json!({
+        "kind": "truncated",
+        "type": "artifact",
+        "mime_type": mime_type,
+        "estimated_bytes": estimated_decoded_len(data_base64),
+        "max_bytes": MAX_ARTIFACT_BYTES,
+    })
 }
 
 fn truncate_text(value: String, max_bytes: usize) -> (String, bool) {
@@ -383,5 +463,33 @@ mod tests {
             prepared.structured["displays"][0]["value"]["kind"],
             "truncated"
         );
+    }
+
+    #[test]
+    fn prepare_js_result_summarizes_oversize_artifact_without_decoding_it() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifacts = ArtifactStore::new_at(dir.path(), "budget-test").unwrap();
+        let encoded_len = (MAX_ARTIFACT_BYTES / 3 + 2) * 4;
+        let raw = JsExecResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            result: json!({
+                "mime_type": "application/pdf",
+                "data": "A".repeat(encoded_len),
+            }),
+            duration_ms: 7,
+            truncated: TruncationInfo::default(),
+            displays: Vec::new(),
+            response_meta: None,
+            error: None,
+        };
+
+        let prepared = prepare_js_result(raw, &artifacts).unwrap();
+
+        assert_eq!(prepared.structured["truncated"]["result"], true);
+        assert_eq!(prepared.structured["result"]["kind"], "truncated");
+        assert_eq!(prepared.structured["result"]["type"], "artifact");
+        assert_eq!(prepared.content_links.len(), 0);
+        assert!(artifacts.list_resources().is_empty());
     }
 }
