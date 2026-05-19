@@ -81,6 +81,15 @@ type RuntimeDescriptorProbeResult =
   | { ok: true; details: Record<string, unknown> }
   | { ok: false; message: string };
 
+export async function hasActiveWebExtensionRuntimeDescriptor(runtimeDir: string): Promise<boolean> {
+  const descriptorDir = path.join(runtimeDir, "webextension");
+  const descriptorDirCheck = await checkRuntimeDescriptorDir(descriptorDir);
+  if (descriptorDirCheck.status === "fail") return false;
+  const descriptorCheck = await checkRuntimeDescriptors(descriptorDir);
+  return typeof descriptorCheck.details?.descriptor === "string" &&
+    /responded to getInfo/.test(descriptorCheck.message);
+}
+
 export async function doctorBrowser(options: DoctorBrowserOptions = {}): Promise<DoctorReport> {
   const browser = options.browser ?? DEFAULT_BROWSER;
   const extensionChannel = options.channel ?? "unpacked-dev";
