@@ -3,7 +3,14 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 
 import { doctorAgent, formatAgentDoctorReport, hasAgentDoctorFailures } from "./agents/doctor.js";
-import { isAgentId, renderAgentMcpConfig, supportedAgentIds, type AgentId, type McpServerInvocation } from "./agents/registry.js";
+import {
+  normalizeAgentId,
+  renderAgentMcpConfig,
+  supportedAgentAliasHelp,
+  supportedAgentIds,
+  type AgentId,
+  type McpServerInvocation,
+} from "./agents/registry.js";
 import { appendShellArgs, formatShellCommand } from "./command-line.js";
 import { doctorAggregate, formatAggregateDoctorReport } from "./doctor.js";
 import { doctorJson } from "./doctor-json.js";
@@ -125,9 +132,9 @@ async function runBootstrap(args: ParsedArgs): Promise<number> {
     console.error(`unsupported bootstrap browser target on ${process.platform}: ${unsupported.join(", ")}`);
     return 2;
   }
-  const unsupportedAgents = args.agents.filter((agent) => !isAgentId(agent));
-  if (unsupportedAgents.length > 0) {
-    console.error(`unsupported agent id(s): ${unsupportedAgents.join(", ")}. Supported agents: ${supportedAgentIds().join(", ")}`);
+  const requestedAgents = normalizeAgentArgs(args.agents);
+  if (requestedAgents.unsupported.length > 0) {
+    console.error(unsupportedAgentMessage(requestedAgents.unsupported));
     return 2;
   }
   const invocation = await resolveMcpInvocation(layout.openBrowserUseCommand, layout.cliEntry);
@@ -141,7 +148,7 @@ async function runBootstrap(args: ParsedArgs): Promise<number> {
     layout,
     obuVersion: await packageVersion(),
     browsers,
-    agents: args.agents as AgentId[],
+    agents: requestedAgents.agents,
     server,
     extensionChannel: extensionTarget.channel,
     extensionId: extensionTarget.extensionId,
@@ -172,7 +179,7 @@ async function runBootstrap(args: ParsedArgs): Promise<number> {
     const doctorExit = browserReport ? doctorExitCode(browserReport, false) : 0;
     const result = setupReport.result === "failed" || doctorExit !== 0
       ? "failed"
-      : setupReport.result === "manual_action_required"
+      : setupReport.result === "manual_action_required" || browserResumeRequired(browserReport)
         ? "manual_action_required"
         : "complete";
     const payload: {
@@ -195,7 +202,10 @@ async function runBootstrap(args: ParsedArgs): Promise<number> {
 
   if (setupReport.result === "failed") return 1;
   if (!browserReport) return 1;
-  return doctorExitCode(browserReport, false);
+  const doctorExit = doctorExitCode(browserReport, false);
+  if (doctorExit !== 0) return doctorExit;
+  if (setupReport.result === "manual_action_required" || browserResumeRequired(browserReport)) return 1;
+  return 0;
 }
 
 async function runSetup(args: ParsedArgs): Promise<number> {
@@ -228,9 +238,9 @@ async function runSetup(args: ParsedArgs): Promise<number> {
     console.error(`unsupported setup browser target on ${process.platform}: ${unsupported.join(", ")}`);
     return 2;
   }
-  const unsupportedAgents = args.agents.filter((agent) => !isAgentId(agent));
-  if (unsupportedAgents.length > 0) {
-    console.error(`unsupported agent id(s): ${unsupportedAgents.join(", ")}. Supported agents: ${supportedAgentIds().join(", ")}`);
+  const requestedAgents = normalizeAgentArgs(args.agents);
+  if (requestedAgents.unsupported.length > 0) {
+    console.error(unsupportedAgentMessage(requestedAgents.unsupported));
     return 2;
   }
   const invocation = await resolveMcpInvocation(layout.openBrowserUseCommand, layout.cliEntry);
@@ -244,7 +254,7 @@ async function runSetup(args: ParsedArgs): Promise<number> {
     layout,
     obuVersion: await packageVersion(),
     browsers,
-    agents: args.agents as AgentId[],
+    agents: requestedAgents.agents,
     server,
     extensionChannel: extensionTarget.channel,
     extensionId: extensionTarget.extensionId,
@@ -460,9 +470,8 @@ async function runDoctor(args: ParsedArgs): Promise<number> {
 async function runMcpConfig(args: ParsedArgs): Promise<number> {
   if (!args.agent) throw new Error("mcp-config requires --agent=<id>");
   if (!args.print) throw new Error("mcp-config currently supports --print only");
-  if (!isAgentId(args.agent)) {
-    throw new Error(`unsupported agent: ${args.agent}. Supported agents: ${supportedAgentIds().join(", ")}`);
-  }
+  const agent = normalizeAgentId(args.agent);
+  if (!agent) throw new Error(unsupportedAgentMessage([args.agent]));
   const layout = await resolveRuntimeLayout();
   const invocation = await resolveMcpInvocation(layout.openBrowserUseCommand, layout.cliEntry);
   const server: McpServerInvocation = {
@@ -470,15 +479,14 @@ async function runMcpConfig(args: ParsedArgs): Promise<number> {
     command: invocation.command,
     args: invocation.args,
   };
-  console.log(JSON.stringify(renderAgentMcpConfig(args.agent, server), null, 2));
+  console.log(JSON.stringify(renderAgentMcpConfig(agent, server), null, 2));
   return 0;
 }
 
 async function runAgentDoctor(args: ParsedArgs): Promise<number> {
   if (!args.agent) throw new Error("agent doctor requires --agent=<id>");
-  if (!isAgentId(args.agent)) {
-    throw new Error(`unsupported agent: ${args.agent}. Supported agents: ${supportedAgentIds().join(", ")}`);
-  }
+  const agent = normalizeAgentId(args.agent);
+  if (!agent) throw new Error(unsupportedAgentMessage([args.agent]));
   const layout = await resolveRuntimeLayout();
   const invocation = await resolveMcpInvocation(layout.openBrowserUseCommand, layout.cliEntry);
   const server: McpServerInvocation = {
@@ -487,7 +495,7 @@ async function runAgentDoctor(args: ParsedArgs): Promise<number> {
     args: invocation.args,
   };
   const report = await doctorAgent({
-    agent: args.agent,
+    agent,
     server,
     env: process.env,
     homeDir: path.dirname(path.dirname(layout.userConfigPath)),
@@ -503,6 +511,24 @@ async function runAgentDoctor(args: ParsedArgs): Promise<number> {
     console.log(formatAgentDoctorReport(report));
   }
   return hasAgentDoctorFailures(report) ? 1 : 0;
+}
+
+function normalizeAgentArgs(values: string[]): { agents: AgentId[]; unsupported: string[] } {
+  const agents: AgentId[] = [];
+  const unsupported: string[] = [];
+  for (const value of values) {
+    const agent = normalizeAgentId(value);
+    if (!agent) {
+      unsupported.push(value);
+      continue;
+    }
+    if (!agents.includes(agent)) agents.push(agent);
+  }
+  return { agents, unsupported };
+}
+
+function unsupportedAgentMessage(values: string[]): string {
+  return `unsupported agent id(s): ${values.join(", ")}. Supported agents: ${supportedAgentIds().join(", ")}. ${supportedAgentAliasHelp()}`;
 }
 
 async function resolveHumanCommandPrefix(layout: Awaited<ReturnType<typeof resolveRuntimeLayout>>): Promise<string> {
@@ -584,11 +610,14 @@ function formatBootstrapSummary(setupReport: SetupJson, browserReport: DoctorRep
   if (browserReport) {
     const channelLabel = setupReport.extensionChannel === "store" ? "Chrome Web Store extension" : "extension";
     const browserFailed = hasDoctorFailures(browserReport);
+    const needsPopup = browserResumeRequired(browserReport);
     rows.push(setupReport.dryRun
       ? `Browser pairing would be checked for ${channelLabel} ${setupReport.extensionId}.`
       : browserFailed
         ? `Browser repair ran for ${channelLabel} ${setupReport.extensionId}.`
-        : `Browser pairing repaired for ${channelLabel} ${setupReport.extensionId}.`);
+        : needsPopup
+          ? `Browser pairing repaired for ${channelLabel} ${setupReport.extensionId}; extension popup activation is still required.`
+          : `Browser pairing ready for ${channelLabel} ${setupReport.extensionId}.`);
     if (browserFailed) {
       const failed = browserReport.checks.filter((check) => check.status === "fail");
       rows.push(`Browser doctor still found ${plural(failed.length, "problem")}: ${failed.map((check) => check.label).join(", ")}.`);
@@ -597,13 +626,15 @@ function formatBootstrapSummary(setupReport: SetupJson, browserReport: DoctorRep
 
   const agentLine = bootstrapAgentSummary(setupReport);
   if (agentLine) rows.push(agentLine);
-  rows.push("Return to the extension popup and click Resume.");
+  if (browserResumeRequired(browserReport)) {
+    rows.push("Open the extension popup; click Resume if it is enabled, otherwise wait for Connected and rerun doctor.");
+  }
   return rows.join("\n");
 }
 
 function bootstrapAgentSummary(setupReport: SetupJson): string | undefined {
   const agentSteps = setupReport.steps.filter((step) =>
-    step.id.startsWith("agent-") && !step.id.endsWith("-instructions")
+    step.id.startsWith("agent-") && step.id !== "agent-adapters" && !step.id.endsWith("-instructions")
   );
   const manualAgents = agentSteps
     .filter((step) => step.status === "manual_action_required")
@@ -625,6 +656,10 @@ function bootstrapAgentSummary(setupReport: SetupJson): string | undefined {
   if (/no supported coding agents detected/i.test(adapterStep.message)) return "No supported coding agents were detected.";
   if (/skipped agent adapter wiring/i.test(adapterStep.message)) return "MCP agent setup skipped.";
   return adapterStep.message;
+}
+
+function browserResumeRequired(report: DoctorReport | undefined): boolean {
+  return report?.checks.some((check) => check.details?.resume_required === true) ?? false;
 }
 
 function plural(count: number, label: string): string {
@@ -790,7 +825,9 @@ function printHelp(): void {
   obu mcp-config --agent=<id> --print
   obu agent doctor --agent=<id> [--json]
   obu shellenv [shell]
-  obu mcp stdio`);
+  obu mcp stdio
+
+Agent aliases: codex=codex-cli, claude=claude-code, gemini=gemini-cli.`);
 }
 
 main(process.argv.slice(2))

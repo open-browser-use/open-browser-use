@@ -6,6 +6,12 @@ import { spawn } from "node:child_process";
 import { renderAgentMcpConfig, type AgentId, type McpServerInvocation } from "./registry.js";
 import { appendShellArgs } from "../command-line.js";
 import {
+  canAutoConfigureCodex,
+  equivalentCodexServer,
+  readCodexMcpServer,
+  writeCodexMcpServer,
+} from "./codex-config.js";
+import {
   canAutoConfigureDirectEditAgent,
   isDirectEditAgentId,
   writeDirectEditAgentConfig,
@@ -80,16 +86,8 @@ export async function configureAgents(options: ConfigureAgentsOptions): Promise<
       value: appendShellArgs(options.commandPrefix ?? "obu", ["mcp-config", `--agent=${agent}`, "--print"]),
     };
     let step: AgentConfigureStep;
-    if (agent === "cursor") {
-      step = await configureCursor(
-        config,
-        options.server,
-        env,
-        options.dryRun === true,
-        directEditOptions,
-        manualAction,
-        options.adapterTimeoutMs ?? DEFAULT_ADAPTER_TIMEOUT_MS,
-      );
+    if (agent === "codex-cli") {
+      step = await configureCodex(options.server, options.dryRun === true, directEditOptions, manualAction);
       steps.push(step);
       steps.push(...await maybeConfigureInstructions(options, agent));
       continue;
@@ -141,31 +139,81 @@ async function maybeConfigureInstructions(options: ConfigureAgentsOptions, agent
 
 async function isAgentInstalled(agent: AgentId, env: NodeJS.ProcessEnv, directEditOptions: DirectEditOptions): Promise<boolean> {
   const config = renderAgentMcpConfig(agent, { name: "open-browser-use", command: "obu", args: ["mcp", "stdio"] });
+  if (agent === "codex-cli") {
+    return await findExecutable(config.mode === "shell" ? config.executable : "codex", env) !== undefined ||
+      await canAutoConfigureCodex(directEditOptions);
+  }
+  if (agent === "cursor" && await findExecutable("cursor", env)) return true;
   if (config.mode === "shell" && await findExecutable(config.executable, env)) return true;
   if (isDirectEditAgentId(agent)) return canAutoConfigureDirectEditAgent(agent, directEditOptions);
   return false;
 }
 
-async function configureCursor(
-  config: ReturnType<typeof renderAgentMcpConfig>,
+async function configureCodex(
   server: McpServerInvocation,
-  env: NodeJS.ProcessEnv,
   dryRun: boolean,
-  directEditOptions: DirectEditOptions,
+  options: DirectEditOptions,
   manualAction: AgentNextAction,
-  adapterTimeoutMs: number,
 ): Promise<AgentConfigureStep> {
-  if (config.mode !== "shell") {
-    return configureDirectEdit("cursor", server, dryRun, directEditOptions, manualAction);
+  if (dryRun) {
+    return {
+      id: "agent-codex-cli",
+      status: "would_apply",
+      message: "would update codex-cli MCP config",
+      details: { dryRun: true },
+    };
   }
-  const executable = await findExecutable(config.executable, env);
-  if (executable) {
-    const help = await runAdapter(executable, ["--help"], env, adapterTimeoutMs);
-    if (help.code === 0 && /--add-mcp\b/.test(`${help.stdout}\n${help.stderr}`)) {
-      return configureShell("cursor", config, env, dryRun, manualAction, executable, adapterTimeoutMs);
-    }
+  const current = await readCodexMcpServer(server.name, options);
+  if (current.status === "found" && equivalentCodexServer(current.server, server)) {
+    return {
+      id: "agent-codex-cli",
+      status: "skipped",
+      message: "codex-cli already has an equivalent open-browser-use MCP server",
+      details: { path: current.path },
+    };
   }
-  return configureDirectEdit("cursor", server, dryRun, directEditOptions, manualAction);
+  if (current.status === "found") {
+    return {
+      id: "agent-codex-cli",
+      status: "manual_action_required",
+      message: "codex-cli already has an open-browser-use MCP server with different settings",
+      details: { path: current.path, expected: server, actual: current.server },
+      nextActions: [manualAction],
+    };
+  }
+  if (current.status === "error") {
+    return {
+      id: "agent-codex-cli",
+      status: "manual_action_required",
+      message: "codex-cli MCP config could not be read; configure it manually",
+      details: { path: current.path, message: current.message, ...(current.code ? { code: current.code } : {}) },
+      nextActions: [manualAction],
+    };
+  }
+  const result = await writeCodexMcpServer(server, options);
+  if (result.status === "skipped") {
+    return {
+      id: "agent-codex-cli",
+      status: "skipped",
+      message: "codex-cli MCP config is unchanged",
+      details: { path: result.path },
+    };
+  }
+  if (result.status === "io_error") {
+    return {
+      id: "agent-codex-cli",
+      status: "manual_action_required",
+      message: "codex-cli MCP config could not be written; configure it manually",
+      details: { path: result.path, message: result.message, ...(result.code ? { code: result.code } : {}) },
+      nextActions: [manualAction],
+    };
+  }
+  return {
+    id: "agent-codex-cli",
+    status: "applied",
+    message: "updated codex-cli MCP config",
+    details: { path: result.path, ...(result.backupPath ? { backupPath: result.backupPath } : {}) },
+  };
 }
 
 async function configureShell(

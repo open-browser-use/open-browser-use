@@ -37,9 +37,10 @@ test("setupOpenBrowserUse composes runtime, native host, extension update, and m
   assert.equal(result.steps.find((step) => step.id === "runtime-dir")?.status, "applied");
   assert.equal(result.steps.find((step) => step.id === "native-host-chrome")?.status, "applied");
   assert.equal(result.steps.find((step) => step.id === "extension-current")?.status, "applied");
-  assert.equal(result.steps.find((step) => step.id === "agent-codex-cli")?.status, "manual_action_required");
+  assert.equal(result.steps.find((step) => step.id === "agent-codex-cli")?.status, "applied");
+  assert.match(await readFile(path.join(root, ".codex", "config.toml"), "utf8"), /\[mcp_servers\.open-browser-use\]/);
   assert.equal(await readFile(path.join(layout.extensionCurrentDir, "marker.txt"), "utf8"), "0.6.0");
-  assert.ok(result.nextActions.some((action) => action.value === "obu mcp-config --agent=codex-cli --print"));
+  assert.equal(result.nextActions.some((action) => action.value === "obu mcp-config --agent=codex-cli --print"), false);
 });
 
 test("setupOpenBrowserUse can complete deterministic setup when extension and agents are skipped", async (t) => {

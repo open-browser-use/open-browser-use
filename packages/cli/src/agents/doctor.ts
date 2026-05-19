@@ -11,6 +11,7 @@ import {
   PRIMARY_BROWSER_INSTRUCTION,
   primaryInstructionTargets,
 } from "./instructions.js";
+import { equivalentCodexServer, readCodexMcpServer } from "./codex-config.js";
 import { renderAgentMcpConfig, type AgentId, type McpServerInvocation } from "./registry.js";
 
 export type AgentDoctorStatus = "pass" | "warn" | "fail";
@@ -37,7 +38,7 @@ export type AgentDoctorOptions = {
   adapterTimeoutMs?: number;
 };
 
-const DEFAULT_ADAPTER_TIMEOUT_MS = 5_000;
+const DEFAULT_ADAPTER_TIMEOUT_MS = 15_000;
 const MCP_LIST_AGENT_IDS = new Set<AgentId>(["codex-cli", "claude-code", "gemini-cli"]);
 
 export async function doctorAgent(options: AgentDoctorOptions): Promise<AgentDoctorReport> {
@@ -68,6 +69,10 @@ export function hasAgentDoctorFailures(report: AgentDoctorReport): boolean {
 
 async function checkMcpServer(options: AgentDoctorOptions): Promise<AgentDoctorCheck> {
   const config = renderAgentMcpConfig(options.agent, options.server);
+  if (options.agent === "codex-cli") {
+    const configCheck = await checkCodexConfigMcpServer(options);
+    if (configCheck) return configCheck;
+  }
   if (isDirectEditAgentId(options.agent)) {
     return checkDirectEditMcpConfig(options);
   }
@@ -116,6 +121,32 @@ async function checkMcpServer(options: AgentDoctorOptions): Promise<AgentDoctorC
   }
   return pass("agent-mcp-server", "MCP server", `${options.agent} lists ${options.server.name}`, {
     executable,
+  });
+}
+
+async function checkCodexConfigMcpServer(options: AgentDoctorOptions): Promise<AgentDoctorCheck | undefined> {
+  const state = await readCodexMcpServer(options.server.name, {
+    ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+  });
+  if (state.status === "error") {
+    return fail("agent-mcp-server", "MCP server", "codex-cli MCP config could not be read", {
+      path: state.path,
+      message: state.message,
+      ...(state.code ? { code: state.code } : {}),
+    });
+  }
+  if (state.status === "missing") {
+    return undefined;
+  }
+  if (!equivalentCodexServer(state.server, options.server)) {
+    return fail("agent-mcp-server", "MCP server", `Codex config lists ${options.server.name} with different settings`, {
+      path: state.path,
+      expected: options.server,
+      actual: state.server,
+    });
+  }
+  return pass("agent-mcp-server", "MCP server", `codex-cli configures ${options.server.name}`, {
+    path: state.path,
   });
 }
 

@@ -4,7 +4,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
-import { configureAgents } from "./configure.js";
+import { configureAgents, detectInstalledAgents } from "./configure.js";
 import type { McpServerInvocation } from "./registry.js";
 
 test("configureAgents runs shell adapters found on PATH", async (t) => {
@@ -13,18 +13,18 @@ test("configureAgents runs shell adapters found on PATH", async (t) => {
   const bin = path.join(root, "bin");
   await mkdir(bin, { recursive: true });
   const log = path.join(root, "args.txt");
-  const codex = path.join(bin, "codex");
-  await writeFile(codex, `#!/bin/sh\necho "$@" > ${shellQuote(log)}\n`, "utf8");
-  await chmod(codex, 0o755);
+  const claude = path.join(bin, "claude");
+  await writeFile(claude, `#!/bin/sh\necho "$@" > ${shellQuote(log)}\n`, "utf8");
+  await chmod(claude, 0o755);
 
   const steps = await configureAgents({
-    agents: ["codex-cli"],
+    agents: ["claude-code"],
     server: server(root),
     env: { PATH: bin },
   });
 
   assert.equal(steps[0]?.status, "applied");
-  assert.match(await readFile(log, "utf8"), /mcp add open-browser-use -- .* mcp stdio/);
+  assert.match(await readFile(log, "utf8"), /mcp add -s user open-browser-use -- .* mcp stdio/);
 });
 
 test("configureAgents skips shell adapters when an equivalent server already exists", async (t) => {
@@ -33,18 +33,18 @@ test("configureAgents skips shell adapters when an equivalent server already exi
   const bin = path.join(root, "bin");
   await mkdir(bin, { recursive: true });
   const log = path.join(root, "add.txt");
-  const codex = path.join(bin, "codex");
-  await writeFile(codex, `#!/bin/sh
+  const claude = path.join(bin, "claude");
+  await writeFile(claude, `#!/bin/sh
 if [ "$1 $2" = "mcp list" ]; then
   echo "open-browser-use ${shellEscapeForDoubleQuotes(path.join(root, "obu"))} mcp stdio"
   exit 0
 fi
 echo "$@" > ${shellQuote(log)}
 `, "utf8");
-  await chmod(codex, 0o755);
+  await chmod(claude, 0o755);
 
   const steps = await configureAgents({
-    agents: ["codex-cli"],
+    agents: ["claude-code"],
     server: server(root),
     env: { PATH: bin },
   });
@@ -76,12 +76,12 @@ test("configureAgents times out hung shell adapters with a manual action", async
   t.after(() => rm(root, { recursive: true, force: true }));
   const bin = path.join(root, "bin");
   await mkdir(bin, { recursive: true });
-  const codex = path.join(bin, "codex");
-  await writeFile(codex, "#!/bin/sh\nsleep 5\n", "utf8");
-  await chmod(codex, 0o755);
+  const claude = path.join(bin, "claude");
+  await writeFile(claude, "#!/bin/sh\nsleep 5\n", "utf8");
+  await chmod(claude, 0o755);
 
   const steps = await configureAgents({
-    agents: ["codex-cli"],
+    agents: ["claude-code"],
     server: server(root),
     env: { PATH: bin },
     adapterTimeoutMs: 25,
@@ -90,7 +90,7 @@ test("configureAgents times out hung shell adapters with a manual action", async
   assert.equal(steps[0]?.status, "manual_action_required");
   assert.match(steps[0]?.message ?? "", /timed out/);
   assert.equal(steps[0]?.details?.timeout_ms, 25);
-  assert.match(steps[0]?.nextActions?.[0]?.value ?? "", /mcp-config --agent=codex-cli --print/);
+  assert.match(steps[0]?.nextActions?.[0]?.value ?? "", /mcp-config --agent=claude-code --print/);
 });
 
 test("configureAgents dry-run reports planned shell and direct-edit work", async (t) => {
@@ -107,9 +107,63 @@ test("configureAgents dry-run reports planned shell and direct-edit work", async
   });
 
   assert.equal(steps.find((step) => step.id === "agent-codex-cli")?.status, "would_apply");
-  assert.match(steps.find((step) => step.id === "agent-codex-cli")?.message ?? "", /would run codex adapter/);
+  assert.match(steps.find((step) => step.id === "agent-codex-cli")?.message ?? "", /would update codex-cli MCP config/);
   assert.equal(steps.find((step) => step.id === "agent-zed")?.status, "would_apply");
   assert.match(steps.find((step) => step.id === "agent-zed")?.message ?? "", /would update zed MCP config/);
+});
+
+test("configureAgents writes Codex global MCP config without requiring codex on PATH", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-agent-config-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const first = await configureAgents({
+    agents: ["codex-cli"],
+    server: server(root),
+    env: { PATH: "" },
+    homeDir: root,
+  });
+
+  assert.equal(first[0]?.status, "applied");
+  const configPath = path.join(root, ".codex", "config.toml");
+  const config = await readFile(configPath, "utf8");
+  assert.match(config, /\[mcp_servers\.open-browser-use\]/);
+  assert.match(config, new RegExp(`command = "${escapeRegExp(path.join(root, "obu"))}"`));
+  assert.match(config, /args = \["mcp", "stdio"\]/);
+
+  const second = await configureAgents({
+    agents: ["codex-cli"],
+    server: server(root),
+    env: { PATH: "" },
+    homeDir: root,
+  });
+  assert.equal(second[0]?.status, "skipped");
+});
+
+test("configureAgents does not overwrite divergent Codex MCP config", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-agent-config-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configPath = path.join(root, ".codex", "config.toml");
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(configPath, [
+    "[mcp_servers.open-browser-use]",
+    'command = "/custom/obu"',
+    'args = ["mcp", "stdio"]',
+    "",
+  ].join("\n"), "utf8");
+
+  const steps = await configureAgents({
+    agents: ["codex-cli"],
+    server: server(root),
+    env: { PATH: "" },
+    homeDir: root,
+  });
+
+  assert.equal(steps[0]?.status, "manual_action_required");
+  assert.match(steps[0]?.message ?? "", /different settings/);
+  assert.match(steps[0]?.nextActions?.[0]?.value ?? "", /mcp-config --agent=codex-cli --print/);
+  const config = await readFile(configPath, "utf8");
+  assert.match(config, /command = "\/custom\/obu"/);
+  assert.doesNotMatch(config, new RegExp(escapeRegExp(path.join(root, "obu"))));
 });
 
 test("configureAgents writes JSONC direct-edit adapters and skips unchanged reruns", async (t) => {
@@ -223,7 +277,7 @@ test("configureAgents writes primary-browser instructions only when requested", 
     writeInstructions: true,
   });
 
-  assert.equal(steps.find((step) => step.id === "agent-codex-cli")?.status, "manual_action_required");
+  assert.equal(steps.find((step) => step.id === "agent-codex-cli")?.status, "applied");
   const instructionStep = steps.find((step) => step.id === "agent-codex-cli-instructions");
   assert.equal(instructionStep?.status, "applied");
   assert.match(await readFile(path.join(root, ".codex", "AGENTS.md"), "utf8"), /primary BrowserUse\/browser automation tool/);
@@ -261,7 +315,7 @@ test("configureAgents prefers an existing project instruction file over the glob
   await assert.rejects(() => readFile(path.join(root, ".codex", "AGENTS.md"), "utf8"), { code: "ENOENT" });
 });
 
-test("configureAgents uses Cursor shell adapter only when --add-mcp is available", async (t) => {
+test("configureAgents writes Cursor config where agent doctor checks it", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "obu-agent-config-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const bin = path.join(root, "bin");
@@ -285,8 +339,31 @@ echo "$@" > ${shellQuote(log)}
   });
 
   assert.equal(steps[0]?.status, "applied");
-  assert.match(await readFile(log, "utf8"), /--add-mcp/);
-  await assert.rejects(() => readFile(path.join(root, ".cursor", "mcp.json"), "utf8"), { code: "ENOENT" });
+  await assert.rejects(() => readFile(log, "utf8"), { code: "ENOENT" });
+  const config = JSON.parse(await readFile(path.join(root, ".cursor", "mcp.json"), "utf8"));
+  assert.equal(config.mcpServers["open-browser-use"].command, path.join(root, "obu"));
+  assert.deepEqual(config.mcpServers["open-browser-use"].args, ["mcp", "stdio"]);
+  assert.equal("name" in config.mcpServers["open-browser-use"], false);
+});
+
+test("detectInstalledAgents includes Codex config directories and Cursor executables", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-agent-config-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bin = path.join(root, "bin");
+  await mkdir(path.join(root, ".codex"), { recursive: true });
+  await mkdir(bin, { recursive: true });
+  const cursor = path.join(bin, "cursor");
+  await writeFile(cursor, "#!/bin/sh\n", "utf8");
+  await chmod(cursor, 0o755);
+
+  const agents = await detectInstalledAgents({
+    env: { PATH: bin },
+    homeDir: root,
+    platform: "linux",
+  });
+
+  assert.equal(agents.includes("codex-cli"), true);
+  assert.equal(agents.includes("cursor"), true);
 });
 
 function server(root: string): McpServerInvocation {
@@ -303,4 +380,8 @@ function shellQuote(value: string): string {
 
 function shellEscapeForDoubleQuotes(value: string): string {
   return value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("$", "\\$").replaceAll("`", "\\`");
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }

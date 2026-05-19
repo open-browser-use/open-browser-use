@@ -816,7 +816,7 @@ async function checkRuntimeDescriptors(descriptorDir: string): Promise<DoctorChe
 function resumeRequiredDetails(): Record<string, unknown> {
   return {
     resume_required: true,
-    resume_action: "open the open-browser-use extension popup and click Resume",
+    resume_action: "open the open-browser-use extension popup; click Resume if it is enabled, otherwise wait for Connected and rerun doctor",
   };
 }
 
@@ -1127,9 +1127,9 @@ function repairHint(id: string, status: DoctorStatus, details: Record<string, un
     case "runtime-dir":
       return "Repair the runtime directory to an owner-only real directory, then rerun doctor.";
     case "runtime-descriptor-dir":
-      return "Repair the runtime descriptor directory to owner-only, then open the extension popup and click Resume.";
+      return "Repair the runtime descriptor directory to owner-only, then open the extension popup; click Resume if it is enabled.";
     case "runtime-descriptor-probe":
-      return "Run --repair if offered, then open the extension popup and click Resume to retry the native-host connection; rerun doctor after it reconnects.";
+      return "Run --repair if offered, then open the extension popup; click Resume if enabled, otherwise wait for Connected and rerun doctor.";
     default:
       return undefined;
   }
