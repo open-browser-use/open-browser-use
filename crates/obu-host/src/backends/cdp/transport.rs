@@ -185,10 +185,11 @@ impl CdpTransport {
             return Err(error.into());
         }
 
-        match timeout(DEFAULT_TIMEOUT, rx).await {
+        let command_timeout = crate::backends::current_client_timeout().unwrap_or(DEFAULT_TIMEOUT);
+        match timeout(command_timeout, rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(CdpError::Disconnected),
-            Err(_) => Err(CdpError::Timeout(DEFAULT_TIMEOUT)),
+            Err(_) => Err(CdpError::Timeout(command_timeout)),
         }
     }
 
@@ -201,8 +202,10 @@ impl CdpTransport {
 #[cfg(test)]
 mod tests {
     use super::PendingRemovalGuard;
+    use crate::backends::scope_client_timeout;
     use std::collections::HashMap;
     use std::sync::Mutex;
+    use std::time::Duration;
 
     #[test]
     fn pending_guard_removes_entry_on_drop() {
@@ -215,5 +218,15 @@ mod tests {
             assert!(pending.lock().expect("pending lock").contains_key(&7));
         }
         assert!(!pending.lock().expect("pending lock").contains_key(&7));
+    }
+
+    #[tokio::test]
+    async fn command_timeout_uses_scoped_client_timeout() {
+        let timeout = scope_client_timeout(Some(60_000), async {
+            crate::backends::current_client_timeout()
+        })
+        .await;
+
+        assert_eq!(timeout, Some(Duration::from_secs(60)));
     }
 }

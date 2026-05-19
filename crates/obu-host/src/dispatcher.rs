@@ -225,7 +225,7 @@ impl Dispatcher {
             let id = request.id.clone();
             let method = request.method.clone();
             let timeout_ms = request_context(&request.params).client_timeout_ms;
-            let route = async move {
+            let route = crate::backends::scope_client_timeout(timeout_ms, async move {
                 match timeout_ms {
                     Some(timeout_ms) => match tokio::time::timeout(
                         Duration::from_millis(timeout_ms),
@@ -244,7 +244,7 @@ impl Dispatcher {
                     },
                     None => dispatcher.route_request(request).await,
                 }
-            };
+            });
             let response = tokio::select! {
                 _ = peer_cancel.cancelled() => return,
                 response = route => response,
