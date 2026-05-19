@@ -168,9 +168,7 @@ that both license files are present in every payload.
 The generated curl release manifests are part of the installer contract. Before
 uploading GitHub Release assets, verify `manifest.json`, `manifest.tsv`,
 `install.sh`, every artifact tarball, and every `.sha256` file are present in
-the same asset set. See
-[`docs/native-host-recovery-ux.md`](native-host-recovery-ux.md) for the manifest
-shape constraints.
+the same asset set.
 
 ## Chrome Web Store Gate
 

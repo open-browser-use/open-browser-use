@@ -51,7 +51,8 @@ await runPopupInitialFailure("runtime rejection", [new Error("status boom")], "R
 
 function assertAgentHandoff(elements, channel = "unpacked-dev") {
   const handoff = elements.agentHandoff.textContent;
-  assert.match(handoff, /prompts\/agent-install-prompt\.md/);
+  assert.match(handoff, /github\.com\/open-browser-use\/open-browser-use\/blob\/main\/prompts\/agent-install-prompt\.md/);
+  assert.doesNotMatch(handoff, /blob\/v0\.1\.2\/prompts\/agent-install-prompt\.md/);
   assert.match(handoff, new RegExp(`Extension channel: ${channel}`));
   assert.match(handoff, new RegExp(`Extension id: ${runtimeExtensionId}`));
   assert.match(handoff, /generic open-browser-use stdio server/);

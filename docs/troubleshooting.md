@@ -52,8 +52,8 @@ Then retry the MCP client.
 
 ## Agent JavaScript Pitfalls
 
-For the full MCP browser-use call chain and token-budget rules, see
-[`docs/agent-browser-mcp-usage.md`](agent-browser-mcp-usage.md).
+For agent setup and MCP wiring, use the popup's **Copy for Agent** handoff or
+[`prompts/agent-install-prompt.md`](../prompts/agent-install-prompt.md).
 
 Inside the MCP `js` tool, `agent.browsers.get(...)` returns a promise:
 

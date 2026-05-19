@@ -44,8 +44,8 @@ Transmitted:
 
 - Extension messages are sent to the locally installed native host through
   Chrome native messaging.
-- The GitHub installer command downloads release assets from GitHub when the
-  user runs the copied setup command.
+- The copied agent handoff links to GitHub-hosted setup instructions and may ask
+  the user's local agent to download release assets from GitHub.
 
 Not uploaded by the extension:
 
@@ -71,11 +71,12 @@ Current stance for the first Store draft:
 
 1. Install the Chrome Web Store draft item in a clean Chrome profile.
 2. Open the extension popup.
-3. Copy the setup command from the popup.
-4. Run it in Terminal. The Store command must include:
+3. Click **Copy for Agent** in the popup.
+4. Paste the handoff into the local coding agent and have it complete setup or
+   repair. The handoff must include:
 
-   ```bash
-   --channel=store
+   ```text
+   Extension channel: store
    ```
 
 5. Click **Resume** in the popup.

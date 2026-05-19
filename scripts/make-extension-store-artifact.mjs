@@ -91,7 +91,7 @@ function assertStorePopup(contents) {
   if (!/const EXTENSION_CHANNEL = "store";/.test(contents)) {
     issues.push("popup.js must be built with EXTENSION_CHANNEL store");
   }
-  if (!contents.includes("prompts/agent-install-prompt.md")) {
+  if (!contents.includes("blob/main/prompts/agent-install-prompt.md")) {
     issues.push("popup.js must include the agent install prompt handoff");
   }
   if (!contents.includes("Extension channel:") || !contents.includes("Extension id:")) {

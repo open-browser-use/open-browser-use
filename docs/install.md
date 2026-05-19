@@ -108,8 +108,8 @@ Installer options:
 - `OBU_RELEASE_BASE_URL` and `OBU_TARGET` are preview/debug overrides for the
   GitHub Release `manifest.tsv` / `manifest.json` lookup.
 
-See [native-host-recovery-ux.md](native-host-recovery-ux.md) for the popup
-recovery UX rationale and the release manifest contract.
+The release manifest contract is summarized in
+[release-checklist.md](release-checklist.md).
 
 The extension popup setup panel keeps **Copy for agent** available. Paste that
 handoff into the user's coding agent; it points to
@@ -167,5 +167,5 @@ Inspect the exact MCP config for any supported client:
 obu mcp-config --agent=codex-cli --print
 ```
 
-See [agent-adapters.md](agent-adapters.md) for all adapter IDs and write
-strategies.
+Supported adapter IDs are `codex-cli`, `claude-code`, `gemini-cli`, `vscode`,
+`cursor`, `cline`, `windsurf`, `claude-desktop`, `zed`, and `continue`.

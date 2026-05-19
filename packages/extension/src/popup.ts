@@ -490,8 +490,7 @@ function disconnectedPortObjectAdvice(): NativeHostAdvice {
 function agentHandoffForChannel(channel: string, runtimeExtensionId: string | undefined): string {
   const resolvedChannel: ExtensionChannel = channel === "store" ? "store" : "unpacked-dev";
   const extensionId = isExtensionId(runtimeExtensionId) ? runtimeExtensionId : "<extension-id>";
-  const version = chrome.runtime.getManifest().version;
-  const promptUrl = `https://github.com/open-browser-use/open-browser-use/blob/v${version}/prompts/agent-install-prompt.md`;
+  const promptUrl = "https://github.com/open-browser-use/open-browser-use/blob/main/prompts/agent-install-prompt.md";
   return [
     "Install, repair, or adapt open-browser-use for this browser extension.",
     `Prompt: ${promptUrl}`,
