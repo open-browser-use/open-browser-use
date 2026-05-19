@@ -15,8 +15,12 @@ await mkdir(dist, { recursive: true });
 
 await cp(join(pub, "popup.html"), join(dist, "popup.html"));
 await cp(join(pub, "popup.css"), join(dist, "popup.css"));
+await cp(join(pub, "options.html"), join(dist, "options.html"));
+await cp(join(pub, "options.css"), join(dist, "options.css"));
 await rm(join(dist, "icons"), { recursive: true, force: true });
 await cp(join(pub, "icons"), join(dist, "icons"), { recursive: true });
+await rm(join(dist, "_locales"), { recursive: true, force: true });
+await cp(join(pub, "_locales"), join(dist, "_locales"), { recursive: true });
 
 const manifest = JSON.parse(await readFile(join(pub, "manifest.json"), "utf8"));
 manifest.version = JSON.parse(await readFile(join(root, "package.json"), "utf8")).version;

@@ -388,7 +388,7 @@ describe("SDK wire-shape contracts", () => {
     }
 
     expect(transport.calls).toEqual([
-      { method: M.GET_TABS, params: { ...meta }, timeout: undefined },
+      { method: M.GET_TABS, params: { ...meta }, timeout: 250 },
       { method: M.GET_INFO, params: {}, timeout: 250 },
       { method: M.CLAIM_USER_TAB, params: { tab_id: "deliverable-1", ...meta }, timeout: undefined },
     ]);
@@ -556,15 +556,15 @@ describe("SDK wire-shape contracts", () => {
     const chooser = new FileChooser(asTransport(transport), "chooser-1");
 
     try {
-      await expect(tab.dev.cdp("Runtime.evaluate", { expression: "1 + 1" })).resolves.toBeNull();
+      await expect(tab.dev.cdp("Runtime.evaluate", { expression: "1 + 1" }, { timeout: 129 })).resolves.toBeNull();
       await expect(tab.content.export({ format: "html", timeout: 130 })).resolves.toEqual({
         data: "html64",
         data_base64: "html64",
         mime_type: "text/html",
       });
-      await expect(download.path()).resolves.toBe("/tmp/download.txt");
-      await chooser.setFiles("/tmp/upload.txt");
-      await chooser.setFiles(["/tmp/a.txt", "/tmp/b.txt"]);
+      await expect(download.path({ timeout: 131 })).resolves.toBe("/tmp/download.txt");
+      await chooser.setFiles("/tmp/upload.txt", { timeout: 132 });
+      await chooser.setFiles(["/tmp/a.txt", "/tmp/b.txt"], { timeout: 133 });
     } finally {
       restoreMeta();
     }
@@ -579,7 +579,7 @@ describe("SDK wire-shape contracts", () => {
           commandParams: { expression: "1 + 1" },
           ...meta,
         },
-        timeout: undefined,
+        timeout: 129,
       },
       {
         method: M.TAB_CONTENT_EXPORT,
@@ -589,17 +589,17 @@ describe("SDK wire-shape contracts", () => {
       {
         method: M.PLAYWRIGHT_DOWNLOAD_PATH,
         params: { download_id: "download-1", ...meta },
-        timeout: undefined,
+        timeout: 131,
       },
       {
         method: M.PLAYWRIGHT_FILE_CHOOSER_SET_FILES,
         params: { file_chooser_id: "chooser-1", paths: ["/tmp/upload.txt"], ...meta },
-        timeout: undefined,
+        timeout: 132,
       },
       {
         method: M.PLAYWRIGHT_FILE_CHOOSER_SET_FILES,
         params: { file_chooser_id: "chooser-1", paths: ["/tmp/a.txt", "/tmp/b.txt"], ...meta },
-        timeout: undefined,
+        timeout: 133,
       },
     ]);
   });

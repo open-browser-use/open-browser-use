@@ -126,10 +126,10 @@ where
 {
     let desired = match state {
         "domcontentloaded" => "interactive",
-        "load" | "networkidle" => "complete",
+        "load" => "complete",
         other => {
             return Err(HostError::Protocol(format!(
-                "unsupported load state {other}; expected load, domcontentloaded, or networkidle"
+                "unsupported load state {other}; expected load or domcontentloaded"
             )));
         }
     };
@@ -364,6 +364,21 @@ mod tests {
                 }),
             )]
         );
+    }
+
+    #[tokio::test]
+    async fn networkidle_load_state_is_rejected_instead_of_aliasing_complete() {
+        let cdp = FakeCdpExecutor::default();
+        let error = wait_for_load_state(&cdp, "7", "networkidle", Some(1))
+            .await
+            .unwrap_err();
+
+        assert!(
+            error
+                .to_string()
+                .contains("unsupported load state networkidle")
+        );
+        assert!(cdp.calls.lock().unwrap().is_empty());
     }
 
     fn fake_execute(

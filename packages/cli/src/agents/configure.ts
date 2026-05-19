@@ -4,7 +4,9 @@ import path from "node:path";
 import { spawn } from "node:child_process";
 
 import { renderAgentMcpConfig, type AgentId, type McpServerInvocation } from "./registry.js";
+import { appendShellArgs } from "../command-line.js";
 import {
+  canAutoConfigureDirectEditAgent,
   isDirectEditAgentId,
   writeDirectEditAgentConfig,
   type DirectEditOptions,
@@ -28,7 +30,37 @@ export type ConfigureAgentsOptions = {
   homeDir?: string;
   platform?: NodeJS.Platform;
   now?: Date;
+  commandPrefix?: string;
+  adapterTimeoutMs?: number;
 };
+
+export type DetectInstalledAgentsOptions = Pick<ConfigureAgentsOptions, "env" | "homeDir" | "platform">;
+
+const AUTO_DETECT_AGENT_IDS: AgentId[] = [
+  "codex-cli",
+  "claude-code",
+  "gemini-cli",
+  "vscode",
+  "cursor",
+  "cline",
+  "windsurf",
+  "claude-desktop",
+  "zed",
+];
+const DEFAULT_ADAPTER_TIMEOUT_MS = 15_000;
+
+export async function detectInstalledAgents(options: DetectInstalledAgentsOptions = {}): Promise<AgentId[]> {
+  const env = options.env ?? process.env;
+  const directEditOptions: DirectEditOptions = {
+    ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+    ...(options.platform ? { platform: options.platform } : {}),
+  };
+  const detected: AgentId[] = [];
+  for (const agent of AUTO_DETECT_AGENT_IDS) {
+    if (await isAgentInstalled(agent, env, directEditOptions)) detected.push(agent);
+  }
+  return detected;
+}
 
 export async function configureAgents(options: ConfigureAgentsOptions): Promise<AgentConfigureStep[]> {
   const steps: AgentConfigureStep[] = [];
@@ -40,9 +72,20 @@ export async function configureAgents(options: ConfigureAgentsOptions): Promise<
   };
   for (const agent of options.agents) {
     const config = renderAgentMcpConfig(agent, options.server);
-    const manualAction = { kind: "command" as const, value: `obu mcp-config --agent=${agent} --print` };
+    const manualAction = {
+      kind: "command" as const,
+      value: appendShellArgs(options.commandPrefix ?? "obu", ["mcp-config", `--agent=${agent}`, "--print"]),
+    };
     if (agent === "cursor") {
-      steps.push(await configureCursor(config, options.server, env, options.dryRun === true, directEditOptions, manualAction));
+      steps.push(await configureCursor(
+        config,
+        options.server,
+        env,
+        options.dryRun === true,
+        directEditOptions,
+        manualAction,
+        options.adapterTimeoutMs ?? DEFAULT_ADAPTER_TIMEOUT_MS,
+      ));
       continue;
     }
     if (config.mode !== "shell") {
@@ -59,9 +102,24 @@ export async function configureAgents(options: ConfigureAgentsOptions): Promise<
       });
       continue;
     }
-    steps.push(await configureShell(agent, config, env, options.dryRun === true, manualAction));
+    steps.push(await configureShell(
+      agent,
+      config,
+      env,
+      options.dryRun === true,
+      manualAction,
+      undefined,
+      options.adapterTimeoutMs ?? DEFAULT_ADAPTER_TIMEOUT_MS,
+    ));
   }
   return steps;
+}
+
+async function isAgentInstalled(agent: AgentId, env: NodeJS.ProcessEnv, directEditOptions: DirectEditOptions): Promise<boolean> {
+  const config = renderAgentMcpConfig(agent, { name: "open-browser-use", command: "obu", args: ["mcp", "stdio"] });
+  if (config.mode === "shell" && await findExecutable(config.executable, env)) return true;
+  if (isDirectEditAgentId(agent)) return canAutoConfigureDirectEditAgent(agent, directEditOptions);
+  return false;
 }
 
 async function configureCursor(
@@ -71,15 +129,16 @@ async function configureCursor(
   dryRun: boolean,
   directEditOptions: DirectEditOptions,
   manualAction: AgentNextAction,
+  adapterTimeoutMs: number,
 ): Promise<AgentConfigureStep> {
   if (config.mode !== "shell") {
     return configureDirectEdit("cursor", server, dryRun, directEditOptions, manualAction);
   }
   const executable = await findExecutable(config.executable, env);
   if (executable) {
-    const help = await runAdapter(executable, ["--help"], env);
+    const help = await runAdapter(executable, ["--help"], env, adapterTimeoutMs);
     if (help.code === 0 && /--add-mcp\b/.test(`${help.stdout}\n${help.stderr}`)) {
-      return configureShell("cursor", config, env, dryRun, manualAction, executable);
+      return configureShell("cursor", config, env, dryRun, manualAction, executable, adapterTimeoutMs);
     }
   }
   return configureDirectEdit("cursor", server, dryRun, directEditOptions, manualAction);
@@ -92,6 +151,7 @@ async function configureShell(
   dryRun: boolean,
   manualAction: AgentNextAction,
   resolvedExecutable?: string,
+  adapterTimeoutMs = DEFAULT_ADAPTER_TIMEOUT_MS,
 ): Promise<AgentConfigureStep> {
   if (dryRun) {
     return {
@@ -114,7 +174,16 @@ async function configureShell(
 
   const probeArgs = shellProbeArgs(agent);
   if (probeArgs) {
-    const probe = await runAdapter(executable, probeArgs, env);
+    const probe = await runAdapter(executable, probeArgs, env, adapterTimeoutMs);
+    if (probe.timedOut) {
+      return {
+        id: `agent-${agent}`,
+        status: "manual_action_required",
+        message: `${config.executable} adapter probe timed out; configure ${agent} manually`,
+        details: { executable, probe: [config.executable, ...probeArgs].join(" "), timeout_ms: adapterTimeoutMs },
+        nextActions: [manualAction],
+      };
+    }
     const existing = existingShellServerState(`${probe.stdout}\n${probe.stderr}`, config.server);
     if (probe.code === 0 && existing === "equivalent") {
       return {
@@ -135,7 +204,7 @@ async function configureShell(
     }
   }
 
-  const result = await runAdapter(executable, config.args, env);
+  const result = await runAdapter(executable, config.args, env, adapterTimeoutMs);
   if (result.code === 0) {
     return {
       id: `agent-${agent}`,
@@ -147,8 +216,16 @@ async function configureShell(
   return {
     id: `agent-${agent}`,
     status: "manual_action_required",
-    message: `${config.executable} adapter did not complete; configure ${agent} manually`,
-    details: { executable, args: config.args, code: result.code, stderr: result.stderr.trim() },
+    message: result.timedOut
+      ? `${config.executable} adapter timed out; configure ${agent} manually`
+      : `${config.executable} adapter did not complete; configure ${agent} manually`,
+    details: {
+      executable,
+      args: config.args,
+      code: result.code,
+      stderr: result.stderr.trim(),
+      ...(result.timedOut ? { timeout_ms: adapterTimeoutMs } : {}),
+    },
     nextActions: [manualAction],
   };
 }
@@ -186,6 +263,19 @@ async function configureDirectEdit(
       nextActions: [manualAction],
     };
   }
+  if (result.status === "io_error") {
+    return {
+      id: `agent-${agent}`,
+      status: "manual_action_required",
+      message: `${agent} MCP config could not be read or written; configure it manually`,
+      details: {
+        path: result.path,
+        message: result.message,
+        ...(result.code ? { code: result.code } : {}),
+      },
+      nextActions: [manualAction],
+    };
+  }
   return {
     id: `agent-${agent}`,
     status: "applied",
@@ -211,11 +301,24 @@ function runAdapter(
   executable: string,
   args: string[],
   env: NodeJS.ProcessEnv,
-): Promise<{ code: number | null; stdout: string; stderr: string }> {
+  timeoutMs: number,
+): Promise<{ code: number | null; stdout: string; stderr: string; timedOut?: boolean }> {
   return new Promise((resolve) => {
     const child = spawn(executable, args, { env, stdio: ["ignore", "pipe", "pipe"] });
     let stdout = "";
     let stderr = "";
+    let settled = false;
+    const finish = (result: { code: number | null; stdout: string; stderr: string; timedOut?: boolean }) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve(result);
+    };
+    const timeout = setTimeout(() => {
+      child.kill("SIGTERM");
+      finish({ code: null, stdout, stderr, timedOut: true });
+    }, Math.max(1, timeoutMs));
+    timeout.unref?.();
     child.stdout.setEncoding("utf8");
     child.stderr.setEncoding("utf8");
     child.stdout.on("data", (chunk) => {
@@ -225,10 +328,10 @@ function runAdapter(
       stderr += chunk;
     });
     child.on("error", (error) => {
-      resolve({ code: 1, stdout, stderr: error.message });
+      finish({ code: 1, stdout, stderr: error.message });
     });
     child.on("exit", (code) => {
-      resolve({ code, stdout, stderr });
+      finish({ code, stdout, stderr });
     });
   });
 }

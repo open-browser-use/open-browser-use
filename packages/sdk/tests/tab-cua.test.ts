@@ -23,6 +23,10 @@ describe("TabCua", () => {
       timeout: 2000,
       waitForNavigation: { waitUntil: "domcontentloaded", timeout: 1500 },
     });
+    await cua.click(13, 23, {
+      timeout: 120,
+      waitForNavigation: { waitUntil: "load", timeout: 1500 },
+    });
     await cua.scroll(12, 22, { deltaX: 3, deltaY: 4 });
     await cua.scroll(13, 23, -250);
     await cua.type("hello");
@@ -55,6 +59,20 @@ describe("TabCua", () => {
           navigation_timeout_ms: 1500,
         },
         timeout: 2000,
+      },
+      {
+        method: M.CUA_CLICK,
+        params: {
+          tab_id: "tab-1",
+          x: 13,
+          y: 23,
+          button: undefined,
+          modifiers: undefined,
+          wait_for_navigation: true,
+          navigation_wait_until: "load",
+          navigation_timeout_ms: 1500,
+        },
+        timeout: 1500,
       },
       {
         method: M.CUA_SCROLL,

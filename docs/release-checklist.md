@@ -149,7 +149,9 @@ Verify installer support for:
 - `OBU_INSTALL_DIR`;
 - `OBU_UNMANAGED_INSTALL`;
 - `--no-modify-path`;
-- stable `bin/obu` shim pointing at `payloads/current`.
+- stable `bin/obu` shim pointing at `payloads/current`;
+- packaged `obu shellenv` output and installer Next steps without writing
+  arbitrary current-`PATH` shims.
 - packaged `obu doctor --json` payload integrity checks and `obu mcp stdio`
   initialize/list-tools through the installed shim.
 - installed-payload `obu setup --yes --skip-agents` and
@@ -166,9 +168,7 @@ that both license files are present in every payload.
 The generated curl release manifests are part of the installer contract. Before
 uploading GitHub Release assets, verify `manifest.json`, `manifest.tsv`,
 `install.sh`, every artifact tarball, and every `.sha256` file are present in
-the same asset set. See
-[`docs/native-host-recovery-ux.md`](native-host-recovery-ux.md) for the manifest
-shape constraints.
+the same asset set.
 
 ## Chrome Web Store Gate
 
@@ -207,11 +207,10 @@ Required draft checks:
      --store-extension-id <STORE_EXTENSION_ID>
    ```
 
-7. Run Store-channel setup on a clean profile:
+7. Run Store-channel bootstrap on a clean profile:
 
    ```bash
-   obu setup --yes --all --skip-agents --channel=store
-   obu doctor browser --repair --channel=store
+   obu bootstrap --yes --all --channel=store --extension-id <STORE_EXTENSION_ID> --agents=auto
    obu doctor browser --channel=store --json
    ```
 
@@ -223,7 +222,16 @@ Verify:
   `chrome-extension://<STORE_EXTENSION_ID>/`.
 - `doctor browser --channel=store --json` reports channel, extension id, and id
   source.
-- the popup copied command includes `--channel=store`.
+- the popup agent handoff preserves `Extension channel: store`, the exact Store
+  extension id, and does not expose a Terminal command.
+- the popup agent handoff links to the version-tagged
+  `prompts/agent-install-prompt.md`, preserves the exact Store extension id, and
+  explains the generic MCP stdio server contract before using OBU's adapter
+  helpers. It asks the coding agent to make open-browser-use the primary
+  BrowserUse/browser automation tool in the core `AGENTS.md`, `AGENT.md`,
+  `CLAUDE.md`, or equivalent agent instructions when present.
+- the popup still exposes `Copy for agent` after the native host is connected,
+  so users can add another MCP client such as Cursor after Codex is working.
 - `dist/chrome-web-store/chrome-web-store-artifact.json` lists only
   `manifest.json`, generated JS/CSS/HTML, and icon files.
 - permission justifications, data handling notes, and reviewer instructions are
@@ -234,7 +242,7 @@ Verify:
 Run from a fresh temp home with Chrome or Chrome for Testing:
 
 ```bash
-obu setup --yes --skip-agents
+obu bootstrap --yes --all --agents=auto
 obu doctor --json
 obu doctor --strict --json
 ```

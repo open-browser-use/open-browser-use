@@ -1,7 +1,10 @@
 import { withSessionMeta } from "./session-meta.js";
 import { Guards } from "./guards.js";
+import type { LoadState } from "./tab.js";
 import type { Transport } from "./wire/transport.js";
 import * as M from "./wire/methods.js";
+
+const DEFAULT_TIMEOUT_MS = 30_000;
 
 export type TabCuaPoint = {
   x: number;
@@ -16,7 +19,7 @@ export type TabCuaMouseOptions = TabCuaTimeoutOptions & {
   button?: "left" | "right" | "middle";
   modifiers?: string[];
   waitForNavigation?: boolean | {
-    waitUntil?: "domcontentloaded" | "load" | "networkidle";
+    waitUntil?: LoadState;
     timeout?: number;
   };
 };
@@ -42,11 +45,21 @@ export class TabCua {
   }
 
   async click(x: number, y: number, opts: TabCuaMouseOptions = {}): Promise<void> {
-    await this.#send(M.CUA_CLICK, { x, y, button: opts.button, modifiers: opts.modifiers, ...navigationWaitParams(opts) }, opts.timeout);
+    await this.#send(
+      M.CUA_CLICK,
+      { x, y, button: opts.button, modifiers: opts.modifiers, ...navigationWaitParams(opts) },
+      opts.timeout,
+      requestTimeoutWithNavigationWait(opts),
+    );
   }
 
   async dblclick(x: number, y: number, opts: TabCuaMouseOptions = {}): Promise<void> {
-    await this.#send(M.CUA_DBLCLICK, { x, y, button: opts.button, modifiers: opts.modifiers, ...navigationWaitParams(opts) }, opts.timeout);
+    await this.#send(
+      M.CUA_DBLCLICK,
+      { x, y, button: opts.button, modifiers: opts.modifiers, ...navigationWaitParams(opts) },
+      opts.timeout,
+      requestTimeoutWithNavigationWait(opts),
+    );
   }
 
   async scroll(
@@ -88,13 +101,14 @@ export class TabCua {
     await this.#send(M.CUA_MOVE, { x, y }, opts.timeout);
   }
 
-  async #send(method: string, params: Record<string, unknown>, timeoutMs?: number): Promise<void> {
+  async #send(method: string, params: Record<string, unknown>, timeoutMs?: number, requestTimeoutMs?: number): Promise<void> {
+    const requestTimeout = requestTimeoutMs ?? timeoutMs;
     const command = { command: method, tab_id: this.tabId, ...params };
     const currentUrl = this.guards.needsCurrentUrl(method)
       ? await this.transport.sendRequest<string>(M.TAB_URL, withSessionMeta({ tab_id: this.tabId }), timeoutMs)
       : undefined;
     await this.guards.ensureCommandAllowed(command, { currentUrl });
-    await this.transport.sendRequest(method, withSessionMeta({ tab_id: this.tabId, ...params }), timeoutMs);
+    await this.transport.sendRequest(method, withSessionMeta({ tab_id: this.tabId, ...params }), requestTimeout);
   }
 }
 
@@ -112,4 +126,10 @@ function navigationWaitParams(opts: TabCuaMouseOptions): Record<string, unknown>
     navigation_wait_until: wait.waitUntil,
     navigation_timeout_ms: wait.timeout ?? opts.timeout,
   };
+}
+
+function requestTimeoutWithNavigationWait(opts: TabCuaMouseOptions): number | undefined {
+  const wait = opts.waitForNavigation;
+  if (!wait || wait === true || wait.timeout === undefined) return opts.timeout;
+  return Math.max(opts.timeout ?? DEFAULT_TIMEOUT_MS, wait.timeout);
 }

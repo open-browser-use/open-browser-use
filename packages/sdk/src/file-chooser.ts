@@ -11,7 +11,7 @@ export class FileChooser {
     public readonly tabId?: string,
   ) {}
 
-  async setFiles(paths: string | string[]): Promise<void> {
+  async setFiles(paths: string | string[], opts: { timeout?: number } = {}): Promise<void> {
     const files = Array.isArray(paths) ? paths : [paths];
     const params = {
       ...(this.tabId ? { tab_id: this.tabId } : {}),
@@ -19,7 +19,7 @@ export class FileChooser {
       paths: files,
     };
     const currentUrl = this.tabId && this.guards.needsCurrentUrl(M.PLAYWRIGHT_FILE_CHOOSER_SET_FILES)
-      ? await this.transport.sendRequest<string>(M.TAB_URL, withSessionMeta({ tab_id: this.tabId }))
+      ? await this.transport.sendRequest<string>(M.TAB_URL, withSessionMeta({ tab_id: this.tabId }), opts.timeout)
       : undefined;
     await this.guards.ensureCommandAllowed({
       command: M.PLAYWRIGHT_FILE_CHOOSER_SET_FILES,
@@ -28,6 +28,7 @@ export class FileChooser {
     await this.transport.sendRequest(
       M.PLAYWRIGHT_FILE_CHOOSER_SET_FILES,
       withSessionMeta(params),
+      opts.timeout,
     );
   }
 }

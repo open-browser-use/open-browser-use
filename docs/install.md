@@ -74,8 +74,7 @@ Release `manifest.tsv`, with `manifest.json` as an older-release fallback:
 
 ```bash
 curl -fsSL https://github.com/open-browser-use/open-browser-use/releases/latest/download/install.sh | sh && \
-~/.obu/bin/obu setup --yes --all --skip-agents && \
-~/.obu/bin/obu doctor browser --repair
+~/.obu/bin/obu bootstrap --yes --all --agents=auto
 ```
 
 For a Chrome Web Store-installed extension, use the Store channel so native-host
@@ -83,8 +82,7 @@ manifests allow the Store extension id instead of the unpacked-dev id:
 
 ```bash
 curl -fsSL https://github.com/open-browser-use/open-browser-use/releases/latest/download/install.sh | sh && \
-~/.obu/bin/obu setup --yes --all --skip-agents --channel=store && \
-~/.obu/bin/obu doctor browser --repair --channel=store
+~/.obu/bin/obu bootstrap --yes --all --channel=store --extension-id=<store-extension-id> --agents=auto
 ```
 
 Store-channel setup requires a release payload with `storeExtensionId` metadata,
@@ -103,21 +101,35 @@ sh install.sh \
 Installer options:
 
 - `OBU_INSTALL_DIR` or `--install-dir` controls the install root.
-- `OBU_UNMANAGED_INSTALL=1` disables shell profile edits.
-- `--no-modify-path` disables shell profile edits for that run.
+- `OBU_UNMANAGED_INSTALL=1` skips shellenv PATH integration instructions.
+- `--no-modify-path` skips shellenv PATH integration instructions for that run.
 - `OBU_ARTIFACT` can provide the artifact path or URL.
 - `OBU_ARTIFACT_SHA256` can provide the expected checksum.
 - `OBU_RELEASE_BASE_URL` and `OBU_TARGET` are preview/debug overrides for the
   GitHub Release `manifest.tsv` / `manifest.json` lookup.
 
-See [native-host-recovery-ux.md](native-host-recovery-ux.md) for the popup
-recovery UX rationale and the release manifest contract.
+The release manifest contract is summarized in
+[release-checklist.md](release-checklist.md).
+
+The extension popup setup panel keeps **Copy for agent** available. Paste that
+handoff into the user's coding agent; it points to
+[`agent-install-prompt.md`](../prompts/agent-install-prompt.md), preserves the exact
+extension id, describes the generic MCP stdio server contract, and asks the
+agent to choose the right install/repair, verification, MCP wiring, and
+persistent instruction steps for the current client. The agent should make
+open-browser-use the primary BrowserUse/browser automation tool in the core
+`AGENTS.md`, `AGENT.md`, `CLAUDE.md`, Cursor/Claude/Codex project instructions,
+or equivalent agent memory when one exists. The OBU adapter commands are
+secondary helpers for known clients. The popup keeps this entry available after
+the native host connects so users can connect another agent later.
 
 ## Setup
 
 After installing an `obu` shim:
 
 ```bash
+eval "$("$HOME/.obu/bin/obu" shellenv zsh)"
+obu bootstrap --yes --all --agents=auto
 obu setup --yes --agents=codex-cli,claude-code
 obu doctor
 ```
@@ -155,5 +167,5 @@ Inspect the exact MCP config for any supported client:
 obu mcp-config --agent=codex-cli --print
 ```
 
-See [agent-adapters.md](agent-adapters.md) for all adapter IDs and write
-strategies.
+Supported adapter IDs are `codex-cli`, `claude-code`, `gemini-cli`, `vscode`,
+`cursor`, `cline`, `windsurf`, `claude-desktop`, `zed`, and `continue`.

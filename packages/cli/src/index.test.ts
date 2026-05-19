@@ -52,6 +52,42 @@ test("mcp-config rejects unknown agents", async (t) => {
   assert.match(result.stderr, /unsupported agent/);
 });
 
+test("shellenv emits packaged install environment snippets", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  const installRoot = path.join(home, "install");
+  const payloadRoot = path.join(installRoot, "payloads", "current");
+  await mkdir(payloadRoot, { recursive: true });
+  const env = {
+    HOME: home,
+    OBU_PAYLOAD_ROOT: payloadRoot,
+    OBU_COMMAND: path.join(installRoot, "bin", "obu"),
+  };
+
+  const sh = await runCli(["shellenv", "sh"], env);
+  assert.equal(sh.code, 0);
+  assert.equal(sh.stderr, "");
+  assert.match(sh.stdout, new RegExp(`export OBU_INSTALL_DIR='${escapeRegExp(installRoot)}';`));
+  assert.match(sh.stdout, /export PATH="\$\{OBU_INSTALL_DIR\}\/bin\$\{PATH\+:\$PATH\}";/);
+
+  const fish = await runCli(["shellenv", "fish"], env);
+  assert.equal(fish.code, 0);
+  assert.match(fish.stdout, new RegExp(`set --global --export OBU_INSTALL_DIR "${escapeRegExp(installRoot)}";`));
+  assert.match(fish.stdout, /fish_add_path --global --move --path /);
+
+  const active = await runCli(["shellenv", "zsh"], {
+    ...env,
+    OBU_INSTALL_DIR: installRoot,
+    PATH: `${path.join(installRoot, "bin")}${path.delimiter}/usr/bin`,
+  });
+  assert.equal(active.code, 0);
+  assert.equal(active.stdout, "");
+
+  const unknown = await runCli(["shellenv", "nu"], env);
+  assert.equal(unknown.code, 0);
+  assert.match(unknown.stdout, /export OBU_INSTALL_DIR=/);
+});
+
 test("mcp stdio missing setup fails before writing stdout", async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
   t.after(() => rm(home, { recursive: true, force: true }));
@@ -224,10 +260,14 @@ test("setup summary preserves manual agent next actions", async (t) => {
   const hostBin = path.join(bin, "obu-host");
   await writeFile(hostBin, "#!/bin/sh\n", "utf8");
   await chmod(hostBin, 0o755);
+  const obuCommand = path.join(bin, "obu");
+  await writeFile(obuCommand, "#!/bin/sh\n", "utf8");
+  await chmod(obuCommand, 0o755);
   const storeExtensionId = "abcdefghijklmnopabcdefghijklmnop";
 
   const result = await runCli(["setup", "--yes", "--channel=store", "--extension-id", storeExtensionId, "--agents=continue"], {
     HOME: home,
+    OBU_COMMAND: obuCommand,
     OBU_RUNTIME_DIR: path.join(home, "runtime"),
     OBU_HOST_BIN: hostBin,
   });
@@ -235,17 +275,127 @@ test("setup summary preserves manual agent next actions", async (t) => {
   assert.equal(result.code, 1);
   assert.equal(result.stderr, "");
   assert.match(result.stdout, /Setup needs 1 follow-up step\./);
-  assert.match(result.stdout, /obu mcp-config --agent=continue --print/);
-  assert.match(result.stdout, /obu doctor browser --channel=store/);
+  assert.match(result.stdout, new RegExp(`${escapeRegExp(obuCommand)} mcp-config --agent=continue --print`));
+  assert.match(result.stdout, new RegExp(`${escapeRegExp(obuCommand)} doctor browser --channel=store`));
   assert.doesNotMatch(result.stdout, /agent-continue:/);
 
   const recovery = await runCli(["setup", "--yes", "--recovery", "--channel=store", "--extension-id", storeExtensionId, "--agents=continue"], {
     HOME: home,
+    OBU_COMMAND: obuCommand,
     OBU_RUNTIME_DIR: path.join(home, "runtime"),
     OBU_HOST_BIN: hostBin,
   });
   assert.equal(recovery.code, 1);
-  assert.match(recovery.stdout, /obu mcp-config --agent=continue --print/);
+  assert.match(recovery.stdout, new RegExp(`${escapeRegExp(obuCommand)} mcp-config --agent=continue --print`));
+});
+
+test("bootstrap continues through manual agent setup and runs browser repair", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  const hostBin = path.join(bin, "obu-host");
+  await writeFile(hostBin, "#!/bin/sh\nprintf 'obu-host 0.0.0\\n'\n", "utf8");
+  await chmod(hostBin, 0o755);
+  const oldStoreExtensionId = "ponmlkjihgfedcbaponmlkjihgfedcba";
+  const storeExtensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const nativeHostDir = nativeMessagingHostDir("chrome", process.platform, home);
+  await mkdir(nativeHostDir, { recursive: true });
+  await writeFile(path.join(nativeHostDir, "dev.obu.host.json"), JSON.stringify({
+    name: "dev.obu.host",
+    description: "old open-browser-use native host",
+    path: hostBin,
+    type: "stdio",
+    allowed_origins: [`chrome-extension://${oldStoreExtensionId}/`],
+  }, null, 2), "utf8");
+
+  const result = await runCli([
+    "bootstrap",
+    "--yes",
+    "--channel=store",
+    "--extension-id",
+    storeExtensionId,
+    "--agents=continue",
+    "--json",
+  ], {
+    HOME: home,
+    OBU_RUNTIME_DIR: path.join(home, "runtime"),
+    OBU_HOST_BIN: hostBin,
+  });
+
+  assert.notEqual(result.code, 2);
+  assert.equal(result.stderr, "");
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.command, "bootstrap");
+  assert.equal(payload.setup.result, "manual_action_required");
+  assert.equal(payload.setup.steps.some((step: any) => step.id === "agent-continue" && step.status === "manual_action_required"), true);
+  assert.equal(payload.browserDoctor.extensionChannel, "store");
+  assert.equal(payload.browserDoctor.extensionId, storeExtensionId);
+  assert.equal(payload.browserDoctor.repairs.some((repair: any) => repair.id === "native-host-manifest"), true);
+  assert.equal(payload.browserDoctor.repairs.some((repair: any) => repair.id === "runtime-descriptor-dir"), true);
+  const nativeHost = JSON.parse(await readFile(path.join(nativeHostDir, "dev.obu.host.json"), "utf8"));
+  assert.deepEqual(nativeHost.allowed_origins, [`chrome-extension://${storeExtensionId}/`]);
+});
+
+test("setup CLI accepts explicit auto and none agent modes", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  const hostBin = path.join(bin, "obu-host");
+  await writeFile(hostBin, "#!/bin/sh\n", "utf8");
+  await chmod(hostBin, 0o755);
+  const env = {
+    HOME: home,
+    OBU_RUNTIME_DIR: path.join(home, "runtime"),
+    OBU_HOST_BIN: hostBin,
+    PATH: "",
+  };
+  const storeExtensionId = "abcdefghijklmnopabcdefghijklmnop";
+
+  const auto = await runCli(["setup", "--yes", "--channel=store", "--extension-id", storeExtensionId, "--agents=auto", "--json"], env);
+  assert.equal(auto.code, 0);
+  const autoPayload = JSON.parse(auto.stdout);
+  assert.equal(autoPayload.steps.find((step: any) => step.id === "agent-adapters")?.message, "no supported coding agents detected");
+
+  const none = await runCli(["setup", "--yes", "--channel=store", "--extension-id", storeExtensionId, "--agents=none", "--json"], env);
+  assert.equal(none.code, 0);
+  const nonePayload = JSON.parse(none.stdout);
+  assert.equal(nonePayload.steps.find((step: any) => step.id === "agent-adapters")?.message, "skipped agent adapter wiring");
+});
+
+test("setup auto skips unreadable direct-edit agent config instead of aborting", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX permissions are required for this regression test");
+    return;
+  }
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  const configPath = path.join(home, ".cursor", "mcp.json");
+  t.after(async () => {
+    await chmod(configPath, 0o600).catch(() => {});
+    await rm(home, { recursive: true, force: true });
+    await rm(bin, { recursive: true, force: true });
+  });
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(configPath, "{}\n", "utf8");
+  await chmod(configPath, 0o000);
+  const hostBin = path.join(bin, "obu-host");
+  await writeFile(hostBin, "#!/bin/sh\n", "utf8");
+  await chmod(hostBin, 0o755);
+  const storeExtensionId = "abcdefghijklmnopabcdefghijklmnop";
+
+  const result = await runCli(["setup", "--yes", "--channel=store", "--extension-id", storeExtensionId, "--agents=auto", "--json"], {
+    HOME: home,
+    PATH: "",
+    OBU_RUNTIME_DIR: path.join(home, "runtime"),
+    OBU_HOST_BIN: hostBin,
+  });
+
+  assert.equal(result.code, 0);
+  assert.equal(result.stderr, "");
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.steps.find((step: any) => step.id === "agent-adapters")?.message, "no supported coding agents detected");
 });
 
 test("setup recovery mode exits zero for manual action but not failed setup", async (t) => {
@@ -399,7 +549,9 @@ test("aggregate doctor CLI honors Store channel and extension id source", async 
   assert.equal(payload.checks.some((check: any) =>
     check.id === "extension-installed" &&
     check.details?.channel === "store" &&
-    check.details?.extensionId === storeExtensionId
+    check.details?.extensionId === storeExtensionId &&
+    /Chrome Web Store extension/.test(check.remediation?.value ?? "") &&
+    !String(check.remediation?.value ?? "").includes("packages/extension/dist")
   ), true);
 });
 

@@ -1,4 +1,4 @@
-import { ObuError, ERR_TIMEOUT, ERR_TRANSPORT_CLOSED } from "../errors.js";
+import { ObuError, ERR_PROTOCOL, ERR_TIMEOUT, ERR_TRANSPORT_CLOSED } from "../errors.js";
 import { FrameDecoder, FrameEncoder } from "./frames.js";
 import type { NativePipeConnection } from "./pipe.js";
 
@@ -97,7 +97,16 @@ export class Transport {
   #onData(chunk: unknown): void {
     const bytes = toUint8Array(chunk);
     if (!bytes) return;
-    for (const frame of this.#decoder.feed(bytes)) {
+    let frames: Uint8Array[];
+    try {
+      frames = this.#decoder.feed(bytes);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error ?? "frame decoder error");
+      this.#onClose(`transport frame error: ${message}`, ERR_PROTOCOL);
+      this.connection.end();
+      return;
+    }
+    for (const frame of frames) {
       let message: RpcResponse;
       try {
         message = JSON.parse(new TextDecoder().decode(frame)) as RpcResponse;
@@ -138,12 +147,12 @@ export class Transport {
     }
   }
 
-  #onClose(reason: string): void {
+  #onClose(reason: string, code = ERR_TRANSPORT_CLOSED): void {
     if (this.#closed) return;
     this.#closed = true;
     for (const pending of this.#pending.values()) {
       clearTimeout(pending.timer);
-      pending.reject(new ObuError(ERR_TRANSPORT_CLOSED, reason));
+      pending.reject(new ObuError(code, reason));
     }
     this.#pending.clear();
   }

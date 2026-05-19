@@ -1,5 +1,8 @@
 //! Browser backend abstraction.
 
+use std::future::Future;
+use std::time::Duration;
+
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
@@ -15,6 +18,26 @@ pub struct BackendRequestContext {
     pub turn_id: Option<String>,
     /// Client-requested timeout in milliseconds.
     pub client_timeout_ms: Option<u64>,
+}
+
+tokio::task_local! {
+    static CURRENT_CLIENT_TIMEOUT_MS: Option<u64>;
+}
+
+/// Run backend work with the client request timeout available to lower-level transports.
+pub async fn scope_client_timeout<F>(timeout_ms: Option<u64>, future: F) -> F::Output
+where
+    F: Future,
+{
+    CURRENT_CLIENT_TIMEOUT_MS.scope(timeout_ms, future).await
+}
+
+/// Current request timeout for transports that need a per-command defensive timeout.
+pub(crate) fn current_client_timeout() -> Option<Duration> {
+    CURRENT_CLIENT_TIMEOUT_MS
+        .try_with(|timeout_ms| timeout_ms.map(Duration::from_millis))
+        .ok()
+        .flatten()
 }
 
 /// Backend implementation kind.

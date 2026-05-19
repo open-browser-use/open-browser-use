@@ -1,10 +1,13 @@
+import path from "node:path";
+
 import { installNativeHosts } from "./native-host.js";
 import { ensureRuntimeDir, type RuntimeLayout, writeUserConfig } from "./runtime-layout.js";
 import { updateExtension, type ExtensionUpdateStep } from "./extension-update.js";
 import { type ExtensionChannel, type ExtensionIdSource, userConfigForExtensionTarget } from "./extension-channel.js";
 import type { BrowserKind } from "./browser-paths.js";
-import { configureAgents } from "./agents/configure.js";
+import { configureAgents, detectInstalledAgents } from "./agents/configure.js";
 import type { AgentId, McpServerInvocation } from "./agents/registry.js";
+import { appendShellArgs, formatShellCommand } from "./command-line.js";
 
 export type SetupStepStatus = "applied" | "skipped" | "would_apply" | "manual_action_required" | "failed";
 
@@ -40,6 +43,7 @@ export type SetupOptions = {
   skipAgents?: boolean;
   extensionPath?: string;
   env?: NodeJS.ProcessEnv;
+  commandPrefix?: string;
 };
 
 export async function setupOpenBrowserUse(options: SetupOptions): Promise<SetupJson> {
@@ -122,18 +126,30 @@ export async function setupOpenBrowserUse(options: SetupOptions): Promise<SetupJ
     nextActions.push(...extension.nextActions);
   }
 
-  if (options.skipAgents || options.agents.length === 0) {
+  const agentHomeDir = path.dirname(path.dirname(options.layout.userConfigPath));
+  const agents = options.skipAgents
+    ? []
+    : options.agents.length > 0
+      ? options.agents
+      : await detectInstalledAgents({
+        ...(options.env ? { env: options.env } : {}),
+        homeDir: agentHomeDir,
+      });
+
+  if (options.skipAgents || agents.length === 0) {
     steps.push({
       id: "agent-adapters",
       status: "skipped",
-      message: options.skipAgents ? "skipped agent adapter wiring" : "no agent adapters requested",
+      message: options.skipAgents ? "skipped agent adapter wiring" : "no supported coding agents detected",
     });
   } else {
     const agentSteps = await configureAgents({
-      agents: options.agents,
+      agents,
       server: options.server,
       dryRun,
       ...(options.env ? { env: options.env } : {}),
+      homeDir: agentHomeDir,
+      ...(options.commandPrefix ? { commandPrefix: options.commandPrefix } : {}),
     });
     for (const step of agentSteps) {
       steps.push({
@@ -148,9 +164,16 @@ export async function setupOpenBrowserUse(options: SetupOptions): Promise<SetupJ
 
   nextActions.push({
     kind: "command",
-    value: options.extensionChannel === "store" ? "obu doctor browser --channel=store" : "obu doctor",
+    value: formatSetupCommand(options, options.extensionChannel === "store"
+      ? ["doctor", "browser", "--channel=store"]
+      : ["doctor"]),
   });
   return finalize(options, steps, dedupeActions(nextActions));
+}
+
+function formatSetupCommand(options: SetupOptions, args: string[]): string {
+  if (options.commandPrefix) return appendShellArgs(options.commandPrefix, args);
+  return formatShellCommand(options.layout.openBrowserUseCommand, args);
 }
 
 function mapExtensionStep(step: ExtensionUpdateStep): SetupJson["steps"][number] {

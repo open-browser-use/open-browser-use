@@ -1,6 +1,6 @@
 type MetaRecord = Record<string, unknown>;
 
-let cached: { session_id?: string; turn_id?: string } = {};
+let cachedSessionId: string | undefined;
 
 export function getSessionMeta(): { session_id?: string; turn_id?: string } {
   const meta = (globalThis as { obuRepl?: { requestMeta?: unknown } }).obuRepl?.requestMeta;
@@ -12,14 +12,19 @@ export function getSessionMeta(): { session_id?: string; turn_id?: string } {
       const turnId = (turn as MetaRecord).turn_id;
       if (typeof sessionId === "string") next.session_id = sessionId;
       if (typeof turnId === "string") next.turn_id = turnId;
-      if (next.session_id || next.turn_id) cached = next;
+      if (next.session_id) cachedSessionId = next.session_id;
+      if (next.session_id || next.turn_id) return next;
     }
   }
-  return cached;
+  return cachedSessionId ? { session_id: cachedSessionId } : {};
 }
 
 export function withSessionMeta<P extends Record<string, unknown>>(
   params: P,
 ): P & { session_id?: string; turn_id?: string } {
   return { ...params, ...getSessionMeta() };
+}
+
+export function clearSessionMetaCacheForTests(): void {
+  cachedSessionId = undefined;
 }

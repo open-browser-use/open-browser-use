@@ -67,6 +67,32 @@ test("configureAgents returns manual action when shell executable is missing", a
   assert.match(steps[0]?.nextActions?.[0]?.value ?? "", /mcp-config --agent=claude-code --print/);
 });
 
+test("configureAgents times out hung shell adapters with a manual action", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX shell script fixture");
+    return;
+  }
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-agent-config-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bin = path.join(root, "bin");
+  await mkdir(bin, { recursive: true });
+  const codex = path.join(bin, "codex");
+  await writeFile(codex, "#!/bin/sh\nsleep 5\n", "utf8");
+  await chmod(codex, 0o755);
+
+  const steps = await configureAgents({
+    agents: ["codex-cli"],
+    server: server(root),
+    env: { PATH: bin },
+    adapterTimeoutMs: 25,
+  });
+
+  assert.equal(steps[0]?.status, "manual_action_required");
+  assert.match(steps[0]?.message ?? "", /timed out/);
+  assert.equal(steps[0]?.details?.timeout_ms, 25);
+  assert.match(steps[0]?.nextActions?.[0]?.value ?? "", /mcp-config --agent=codex-cli --print/);
+});
+
 test("configureAgents dry-run reports planned shell and direct-edit work", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "obu-agent-config-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -156,6 +182,33 @@ test("configureAgents skips broken JSONC direct-edit files with a manual action"
   assert.equal(steps[0]?.status, "manual_action_required");
   assert.match(steps[0]?.message ?? "", /could not be parsed/);
   assert.match(steps[0]?.nextActions?.[0]?.value ?? "", /mcp-config --agent=cursor --print/);
+});
+
+test("configureAgents reports unreadable direct-edit files as manual actions", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX permissions are required for this regression test");
+    return;
+  }
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-agent-config-"));
+  const configPath = path.join(root, ".cursor", "mcp.json");
+  t.after(async () => {
+    await chmod(configPath, 0o600).catch(() => {});
+    await rm(root, { recursive: true, force: true });
+  });
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(configPath, "{}\n", "utf8");
+  await chmod(configPath, 0o000);
+
+  const steps = await configureAgents({
+    agents: ["cursor"],
+    server: server(root),
+    env: { PATH: "" },
+    homeDir: root,
+  });
+
+  assert.equal(steps[0]?.status, "manual_action_required");
+  assert.match(steps[0]?.message ?? "", /could not be read or written/);
+  assert.equal(steps[0]?.details?.code, "EACCES");
 });
 
 test("configureAgents uses Cursor shell adapter only when --add-mcp is available", async (t) => {

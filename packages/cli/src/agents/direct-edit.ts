@@ -38,6 +38,12 @@ export type DirectEditResult =
     status: "parse_error";
     path: string;
     errors: string[];
+  }
+  | {
+    status: "io_error";
+    path: string;
+    message: string;
+    code?: string;
   };
 
 export type DirectEditOptions = {
@@ -85,7 +91,12 @@ export async function writeDirectEditAgentConfig(
   options: DirectEditOptions = {},
 ): Promise<DirectEditResult> {
   const targetPath = directEditConfigPath(agent, options);
-  const existing = await readOptionalFile(targetPath);
+  let existing: string | undefined;
+  try {
+    existing = await readOptionalFile(targetPath);
+  } catch (error) {
+    return ioError(targetPath, error);
+  }
   const raw = existing ?? "{\n}\n";
   const parseErrors = validateJsonc(raw);
   if (parseErrors.length > 0) {
@@ -97,20 +108,39 @@ export async function writeDirectEditAgentConfig(
     return { status: "skipped", path: targetPath, reason: "unchanged" };
   }
 
-  await mkdir(path.dirname(targetPath), { recursive: true, mode: 0o700 });
-  let backupPath: string | undefined;
-  if (existing !== undefined) {
-    backupPath = backupPathFor(targetPath, options.now ?? new Date());
-    await copyFile(targetPath, backupPath);
+  try {
+    await mkdir(path.dirname(targetPath), { recursive: true, mode: 0o700 });
+    let backupPath: string | undefined;
+    if (existing !== undefined) {
+      backupPath = backupPathFor(targetPath, options.now ?? new Date());
+      await copyFile(targetPath, backupPath);
+    }
+    await writeFile(targetPath, next, { encoding: "utf8", mode: 0o600 });
+    const deletedBackups = await retainOpenBrowserUseBackups(targetPath, 5);
+    return {
+      status: "applied",
+      path: targetPath,
+      ...(backupPath ? { backupPath } : {}),
+      deletedBackups,
+    };
+  } catch (error) {
+    return ioError(targetPath, error);
   }
-  await writeFile(targetPath, next, { encoding: "utf8", mode: 0o600 });
-  const deletedBackups = await retainOpenBrowserUseBackups(targetPath, 5);
-  return {
-    status: "applied",
-    path: targetPath,
-    ...(backupPath ? { backupPath } : {}),
-    deletedBackups,
-  };
+}
+
+export async function canAutoConfigureDirectEditAgent(
+  agent: DirectEditAgentId,
+  options: DirectEditOptions = {},
+): Promise<boolean> {
+  const targetPath = directEditConfigPath(agent, options);
+  let existing: string | undefined;
+  try {
+    existing = await readOptionalFile(targetPath);
+  } catch {
+    return false;
+  }
+  if (existing !== undefined) return validateJsonc(existing).length === 0;
+  return access(path.dirname(targetPath), constants.F_OK).then(() => true).catch(() => false);
 }
 
 export async function listOpenBrowserUseBackups(
@@ -155,6 +185,16 @@ function validateJsonc(raw: string): string[] {
   const errors: ParseError[] = [];
   parse(raw, errors, { allowTrailingComma: true, disallowComments: false });
   return errors.map((error) => `parse error ${error.error} at offset ${error.offset}`);
+}
+
+function ioError(file: string, error: unknown): DirectEditResult {
+  const nodeError = error as NodeJS.ErrnoException;
+  return {
+    status: "io_error",
+    path: file,
+    message: nodeError.message ?? String(error),
+    ...(nodeError.code ? { code: nodeError.code } : {}),
+  };
 }
 
 function applyServerEdit(raw: string, agent: DirectEditAgentId, server: McpServerInvocation): string {

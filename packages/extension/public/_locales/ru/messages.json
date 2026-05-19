@@ -1,0 +1,392 @@
+{
+  "extName": {
+    "message": "open-browser-use"
+  },
+  "extDescription": {
+    "message": "Управляйте браузерами семейства Chromium через open-browser-use."
+  },
+  "actionTitle": {
+    "message": "open-browser-use"
+  },
+  "popupTitle": {
+    "message": "Управляйте Chrome с любым Agent"
+  },
+  "settingsOpenTitle": {
+    "message": "Настройки"
+  },
+  "settingsOpenAriaLabel": {
+    "message": "Открыть настройки"
+  },
+  "settingsDocumentTitle": {
+    "message": "Настройки open-browser-use"
+  },
+  "settingsPageTitle": {
+    "message": "Настройки"
+  },
+  "settingsPageSubtitle": {
+    "message": "Управляйте тем, как open-browser-use выглядит в этом браузере."
+  },
+  "settingsLanguageTitle": {
+    "message": "Язык"
+  },
+  "settingsLanguageDescription": {
+    "message": "Выберите язык страниц расширения."
+  },
+  "settingsLanguageAuto": {
+    "message": "Использовать язык браузера"
+  },
+  "settingsSaved": {
+    "message": "Сохранено"
+  },
+  "settingsSaveFailed": {
+    "message": "Не удалось сохранить настройку."
+  },
+  "versionAriaLabel": {
+    "message": "Версия установленного расширения"
+  },
+  "versionFallback": {
+    "message": "Версия"
+  },
+  "versionLabel": {
+    "message": "Версия $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "nativeHostLabel": {
+    "message": "Нативный хост"
+  },
+  "checkingStatus": {
+    "message": "Проверка..."
+  },
+  "setupLabel": {
+    "message": "Настройка"
+  },
+  "agentSetupLabel": {
+    "message": "Настройка агента"
+  },
+  "agentHandoffTitle": {
+    "message": "Передача агенту"
+  },
+  "copyForAgent": {
+    "message": "Скопировать для агента"
+  },
+  "copyAgentSetupHandoff": {
+    "message": "Скопировать передачу настройки агента"
+  },
+  "stopButton": {
+    "message": "Я беру управление"
+  },
+  "resumeButton": {
+    "message": "Возобновить"
+  },
+  "debugLogsLabel": {
+    "message": "Журналы отладки"
+  },
+  "disabled": {
+    "message": "Отключено"
+  },
+  "debugEnable": {
+    "message": "Включить"
+  },
+  "debugDisable": {
+    "message": "Отключить"
+  },
+  "debugCopy": {
+    "message": "Копировать"
+  },
+  "debugClear": {
+    "message": "Очистить"
+  },
+  "nativeHostStatusUnavailable": {
+    "message": "Статус нативного хоста недоступен"
+  },
+  "debugUnavailable": {
+    "message": "Недоступно"
+  },
+  "debugCopyFailed": {
+    "message": "Не удалось скопировать: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCleared": {
+    "message": "Очищено"
+  },
+  "copyAgentUnavailable": {
+    "message": "Передача настройки агента недоступна"
+  },
+  "copyAgentSuccess": {
+    "message": "Скопировано. Вставьте в ваш Agent. Вернитесь сюда и нажмите «Возобновить» после завершения настройки."
+  },
+  "copying": {
+    "message": "Копирование"
+  },
+  "copied": {
+    "message": "Скопировано"
+  },
+  "tryAgain": {
+    "message": "Повторить"
+  },
+  "copyUnavailable": {
+    "message": "Копирование недоступно. Проверьте разрешение буфера обмена и повторите попытку."
+  },
+  "agentSetupDefaultText": {
+    "message": "Подключите другой Agent с помощью этой передачи. Скопируйте её в агента и держите это окно открытым во время сопряжения."
+  },
+  "statusConnected": {
+    "message": "Подключено"
+  },
+  "statusConnecting": {
+    "message": "Подключение"
+  },
+  "statusUpdateNeeded": {
+    "message": "Требуется обновление"
+  },
+  "statusStopped": {
+    "message": "Вы управляете"
+  },
+  "statusNeedsSetup": {
+    "message": "Требуется настройка"
+  },
+  "statusReconnecting": {
+    "message": "Повторное подключение"
+  },
+  "hostVersionLabel": {
+    "message": "Хост $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "hostReady": {
+    "message": "Хост готов"
+  },
+  "connectingNativeHost": {
+    "message": "Подключение к нативному хосту."
+  },
+  "disconnectedDetail": {
+    "message": "Попытка переподключения. Используйте «Возобновить» после исправления настройки."
+  },
+  "versionMismatchDetail": {
+    "message": "Обновите локальный хост, затем нажмите «Возобновить» для переподключения."
+  },
+  "stoppedDetail": {
+    "message": "Завершите вход, ввод паролей или шаг на странице, затем нажмите «Возобновить», чтобы продолжить автоматизацию."
+  },
+  "errorDetail": {
+    "message": "Запустите настройку, затем нажмите «Возобновить» для переподключения."
+  },
+  "deliverableRecovery_one": {
+    "message": "Доступна $count$ вкладка результата. Используйте browser.deliverables(), затем claim(), чтобы восстановить её.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_few": {
+    "message": "Доступны $count$ вкладки результата. Используйте browser.deliverables(), затем claim(), чтобы восстановить их.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_many": {
+    "message": "Доступно $count$ вкладок результата. Используйте browser.deliverables(), затем claim(), чтобы восстановить их.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_other": {
+    "message": "Доступно $count$ вкладок результатов. Используйте browser.deliverables(), затем claim(), чтобы восстановить их.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "adviceUpdateHost": {
+    "message": "Обновите локальный хост, затем переподключитесь."
+  },
+  "setupTextUpdateHost": {
+    "message": "Скопируйте эту передачу в ваш Agent. Вернитесь сюда и нажмите «Возобновить» после обновления."
+  },
+  "adviceInstallHost": {
+    "message": "Установите локальный хост, затем переподключитесь."
+  },
+  "setupTextInstallHost": {
+    "message": "Скопируйте эту передачу в ваш Agent, чтобы установить open-browser-use и зарегистрировать нативный хост для этого расширения."
+  },
+  "adviceRefreshHostPermission": {
+    "message": "Обновите разрешение хоста для этого расширения, затем переподключитесь."
+  },
+  "setupTextRefreshHostPermission": {
+    "message": "Скопируйте эту передачу в ваш Agent, чтобы обновить регистрацию нативного хоста для этого ID расширения."
+  },
+  "adviceRepairHost": {
+    "message": "Исправьте локальный хост, затем переподключитесь."
+  },
+  "setupTextRepairHost": {
+    "message": "Скопируйте эту передачу в ваш Agent, чтобы исправить настройку open-browser-use и проверить нативный хост."
+  },
+  "adviceRepairSetup": {
+    "message": "Исправьте настройку, затем переподключитесь."
+  },
+  "setupTextRepairSetup": {
+    "message": "Скопируйте эту передачу в ваш Agent, чтобы исправить настройку open-browser-use и проверить сопряжение браузера."
+  },
+  "adviceCheckSetup": {
+    "message": "Проверьте локальную настройку, затем нажмите «Возобновить» для переподключения."
+  },
+  "adviceDisconnectedPortObject": {
+    "message": "Локальный хост не подключен. Переустановите его, затем переподключитесь."
+  },
+  "setupTextDisconnectedPortObject": {
+    "message": "Скопируйте эту передачу в ваш Agent, чтобы переустановить open-browser-use и зарегистрировать хост для этого расширения."
+  },
+  "retryingInSeconds": {
+    "message": "Повтор через $seconds$ с.",
+    "placeholders": {
+      "seconds": {
+        "content": "$1"
+      }
+    }
+  },
+  "statusStopping": {
+    "message": "Остановка..."
+  },
+  "statusStoppedByUser": {
+    "message": "Остановлено пользователем"
+  },
+  "statusVersionMismatch": {
+    "message": "Несовпадение версий"
+  },
+  "debugEnabledEntries_one": {
+    "message": "Включено, $count$/$max$ запись",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_few": {
+    "message": "Включено, $count$/$max$ записи",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_many": {
+    "message": "Включено, $count$/$max$ записей",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_other": {
+    "message": "Включено, $count$/$max$ записей",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugDisabledEntries_one": {
+    "message": "Отключено, сохранена $count$ запись",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_few": {
+    "message": "Отключено, сохранены $count$ записи",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_many": {
+    "message": "Отключено, сохранено $count$ записей",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_other": {
+    "message": "Отключено, сохранено $count$ записей",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_one": {
+    "message": "Скопирована $count$ запись",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_few": {
+    "message": "Скопированы $count$ записи",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_many": {
+    "message": "Скопировано $count$ записей",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_other": {
+    "message": "Скопировано $count$ записей",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverablesGroupTitle": {
+    "message": "$label$ результаты",
+    "placeholders": {
+      "label": {
+        "content": "$1"
+      }
+    }
+  },
+  "defaultDeliverablesGroupTitle": {
+    "message": "Результаты open-browser-use"
+  }
+}

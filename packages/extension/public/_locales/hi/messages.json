@@ -1,0 +1,322 @@
+{
+  "extName": {
+    "message": "open-browser-use"
+  },
+  "extDescription": {
+    "message": "open-browser-use के ज़रिए Chromium परिवार के ब्राउज़र नियंत्रित करें।"
+  },
+  "actionTitle": {
+    "message": "open-browser-use"
+  },
+  "popupTitle": {
+    "message": "किसी भी Agent से Chrome नियंत्रित करें"
+  },
+  "settingsOpenTitle": {
+    "message": "सेटिंग्स"
+  },
+  "settingsOpenAriaLabel": {
+    "message": "सेटिंग्स खोलें"
+  },
+  "settingsDocumentTitle": {
+    "message": "open-browser-use सेटिंग्स"
+  },
+  "settingsPageTitle": {
+    "message": "सेटिंग्स"
+  },
+  "settingsPageSubtitle": {
+    "message": "इस ब्राउज़र में open-browser-use का अनुभव नियंत्रित करें।"
+  },
+  "settingsLanguageTitle": {
+    "message": "भाषा"
+  },
+  "settingsLanguageDescription": {
+    "message": "एक्सटेंशन पेजों की भाषा चुनें।"
+  },
+  "settingsLanguageAuto": {
+    "message": "ब्राउज़र भाषा का उपयोग करें"
+  },
+  "settingsSaved": {
+    "message": "सहेजा गया"
+  },
+  "settingsSaveFailed": {
+    "message": "सेटिंग सहेजी नहीं जा सकी।"
+  },
+  "versionAriaLabel": {
+    "message": "इंस्टॉल किए गए एक्सटेंशन का संस्करण"
+  },
+  "versionFallback": {
+    "message": "संस्करण"
+  },
+  "versionLabel": {
+    "message": "संस्करण $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "nativeHostLabel": {
+    "message": "नेटिव होस्ट"
+  },
+  "checkingStatus": {
+    "message": "जांच हो रही है..."
+  },
+  "setupLabel": {
+    "message": "सेटअप"
+  },
+  "agentSetupLabel": {
+    "message": "Agent सेटअप"
+  },
+  "agentHandoffTitle": {
+    "message": "Agent हैंडऑफ"
+  },
+  "copyForAgent": {
+    "message": "Agent के लिए कॉपी करें"
+  },
+  "copyAgentSetupHandoff": {
+    "message": "Agent सेटअप हैंडऑफ कॉपी करें"
+  },
+  "stopButton": {
+    "message": "मैं नियंत्रण लूंगा"
+  },
+  "resumeButton": {
+    "message": "फिर शुरू करें"
+  },
+  "debugLogsLabel": {
+    "message": "डीबग लॉग"
+  },
+  "disabled": {
+    "message": "बंद"
+  },
+  "debugEnable": {
+    "message": "चालू करें"
+  },
+  "debugDisable": {
+    "message": "बंद करें"
+  },
+  "debugCopy": {
+    "message": "कॉपी करें"
+  },
+  "debugClear": {
+    "message": "साफ़ करें"
+  },
+  "nativeHostStatusUnavailable": {
+    "message": "नेटिव होस्ट स्थिति उपलब्ध नहीं है"
+  },
+  "debugUnavailable": {
+    "message": "उपलब्ध नहीं"
+  },
+  "debugCopyFailed": {
+    "message": "कॉपी विफल: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCleared": {
+    "message": "साफ़ किया गया"
+  },
+  "copyAgentUnavailable": {
+    "message": "Agent सेटअप हैंडऑफ उपलब्ध नहीं है"
+  },
+  "copyAgentSuccess": {
+    "message": "कॉपी हो गया। इसे अपने Agent में पेस्ट करें। सेटअप पूरा होने पर यहां लौटें और फिर शुरू करें पर क्लिक करें।"
+  },
+  "copying": {
+    "message": "कॉपी हो रहा है"
+  },
+  "copied": {
+    "message": "कॉपी हो गया"
+  },
+  "tryAgain": {
+    "message": "फिर कोशिश करें"
+  },
+  "copyUnavailable": {
+    "message": "कॉपी उपलब्ध नहीं है। क्लिपबोर्ड अनुमति जांचें, फिर कोशिश करें।"
+  },
+  "agentSetupDefaultText": {
+    "message": "इस हैंडऑफ से दूसरा Agent जोड़ें। इसे Agent में कॉपी करें और पेयरिंग के दौरान यह पॉपअप खुला रखें।"
+  },
+  "statusConnected": {
+    "message": "कनेक्टेड"
+  },
+  "statusConnecting": {
+    "message": "कनेक्ट हो रहा है"
+  },
+  "statusUpdateNeeded": {
+    "message": "अपडेट चाहिए"
+  },
+  "statusStopped": {
+    "message": "नियंत्रण आपके पास है"
+  },
+  "statusNeedsSetup": {
+    "message": "सेटअप चाहिए"
+  },
+  "statusReconnecting": {
+    "message": "फिर से कनेक्ट हो रहा है"
+  },
+  "hostVersionLabel": {
+    "message": "होस्ट $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "hostReady": {
+    "message": "होस्ट तैयार है"
+  },
+  "connectingNativeHost": {
+    "message": "नेटिव होस्ट से कनेक्ट हो रहा है।"
+  },
+  "disconnectedDetail": {
+    "message": "फिर से कनेक्ट करने की कोशिश हो रही है। सेटअप ठीक होने के बाद फिर शुरू करें का उपयोग करें।"
+  },
+  "versionMismatchDetail": {
+    "message": "स्थानीय होस्ट अपडेट करें, फिर फिर से कनेक्ट करने के लिए फिर शुरू करें पर क्लिक करें।"
+  },
+  "stoppedDetail": {
+    "message": "साइन-इन, पासवर्ड या पेज का कोई चरण पूरा करें, फिर ऑटोमेशन जारी रखने के लिए फिर शुरू करें पर क्लिक करें।"
+  },
+  "errorDetail": {
+    "message": "सेटअप चलाएं, फिर फिर से कनेक्ट करने के लिए फिर शुरू करें पर क्लिक करें।"
+  },
+  "deliverableRecovery_one": {
+    "message": "$count$ डिलिवरेबल टैब उपलब्ध है। इसे वापस पाने के लिए browser.deliverables(), फिर claim() का उपयोग करें।",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_other": {
+    "message": "$count$ डिलिवरेबल टैब उपलब्ध हैं। इन्हें वापस पाने के लिए browser.deliverables(), फिर claim() का उपयोग करें।",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "adviceUpdateHost": {
+    "message": "स्थानीय होस्ट अपडेट करें, फिर फिर से कनेक्ट करें।"
+  },
+  "setupTextUpdateHost": {
+    "message": "यह हैंडऑफ अपने Agent में कॉपी करें। अपडेट पूरा होने के बाद यहां लौटें और फिर शुरू करें पर क्लिक करें।"
+  },
+  "adviceInstallHost": {
+    "message": "स्थानीय होस्ट इंस्टॉल करें, फिर फिर से कनेक्ट करें।"
+  },
+  "setupTextInstallHost": {
+    "message": "open-browser-use इंस्टॉल करने और इस एक्सटेंशन के लिए नेटिव होस्ट रजिस्टर करने के लिए यह हैंडऑफ अपने Agent में कॉपी करें।"
+  },
+  "adviceRefreshHostPermission": {
+    "message": "इस एक्सटेंशन की होस्ट अनुमति रीफ़्रेश करें, फिर फिर से कनेक्ट करें।"
+  },
+  "setupTextRefreshHostPermission": {
+    "message": "इस एक्सटेंशन ID के लिए नेटिव होस्ट रजिस्ट्रेशन रीफ़्रेश करने के लिए यह हैंडऑफ अपने Agent में कॉपी करें।"
+  },
+  "adviceRepairHost": {
+    "message": "स्थानीय होस्ट ठीक करें, फिर फिर से कनेक्ट करें।"
+  },
+  "setupTextRepairHost": {
+    "message": "open-browser-use सेटअप ठीक करने और नेटिव होस्ट सत्यापित करने के लिए यह हैंडऑफ अपने Agent में कॉपी करें।"
+  },
+  "adviceRepairSetup": {
+    "message": "सेटअप ठीक करें, फिर फिर से कनेक्ट करें।"
+  },
+  "setupTextRepairSetup": {
+    "message": "open-browser-use सेटअप ठीक करने और ब्राउज़र पेयरिंग सत्यापित करने के लिए यह हैंडऑफ अपने Agent में कॉपी करें।"
+  },
+  "adviceCheckSetup": {
+    "message": "स्थानीय सेटअप जांचें, फिर फिर से कनेक्ट करने के लिए फिर शुरू करें पर क्लिक करें।"
+  },
+  "adviceDisconnectedPortObject": {
+    "message": "स्थानीय होस्ट कनेक्ट नहीं है। इसे फिर से इंस्टॉल करें, फिर कनेक्ट करें।"
+  },
+  "setupTextDisconnectedPortObject": {
+    "message": "open-browser-use फिर से इंस्टॉल करने और इस एक्सटेंशन के लिए होस्ट रजिस्टर करने के लिए यह हैंडऑफ अपने Agent में कॉपी करें।"
+  },
+  "retryingInSeconds": {
+    "message": "$seconds$ सेकंड में फिर कोशिश होगी।",
+    "placeholders": {
+      "seconds": {
+        "content": "$1"
+      }
+    }
+  },
+  "statusStopping": {
+    "message": "रुक रहा है..."
+  },
+  "statusStoppedByUser": {
+    "message": "उपयोगकर्ता ने रोका"
+  },
+  "statusVersionMismatch": {
+    "message": "संस्करण मेल नहीं खाता"
+  },
+  "debugEnabledEntries_one": {
+    "message": "चालू, $count$/$max$ प्रविष्टि",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_other": {
+    "message": "चालू, $count$/$max$ प्रविष्टियां",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugDisabledEntries_one": {
+    "message": "बंद, $count$ सहेजी गई प्रविष्टि",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_other": {
+    "message": "बंद, $count$ सहेजी गई प्रविष्टियां",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_one": {
+    "message": "$count$ प्रविष्टि कॉपी हुई",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_other": {
+    "message": "$count$ प्रविष्टियां कॉपी हुईं",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverablesGroupTitle": {
+    "message": "$label$ डिलिवरेबल",
+    "placeholders": {
+      "label": {
+        "content": "$1"
+      }
+    }
+  },
+  "defaultDeliverablesGroupTitle": {
+    "message": "open-browser-use डिलिवरेबल"
+  }
+}

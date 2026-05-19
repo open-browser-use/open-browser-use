@@ -65,3 +65,52 @@ async fn emit_image_is_acknowledged() {
         json!({ "image_url": "data:image/png;base64,iVBORw0KGgo=" })
     );
 }
+
+#[tokio::test]
+async fn losing_concurrent_exec_does_not_clear_active_progress_sink() {
+    let manager = Arc::new(
+        JsRuntimeManager::new(ManagerOptions::for_tests())
+            .await
+            .unwrap(),
+    );
+    manager.boot().await.unwrap();
+
+    let (first_tx, mut first_rx) = tokio::sync::mpsc::unbounded_channel();
+    let first_sink = Arc::new(move |frame| {
+        let _ = first_tx.send(frame);
+    });
+    let first_manager = manager.clone();
+    let first = tokio::spawn(async move {
+        first_manager
+            .exec_with_turn_id_and_progress_sink(
+                r#"await new Promise((resolve) => setTimeout(resolve, 50)); display("first"); 1"#,
+                Some(1_000),
+                None,
+                Some(first_sink),
+            )
+            .await
+    });
+
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+
+    let (second_tx, mut second_rx) = tokio::sync::mpsc::unbounded_channel();
+    let second_sink = Arc::new(move |frame| {
+        let _ = second_tx.send(frame);
+    });
+    let second = manager
+        .exec_with_turn_id_and_progress_sink(
+            r#"display("second"); 2"#,
+            Some(1_000),
+            None,
+            Some(second_sink),
+        )
+        .await;
+
+    assert!(second.unwrap_err().to_string().contains("kernel is busy"));
+    let first = first.await.unwrap().unwrap();
+    assert_eq!(first.result, json!(1));
+
+    let first_frame = first_rx.try_recv().expect("first progress frame");
+    assert_eq!(first_frame.message, "first");
+    assert!(second_rx.try_recv().is_err());
+}

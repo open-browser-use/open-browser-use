@@ -1,0 +1,322 @@
+{
+  "extName": {
+    "message": "open-browser-use"
+  },
+  "extDescription": {
+    "message": "open-browser-use로 Chromium 계열 브라우저를 제어합니다."
+  },
+  "actionTitle": {
+    "message": "open-browser-use"
+  },
+  "popupTitle": {
+    "message": "어떤 Agent로든 Chrome 제어"
+  },
+  "settingsOpenTitle": {
+    "message": "설정"
+  },
+  "settingsOpenAriaLabel": {
+    "message": "설정 열기"
+  },
+  "settingsDocumentTitle": {
+    "message": "open-browser-use 설정"
+  },
+  "settingsPageTitle": {
+    "message": "설정"
+  },
+  "settingsPageSubtitle": {
+    "message": "이 브라우저에서 open-browser-use의 표시 방식을 조정합니다."
+  },
+  "settingsLanguageTitle": {
+    "message": "언어"
+  },
+  "settingsLanguageDescription": {
+    "message": "확장 프로그램 페이지의 언어를 선택합니다."
+  },
+  "settingsLanguageAuto": {
+    "message": "브라우저 언어 따르기"
+  },
+  "settingsSaved": {
+    "message": "저장됨"
+  },
+  "settingsSaveFailed": {
+    "message": "설정을 저장할 수 없습니다."
+  },
+  "versionAriaLabel": {
+    "message": "설치된 확장 프로그램 버전"
+  },
+  "versionFallback": {
+    "message": "버전"
+  },
+  "versionLabel": {
+    "message": "버전 $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "nativeHostLabel": {
+    "message": "네이티브 호스트"
+  },
+  "checkingStatus": {
+    "message": "확인 중..."
+  },
+  "setupLabel": {
+    "message": "설정"
+  },
+  "agentSetupLabel": {
+    "message": "Agent 설정"
+  },
+  "agentHandoffTitle": {
+    "message": "Agent 핸드오프"
+  },
+  "copyForAgent": {
+    "message": "Agent용 복사"
+  },
+  "copyAgentSetupHandoff": {
+    "message": "Agent 설정 핸드오프 복사"
+  },
+  "stopButton": {
+    "message": "직접 제어"
+  },
+  "resumeButton": {
+    "message": "재개"
+  },
+  "debugLogsLabel": {
+    "message": "디버그 로그"
+  },
+  "disabled": {
+    "message": "비활성화됨"
+  },
+  "debugEnable": {
+    "message": "활성화"
+  },
+  "debugDisable": {
+    "message": "비활성화"
+  },
+  "debugCopy": {
+    "message": "복사"
+  },
+  "debugClear": {
+    "message": "지우기"
+  },
+  "nativeHostStatusUnavailable": {
+    "message": "네이티브 호스트 상태를 사용할 수 없음"
+  },
+  "debugUnavailable": {
+    "message": "사용할 수 없음"
+  },
+  "debugCopyFailed": {
+    "message": "복사 실패: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCleared": {
+    "message": "지움"
+  },
+  "copyAgentUnavailable": {
+    "message": "Agent 설정 핸드오프를 사용할 수 없음"
+  },
+  "copyAgentSuccess": {
+    "message": "복사됨. Agent에 붙여넣으세요. 설정이 끝나면 여기로 돌아와 재개를 클릭하세요."
+  },
+  "copying": {
+    "message": "복사 중"
+  },
+  "copied": {
+    "message": "복사됨"
+  },
+  "tryAgain": {
+    "message": "다시 시도"
+  },
+  "copyUnavailable": {
+    "message": "복사할 수 없습니다. 클립보드 권한을 확인한 뒤 다시 시도하세요."
+  },
+  "agentSetupDefaultText": {
+    "message": "이 핸드오프로 다른 Agent를 연결합니다. Agent에 복사한 뒤 페어링하는 동안 이 팝업을 열어 두세요."
+  },
+  "statusConnected": {
+    "message": "연결됨"
+  },
+  "statusConnecting": {
+    "message": "연결 중"
+  },
+  "statusUpdateNeeded": {
+    "message": "업데이트 필요"
+  },
+  "statusStopped": {
+    "message": "사용자가 제어 중"
+  },
+  "statusNeedsSetup": {
+    "message": "설정 필요"
+  },
+  "statusReconnecting": {
+    "message": "재연결 중"
+  },
+  "hostVersionLabel": {
+    "message": "호스트 $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "hostReady": {
+    "message": "호스트 준비됨"
+  },
+  "connectingNativeHost": {
+    "message": "네이티브 호스트에 연결 중입니다."
+  },
+  "disconnectedDetail": {
+    "message": "재연결을 시도 중입니다. 설정을 복구한 뒤 재개를 사용하세요."
+  },
+  "versionMismatchDetail": {
+    "message": "로컬 호스트를 업데이트한 뒤 재개를 클릭해 다시 연결하세요."
+  },
+  "stoppedDetail": {
+    "message": "로그인, 비밀번호 또는 페이지 작업을 마친 뒤 재개를 클릭해 자동화를 계속하세요."
+  },
+  "errorDetail": {
+    "message": "설정을 실행한 뒤 재개를 클릭해 다시 연결하세요."
+  },
+  "deliverableRecovery_one": {
+    "message": "$count$개의 전달 가능 탭이 있습니다. browser.deliverables()를 사용한 뒤 claim()으로 복구하세요.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_other": {
+    "message": "$count$개의 전달 가능 탭이 있습니다. browser.deliverables()를 사용한 뒤 claim()으로 복구하세요.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "adviceUpdateHost": {
+    "message": "로컬 호스트를 업데이트한 뒤 다시 연결하세요."
+  },
+  "setupTextUpdateHost": {
+    "message": "이 핸드오프를 Agent에 복사하세요. 업데이트가 끝나면 여기로 돌아와 재개를 클릭하세요."
+  },
+  "adviceInstallHost": {
+    "message": "로컬 호스트를 설치한 뒤 다시 연결하세요."
+  },
+  "setupTextInstallHost": {
+    "message": "이 핸드오프를 Agent에 복사해 open-browser-use를 설치하고 이 확장 프로그램용 네이티브 호스트를 등록하세요."
+  },
+  "adviceRefreshHostPermission": {
+    "message": "이 확장 프로그램의 호스트 권한을 새로 고친 뒤 다시 연결하세요."
+  },
+  "setupTextRefreshHostPermission": {
+    "message": "이 핸드오프를 Agent에 복사해 이 확장 프로그램 ID의 네이티브 호스트 등록을 새로 고치세요."
+  },
+  "adviceRepairHost": {
+    "message": "로컬 호스트를 복구한 뒤 다시 연결하세요."
+  },
+  "setupTextRepairHost": {
+    "message": "이 핸드오프를 Agent에 복사해 open-browser-use 설정을 복구하고 네이티브 호스트를 확인하세요."
+  },
+  "adviceRepairSetup": {
+    "message": "설정을 복구한 뒤 다시 연결하세요."
+  },
+  "setupTextRepairSetup": {
+    "message": "이 핸드오프를 Agent에 복사해 open-browser-use 설정을 복구하고 브라우저 페어링을 확인하세요."
+  },
+  "adviceCheckSetup": {
+    "message": "로컬 설정을 확인한 뒤 재개를 클릭해 다시 연결하세요."
+  },
+  "adviceDisconnectedPortObject": {
+    "message": "로컬 호스트가 연결되어 있지 않습니다. 다시 설치한 뒤 연결하세요."
+  },
+  "setupTextDisconnectedPortObject": {
+    "message": "이 핸드오프를 Agent에 복사해 open-browser-use를 다시 설치하고 이 확장 프로그램용 호스트를 등록하세요."
+  },
+  "retryingInSeconds": {
+    "message": "$seconds$초 후 재시도합니다.",
+    "placeholders": {
+      "seconds": {
+        "content": "$1"
+      }
+    }
+  },
+  "statusStopping": {
+    "message": "중지 중..."
+  },
+  "statusStoppedByUser": {
+    "message": "사용자가 중지함"
+  },
+  "statusVersionMismatch": {
+    "message": "버전 불일치"
+  },
+  "debugEnabledEntries_one": {
+    "message": "활성화됨, $count$/$max$개 항목",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_other": {
+    "message": "활성화됨, $count$/$max$개 항목",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugDisabledEntries_one": {
+    "message": "비활성화됨, 저장된 항목 $count$개",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_other": {
+    "message": "비활성화됨, 저장된 항목 $count$개",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_one": {
+    "message": "$count$개 항목 복사됨",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_other": {
+    "message": "$count$개 항목 복사됨",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverablesGroupTitle": {
+    "message": "$label$ 전달 항목",
+    "placeholders": {
+      "label": {
+        "content": "$1"
+      }
+    }
+  },
+  "defaultDeliverablesGroupTitle": {
+    "message": "open-browser-use 전달 항목"
+  }
+}

@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>open-browser-use Settings</title>
+    <link rel="stylesheet" href="options.css" />
+  </head>
+  <body>
+    <main class="settings-shell">
+      <header class="settings-header">
+        <span class="brand-mark-wrap" aria-hidden="true">
+          <img class="brand-mark" src="icons/icon-48.png" width="40" height="40" alt="" />
+        </span>
+        <div>
+          <a class="eyebrow brand-link" href="https://open-browser-use.xyz" target="_blank" rel="noopener noreferrer">open-browser-use</a>
+          <h1 data-i18n="settingsPageTitle">Settings</h1>
+          <p class="lede" data-i18n="settingsPageSubtitle">Control how open-browser-use feels in this browser.</p>
+        </div>
+      </header>
+
+      <section class="settings-panel">
+        <div class="setting-row">
+          <label class="setting-copy" for="language-select">
+            <span class="setting-title" data-i18n="settingsLanguageTitle">Language</span>
+            <span class="setting-description" data-i18n="settingsLanguageDescription">Choose the language for extension pages.</span>
+          </label>
+          <select id="language-select" class="setting-control"></select>
+        </div>
+        <p id="settings-status" class="settings-status" aria-live="polite"></p>
+      </section>
+    </main>
+    <script type="module" src="options.js"></script>
+  </body>
+</html>

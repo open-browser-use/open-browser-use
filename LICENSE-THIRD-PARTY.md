@@ -37,3 +37,13 @@ The CLI packages `jsonc-parser` for JSON/JSONC agent adapter config edits.
 - License: MIT License
 - Packaged path: `node_modules/jsonc-parser`
 - Source: https://github.com/microsoft/node-jsonc-parser
+
+## Meriyah
+
+`crates/obu-node-repl/embedded/meriyah.umd.min.js` is bundled into the
+JavaScript kernel runtime for source parsing and instrumentation.
+
+- Upstream project: Meriyah
+- License: ISC License
+- Bundled file: `crates/obu-node-repl/embedded/meriyah.umd.min.js`
+- Source: https://www.npmjs.com/package/meriyah

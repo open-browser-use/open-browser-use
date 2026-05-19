@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { ObuError, ERR_TIMEOUT, ERR_TRANSPORT_CLOSED } from "../src/errors.js";
-import { FrameDecoder, FrameEncoder } from "../src/wire/frames.js";
+import { ObuError, ERR_PROTOCOL, ERR_TIMEOUT, ERR_TRANSPORT_CLOSED } from "../src/errors.js";
+import { FrameDecoder, FrameEncoder, MAX_FRAME_LEN } from "../src/wire/frames.js";
 import { Transport } from "../src/wire/transport.js";
 import type { NativePipeConnection, NativePipeConnectionEvent } from "../src/wire/pipe.js";
 
@@ -89,6 +89,19 @@ describe("Transport", () => {
     const promise = transport.sendRequest("getInfo", {}, 1000);
     connection.emit("close");
     await expect(promise).rejects.toMatchObject({ code: ERR_TRANSPORT_CLOSED });
+  });
+
+  it("rejects pending requests and closes when frame decoding fails", async () => {
+    const connection = new FakeConnection();
+    const transport = new Transport(connection);
+    const promise = transport.sendRequest("getInfo", {}, 1000);
+    const header = new Uint8Array(4);
+    new DataView(header.buffer).setUint32(0, MAX_FRAME_LEN + 1, true);
+
+    connection.emit("data", header);
+
+    await expect(promise).rejects.toMatchObject({ code: ERR_PROTOCOL });
+    expect(connection.ended).toBe(true);
   });
 
   it("ignores notifications while preserving pending request correlation", async () => {

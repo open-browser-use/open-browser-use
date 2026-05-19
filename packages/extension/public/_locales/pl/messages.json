@@ -1,0 +1,392 @@
+{
+  "extName": {
+    "message": "open-browser-use"
+  },
+  "extDescription": {
+    "message": "Steruj przeglądarkami z rodziny Chromium za pomocą open-browser-use."
+  },
+  "actionTitle": {
+    "message": "open-browser-use"
+  },
+  "popupTitle": {
+    "message": "Steruj Chrome z dowolnym Agent"
+  },
+  "settingsOpenTitle": {
+    "message": "Ustawienia"
+  },
+  "settingsOpenAriaLabel": {
+    "message": "Otwórz ustawienia"
+  },
+  "settingsDocumentTitle": {
+    "message": "Ustawienia open-browser-use"
+  },
+  "settingsPageTitle": {
+    "message": "Ustawienia"
+  },
+  "settingsPageSubtitle": {
+    "message": "Steruj tym, jak open-browser-use działa w tej przeglądarce."
+  },
+  "settingsLanguageTitle": {
+    "message": "Język"
+  },
+  "settingsLanguageDescription": {
+    "message": "Wybierz język stron rozszerzenia."
+  },
+  "settingsLanguageAuto": {
+    "message": "Użyj języka przeglądarki"
+  },
+  "settingsSaved": {
+    "message": "Zapisano"
+  },
+  "settingsSaveFailed": {
+    "message": "Nie udało się zapisać ustawienia."
+  },
+  "versionAriaLabel": {
+    "message": "Wersja zainstalowanego rozszerzenia"
+  },
+  "versionFallback": {
+    "message": "Wersja"
+  },
+  "versionLabel": {
+    "message": "Wersja $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "nativeHostLabel": {
+    "message": "Host natywny"
+  },
+  "checkingStatus": {
+    "message": "Sprawdzanie..."
+  },
+  "setupLabel": {
+    "message": "Konfiguracja"
+  },
+  "agentSetupLabel": {
+    "message": "Konfiguracja Agenta"
+  },
+  "agentHandoffTitle": {
+    "message": "Przekazanie Agentowi"
+  },
+  "copyForAgent": {
+    "message": "Kopiuj dla Agenta"
+  },
+  "copyAgentSetupHandoff": {
+    "message": "Kopiuj przekazanie konfiguracji Agenta"
+  },
+  "stopButton": {
+    "message": "Przejmuję kontrolę"
+  },
+  "resumeButton": {
+    "message": "Wznów"
+  },
+  "debugLogsLabel": {
+    "message": "Dzienniki debugowania"
+  },
+  "disabled": {
+    "message": "Wyłączone"
+  },
+  "debugEnable": {
+    "message": "Włącz"
+  },
+  "debugDisable": {
+    "message": "Wyłącz"
+  },
+  "debugCopy": {
+    "message": "Kopiuj"
+  },
+  "debugClear": {
+    "message": "Wyczyść"
+  },
+  "nativeHostStatusUnavailable": {
+    "message": "Status hosta natywnego jest niedostępny"
+  },
+  "debugUnavailable": {
+    "message": "Niedostępne"
+  },
+  "debugCopyFailed": {
+    "message": "Kopiowanie nie powiodło się: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCleared": {
+    "message": "Wyczyszczono"
+  },
+  "copyAgentUnavailable": {
+    "message": "Przekazanie konfiguracji Agenta jest niedostępne"
+  },
+  "copyAgentSuccess": {
+    "message": "Skopiowano. Wklej do swojego Agent. Wróć tutaj i kliknij Wznów po zakończeniu konfiguracji."
+  },
+  "copying": {
+    "message": "Kopiowanie"
+  },
+  "copied": {
+    "message": "Skopiowano"
+  },
+  "tryAgain": {
+    "message": "Spróbuj ponownie"
+  },
+  "copyUnavailable": {
+    "message": "Kopiowanie niedostępne. Sprawdź uprawnienie schowka i spróbuj ponownie."
+  },
+  "agentSetupDefaultText": {
+    "message": "Połącz innego Agent za pomocą tego przekazania. Skopiuj je do Agenta i pozostaw to okno otwarte podczas parowania."
+  },
+  "statusConnected": {
+    "message": "Połączono"
+  },
+  "statusConnecting": {
+    "message": "Łączenie"
+  },
+  "statusUpdateNeeded": {
+    "message": "Wymagana aktualizacja"
+  },
+  "statusStopped": {
+    "message": "Masz kontrolę"
+  },
+  "statusNeedsSetup": {
+    "message": "Wymagana konfiguracja"
+  },
+  "statusReconnecting": {
+    "message": "Ponowne łączenie"
+  },
+  "hostVersionLabel": {
+    "message": "Host $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "hostReady": {
+    "message": "Host gotowy"
+  },
+  "connectingNativeHost": {
+    "message": "Łączenie z hostem natywnym."
+  },
+  "disconnectedDetail": {
+    "message": "Próba ponownego połączenia. Użyj Wznów po naprawie konfiguracji."
+  },
+  "versionMismatchDetail": {
+    "message": "Zaktualizuj lokalnego hosta, a następnie kliknij Wznów, aby połączyć ponownie."
+  },
+  "stoppedDetail": {
+    "message": "Dokończ logowanie, hasła lub krok na stronie, a następnie kliknij Wznów, aby kontynuować automatyzację."
+  },
+  "errorDetail": {
+    "message": "Uruchom konfigurację, a następnie kliknij Wznów, aby połączyć ponownie."
+  },
+  "deliverableRecovery_one": {
+    "message": "Dostępna jest $count$ karta do przekazania. Użyj browser.deliverables(), a potem claim(), aby ją odzyskać.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_few": {
+    "message": "Dostępne są $count$ karty do przekazania. Użyj browser.deliverables(), a potem claim(), aby je odzyskać.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_many": {
+    "message": "Dostępnych jest $count$ kart do przekazania. Użyj browser.deliverables(), a potem claim(), aby je odzyskać.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_other": {
+    "message": "Dostępne są $count$ karty do przekazania. Użyj browser.deliverables(), a potem claim(), aby je odzyskać.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "adviceUpdateHost": {
+    "message": "Zaktualizuj lokalnego hosta, a następnie połącz ponownie."
+  },
+  "setupTextUpdateHost": {
+    "message": "Skopiuj to przekazanie do swojego Agent. Wróć tutaj i kliknij Wznów po zakończeniu aktualizacji."
+  },
+  "adviceInstallHost": {
+    "message": "Zainstaluj lokalnego hosta, a następnie połącz ponownie."
+  },
+  "setupTextInstallHost": {
+    "message": "Skopiuj to przekazanie do swojego Agent, aby zainstalować open-browser-use i zarejestrować hosta natywnego dla tego rozszerzenia."
+  },
+  "adviceRefreshHostPermission": {
+    "message": "Odśwież uprawnienie hosta tego rozszerzenia, a następnie połącz ponownie."
+  },
+  "setupTextRefreshHostPermission": {
+    "message": "Skopiuj to przekazanie do swojego Agent, aby odświeżyć rejestrację hosta natywnego dla tego ID rozszerzenia."
+  },
+  "adviceRepairHost": {
+    "message": "Napraw lokalnego hosta, a następnie połącz ponownie."
+  },
+  "setupTextRepairHost": {
+    "message": "Skopiuj to przekazanie do swojego Agent, aby naprawić konfigurację open-browser-use i zweryfikować hosta natywnego."
+  },
+  "adviceRepairSetup": {
+    "message": "Napraw konfigurację, a następnie połącz ponownie."
+  },
+  "setupTextRepairSetup": {
+    "message": "Skopiuj to przekazanie do swojego Agent, aby naprawić konfigurację open-browser-use i zweryfikować parowanie przeglądarki."
+  },
+  "adviceCheckSetup": {
+    "message": "Sprawdź lokalną konfigurację, a następnie kliknij Wznów, aby połączyć ponownie."
+  },
+  "adviceDisconnectedPortObject": {
+    "message": "Lokalny host nie jest połączony. Zainstaluj go ponownie, a następnie połącz ponownie."
+  },
+  "setupTextDisconnectedPortObject": {
+    "message": "Skopiuj to przekazanie do swojego Agent, aby ponownie zainstalować open-browser-use i zarejestrować hosta dla tego rozszerzenia."
+  },
+  "retryingInSeconds": {
+    "message": "Ponowna próba za $seconds$s.",
+    "placeholders": {
+      "seconds": {
+        "content": "$1"
+      }
+    }
+  },
+  "statusStopping": {
+    "message": "Zatrzymywanie..."
+  },
+  "statusStoppedByUser": {
+    "message": "Zatrzymano przez użytkownika"
+  },
+  "statusVersionMismatch": {
+    "message": "Niezgodność wersji"
+  },
+  "debugEnabledEntries_one": {
+    "message": "Włączone, $count$/$max$ wpis",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_few": {
+    "message": "Włączone, $count$/$max$ wpisy",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_many": {
+    "message": "Włączone, $count$/$max$ wpisów",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_other": {
+    "message": "Włączone, $count$/$max$ wpisów",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugDisabledEntries_one": {
+    "message": "Wyłączone, $count$ zapisany wpis",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_few": {
+    "message": "Wyłączone, zapisane $count$ wpisy",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_many": {
+    "message": "Wyłączone, zapisanych $count$ wpisów",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_other": {
+    "message": "Wyłączone, $count$ zapisanych wpisów",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_one": {
+    "message": "Skopiowano $count$ wpis",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_few": {
+    "message": "Skopiowano $count$ wpisy",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_many": {
+    "message": "Skopiowano $count$ wpisów",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_other": {
+    "message": "Skopiowano $count$ wpisów",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverablesGroupTitle": {
+    "message": "$label$ przekazania",
+    "placeholders": {
+      "label": {
+        "content": "$1"
+      }
+    }
+  },
+  "defaultDeliverablesGroupTitle": {
+    "message": "Przekazania open-browser-use"
+  }
+}

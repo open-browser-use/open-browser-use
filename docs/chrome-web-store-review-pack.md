@@ -44,8 +44,8 @@ Transmitted:
 
 - Extension messages are sent to the locally installed native host through
   Chrome native messaging.
-- The GitHub installer command downloads release assets from GitHub when the
-  user runs the copied setup command.
+- The copied agent handoff links to GitHub-hosted setup instructions and may ask
+  the user's local agent to download release assets from GitHub.
 
 Not uploaded by the extension:
 
@@ -71,11 +71,12 @@ Current stance for the first Store draft:
 
 1. Install the Chrome Web Store draft item in a clean Chrome profile.
 2. Open the extension popup.
-3. Copy the setup command from the popup.
-4. Run it in Terminal. The Store command must include:
+3. Click **Copy for Agent** in the popup.
+4. Paste the handoff into the local coding agent and have it complete setup or
+   repair. The handoff must include:
 
-   ```bash
-   --channel=store
+   ```text
+   Extension channel: store
    ```
 
 5. Click **Resume** in the popup.
@@ -86,9 +87,10 @@ Reviewer notes:
 - The native host is installed outside the extension because Chrome native
   messaging requires a browser-owned native-host manifest whose
   `allowed_origins` contains the concrete extension id.
-- The extension cannot repair that manifest by itself; the copied Terminal
-  command installs the GitHub Release CLI/native host payload and runs
-  `obu setup --channel=store`.
+- The extension cannot repair that manifest by itself; the copied agent handoff
+  sends the exact Store channel/id and prompt link to the user's coding agent,
+  which installs or repairs the GitHub Release CLI/native host payload when
+  needed.
 - Diagnostics are local. `obu doctor browser --channel=store --json` reports the
   channel, extension id, id source, native-host manifest status, and runtime
   descriptor status.

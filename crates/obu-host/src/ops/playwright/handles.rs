@@ -1,5 +1,6 @@
 //! Shared Playwright handle parsing, event waits, and ownership checks.
 
+use std::collections::HashSet;
 use std::time::SystemTime;
 
 use serde_json::{Value, json};
@@ -158,6 +159,17 @@ pub(crate) fn download_will_begin_has_guid(params: &Value) -> bool {
     params.get("guid").and_then(Value::as_str).is_some()
 }
 
+pub(crate) fn download_will_begin_matches_frame_ids(
+    params: &Value,
+    frame_ids: &HashSet<String>,
+) -> bool {
+    download_will_begin_has_guid(params)
+        && params
+            .get("frameId")
+            .and_then(Value::as_str)
+            .is_some_and(|frame_id| frame_ids.contains(frame_id))
+}
+
 pub(crate) fn download_from_will_begin(
     tab_id: &str,
     owner_session_id: Option<String>,
@@ -284,6 +296,14 @@ pub(crate) fn download_change_filename(params: &Value) -> Option<String> {
 }
 
 fn download_change_matches(params: &Value, state: &DownloadState) -> bool {
+    if let Some(source_tab_id) = params
+        .get("source")
+        .and_then(|source| source.get("tabId"))
+        .and_then(Value::as_i64)
+        && state.tab_id.0 != source_tab_id.to_string()
+    {
+        return false;
+    }
     if let Some(url) = params.get("url").and_then(Value::as_str)
         && !state.url.is_empty()
         && url == state.url
@@ -344,6 +364,15 @@ mod tests {
             &json!({ "guid": "download-guid" })
         ));
         assert!(!download_will_begin_has_guid(&json!({ "guid": 42 })));
+        let frame_ids = HashSet::from(["frame-1".to_string()]);
+        assert!(download_will_begin_matches_frame_ids(
+            &json!({ "guid": "download-guid", "frameId": "frame-1" }),
+            &frame_ids,
+        ));
+        assert!(!download_will_begin_matches_frame_ids(
+            &json!({ "guid": "download-guid", "frameId": "frame-2" }),
+            &frame_ids,
+        ));
         assert!(download_progress_completed_for_guid(
             &json!({ "guid": "download-guid", "state": "completed" }),
             "download-guid",
@@ -390,7 +419,7 @@ mod tests {
     #[test]
     fn download_change_helpers_match_terminal_downloads() {
         let state = DownloadState {
-            tab_id: TabId::new("tab-1"),
+            tab_id: TabId::new("1"),
             owner_session_id: Some("session".into()),
             created_at: SystemTime::now(),
             url: "https://example.test/file.txt".into(),
@@ -401,6 +430,7 @@ mod tests {
 
         let completed = json!({
             "status": "complete",
+            "source": { "tabId": 1 },
             "url": "https://example.test/file.txt",
             "filename": "/tmp/file.txt",
         });
@@ -421,7 +451,19 @@ mod tests {
         assert_eq!(download_change_failure_message(&failed), "network failed");
 
         assert!(!download_change_terminal_and_matches(
-            &json!({ "status": "complete", "url": "https://other.test/file.txt" }),
+            &json!({
+                "status": "complete",
+                "source": { "tabId": 2 },
+                "url": "https://example.test/file.txt",
+            }),
+            &state,
+        ));
+        assert!(!download_change_terminal_and_matches(
+            &json!({
+                "status": "complete",
+                "source": { "tabId": 1 },
+                "url": "https://other.test/file.txt",
+            }),
             &state,
         ));
     }

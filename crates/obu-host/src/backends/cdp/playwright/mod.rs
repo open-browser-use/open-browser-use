@@ -1,5 +1,7 @@
 //! Page-side Playwright command handlers backed by the vendored InjectedScript.
 
+use std::collections::HashSet;
+
 use async_trait::async_trait;
 use serde_json::{Value, json};
 
@@ -308,6 +310,8 @@ async fn wait_for_download(
     let tab_id = required_str(&params, "tab_id")?;
     let event_timeout_ms = timeout_ms(&params);
     let mut events = backend.transport().subscribe_events();
+    let session_id = require_session(backend, tab_id)?;
+    let frame_ids = download_frame_ids(backend, &session_id).await?;
     let will_begin = event_wait::wait_for_broadcast_event_matching(
         &mut events,
         event_timeout_ms,
@@ -315,7 +319,7 @@ async fn wait_for_download(
         |_| HostError::from(crate::backends::cdp::error::CdpError::Disconnected),
         |event| {
             if event.method == "Browser.downloadWillBegin"
-                && handle_ops::download_will_begin_has_guid(&event.params)
+                && handle_ops::download_will_begin_matches_frame_ids(&event.params, &frame_ids)
             {
                 return Some(event.params);
             }
@@ -376,9 +380,75 @@ fn handle_owner_session(
         .and_then(|record| record.session_id))
 }
 
+async fn download_frame_ids(backend: &CdpBackend, session_id: &str) -> Result<HashSet<String>> {
+    let tree = backend
+        .transport()
+        .send_command("Page.getFrameTree", json!({}), Some(session_id))
+        .await
+        .map_err(HostError::from)?;
+    let mut frame_ids = HashSet::new();
+    collect_frame_ids(
+        tree.get("frameTree").unwrap_or(&Value::Null),
+        &mut frame_ids,
+    );
+    if frame_ids.is_empty() {
+        return Err(HostError::Protocol(
+            "Page.getFrameTree returned no frame ids for download correlation".into(),
+        ));
+    }
+    Ok(frame_ids)
+}
+
+fn collect_frame_ids(node: &Value, out: &mut HashSet<String>) {
+    if let Some(frame_id) = node
+        .get("frame")
+        .and_then(|frame| frame.get("id"))
+        .and_then(Value::as_str)
+    {
+        out.insert(frame_id.to_string());
+    }
+    if let Some(children) = node.get("childFrames").and_then(Value::as_array) {
+        for child in children {
+            collect_frame_ids(child, out);
+        }
+    }
+}
+
 fn required_str<'a>(params: &'a Value, key: &str) -> Result<&'a str> {
     params
         .get(key)
         .and_then(Value::as_str)
         .ok_or_else(|| HostError::Protocol(format!("missing {key}")))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn collect_frame_ids_walks_nested_frame_tree() {
+        let frame_tree = json!({
+            "frame": { "id": "root" },
+            "childFrames": [
+                { "frame": { "id": "child-1" } },
+                {
+                    "frame": { "id": "child-2" },
+                    "childFrames": [{ "frame": { "id": "grandchild" } }]
+                }
+            ]
+        });
+        let mut frame_ids = HashSet::new();
+
+        collect_frame_ids(&frame_tree, &mut frame_ids);
+
+        assert_eq!(
+            frame_ids,
+            HashSet::from([
+                "root".to_string(),
+                "child-1".to_string(),
+                "child-2".to_string(),
+                "grandchild".to_string(),
+            ])
+        );
+    }
 }

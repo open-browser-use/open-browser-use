@@ -34,13 +34,17 @@ try {
     "--no-modify-path",
   ], { HOME: home });
   assert.match(defaultInstall.stdout, /open-browser-use installed at /);
-  assert.match(defaultInstall.stdout, /Run: .*\/bin\/obu setup/);
+  assert.match(defaultInstall.stdout, /Run: .*\/bin\/obu bootstrap --yes --all --agents=auto/);
+  assert.doesNotMatch(defaultInstall.stdout, /Next steps:/);
   assert.doesNotMatch(defaultInstall.stdout, /checksum:/);
 
   const obu = path.join(installDir, "bin", "obu");
   await access(obu);
   const version = run(obu, ["--version"], { HOME: home });
   assert.match(version.stdout.trim(), /^\d+\.\d+\.\d+/);
+  const shellenv = run(obu, ["shellenv", "sh"], { HOME: home });
+  assert.match(shellenv.stdout, new RegExp(`export OBU_INSTALL_DIR='${escapeRegExp(installDir)}';`));
+  assert.match(shellenv.stdout, /export PATH="\$\{OBU_INSTALL_DIR\}\/bin\$\{PATH\+:\$PATH\}";/);
 
   const mcpConfig = run(obu, ["mcp-config", "--agent=codex-cli", "--print"], { HOME: home });
   const config = JSON.parse(mcpConfig.stdout);
@@ -98,6 +102,54 @@ try {
   await access(path.join(envArtifactInstallDir, "bin", "obu"));
   await assert.rejects(() => access(path.join(envArtifactHome, ".profile")), { code: "ENOENT" });
 
+  const shellenvInstallDir = path.join(temp, "shellenv-install");
+  const shellenvHome = path.join(temp, "shellenv-home");
+  const shellenvBin = path.join(temp, "shellenv-bin");
+  await mkdir(shellenvBin, { recursive: true });
+  const shellenvPath = `.${path.delimiter}${shellenvBin}${path.delimiter}${process.env.PATH ?? ""}`;
+  const shellenvInstall = run("sh", [
+    installer,
+    "--artifact",
+    artifactPath,
+    "--checksum",
+    artifact.sha256,
+    "--install-dir",
+    shellenvInstallDir,
+  ], {
+    HOME: shellenvHome,
+    PATH: shellenvPath,
+    SHELL: "/bin/zsh",
+  });
+  assert.match(shellenvInstall.stdout, /Next steps:/);
+  assert.match(shellenvInstall.stdout, /obu" shellenv zsh/);
+  assert.match(shellenvInstall.stdout, /\.zprofile/);
+  await assert.rejects(() => access(path.join(shellenvBin, "obu")), { code: "ENOENT" });
+  await assert.rejects(() => access(path.join(process.cwd(), "obu")), { code: "ENOENT" });
+  await assert.rejects(() => access(path.join(shellenvHome, ".zprofile")), { code: "ENOENT" });
+  const shellenvObu = path.join(shellenvInstallDir, "bin", "obu");
+  const shellenvFish = run(shellenvObu, ["shellenv", "fish"], { HOME: shellenvHome });
+  assert.match(shellenvFish.stdout, /fish_add_path --global --move --path /);
+
+  const profileOnlyInstallDir = path.join(temp, "profile-only-install");
+  const profileOnlyHome = path.join(temp, "profile-only-home");
+  const profileOnlyInstall = run("/bin/sh", [
+    installer,
+    "--artifact",
+    artifactPath,
+    "--checksum",
+    artifact.sha256,
+    "--install-dir",
+    profileOnlyInstallDir,
+  ], {
+    HOME: profileOnlyHome,
+    PATH: "/usr/bin:/bin",
+    SHELL: "",
+  });
+  assert.match(profileOnlyInstall.stdout, /Next steps:/);
+  assert.match(profileOnlyInstall.stdout, /\.profile/);
+  await assert.rejects(() => access(path.join(profileOnlyHome, ".profile")), { code: "ENOENT" });
+  await access(path.join(profileOnlyInstallDir, "bin", "obu"));
+
   const releaseManifestInstallDir = path.join(temp, "release-manifest-install");
   const releaseManifestHome = path.join(temp, "release-manifest-home");
   const releaseManifestInstall = run("sh", [
@@ -116,7 +168,7 @@ try {
   assert.match(releaseManifestInstall.stdout, /checksum: ok/);
   assert.match(releaseManifestInstall.stdout, /extract: /);
   assert.match(releaseManifestInstall.stdout, /shim: wrote /);
-  assert.match(releaseManifestInstall.stdout, /path: skipped shell profile update/);
+  assert.match(releaseManifestInstall.stdout, /path: skipped shellenv instructions/);
   await access(path.join(releaseManifestInstallDir, "bin", "obu"));
   await assert.rejects(() => access(path.join(releaseManifestHome, ".profile")), { code: "ENOENT" });
 
@@ -181,6 +233,10 @@ function assertCurlManifest(manifest, tsvManifest) {
     assert.equal(artifact.size > 0, true);
     assert.deepEqual(tsvByTarget.get(artifact.target), artifact);
   }
+}
+
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
 function run(command, args, env = {}, options = {}) {

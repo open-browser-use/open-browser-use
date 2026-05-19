@@ -3,6 +3,7 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 
 import { isAgentId, renderAgentMcpConfig, supportedAgentIds, type AgentId, type McpServerInvocation } from "./agents/registry.js";
+import { appendShellArgs, formatShellCommand } from "./command-line.js";
 import { doctorAggregate, formatAggregateDoctorReport } from "./doctor.js";
 import { doctorJson } from "./doctor-json.js";
 import { doctorBrowser, formatDoctorReport, hasDoctorFailures, type BrowserKind, type DoctorReport } from "./doctor-browser.js";
@@ -63,6 +64,9 @@ async function main(argv: string[]): Promise<number> {
   if (args.command === "mcp-config") {
     return runMcpConfig(args);
   }
+  if (args.command === "shellenv") {
+    return runShellenv(args);
+  }
   if (args.command === "mcp" && args.subject === "stdio") {
     return runMcpStdio();
   }
@@ -75,12 +79,116 @@ async function main(argv: string[]): Promise<number> {
   if (args.command === "setup") {
     return runSetup(args);
   }
+  if (args.command === "bootstrap") {
+    return runBootstrap(args);
+  }
   if (args.command === "repl") {
     console.error("obu repl is deferred in P4a. Use `obu mcp stdio` for MCP clients; a direct debug REPL needs a separate tested contract.");
     return 2;
   }
   printHelp();
   return 2;
+}
+
+async function runBootstrap(args: ParsedArgs): Promise<number> {
+  const layout = await resolveRuntimeLayout();
+  if (layout.configIssue) {
+    console.error(`open-browser-use user config is invalid: ${layout.configIssue.message}. Fix or remove ${layout.configIssue.path}, then rerun obu bootstrap.`);
+    return 2;
+  }
+  let extensionTarget;
+  try {
+    extensionTarget = await resolveExtensionTarget({
+      layout,
+      channel: args.channel,
+      explicitExtensionId: args.extensionId,
+      env: process.env,
+      ...(args.extensionPath ? { manifestPath: path.join(args.extensionPath, "manifest.json") } : {}),
+    });
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 2;
+  }
+  if (extensionTarget.channel === "store" && args.extensionPath) {
+    console.error("bootstrap --channel=store does not support --path; install the extension from Chrome Web Store instead.");
+    return 2;
+  }
+  const supported = supportedNativeHostBrowsers();
+  const browsers = args.all ? supported : [args.browser ?? ("chrome" as BrowserKind)];
+  const unsupported = browsers.filter((browser) => !supported.includes(browser));
+  if (unsupported.length > 0) {
+    console.error(`unsupported bootstrap browser target on ${process.platform}: ${unsupported.join(", ")}`);
+    return 2;
+  }
+  const unsupportedAgents = args.agents.filter((agent) => !isAgentId(agent));
+  if (unsupportedAgents.length > 0) {
+    console.error(`unsupported agent id(s): ${unsupportedAgents.join(", ")}. Supported agents: ${supportedAgentIds().join(", ")}`);
+    return 2;
+  }
+  const invocation = await resolveMcpInvocation(layout.openBrowserUseCommand, layout.cliEntry);
+  const commandPrefix = await resolveHumanCommandPrefix(layout);
+  const server: McpServerInvocation = {
+    name: "open-browser-use",
+    command: invocation.command,
+    args: invocation.args,
+  };
+  const setupReport = await setupOpenBrowserUse({
+    layout,
+    obuVersion: await packageVersion(),
+    browsers,
+    agents: args.agents as AgentId[],
+    server,
+    extensionChannel: extensionTarget.channel,
+    extensionId: extensionTarget.extensionId,
+    extensionIdSource: extensionTarget.extensionIdSource,
+    dryRun: args.dryRun,
+    skipExtension: args.skipExtension,
+    skipAgents: args.skipAgents,
+    env: process.env,
+    commandPrefix,
+    ...(args.extensionPath ? { extensionPath: args.extensionPath } : {}),
+  });
+
+  let browserReport: DoctorReport | undefined;
+  if (setupReport.result !== "failed") {
+    browserReport = await doctorBrowser({
+      ...(args.browser === undefined ? {} : { browser: args.browser }),
+      channel: extensionTarget.channel,
+      extensionId: extensionTarget.extensionId,
+      extensionIdSource: extensionTarget.extensionIdSource,
+      ...(extensionTarget.channel === "store" ? {} : { extensionCurrentDir: layout.mode === "repo" ? layout.extensionDir : layout.extensionCurrentDir }),
+      repair: !args.dryRun,
+    });
+  }
+
+  if (args.json) {
+    const doctorExit = browserReport ? doctorExitCode(browserReport, false) : 0;
+    const result = setupReport.result === "failed" || doctorExit !== 0
+      ? "failed"
+      : setupReport.result === "manual_action_required"
+        ? "manual_action_required"
+        : "complete";
+    const payload: {
+      schemaVersion: 1;
+      command: "bootstrap";
+      result: "complete" | "manual_action_required" | "failed";
+      setup: SetupJson;
+      browserDoctor?: DoctorReport;
+    } = {
+      schemaVersion: 1,
+      command: "bootstrap",
+      result,
+      setup: setupReport,
+    };
+    if (browserReport) payload.browserDoctor = browserReport;
+    console.log(JSON.stringify(payload, null, 2));
+  } else {
+    console.log(formatBootstrapSummary(setupReport, browserReport));
+  }
+
+  if (setupReport.result === "failed") return 1;
+  if (!browserReport) return 1;
+  return doctorExitCode(browserReport, false);
 }
 
 async function runSetup(args: ParsedArgs): Promise<number> {
@@ -119,6 +227,7 @@ async function runSetup(args: ParsedArgs): Promise<number> {
     return 2;
   }
   const invocation = await resolveMcpInvocation(layout.openBrowserUseCommand, layout.cliEntry);
+  const commandPrefix = await resolveHumanCommandPrefix(layout);
   const server: McpServerInvocation = {
     name: "open-browser-use",
     command: invocation.command,
@@ -137,6 +246,7 @@ async function runSetup(args: ParsedArgs): Promise<number> {
     skipExtension: args.skipExtension,
     skipAgents: args.skipAgents,
     env: process.env,
+    commandPrefix,
     ...(args.extensionPath ? { extensionPath: args.extensionPath } : {}),
   });
   if (args.json) {
@@ -147,6 +257,14 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   if (report.result === "complete") return 0;
   if (report.result === "manual_action_required" && args.recovery && isBrowserRecoveryBoundary(report)) return 0;
   return 1;
+}
+
+async function runShellenv(args: ParsedArgs): Promise<number> {
+  const layout = await resolveRuntimeLayout();
+  const shell = parseShellEnv(args.subject ?? process.env.SHELL?.split(/[\\/]/).filter(Boolean).at(-1) ?? "sh");
+  const output = formatShellEnv(shell, shellEnvInstallDir(layout), process.env);
+  if (output.length > 0) console.log(output);
+  return 0;
 }
 
 async function runUpdateExtension(args: ParsedArgs): Promise<number> {
@@ -322,9 +440,10 @@ async function runDoctor(args: ParsedArgs): Promise<number> {
       strict: args.strict,
     }), null, 2));
   } else {
+    const commandPrefix = await resolveHumanCommandPrefix(layout);
     console.log(args.verbose
       ? args.subject === "browser" ? formatDoctorReport(report as DoctorReport) : formatAggregateDoctorReport(report)
-      : formatDoctorSummary(report, command, args.strict, doctorVerboseCommand(args)));
+      : formatDoctorSummary(report, command, args.strict, doctorVerboseCommand(args, commandPrefix)));
   }
   return doctorExitCode(report, args.strict);
 }
@@ -346,6 +465,14 @@ async function runMcpConfig(args: ParsedArgs): Promise<number> {
   return 0;
 }
 
+async function resolveHumanCommandPrefix(layout: Awaited<ReturnType<typeof resolveRuntimeLayout>>): Promise<string> {
+  const command = layout.openBrowserUseCommand;
+  if (!path.isAbsolute(command) && !command.includes(path.sep)) return formatShellCommand(command);
+  const executable = path.isAbsolute(command) ? command : path.resolve(process.cwd(), command);
+  if (await executableExists(executable)) return formatShellCommand(executable);
+  return formatShellCommand(layout.nodeBin, [layout.cliEntry]);
+}
+
 async function resolveMcpInvocation(openBrowserUseCommand: string, cliEntry: string): Promise<{ command: string; args: string[] }> {
   const command = path.isAbsolute(openBrowserUseCommand)
     ? openBrowserUseCommand
@@ -365,13 +492,110 @@ function doctorExitCode(report: { checks: DoctorReport["checks"] }, strict: bool
   return 0;
 }
 
+type ShellEnvKind = "sh" | "bash" | "zsh" | "fish";
+
+function parseShellEnv(value: string): ShellEnvKind {
+  if (value === "sh" || value === "bash" || value === "zsh" || value === "fish") return value;
+  return "sh";
+}
+
+function shellEnvInstallDir(layout: Awaited<ReturnType<typeof resolveRuntimeLayout>>): string {
+  if (layout.mode === "packaged") return path.resolve(layout.root, "..", "..");
+  const command = layout.openBrowserUseCommand;
+  if (path.isAbsolute(command)) return path.dirname(path.dirname(command));
+  if (command.includes(path.sep)) return path.dirname(path.dirname(path.resolve(process.cwd(), command)));
+  return path.dirname(path.dirname(layout.cliEntry));
+}
+
+function formatShellEnv(shell: ShellEnvKind, installDir: string, env: NodeJS.ProcessEnv): string {
+  const binDir = path.join(installDir, "bin");
+  if (env.OBU_INSTALL_DIR === installDir && firstPathEntry(env.PATH) === binDir) return "";
+  if (shell === "fish") {
+    return [
+      `set --global --export OBU_INSTALL_DIR ${doubleQuoted(installDir)};`,
+      `fish_add_path --global --move --path ${doubleQuoted(binDir)};`,
+    ].join("\n");
+  }
+  return [
+    `export OBU_INSTALL_DIR=${shellSingleQuoted(installDir)};`,
+    'export PATH="${OBU_INSTALL_DIR}/bin${PATH+:$PATH}";',
+  ].join("\n");
+}
+
+function firstPathEntry(pathValue: string | undefined): string | undefined {
+  const first = pathValue?.split(path.delimiter).find((entry) => entry.length > 0);
+  return first ? path.resolve(first) : undefined;
+}
+
+function shellSingleQuoted(value: string): string {
+  return `'${value.replaceAll("'", "'\\''")}'`;
+}
+
+function doubleQuoted(value: string): string {
+  return `"${value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("$", "\\$").replaceAll("`", "\\`")}"`;
+}
+
+function formatBootstrapSummary(setupReport: SetupJson, browserReport: DoctorReport | undefined): string {
+  if (setupReport.result === "failed") return formatSetupSummary(setupReport);
+
+  const rows = [
+    setupReport.dryRun ? "open-browser-use bootstrap dry run complete." : "open-browser-use is installed.",
+  ];
+  if (browserReport) {
+    const channelLabel = setupReport.extensionChannel === "store" ? "Chrome Web Store extension" : "extension";
+    const browserFailed = hasDoctorFailures(browserReport);
+    rows.push(setupReport.dryRun
+      ? `Browser pairing would be checked for ${channelLabel} ${setupReport.extensionId}.`
+      : browserFailed
+        ? `Browser repair ran for ${channelLabel} ${setupReport.extensionId}.`
+        : `Browser pairing repaired for ${channelLabel} ${setupReport.extensionId}.`);
+    if (browserFailed) {
+      const failed = browserReport.checks.filter((check) => check.status === "fail");
+      rows.push(`Browser doctor still found ${plural(failed.length, "problem")}: ${failed.map((check) => check.label).join(", ")}.`);
+    }
+  }
+
+  const agentLine = bootstrapAgentSummary(setupReport);
+  if (agentLine) rows.push(agentLine);
+  rows.push("Return to the extension popup and click Resume.");
+  return rows.join("\n");
+}
+
+function bootstrapAgentSummary(setupReport: SetupJson): string | undefined {
+  const agentSteps = setupReport.steps.filter((step) => step.id.startsWith("agent-"));
+  const manualAgents = agentSteps
+    .filter((step) => step.status === "manual_action_required")
+    .map((step) => step.id.replace(/^agent-/, ""));
+  if (manualAgents.length > 0) return `MCP setup needs manual action for: ${manualAgents.join(", ")}.`;
+
+  const configuredAgents = agentSteps
+    .filter((step) => step.status === "applied")
+    .map((step) => step.id.replace(/^agent-/, ""));
+  if (configuredAgents.length > 0) return `MCP agents configured: ${configuredAgents.join(", ")}.`;
+
+  const existingAgents = agentSteps
+    .filter((step) => step.status === "skipped")
+    .map((step) => step.id.replace(/^agent-/, ""));
+  if (existingAgents.length > 0) return `MCP agents already configured: ${existingAgents.join(", ")}.`;
+
+  const adapterStep = setupReport.steps.find((step) => step.id === "agent-adapters");
+  if (!adapterStep) return undefined;
+  if (/no supported coding agents detected/i.test(adapterStep.message)) return "No supported coding agents were detected.";
+  if (/skipped agent adapter wiring/i.test(adapterStep.message)) return "MCP agent setup skipped.";
+  return adapterStep.message;
+}
+
+function plural(count: number, label: string): string {
+  return `${count} ${label}${count === 1 ? "" : "s"}`;
+}
+
 function isBrowserRecoveryBoundary(report: SetupJson): boolean {
   const manualSteps = report.steps.filter((step) => step.status === "manual_action_required");
   return manualSteps.length > 0 && manualSteps.every((step) => step.id === "runtime-descriptor-probe");
 }
 
-function doctorVerboseCommand(args: ParsedArgs): string {
-  const parts = ["obu", "doctor"];
+function doctorVerboseCommand(args: ParsedArgs, commandPrefix: string): string {
+  const parts = ["doctor"];
   if (args.subject === "browser") parts.push("browser");
   if (args.browser) parts.push(`--browser=${args.browser}`);
   if (args.channel) parts.push(`--channel=${args.channel}`);
@@ -380,7 +604,7 @@ function doctorVerboseCommand(args: ParsedArgs): string {
   if (args.repair) parts.push("--repair");
   if (args.cleanBackups) parts.push("--clean-backups");
   parts.push("--verbose");
-  return parts.join(" ");
+  return appendShellArgs(commandPrefix, parts);
 }
 
 function parseArgs(argv: string[]): ParsedArgs {
@@ -420,7 +644,19 @@ function parseArgs(argv: string[]): ParsedArgs {
         args.agent = readValue();
         break;
       case "--agents":
-        args.agents = readValue().split(",").map((value) => value.trim()).filter(Boolean);
+        {
+          const value = readValue().trim();
+          if (value === "auto" || value.length === 0) {
+            args.agents = [];
+            args.skipAgents = false;
+          } else if (value === "none") {
+            args.agents = [];
+            args.skipAgents = true;
+          } else {
+            args.agents = value.split(",").map((entry) => entry.trim()).filter(Boolean);
+            args.skipAgents = false;
+          }
+        }
         break;
       case "--json":
         args.json = true;
@@ -469,6 +705,7 @@ function parseArgs(argv: string[]): ParsedArgs {
         args.skipExtension = true;
         break;
       case "--skip-agents":
+        args.agents = [];
         args.skipAgents = true;
         break;
       case "--version":
@@ -499,11 +736,13 @@ function parseBrowser(value: string): BrowserKind {
 function printHelp(): void {
   console.log(`Usage:
   obu --version
-  obu setup [--yes] [--browser chrome|chrome-for-testing|edge|brave|arc|chromium|--all] [--agents=<list>] [--channel unpacked-dev|store] [--extension-id <id>] [--skip-extension] [--skip-agents] [--dry-run] [--recovery] [--verbose] [--json]
+  obu bootstrap [--yes] [--browser chrome|chrome-for-testing|edge|brave|arc|chromium|--all] [--agents=auto|none|<list>] [--channel unpacked-dev|store] [--extension-id <id>] [--skip-extension] [--dry-run] [--json]
+  obu setup [--yes] [--browser chrome|chrome-for-testing|edge|brave|arc|chromium|--all] [--agents=auto|none|<list>] [--channel unpacked-dev|store] [--extension-id <id>] [--skip-extension] [--skip-agents] [--dry-run] [--recovery] [--verbose] [--json]
   obu doctor [browser] [--browser chrome|chrome-for-testing|edge|brave|arc|chromium] [--channel unpacked-dev|store] [--extension-id <id>] [--verbose] [--json] [--strict] [--repair] [--clean-backups]
   obu install-host [--browser chrome|chrome-for-testing|edge|brave|arc|chromium|--all] [--channel unpacked-dev|store] [--extension-id <id>] [--dry-run] [--verbose] [--json]
   obu update-extension [--path <dir>] [--channel unpacked-dev] [--no-wait] [--dry-run] [--verbose] [--json]
   obu mcp-config --agent=<id> --print
+  obu shellenv [shell]
   obu mcp stdio`);
 }
 

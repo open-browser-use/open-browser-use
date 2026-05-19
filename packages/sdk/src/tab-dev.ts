@@ -29,7 +29,7 @@ export class TabDev {
       commandParams: params,
     };
     const currentUrl = this.guards.needsCurrentUrl(M.EXECUTE_CDP)
-      ? await this.transport.sendRequest<string>(M.TAB_URL, withSessionMeta({ tab_id: this.tabId }))
+      ? await this.transport.sendRequest<string>(M.TAB_URL, withSessionMeta({ tab_id: this.tabId }), opts.timeout)
       : undefined;
     await this.guards.ensureCommandAllowed(command, { currentUrl });
     return await this.transport.sendRequest<T>(

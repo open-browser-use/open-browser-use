@@ -15,7 +15,7 @@ for driving an installed browser profile without `--remote-debugging-port`.
 | `packages/sdk` | Agent-facing TypeScript SDK. |
 | `packages/cli` | User-facing setup and diagnostics commands such as `obu doctor browser`. |
 | `packages/extension` | Chromium MV3 extension and dev native-host manifest writer. |
-| `docs/wire-protocol.md` | P1 + P2 wire protocol reference. |
+| `docs/install.md` | Preview install, setup, and agent wiring guide. |
 
 ## Install Preview
 
@@ -45,11 +45,8 @@ For real release payloads, pass `--node-root /path/to/node-22.22-or-newer` to
 `scripts/assemble-payload.mjs`; `--allow-current-node` is only for local smoke
 payloads.
 
-See [docs/install.md](docs/install.md), [docs/agent-adapters.md](docs/agent-adapters.md),
-[docs/agent-browser-mcp-usage.md](docs/agent-browser-mcp-usage.md),
-[docs/mcp-browser-integration-analysis.md](docs/mcp-browser-integration-analysis.md),
-[docs/troubleshooting.md](docs/troubleshooting.md), and
-[docs/release-checklist.md](docs/release-checklist.md). Chrome Web Store
+See [docs/install.md](docs/install.md), [docs/troubleshooting.md](docs/troubleshooting.md),
+and [docs/release-checklist.md](docs/release-checklist.md). Chrome Web Store
 submission notes live in
 [docs/chrome-web-store-review-pack.md](docs/chrome-web-store-review-pack.md).
 

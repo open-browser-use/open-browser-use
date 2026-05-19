@@ -191,20 +191,118 @@ resolve_release_artifact() {
   fi
 }
 
-update_profile_path() {
-  bin_dir="$1"
-  profile="${HOME:-}/.profile"
-  [ -n "${HOME:-}" ] || return 0
-  mkdir -p "$(dirname "$profile")"
-  marker="# open-browser-use installer PATH"
-  if [ -f "$profile" ] && grep -F "$marker" "$profile" >/dev/null 2>&1; then
-    return 0
+shell_quote() {
+  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
+}
+
+shell_double_quote() {
+  printf '"%s"' "$(printf '%s' "$1" | sed 's/[\\`"$]/\\&/g')"
+}
+
+detect_shell_name() {
+  if [ -n "${SHELL:-}" ]; then
+    basename "$SHELL"
+  else
+    printf '%s\n' "sh"
   fi
-  {
-    echo ""
-    echo "$marker"
-    echo "export PATH=\"$bin_dir:\$PATH\""
-  } >> "$profile"
+}
+
+shellenv_shell_arg() {
+  case "$1" in
+    bash|zsh|fish)
+      printf '%s\n' "$1"
+      ;;
+    *)
+      printf '%s\n' "sh"
+      ;;
+  esac
+}
+
+shell_profile_path() {
+  shell_name="$1"
+  [ -n "${HOME:-}" ] || return 1
+  os_name="$(uname -s 2>/dev/null || true)"
+  case "$shell_name:$os_name" in
+    zsh:Darwin)
+      printf '%s\n' "${ZDOTDIR:-"$HOME"}/.zprofile"
+      ;;
+    zsh:*)
+      printf '%s\n' "${ZDOTDIR:-"$HOME"}/.zshrc"
+      ;;
+    bash:Darwin)
+      printf '%s\n' "$HOME/.bash_profile"
+      ;;
+    bash:*)
+      printf '%s\n' "$HOME/.bashrc"
+      ;;
+    fish:*)
+      printf '%s\n' "$HOME/.config/fish/config.fish"
+      ;;
+    *)
+      printf '%s\n' "${ENV:-"$HOME/.profile"}"
+      ;;
+  esac
+}
+
+print_path_next_steps() {
+  [ "$NO_MODIFY_PATH" -eq 0 ] || { log_verbose "path: skipped shellenv instructions"; return 0; }
+  [ "$UNMANAGED" != "1" ] || { log_verbose "path: skipped shellenv instructions"; return 0; }
+
+  shell_name="$(detect_shell_name)"
+  shell_arg="$(shellenv_shell_arg "$shell_name")"
+  profile="$(shell_profile_path "$shell_name" || true)"
+  quoted_obu="$(shell_double_quote "$INSTALL_DIR/bin/obu")"
+
+  if [ -n "$profile" ]; then
+    quoted_profile="$(shell_quote "$profile")"
+    if [ "$shell_arg" = "fish" ]; then
+      shellenv_line="$quoted_obu shellenv fish | source"
+      if [ -f "$profile" ] && grep -F "$shellenv_line" "$profile" >/dev/null 2>&1; then
+        if command -v obu >/dev/null 2>&1; then
+          log_verbose "path: shellenv already configured"
+          return 0
+        fi
+        echo
+        echo "Next steps:"
+        echo "  Add open-browser-use to your current shell:"
+        echo "    $shellenv_line"
+        log_verbose "path: printed shellenv activation"
+        return 0
+      fi
+      echo
+      echo "Next steps:"
+      echo "  Add open-browser-use to your fish environment:"
+      echo "    mkdir -p $(shell_quote "$(dirname "$profile")")"
+      echo "    echo '$shellenv_line' >> $quoted_profile"
+      echo "    $shellenv_line"
+    else
+      shellenv_line="eval \"\$($quoted_obu shellenv $shell_arg)\""
+      if [ -f "$profile" ] && grep -F "$shellenv_line" "$profile" >/dev/null 2>&1; then
+        if command -v obu >/dev/null 2>&1; then
+          log_verbose "path: shellenv already configured"
+          return 0
+        fi
+        echo
+        echo "Next steps:"
+        echo "  Add open-browser-use to your current shell:"
+        echo "    $shellenv_line"
+        log_verbose "path: printed shellenv activation"
+        return 0
+      fi
+      echo
+      echo "Next steps:"
+      echo "  Add open-browser-use to your shell environment:"
+      echo "    echo '$shellenv_line' >> $quoted_profile"
+      echo "    $shellenv_line"
+    fi
+  else
+    shellenv_line="eval \"\$($quoted_obu shellenv $shell_arg)\""
+    echo
+    echo "Next steps:"
+    echo "  Add open-browser-use to your current shell:"
+    echo "    $shellenv_line"
+  fi
+  log_verbose "path: printed shellenv instructions"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -243,7 +341,7 @@ Environment:
   OBU_ARTIFACT_SHA256   Expected artifact SHA-256
   OBU_RELEASE_BASE_URL   Release asset base URL with manifest.tsv or manifest.json
   OBU_TARGET             Override target triple from release manifest
-  OBU_UNMANAGED_INSTALL Disable shell profile PATH edits
+  OBU_UNMANAGED_INSTALL Skip shellenv PATH integration instructions
 USAGE
       exit 0
       ;;
@@ -256,8 +354,12 @@ USAGE
 done
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/obu-install.XXXXXX")"
+PAYLOAD_STAGE_DIR=""
 cleanup() {
   rm -rf "$TMP_DIR"
+  if [ -n "$PAYLOAD_STAGE_DIR" ]; then
+    rm -rf "$PAYLOAD_STAGE_DIR"
+  fi
 }
 trap cleanup EXIT INT TERM
 
@@ -298,22 +400,61 @@ fi
 mkdir -p "$INSTALL_DIR/payloads" "$INSTALL_DIR/bin"
 PAYLOAD_NAME="$(artifact_name "$ARTIFACT_FILE")"
 PAYLOAD_DIR="$INSTALL_DIR/payloads/$PAYLOAD_NAME"
-rm -rf "$PAYLOAD_DIR.tmp" "$PAYLOAD_DIR"
-mkdir -p "$PAYLOAD_DIR.tmp"
+PAYLOAD_STAGE_DIR="$(mktemp -d "$INSTALL_DIR/payloads/.${PAYLOAD_NAME}.tmp.XXXXXX")"
+PAYLOAD_BACKUP_DIR="$INSTALL_DIR/payloads/.${PAYLOAD_NAME}.previous.$$"
+rm -rf "$PAYLOAD_BACKUP_DIR"
 log_verbose "extract: $ARTIFACT_FILE -> $PAYLOAD_DIR"
-if ! tar -xzf "$ARTIFACT_FILE" -C "$PAYLOAD_DIR.tmp"; then
+if ! tar -xzf "$ARTIFACT_FILE" -C "$PAYLOAD_STAGE_DIR"; then
   echo "extract failed: could not unpack $ARTIFACT_FILE" >&2
   echo "Check that the artifact is a valid open-browser-use .tar.gz file." >&2
   exit 1
 fi
-mv "$PAYLOAD_DIR.tmp" "$PAYLOAD_DIR"
+if [ -e "$PAYLOAD_DIR" ] || [ -L "$PAYLOAD_DIR" ]; then
+  if ! mv "$PAYLOAD_DIR" "$PAYLOAD_BACKUP_DIR"; then
+    echo "install failed: could not move existing payload $PAYLOAD_DIR aside" >&2
+    exit 1
+  fi
+fi
+if ! mv "$PAYLOAD_STAGE_DIR" "$PAYLOAD_DIR"; then
+  echo "install failed: could not activate new payload $PAYLOAD_DIR" >&2
+  if [ -e "$PAYLOAD_BACKUP_DIR" ] || [ -L "$PAYLOAD_BACKUP_DIR" ]; then
+    mv "$PAYLOAD_BACKUP_DIR" "$PAYLOAD_DIR" 2>/dev/null || true
+  fi
+  exit 1
+fi
+PAYLOAD_STAGE_DIR=""
+PREVIOUS_CURRENT="$(readlink "$INSTALL_DIR/payloads/current" 2>/dev/null || true)"
 rm -f "$INSTALL_DIR/payloads/current"
-ln -s "$PAYLOAD_NAME" "$INSTALL_DIR/payloads/current"
+if ! ln -s "$PAYLOAD_NAME" "$INSTALL_DIR/payloads/current"; then
+  echo "install failed: could not update current payload symlink" >&2
+  rm -rf "$PAYLOAD_DIR"
+  if [ -e "$PAYLOAD_BACKUP_DIR" ] || [ -L "$PAYLOAD_BACKUP_DIR" ]; then
+    mv "$PAYLOAD_BACKUP_DIR" "$PAYLOAD_DIR" 2>/dev/null || true
+  fi
+  if [ -n "$PREVIOUS_CURRENT" ]; then
+    ln -s "$PREVIOUS_CURRENT" "$INSTALL_DIR/payloads/current" 2>/dev/null || true
+  fi
+  exit 1
+fi
+rm -rf "$PAYLOAD_BACKUP_DIR"
 
 cat > "$INSTALL_DIR/bin/obu" <<'SHIM'
 #!/bin/sh
 set -eu
-BIN_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+SOURCE="$0"
+while [ -L "$SOURCE" ]; do
+  SOURCE_DIR="$(CDPATH= cd -- "$(dirname -- "$SOURCE")" && pwd)"
+  SOURCE_TARGET="$(readlink "$SOURCE")"
+  case "$SOURCE_TARGET" in
+    /*)
+      SOURCE="$SOURCE_TARGET"
+      ;;
+    *)
+      SOURCE="$SOURCE_DIR/$SOURCE_TARGET"
+      ;;
+  esac
+done
+BIN_DIR="$(CDPATH= cd -- "$(dirname -- "$SOURCE")" && pwd)"
 PAYLOAD_ROOT="${OBU_PAYLOAD_ROOT:-"$BIN_DIR/../payloads/current"}"
 NODE_BIN="${OBU_NODE_BINARY:-"$PAYLOAD_ROOT/node/bin/node"}"
 export OBU_PAYLOAD_ROOT="$PAYLOAD_ROOT"
@@ -325,15 +466,9 @@ chmod 755 "$INSTALL_DIR/bin/obu"
 ln -sf obu "$INSTALL_DIR/bin/open-browser-use"
 log_verbose "shim: wrote $INSTALL_DIR/bin/obu"
 
-if [ "$NO_MODIFY_PATH" -eq 0 ] && [ "$UNMANAGED" != "1" ]; then
-  update_profile_path "$INSTALL_DIR/bin"
-  log_verbose "path: ensured $INSTALL_DIR/bin in ${HOME:-}/.profile"
-else
-  log_verbose "path: skipped shell profile update"
-fi
-
 if [ -n "$SELECTED_TARGET" ]; then
   echo "Selected target: $SELECTED_TARGET"
 fi
 echo "open-browser-use installed at $INSTALL_DIR"
-echo "Run: $INSTALL_DIR/bin/obu setup"
+echo "Run: $INSTALL_DIR/bin/obu bootstrap --yes --all --agents=auto"
+print_path_next_steps

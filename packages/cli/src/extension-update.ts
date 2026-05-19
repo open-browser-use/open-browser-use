@@ -1,6 +1,7 @@
-import { cp, mkdir, readdir, readFile, rename, rm } from "node:fs/promises";
+import { cp, mkdir, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 
+import { hasActiveWebExtensionRuntimeDescriptor } from "./doctor-browser.js";
 import type { RuntimeLayout } from "./runtime-layout.js";
 
 export type ExtensionUpdateStatus = "applied" | "skipped" | "would_apply" | "manual_action_required" | "failed";
@@ -108,7 +109,7 @@ export async function updateExtension(options: UpdateExtensionOptions): Promise<
     return result("manual_action_required", dryRun, currentDir, steps);
   }
 
-  if (await hasRuntimeDescriptor(options.layout.runtimeDir)) {
+  if (await hasActiveWebExtensionRuntimeDescriptor(options.layout.runtimeDir)) {
     steps.push({
       id: "runtime-descriptor-probe",
       status: "applied",
@@ -169,11 +170,6 @@ async function replaceCurrentDir(versionDir: string, currentDir: string): Promis
     throw error;
   }
   await rm(oldDir, { recursive: true, force: true });
-}
-
-async function hasRuntimeDescriptor(runtimeDir: string): Promise<boolean> {
-  const entries = await readdir(path.join(runtimeDir, "webextension")).catch(() => []);
-  return entries.some((entry) => entry.endsWith(".json"));
 }
 
 function result(

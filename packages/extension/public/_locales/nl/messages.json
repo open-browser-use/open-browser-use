@@ -1,0 +1,322 @@
+{
+  "extName": {
+    "message": "open-browser-use"
+  },
+  "extDescription": {
+    "message": "Bedien Chromium-familiebrowsers met open-browser-use."
+  },
+  "actionTitle": {
+    "message": "open-browser-use"
+  },
+  "popupTitle": {
+    "message": "Bedien Chrome met elke Agent"
+  },
+  "settingsOpenTitle": {
+    "message": "Instellingen"
+  },
+  "settingsOpenAriaLabel": {
+    "message": "Instellingen openen"
+  },
+  "settingsDocumentTitle": {
+    "message": "open-browser-use instellingen"
+  },
+  "settingsPageTitle": {
+    "message": "Instellingen"
+  },
+  "settingsPageSubtitle": {
+    "message": "Bepaal hoe open-browser-use aanvoelt in deze browser."
+  },
+  "settingsLanguageTitle": {
+    "message": "Taal"
+  },
+  "settingsLanguageDescription": {
+    "message": "Kies de taal voor extensiepagina’s."
+  },
+  "settingsLanguageAuto": {
+    "message": "Browsertaal volgen"
+  },
+  "settingsSaved": {
+    "message": "Opgeslagen"
+  },
+  "settingsSaveFailed": {
+    "message": "Instelling kon niet worden opgeslagen."
+  },
+  "versionAriaLabel": {
+    "message": "Geïnstalleerde extensieversie"
+  },
+  "versionFallback": {
+    "message": "Versie"
+  },
+  "versionLabel": {
+    "message": "Versie $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "nativeHostLabel": {
+    "message": "Native host"
+  },
+  "checkingStatus": {
+    "message": "Controleren..."
+  },
+  "setupLabel": {
+    "message": "Instellen"
+  },
+  "agentSetupLabel": {
+    "message": "Agent instellen"
+  },
+  "agentHandoffTitle": {
+    "message": "Overdracht aan Agent"
+  },
+  "copyForAgent": {
+    "message": "Kopiëren voor Agent"
+  },
+  "copyAgentSetupHandoff": {
+    "message": "Agent-instellingsoverdracht kopiëren"
+  },
+  "stopButton": {
+    "message": "Ik neem over"
+  },
+  "resumeButton": {
+    "message": "Hervatten"
+  },
+  "debugLogsLabel": {
+    "message": "Debuglogboeken"
+  },
+  "disabled": {
+    "message": "Uitgeschakeld"
+  },
+  "debugEnable": {
+    "message": "Inschakelen"
+  },
+  "debugDisable": {
+    "message": "Uitschakelen"
+  },
+  "debugCopy": {
+    "message": "Kopiëren"
+  },
+  "debugClear": {
+    "message": "Wissen"
+  },
+  "nativeHostStatusUnavailable": {
+    "message": "Native-hoststatus niet beschikbaar"
+  },
+  "debugUnavailable": {
+    "message": "Niet beschikbaar"
+  },
+  "debugCopyFailed": {
+    "message": "Kopiëren mislukt: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCleared": {
+    "message": "Gewist"
+  },
+  "copyAgentUnavailable": {
+    "message": "Agent-instellingsoverdracht niet beschikbaar"
+  },
+  "copyAgentSuccess": {
+    "message": "Gekopieerd. Plak dit in je Agent. Kom terug en klik op Hervatten wanneer de instelling klaar is."
+  },
+  "copying": {
+    "message": "Bezig met kopiëren"
+  },
+  "copied": {
+    "message": "Gekopieerd"
+  },
+  "tryAgain": {
+    "message": "Opnieuw proberen"
+  },
+  "copyUnavailable": {
+    "message": "Kopiëren niet beschikbaar. Controleer de klembordmachtiging en probeer het opnieuw."
+  },
+  "agentSetupDefaultText": {
+    "message": "Verbind een andere Agent met deze overdracht. Kopieer dit naar de Agent en houd deze pop-up open tijdens het koppelen."
+  },
+  "statusConnected": {
+    "message": "Verbonden"
+  },
+  "statusConnecting": {
+    "message": "Verbinden"
+  },
+  "statusUpdateNeeded": {
+    "message": "Update nodig"
+  },
+  "statusStopped": {
+    "message": "Jij hebt de controle"
+  },
+  "statusNeedsSetup": {
+    "message": "Instelling nodig"
+  },
+  "statusReconnecting": {
+    "message": "Opnieuw verbinden"
+  },
+  "hostVersionLabel": {
+    "message": "Host $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "hostReady": {
+    "message": "Host gereed"
+  },
+  "connectingNativeHost": {
+    "message": "Verbinden met de native host."
+  },
+  "disconnectedDetail": {
+    "message": "Proberen opnieuw te verbinden. Gebruik Hervatten nadat de instelling is gerepareerd."
+  },
+  "versionMismatchDetail": {
+    "message": "Werk de lokale host bij en klik daarna op Hervatten om opnieuw te verbinden."
+  },
+  "stoppedDetail": {
+    "message": "Voltooi aanmelden, wachtwoorden of een paginastap en klik daarna op Hervatten om de automatisering voort te zetten."
+  },
+  "errorDetail": {
+    "message": "Voer de instelling uit en klik daarna op Hervatten om opnieuw te verbinden."
+  },
+  "deliverableRecovery_one": {
+    "message": "$count$ opleverbaar tabblad beschikbaar. Gebruik browser.deliverables() en daarna claim() om het te herstellen.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_other": {
+    "message": "$count$ opleverbare tabbladen beschikbaar. Gebruik browser.deliverables() en daarna claim() om ze te herstellen.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "adviceUpdateHost": {
+    "message": "Werk de lokale host bij en verbind opnieuw."
+  },
+  "setupTextUpdateHost": {
+    "message": "Kopieer deze overdracht naar je Agent. Kom terug en klik op Hervatten nadat de update klaar is."
+  },
+  "adviceInstallHost": {
+    "message": "Installeer de lokale host en verbind opnieuw."
+  },
+  "setupTextInstallHost": {
+    "message": "Kopieer deze overdracht naar je Agent om open-browser-use te installeren en de native host voor deze extensie te registreren."
+  },
+  "adviceRefreshHostPermission": {
+    "message": "Vernieuw de hostmachtiging van deze extensie en verbind opnieuw."
+  },
+  "setupTextRefreshHostPermission": {
+    "message": "Kopieer deze overdracht naar je Agent om de native-hostregistratie voor deze extensie-ID te vernieuwen."
+  },
+  "adviceRepairHost": {
+    "message": "Repareer de lokale host en verbind opnieuw."
+  },
+  "setupTextRepairHost": {
+    "message": "Kopieer deze overdracht naar je Agent om de open-browser-use-instelling te repareren en de native host te verifiëren."
+  },
+  "adviceRepairSetup": {
+    "message": "Repareer de instelling en verbind opnieuw."
+  },
+  "setupTextRepairSetup": {
+    "message": "Kopieer deze overdracht naar je Agent om de open-browser-use-instelling te repareren en browserkoppeling te verifiëren."
+  },
+  "adviceCheckSetup": {
+    "message": "Controleer de lokale instelling en klik daarna op Hervatten om opnieuw te verbinden."
+  },
+  "adviceDisconnectedPortObject": {
+    "message": "De lokale host is niet verbonden. Installeer opnieuw en verbind daarna opnieuw."
+  },
+  "setupTextDisconnectedPortObject": {
+    "message": "Kopieer deze overdracht naar je Agent om open-browser-use opnieuw te installeren en de host voor deze extensie te registreren."
+  },
+  "retryingInSeconds": {
+    "message": "Opnieuw proberen over $seconds$s.",
+    "placeholders": {
+      "seconds": {
+        "content": "$1"
+      }
+    }
+  },
+  "statusStopping": {
+    "message": "Stoppen..."
+  },
+  "statusStoppedByUser": {
+    "message": "Gestopt door gebruiker"
+  },
+  "statusVersionMismatch": {
+    "message": "Versie komt niet overeen"
+  },
+  "debugEnabledEntries_one": {
+    "message": "Ingeschakeld, $count$/$max$ item",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_other": {
+    "message": "Ingeschakeld, $count$/$max$ items",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugDisabledEntries_one": {
+    "message": "Uitgeschakeld, $count$ opgeslagen item",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_other": {
+    "message": "Uitgeschakeld, $count$ opgeslagen items",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_one": {
+    "message": "$count$ item gekopieerd",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_other": {
+    "message": "$count$ items gekopieerd",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverablesGroupTitle": {
+    "message": "$label$ opleveringen",
+    "placeholders": {
+      "label": {
+        "content": "$1"
+      }
+    }
+  },
+  "defaultDeliverablesGroupTitle": {
+    "message": "open-browser-use opleveringen"
+  }
+}

@@ -1,8 +1,8 @@
+import { LANGUAGE_SETTING_KEY, applyDocumentLocale, applyStaticMessages, initI18n, msg, msgPlural } from "./i18n.js";
+
 const STATUS_KEY = "OBU_NATIVE_HOST_STATUS";
 const DEBUG_LOG_KEY = "OBU_DEBUG_LOG";
-const GITHUB_INSTALL_URL = "https://github.com/open-browser-use/open-browser-use/releases/latest/download/install.sh";
 const EXTENSION_CHANNEL = "__OBU_EXTENSION_CHANNEL__";
-const SETUP_COMMAND = setupCommandForChannel(EXTENSION_CHANNEL, chrome.runtime.id);
 
 type ExtensionChannel = "unpacked-dev" | "store";
 
@@ -29,7 +29,6 @@ type HostDiagnosis =
 type NativeHostAdvice = {
   detail?: string;
   setupText?: string;
-  setupCommand?: string;
   showSetup: boolean;
 };
 
@@ -47,16 +46,20 @@ type DebugLogStatus = {
 };
 
 const dot = document.querySelector<HTMLSpanElement>("#status-dot");
+const shell = document.querySelector<HTMLElement>("#shell");
+const statusPanel = document.querySelector<HTMLElement>("#status-panel");
 const statusText = document.querySelector<HTMLParagraphElement>("#status-text");
 const detailText = document.querySelector<HTMLParagraphElement>("#detail-text");
 const setupPanel = document.querySelector<HTMLElement>("#setup-panel");
+const setupLabel = document.querySelector<HTMLParagraphElement>("#setup-label");
 const setupText = document.querySelector<HTMLParagraphElement>("#setup-text");
-const setupCommand = document.querySelector<HTMLPreElement>("#setup-command");
-const copySetupButton = document.querySelector<HTMLButtonElement>("#copy-setup-button");
+const agentHandoff = document.querySelector<HTMLElement>("#agent-handoff");
+const copyAgentButton = document.querySelector<HTMLButtonElement>("#copy-agent-button");
 const setupCopyText = document.querySelector<HTMLParagraphElement>("#setup-copy-text");
 const versionText = document.querySelector<HTMLSpanElement>("#version-text");
 const stopButton = document.querySelector<HTMLButtonElement>("#stop-button");
 const resumeButton = document.querySelector<HTMLButtonElement>("#resume-button");
+const settingsButton = document.querySelector<HTMLButtonElement>("#settings-button");
 const debugText = document.querySelector<HTMLParagraphElement>("#debug-text");
 const debugToggleButton = document.querySelector<HTMLButtonElement>("#debug-toggle-button");
 const copyDebugButton = document.querySelector<HTMLButtonElement>("#copy-debug-button");
@@ -64,14 +67,15 @@ const clearDebugButton = document.querySelector<HTMLButtonElement>("#clear-debug
 
 let currentStatus: HostStatus | undefined;
 let currentDebug: DebugLogStatus = { enabled: false, entries: [] };
+let setupCopyResetTimer: ReturnType<typeof setTimeout> | undefined;
 
-versionText!.textContent = `Version ${chrome.runtime.getManifest().version}`;
-
-void refreshStatus();
-void refreshDebugStatus();
+void start();
 
 chrome.storage.onChanged.addListener((changes, areaName) => {
   if (areaName !== "local") return;
+  if (changes[LANGUAGE_SETTING_KEY]) {
+    void refreshLanguage();
+  }
   const status = changes[STATUS_KEY]?.newValue;
   if (isHostStatus(status)) render(status);
   const debug = changes[DEBUG_LOG_KEY]?.newValue;
@@ -86,8 +90,22 @@ resumeButton!.addEventListener("click", () => {
   void sendControlMessage("RESUME_BROWSER_CONTROL", resumeButton!);
 });
 
-copySetupButton!.addEventListener("click", () => {
-  void copySetupCommand();
+settingsButton?.addEventListener("click", () => {
+  void openSettings();
+});
+
+copyAgentButton!.addEventListener("click", () => {
+  void copyAgentHandoff();
+});
+
+agentHandoff!.addEventListener("click", () => {
+  void copyAgentHandoff();
+});
+
+agentHandoff!.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
+  void copyAgentHandoff();
 });
 
 debugToggleButton!.addEventListener("click", () => {
@@ -102,13 +120,42 @@ clearDebugButton!.addEventListener("click", () => {
   void clearDebugLogs();
 });
 
+async function start(): Promise<void> {
+  await initI18n();
+  renderStaticShell();
+  void refreshStatus();
+  void refreshDebugStatus();
+}
+
+async function refreshLanguage(): Promise<void> {
+  await initI18n();
+  renderStaticShell();
+  if (currentStatus) render(currentStatus);
+  renderDebug(currentDebug);
+}
+
+function renderStaticShell(): void {
+  applyDocumentLocale();
+  applyStaticMessages();
+  versionText!.textContent = msg("versionLabel", [chrome.runtime.getManifest().version]);
+  copyAgentButton!.textContent = agentCopyButtonLabel();
+}
+
+async function openSettings(): Promise<void> {
+  if (chrome.runtime.openOptionsPage) {
+    await chrome.runtime.openOptionsPage();
+    return;
+  }
+  await chrome.tabs.create({ url: chrome.runtime.getURL("options.html"), active: true });
+}
+
 async function refreshStatus(): Promise<void> {
   try {
     const status = await chrome.runtime.sendMessage({ type: "GET_NATIVE_HOST_STATUS" });
     if (isHostStatus(status)) {
       render(status);
     } else {
-      render({ state: "error", message: "Native host status unavailable" });
+      render({ state: "error", message: msg("nativeHostStatusUnavailable") });
     }
   } catch (error) {
     render({ state: "error", message: errorMessage(error) });
@@ -120,7 +167,7 @@ async function refreshDebugStatus(): Promise<void> {
     const debug = await chrome.runtime.sendMessage({ type: "GET_DEBUG_LOG_STATUS" });
     if (isDebugLogStatus(debug)) renderDebug(debug);
   } catch {
-    renderDebug({ enabled: false, entries: [] }, "Unavailable");
+    renderDebug({ enabled: false, entries: [] }, msg("debugUnavailable"));
   }
 }
 
@@ -131,7 +178,7 @@ async function sendControlMessage(type: "STOP_BROWSER_CONTROL" | "RESUME_BROWSER
     if (isHostStatus(status)) {
       render(status);
     } else {
-      render({ state: "error", message: "Native host status unavailable" });
+      render({ state: "error", message: msg("nativeHostStatusUnavailable") });
     }
   } catch (error) {
     render({ state: "error", message: errorMessage(error) });
@@ -157,10 +204,10 @@ async function copyDebugLogs(): Promise<void> {
     if (isDebugLogStatus(debug)) {
       renderDebug(debug);
       await writeClipboard(debugReport(debug));
-      renderDebug(debug, `Copied ${debug.entries.length} entries`);
+      renderDebug(debug, debugCopiedLabel(debug.entries.length));
     }
   } catch (error) {
-    renderDebug(currentDebug, `Copy failed: ${errorMessage(error)}`);
+    renderDebug(currentDebug, msg("debugCopyFailed", [errorMessage(error)]));
   } finally {
     copyDebugButton!.disabled = currentDebug.entries.length === 0;
   }
@@ -170,29 +217,65 @@ async function clearDebugLogs(): Promise<void> {
   clearDebugButton!.disabled = true;
   try {
     const debug = await chrome.runtime.sendMessage({ type: "CLEAR_DEBUG_LOGS" });
-    if (isDebugLogStatus(debug)) renderDebug(debug, "Cleared");
+    if (isDebugLogStatus(debug)) renderDebug(debug, msg("debugCleared"));
   } finally {
     clearDebugButton!.disabled = currentDebug.entries.length === 0;
   }
 }
 
-async function copySetupCommand(): Promise<void> {
-  copySetupButton!.disabled = true;
+async function copyAgentHandoff(): Promise<void> {
+  await copySetupText({
+    button: copyAgentButton!,
+    text: (agentHandoff!.textContent ?? "").trim(),
+    unavailable: msg("copyAgentUnavailable"),
+    success: msg("copyAgentSuccess"),
+  });
+}
+
+async function copySetupText(input: {
+  button: HTMLButtonElement;
+  text: string;
+  unavailable: string;
+  success: string;
+}): Promise<void> {
+  if (input.button.disabled) return;
+  input.button.disabled = true;
+  clearSetupCopyResetTimer();
+  input.button.textContent = msg("copying");
+  setupCopyText!.textContent = "";
+  setDataAttribute(setupPanel, "data-copy-state", "copying");
   try {
-    const command = (setupCommand!.textContent ?? "").trim();
-    if (command.length === 0) throw new Error("setup command unavailable");
-    await writeClipboard(command);
-    setupCopyText!.textContent = "Copied. Paste into Terminal, wait for doctor to finish, then click Resume.";
-  } catch (error) {
-    setupCopyText!.textContent = `Copy failed: ${errorMessage(error)}`;
+    if (input.text.length === 0) throw new Error(input.unavailable);
+    await writeClipboard(input.text);
+    input.button.textContent = msg("copied");
+    setupCopyText!.textContent = input.success;
+    setDataAttribute(setupPanel, "data-copy-state", "copied");
+  } catch {
+    input.button.textContent = msg("tryAgain");
+    setupCopyText!.textContent = msg("copyUnavailable");
+    setDataAttribute(setupPanel, "data-copy-state", "error");
   } finally {
-    copySetupButton!.disabled = false;
+    input.button.disabled = false;
+    setupCopyResetTimer = setTimeout(() => {
+      copyAgentButton!.textContent = agentCopyButtonLabel();
+      setupCopyText!.textContent = "";
+      removeDataAttribute(setupPanel, "data-copy-state");
+      setupCopyResetTimer = undefined;
+    }, 2200);
   }
+}
+
+function clearSetupCopyResetTimer(): void {
+  if (setupCopyResetTimer === undefined) return;
+  clearTimeout(setupCopyResetTimer);
+  setupCopyResetTimer = undefined;
 }
 
 function render(status: HostStatus): void {
   currentStatus = status;
   const advice = nativeHostAdvice(status);
+  setDataAttribute(shell, "data-state", status.state);
+  setDataAttribute(statusPanel, "data-state", status.state);
   dot!.className = `dot ${statusClass(status.state)}`;
   statusText!.textContent = statusLabel(status);
   detailText!.textContent = statusDetail(status, advice);
@@ -202,18 +285,43 @@ function render(status: HostStatus): void {
 }
 
 function renderSetup(advice: NativeHostAdvice): void {
-  const text = advice.showSetup ? advice.setupText ?? "" : "";
-  const command = advice.showSetup ? advice.setupCommand ?? "" : "";
-  const changed = setupText!.textContent !== text || setupCommand!.textContent !== command;
-  setupPanel!.hidden = !advice.showSetup;
+  const text = advice.showSetup
+    ? advice.setupText ?? ""
+    : msg("agentSetupDefaultText");
+  const handoff = agentHandoffForChannel(EXTENSION_CHANNEL, chrome.runtime.id);
+  const label = advice.showSetup
+    ? msg("setupLabel")
+    : msg("agentSetupLabel");
+  const changed = setupLabel!.textContent !== label
+    || setupText!.textContent !== text
+    || agentHandoff!.textContent !== handoff;
+  setupPanel!.hidden = false;
+  setupLabel!.textContent = label;
   setupText!.textContent = text;
-  setupCommand!.textContent = command;
-  if (!advice.showSetup || changed) setupCopyText!.textContent = "";
+  agentHandoff!.textContent = handoff;
+  if (changed) {
+    clearSetupCopyResetTimer();
+    copyAgentButton!.textContent = agentCopyButtonLabel();
+    setupCopyText!.textContent = "";
+    removeDataAttribute(setupPanel, "data-copy-state");
+  }
+}
+
+function setDataAttribute(element: HTMLElement | null, name: string, value: string): void {
+  const target = element as (HTMLElement & { setAttribute?: (name: string, value: string) => void }) | null;
+  target?.setAttribute?.(name, value);
+}
+
+function removeDataAttribute(element: HTMLElement | null, name: string): void {
+  const target = element as (HTMLElement & { removeAttribute?: (name: string) => void }) | null;
+  target?.removeAttribute?.(name);
 }
 
 function renderDebug(debug: DebugLogStatus, overrideText?: string): void {
   currentDebug = debug;
-  debugToggleButton!.textContent = debug.enabled ? "Disable" : "Enable";
+  debugToggleButton!.textContent = debug.enabled
+    ? msg("debugDisable")
+    : msg("debugEnable");
   copyDebugButton!.disabled = debug.entries.length === 0;
   clearDebugButton!.disabled = debug.entries.length === 0;
   if (overrideText) {
@@ -222,8 +330,8 @@ function renderDebug(debug: DebugLogStatus, overrideText?: string): void {
   }
   const max = typeof debug.maxEntries === "number" ? debug.maxEntries : 200;
   debugText!.textContent = debug.enabled
-    ? `Enabled, ${debug.entries.length}/${max} entries`
-    : `Disabled, ${debug.entries.length} saved entries`;
+    ? debugEnabledLabel(debug.entries.length, max)
+    : debugDisabledLabel(debug.entries.length);
 }
 
 function canResume(status: HostStatus): boolean {
@@ -232,45 +340,48 @@ function canResume(status: HostStatus): boolean {
 
 function statusClass(state: HostStatus["state"]): string {
   if (state === "connected") return "connected";
-  if (state === "error" || state === "version_mismatch") return "error";
+  if (state === "connecting" || state === "disconnected") return "reconnecting";
+  if (state === "error" || state === "version_mismatch") return "attention";
   return "";
 }
 
 function statusLabel(status: HostStatus): string {
   switch (status.state) {
     case "connected":
-      return "Connected";
+      return msg("statusConnected");
     case "connecting":
-      return "Connecting";
+      return msg("statusConnecting");
     case "version_mismatch":
-      return "Version mismatch";
+      return msg("statusUpdateNeeded");
     case "stopped":
-      return "You are in control";
+      return msg("statusStopped");
     case "error":
-      return "Error";
+      return msg("statusNeedsSetup");
     case "disconnected":
-      return "Disconnected";
+      return msg("statusReconnecting");
   }
 }
 
 function detailLabel(status: HostStatus): string {
   if (status.state === "connected") {
-    return status.hostVersion ? `Host ${status.hostVersion}` : "Host ready";
+    return status.hostVersion
+      ? msg("hostVersionLabel", [status.hostVersion])
+      : msg("hostReady");
   }
   if (status.state === "connecting") {
-    return "Connecting to the native host.";
+    return msg("connectingNativeHost");
   }
   if (status.state === "disconnected") {
-    return "Retrying native host connection. Use Resume to retry now after repair.";
+    return msg("disconnectedDetail");
   }
   if (status.state === "version_mismatch") {
-    return "Update the native host, then click Resume.";
+    return msg("versionMismatchDetail");
   }
   if (status.state === "stopped") {
-    return "Finish sign-in, passwords, or any page step, then click Resume to continue automation.";
+    return msg("stoppedDetail");
   }
   if (status.state === "error") {
-    return "Native host unavailable. Run obu doctor browser, then use Resume to retry.";
+    return msg("errorDetail");
   }
   return "";
 }
@@ -279,16 +390,26 @@ function statusDetail(status: HostStatus, advice: NativeHostAdvice): string {
   const retry = retryLabel(status);
   const repair = advice.detail;
   const deliverables = deliverableRecoveryLabel(status);
-  const parts = [status.message, retry, repair, deliverables].filter((part): part is string => Boolean(part));
+  const parts = [visibleStatusMessage(status), retry, repair, deliverables].filter(
+    (part): part is string => Boolean(part),
+  );
   if (parts.length > 0) return joinSentences(parts);
   return detailLabel(status);
+}
+
+function visibleStatusMessage(status: HostStatus): string {
+  if (status.state === "connecting" || status.state === "stopped") return knownStatusMessage(status.message);
+  return "";
 }
 
 function deliverableRecoveryLabel(status: HostStatus): string {
   const count = typeof status.deliverableTabs === "number" ? Math.trunc(status.deliverableTabs) : 0;
   if (count <= 0) return "";
-  const noun = count === 1 ? "tab" : "tabs";
-  return `${count} deliverable ${noun} available. Recover with browser.deliverables(), then claim().`;
+  return msgPlural(
+    "deliverableRecovery",
+    count,
+    [String(count)],
+  );
 }
 
 function nativeHostAdvice(status: HostStatus): NativeHostAdvice {
@@ -296,51 +417,57 @@ function nativeHostAdvice(status: HostStatus): NativeHostAdvice {
   switch (diagnosis) {
     case "version_mismatch":
       return withSetup(
-        "Rebuild and reinstall the native host, then click Resume.",
-        "Update the local open-browser-use host from GitHub, refresh setup, then reconnect.",
+        msg("adviceUpdateHost"),
+        msg("setupTextUpdateHost"),
       );
     case "native_host_not_found":
       return withSetup(
-        "Install the native host manifest, then run obu doctor browser.",
-        "Install open-browser-use from GitHub, register the native host for local Chromium browsers, then reconnect.",
+        msg("adviceInstallHost"),
+        msg("setupTextInstallHost"),
       );
     case "native_host_forbidden":
       return withSetup(
-        "Check the extension id allowed by the native host manifest with obu doctor browser.",
-        "Reinstall the native host manifest so it allows this extension id, then reconnect.",
+        msg("adviceRefreshHostPermission"),
+        msg("setupTextRefreshHostPermission"),
       );
     case "native_host_crashed":
       return withSetup(
-        "Run obu doctor browser and inspect native host logs.",
-        "Repair the local open-browser-use host, rerun setup, then reconnect.",
+        msg("adviceRepairHost"),
+        msg("setupTextRepairHost"),
       );
     case "native_host_hello_timeout":
       return withSetup(
-        "Run obu doctor browser --repair, then use Resume to restart the native-host handshake.",
-        "Repair the local open-browser-use host, rerun setup, then reconnect.",
+        msg("adviceRepairHost"),
+        msg("setupTextRepairHost"),
       );
     case "native_host_heartbeat_timeout":
       return withSetup(
-        "Run obu doctor browser --repair, then use Resume to restart the native-host connection.",
-        "Repair the local open-browser-use host, rerun setup, then reconnect.",
+        msg("adviceRepairHost"),
+        msg("setupTextRepairHost"),
       );
     case "native_host_unavailable":
       if (isDisconnectedPortObject(status.message)) {
         return disconnectedPortObjectAdvice();
       }
       return withSetup(
-        "Run obu doctor browser --repair, then use Resume to retry native-host startup.",
-        "Repair the local open-browser-use host, rerun setup, then reconnect.",
+        msg("adviceRepairSetup"),
+        msg("setupTextRepairSetup"),
       );
     case "native_host_disconnected":
       if (isDisconnectedPortObject(status.message)) {
         return disconnectedPortObjectAdvice();
       }
       return {
-        detail: "Run obu doctor browser to check the runtime descriptor, then use Resume to reconnect.",
+        detail: msg("adviceCheckSetup"),
         showSetup: false,
       };
     case undefined:
+      if (status.state === "error") {
+        return withSetup(
+          msg("adviceRepairSetup"),
+          msg("setupTextRepairSetup"),
+        );
+      }
       return { showSetup: false };
   }
 }
@@ -349,28 +476,33 @@ function withSetup(detail: string, setupText: string): NativeHostAdvice {
   return {
     detail,
     setupText,
-    setupCommand: SETUP_COMMAND,
     showSetup: true,
   };
 }
 
 function disconnectedPortObjectAdvice(): NativeHostAdvice {
   return withSetup(
-    "The local open-browser-use install may be missing. Reinstall the native host, then click Resume.",
-    "Install open-browser-use again, register the native host, then return here and click Resume.",
+    msg("adviceDisconnectedPortObject"),
+    msg("setupTextDisconnectedPortObject"),
   );
 }
 
-function setupCommandForChannel(channel: string, runtimeExtensionId?: string): string {
+function agentHandoffForChannel(channel: string, runtimeExtensionId: string | undefined): string {
   const resolvedChannel: ExtensionChannel = channel === "store" ? "store" : "unpacked-dev";
-  const channelSuffix = resolvedChannel === "store" ? " --channel=store" : "";
-  const extensionIdSuffix = resolvedChannel === "store" && isExtensionId(runtimeExtensionId)
-    ? ` --extension-id=${runtimeExtensionId}`
-    : "";
+  const extensionId = isExtensionId(runtimeExtensionId) ? runtimeExtensionId : "<extension-id>";
+  const promptUrl = "https://github.com/open-browser-use/open-browser-use/blob/main/prompts/agent-install-prompt.md";
   return [
-    `curl -fsSL ${GITHUB_INSTALL_URL} | sh && \\`,
-    `~/.obu/bin/obu setup --yes --all --skip-agents --recovery${channelSuffix}${extensionIdSuffix} && \\`,
-    `~/.obu/bin/obu doctor browser --repair${channelSuffix}${extensionIdSuffix}`,
+    "Install, repair, or adapt open-browser-use for this browser extension.",
+    `Prompt: ${promptUrl}`,
+    `Extension channel: ${resolvedChannel}`,
+    `Extension id: ${extensionId}`,
+    "Use the exact extension channel and id when native-host repair or browser pairing is needed.",
+    "Let the linked prompt choose the install, repair, MCP config, and agent-instruction steps for this agent and project.",
+    "Configure MCP with the generic open-browser-use stdio server first; use OBU's built-in adapter commands as secondary helpers.",
+    "Make open-browser-use the primary BrowserUse/browser automation tool for this agent.",
+    "Configure the current agent, and any other supported agent the user requests, such as Codex, Cursor, or Claude Code.",
+    "Update the project's core AGENTS.md, AGENT.md, CLAUDE.md, or equivalent agent instructions when one exists; otherwise show the instruction snippet.",
+    "After setup or repair, verify browser/native-host state and return to this popup to click Resume when needed.",
   ].join("\n");
 }
 
@@ -381,7 +513,7 @@ function retryLabel(status: HostStatus): string {
   if (nextRetryAt === undefined && retryDelayMs === undefined) return "";
   const remainingMs = Math.max(0, (nextRetryAt ?? Date.now() + (retryDelayMs ?? 0)) - Date.now());
   const seconds = Math.max(1, Math.ceil(remainingMs / 1000));
-  return `Retrying native host connection in ${seconds}s. Run obu doctor browser if setup needs repair.`;
+  return msg("retryingInSeconds", [String(seconds)]);
 }
 
 function normalizeDiagnosis(status: HostStatus): HostDiagnosis | undefined {
@@ -418,8 +550,39 @@ function joinSentences(parts: string[]): string {
     .filter((part, index, rows) => part.length > 0 && rows.indexOf(part) === index);
   if (rows.length === 1) return rows[0]!;
   return rows
-    .map((part) => (/[.!?]$/.test(part) ? part : `${part}.`))
-    .join(" ");
+    .map((part) => (/[.!?。！？؟]$/.test(part) ? part : `${part}.`))
+    .reduce((joined, part) => {
+      if (joined.length === 0) return part;
+      return `${joined}${sentenceSeparator(joined, part)}${part}`;
+    }, "");
+}
+
+function sentenceSeparator(left: string, right: string): string {
+  if (/[。！？]$/.test(left) && /^[\p{Script=Han}\p{Script=Hiragana}\p{Script=Katakana}]/u.test(right)) return "";
+  return " ";
+}
+
+function agentCopyButtonLabel(): string {
+  return msg("copyForAgent");
+}
+
+function knownStatusMessage(message: string | undefined): string {
+  if (message === "Stopping...") return msg("statusStopping");
+  if (message === "Stopped by user") return msg("statusStoppedByUser");
+  if (message === "Version mismatch") return msg("statusVersionMismatch");
+  return message ?? "";
+}
+
+function debugEnabledLabel(count: number, max: number): string {
+  return msgPlural("debugEnabledEntries", count, [String(count), String(max)]);
+}
+
+function debugDisabledLabel(count: number): string {
+  return msgPlural("debugDisabledEntries", count, [String(count)]);
+}
+
+function debugCopiedLabel(count: number): string {
+  return msgPlural("debugCopiedEntries", count, [String(count)]);
 }
 
 function debugReport(debug: DebugLogStatus): string {

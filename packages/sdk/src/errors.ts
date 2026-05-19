@@ -15,6 +15,7 @@ export const ERR_DISALLOWED = -1002;
 export const ERR_NOT_IMPLEMENTED = -1003;
 export const ERR_PROTOCOL = -1004;
 export const ERR_NO_BACKEND = -1005;
+export const ERR_OVERLOADED = -1006;
 export const ERR_IO = -1099;
 export const ERR_PEER_AUTH = -1100;
 export const ERR_CAPABILITY_TOKEN = -1101;

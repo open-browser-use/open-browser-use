@@ -52,8 +52,8 @@ Then retry the MCP client.
 
 ## Agent JavaScript Pitfalls
 
-For the full MCP browser-use call chain and token-budget rules, see
-[`docs/agent-browser-mcp-usage.md`](agent-browser-mcp-usage.md).
+For agent setup and MCP wiring, use the popup's **Copy for Agent** handoff or
+[`prompts/agent-install-prompt.md`](../prompts/agent-install-prompt.md).
 
 Inside the MCP `js` tool, `agent.browsers.get(...)` returns a promise:
 
@@ -140,9 +140,9 @@ obu doctor browser --repair --channel=store
 ```
 
 If the Store channel reports that the Store extension id is not configured,
-install a release payload that records `storeExtensionId`, rerun setup from the
-Store popup command, or pass `--extension-id <STORE_EXTENSION_ID>` while testing
-a draft item.
+install a release payload that records `storeExtensionId`, use the Store popup
+agent handoff, or pass `--extension-id <STORE_EXTENSION_ID>` while testing a
+draft item.
 
 The manifest path should point at an open-browser-use wrapper under
 `~/.obu/native-host/dev.obu.host/<browser>/obu-host-wrapper`, not directly at a

@@ -1,8 +1,10 @@
 //! Chrome Native Messaging mode for the WebExtension backend.
 
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -226,7 +228,26 @@ async fn handle_extension_request(
 struct NativeExtensionTransport {
     writer: Arc<Mutex<NativeWriter>>,
     next_id: AtomicI64,
-    pending: Mutex<HashMap<i64, oneshot::Sender<Response>>>,
+    pending: StdMutex<HashMap<i64, oneshot::Sender<Response>>>,
+}
+
+struct PendingRemovalGuard<'a, K, V>
+where
+    K: Copy + Eq + Hash,
+{
+    pending: &'a StdMutex<HashMap<K, V>>,
+    id: K,
+}
+
+impl<K, V> Drop for PendingRemovalGuard<'_, K, V>
+where
+    K: Copy + Eq + Hash,
+{
+    fn drop(&mut self) {
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.remove(&self.id);
+        }
+    }
 }
 
 impl NativeExtensionTransport {
@@ -234,7 +255,7 @@ impl NativeExtensionTransport {
         Self {
             writer,
             next_id: AtomicI64::new(1),
-            pending: Mutex::new(HashMap::new()),
+            pending: StdMutex::new(HashMap::new()),
         }
     }
 
@@ -242,13 +263,19 @@ impl NativeExtensionTransport {
         let Some(id) = response_id(&response.id) else {
             return;
         };
-        if let Some(tx) = self.pending.lock().await.remove(&id) {
+        if let Some(tx) = self
+            .pending
+            .lock()
+            .expect("native extension pending lock")
+            .remove(&id)
+        {
             let _ = tx.send(response);
         }
     }
 
     async fn fail_all(&self, message: &str) {
-        let pending = std::mem::take(&mut *self.pending.lock().await);
+        let pending =
+            std::mem::take(&mut *self.pending.lock().expect("native extension pending lock"));
         for (id, tx) in pending {
             let _ = tx.send(Response::err(
                 Id::Number(id),
@@ -263,7 +290,14 @@ impl ExtensionTransport for NativeExtensionTransport {
     async fn request(&self, method: &str, params: Value) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(id, tx);
+        self.pending
+            .lock()
+            .expect("native extension pending lock")
+            .insert(id, tx);
+        let _pending_guard = PendingRemovalGuard {
+            pending: &self.pending,
+            id,
+        };
         let timeout_ms = params
             .get("timeoutMs")
             .or_else(|| params.get("client_timeout_ms"))
@@ -272,7 +306,6 @@ impl ExtensionTransport for NativeExtensionTransport {
             .saturating_add(EXTENSION_RESPONSE_OVERSHOOT_MS);
         let request = Request::new(id, method, params);
         if let Err(error) = send_native(&self.writer, &request).await {
-            self.pending.lock().await.remove(&id);
             return Err(error);
         }
         let response =
@@ -281,7 +314,6 @@ impl ExtensionTransport for NativeExtensionTransport {
                     HostError::Protocol(format!("extension response dropped: {method}"))
                 })?,
                 Err(_) => {
-                    self.pending.lock().await.remove(&id);
                     return Err(HostError::Timeout(format!(
                         "extension request timed out: {method}"
                     )));
@@ -291,6 +323,26 @@ impl ExtensionTransport for NativeExtensionTransport {
             return Err(HostError::Protocol(error.message));
         }
         Ok(response.result.unwrap_or(Value::Null))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PendingRemovalGuard;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    #[test]
+    fn pending_guard_removes_entry_on_drop() {
+        let pending = Mutex::new(HashMap::from([(7_i64, "pending")]));
+        {
+            let _guard = PendingRemovalGuard {
+                pending: &pending,
+                id: 7,
+            };
+            assert!(pending.lock().expect("pending lock").contains_key(&7));
+        }
+        assert!(!pending.lock().expect("pending lock").contains_key(&7));
     }
 }
 

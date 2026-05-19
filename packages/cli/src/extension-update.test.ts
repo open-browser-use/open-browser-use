@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -40,13 +41,47 @@ test("updateExtension dry-run reports actions without writing", async (t) => {
   await assert.rejects(readFile(path.join(layout.extensionCurrentDir, "manifest.json"), "utf8"));
 });
 
-test("updateExtension reports complete when a runtime descriptor is already active", async (t) => {
+test("updateExtension ignores malformed runtime descriptor JSON", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "obu-extension-update-"));
   t.after(() => rm(root, { recursive: true, force: true }));
   const sourceDir = await extensionSource(root, "0.4.0");
   const layout = fakeLayout(root);
   await mkdir(path.join(layout.runtimeDir, "webextension"), { recursive: true });
   await writeFile(path.join(layout.runtimeDir, "webextension", "chrome.json"), "{}", "utf8");
+
+  const result = await updateExtension({ layout, sourceDir });
+
+  assert.equal(result.result, "manual_action_required");
+});
+
+test("updateExtension reports complete when a runtime descriptor probes successfully", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("runtime descriptor socket probing is POSIX-only");
+    return;
+  }
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-extension-update-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sourceDir = await extensionSource(root, "0.5.0");
+  const layout = fakeLayout(root);
+  const descriptorDir = path.join(layout.runtimeDir, "webextension");
+  const socketPath = path.join(root, "runtime.sock");
+  await mkdir(descriptorDir, { recursive: true, mode: 0o700 });
+  await chmod(descriptorDir, 0o700);
+  await startRuntimeDescriptorServer(t, socketPath, "chrome");
+  const descriptorPath = path.join(descriptorDir, "chrome.json");
+  await writeFile(
+    descriptorPath,
+    JSON.stringify({
+      schema_version: 1,
+      type: "webextension",
+      name: "chrome",
+      socketPath,
+      sdk_auth_token: "token",
+      pid: process.pid,
+    }),
+    "utf8",
+  );
+  await chmod(descriptorPath, 0o600);
 
   const result = await updateExtension({ layout, sourceDir });
 
@@ -81,4 +116,46 @@ function fakeLayout(root: string): RuntimeLayout {
     userConfigPath: path.join(root, ".obu", "config.json"),
     runtimeDir: path.join(root, "runtime"),
   };
+}
+
+async function startRuntimeDescriptorServer(t: { after: (fn: () => void | Promise<void>) => void }, socketPath: string, name: string): Promise<void> {
+  const server = net.createServer((socket) => {
+    let buffer = Buffer.alloc(0);
+    socket.on("error", () => undefined);
+    socket.on("data", (chunk) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      while (buffer.length >= 4) {
+        const len = buffer.readUInt32LE(0);
+        if (buffer.length < 4 + len) return;
+        const payload = JSON.parse(buffer.subarray(4, 4 + len).toString("utf8"));
+        buffer = buffer.subarray(4 + len);
+        if (payload.method === "auth") {
+          socket.write(encodeTestFrame({ jsonrpc: "2.0", id: payload.id, result: null }));
+        } else if (payload.method === "getInfo") {
+          socket.write(encodeTestFrame({ jsonrpc: "2.0", id: payload.id, result: { type: "webextension", name } }));
+        } else {
+          socket.write(encodeTestFrame({
+            jsonrpc: "2.0",
+            id: payload.id,
+            error: { code: -32601, message: "method not found" },
+          }));
+        }
+      }
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, resolve);
+  });
+  await chmod(socketPath, 0o600);
+  t.after(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+}
+
+function encodeTestFrame(value: unknown): Buffer {
+  const payload = Buffer.from(JSON.stringify(value), "utf8");
+  const header = Buffer.alloc(4);
+  header.writeUInt32LE(payload.length, 0);
+  return Buffer.concat([header, payload]);
 }

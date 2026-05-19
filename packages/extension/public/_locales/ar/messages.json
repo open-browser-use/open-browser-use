@@ -1,0 +1,462 @@
+{
+  "extName": {
+    "message": "open-browser-use"
+  },
+  "extDescription": {
+    "message": "تحكم في متصفحات عائلة Chromium عبر open-browser-use."
+  },
+  "actionTitle": {
+    "message": "open-browser-use"
+  },
+  "popupTitle": {
+    "message": "تحكّم في Chrome مع أي Agent"
+  },
+  "settingsOpenTitle": {
+    "message": "الإعدادات"
+  },
+  "settingsOpenAriaLabel": {
+    "message": "فتح الإعدادات"
+  },
+  "settingsDocumentTitle": {
+    "message": "إعدادات open-browser-use"
+  },
+  "settingsPageTitle": {
+    "message": "الإعدادات"
+  },
+  "settingsPageSubtitle": {
+    "message": "تحكّم في طريقة ظهور open-browser-use في هذا المتصفح."
+  },
+  "settingsLanguageTitle": {
+    "message": "اللغة"
+  },
+  "settingsLanguageDescription": {
+    "message": "اختر لغة صفحات الإضافة."
+  },
+  "settingsLanguageAuto": {
+    "message": "اتباع لغة المتصفح"
+  },
+  "settingsSaved": {
+    "message": "تم الحفظ"
+  },
+  "settingsSaveFailed": {
+    "message": "تعذر حفظ الإعداد."
+  },
+  "versionAriaLabel": {
+    "message": "إصدار الإضافة المثبتة"
+  },
+  "versionFallback": {
+    "message": "الإصدار"
+  },
+  "versionLabel": {
+    "message": "الإصدار $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "nativeHostLabel": {
+    "message": "المضيف المحلي"
+  },
+  "checkingStatus": {
+    "message": "جارٍ التحقق..."
+  },
+  "setupLabel": {
+    "message": "الإعداد"
+  },
+  "agentSetupLabel": {
+    "message": "إعداد Agent"
+  },
+  "agentHandoffTitle": {
+    "message": "تسليم Agent"
+  },
+  "copyForAgent": {
+    "message": "نسخ لـ Agent"
+  },
+  "copyAgentSetupHandoff": {
+    "message": "نسخ تسليم إعداد Agent"
+  },
+  "stopButton": {
+    "message": "سأتولى التحكم"
+  },
+  "resumeButton": {
+    "message": "استئناف"
+  },
+  "debugLogsLabel": {
+    "message": "سجلات التصحيح"
+  },
+  "disabled": {
+    "message": "معطل"
+  },
+  "debugEnable": {
+    "message": "تفعيل"
+  },
+  "debugDisable": {
+    "message": "تعطيل"
+  },
+  "debugCopy": {
+    "message": "نسخ"
+  },
+  "debugClear": {
+    "message": "مسح"
+  },
+  "nativeHostStatusUnavailable": {
+    "message": "حالة المضيف المحلي غير متاحة"
+  },
+  "debugUnavailable": {
+    "message": "غير متاح"
+  },
+  "debugCopyFailed": {
+    "message": "فشل النسخ: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCleared": {
+    "message": "تم المسح"
+  },
+  "copyAgentUnavailable": {
+    "message": "تسليم إعداد Agent غير متاح"
+  },
+  "copyAgentSuccess": {
+    "message": "تم النسخ. الصقه في Agent. عُد إلى هنا وانقر على استئناف عند انتهاء الإعداد."
+  },
+  "copying": {
+    "message": "جارٍ النسخ"
+  },
+  "copied": {
+    "message": "تم النسخ"
+  },
+  "tryAgain": {
+    "message": "حاول مرة أخرى"
+  },
+  "copyUnavailable": {
+    "message": "النسخ غير متاح. تحقق من إذن الحافظة ثم حاول مرة أخرى."
+  },
+  "agentSetupDefaultText": {
+    "message": "وصّل Agent آخر بهذا التسليم. انسخه إلى Agent، ثم أبقِ هذه النافذة مفتوحة أثناء الاقتران."
+  },
+  "statusConnected": {
+    "message": "متصل"
+  },
+  "statusConnecting": {
+    "message": "جارٍ الاتصال"
+  },
+  "statusUpdateNeeded": {
+    "message": "يلزم التحديث"
+  },
+  "statusStopped": {
+    "message": "التحكم لديك"
+  },
+  "statusNeedsSetup": {
+    "message": "يلزم الإعداد"
+  },
+  "statusReconnecting": {
+    "message": "جارٍ إعادة الاتصال"
+  },
+  "hostVersionLabel": {
+    "message": "المضيف $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "hostReady": {
+    "message": "المضيف جاهز"
+  },
+  "connectingNativeHost": {
+    "message": "جارٍ الاتصال بالمضيف المحلي."
+  },
+  "disconnectedDetail": {
+    "message": "جارٍ محاولة إعادة الاتصال. استخدم استئناف بعد إصلاح الإعداد."
+  },
+  "versionMismatchDetail": {
+    "message": "حدّث المضيف المحلي، ثم انقر على استئناف لإعادة الاتصال."
+  },
+  "stoppedDetail": {
+    "message": "أكمل تسجيل الدخول أو كلمات المرور أو أي خطوة في الصفحة، ثم انقر على استئناف لمتابعة الأتمتة."
+  },
+  "errorDetail": {
+    "message": "شغّل الإعداد، ثم انقر على استئناف لإعادة الاتصال."
+  },
+  "deliverableRecovery_one": {
+    "message": "توجد علامة تبويب قابلة للتسليم عددها $count$. استخدم browser.deliverables() ثم claim() لاستعادتها.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_zero": {
+    "message": "عدد علامات التبويب القابلة للتسليم: $count$. استخدم browser.deliverables() ثم claim() للاستعادة.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_two": {
+    "message": "عدد علامات التبويب القابلة للتسليم: $count$. استخدم browser.deliverables() ثم claim() للاستعادة.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_few": {
+    "message": "عدد علامات التبويب القابلة للتسليم: $count$. استخدم browser.deliverables() ثم claim() للاستعادة.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_many": {
+    "message": "عدد علامات التبويب القابلة للتسليم: $count$. استخدم browser.deliverables() ثم claim() للاستعادة.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_other": {
+    "message": "عدد علامات التبويب القابلة للتسليم: $count$. استخدم browser.deliverables() ثم claim() للاستعادة.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "adviceUpdateHost": {
+    "message": "حدّث المضيف المحلي، ثم أعد الاتصال."
+  },
+  "setupTextUpdateHost": {
+    "message": "انسخ هذا التسليم إلى Agent. عُد إلى هنا وانقر على استئناف بعد انتهاء التحديث."
+  },
+  "adviceInstallHost": {
+    "message": "ثبّت المضيف المحلي، ثم أعد الاتصال."
+  },
+  "setupTextInstallHost": {
+    "message": "انسخ هذا التسليم إلى Agent لتثبيت open-browser-use وتسجيل المضيف المحلي لهذه الإضافة."
+  },
+  "adviceRefreshHostPermission": {
+    "message": "حدّث إذن المضيف لهذه الإضافة، ثم أعد الاتصال."
+  },
+  "setupTextRefreshHostPermission": {
+    "message": "انسخ هذا التسليم إلى Agent لتحديث تسجيل المضيف المحلي لمعرّف هذه الإضافة."
+  },
+  "adviceRepairHost": {
+    "message": "أصلح المضيف المحلي، ثم أعد الاتصال."
+  },
+  "setupTextRepairHost": {
+    "message": "انسخ هذا التسليم إلى Agent لإصلاح إعداد open-browser-use والتحقق من المضيف المحلي."
+  },
+  "adviceRepairSetup": {
+    "message": "أصلح الإعداد، ثم أعد الاتصال."
+  },
+  "setupTextRepairSetup": {
+    "message": "انسخ هذا التسليم إلى Agent لإصلاح إعداد open-browser-use والتحقق من اقتران المتصفح."
+  },
+  "adviceCheckSetup": {
+    "message": "تحقق من الإعداد المحلي، ثم انقر على استئناف لإعادة الاتصال."
+  },
+  "adviceDisconnectedPortObject": {
+    "message": "المضيف المحلي غير متصل. أعد تثبيته، ثم أعد الاتصال."
+  },
+  "setupTextDisconnectedPortObject": {
+    "message": "انسخ هذا التسليم إلى Agent لإعادة تثبيت open-browser-use وتسجيل المضيف لهذه الإضافة."
+  },
+  "retryingInSeconds": {
+    "message": "ستتم إعادة المحاولة خلال $seconds$ ث.",
+    "placeholders": {
+      "seconds": {
+        "content": "$1"
+      }
+    }
+  },
+  "statusStopping": {
+    "message": "جارٍ الإيقاف..."
+  },
+  "statusStoppedByUser": {
+    "message": "أوقفه المستخدم"
+  },
+  "statusVersionMismatch": {
+    "message": "عدم تطابق الإصدار"
+  },
+  "debugEnabledEntries_one": {
+    "message": "مفعل، $count$/$max$ إدخال",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_zero": {
+    "message": "مفعل، عدد الإدخالات: $count$/$max$",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_two": {
+    "message": "مفعل، عدد الإدخالات: $count$/$max$",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_few": {
+    "message": "مفعل، عدد الإدخالات: $count$/$max$",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_many": {
+    "message": "مفعل، عدد الإدخالات: $count$/$max$",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_other": {
+    "message": "مفعل، عدد الإدخالات: $count$/$max$",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugDisabledEntries_one": {
+    "message": "معطل، $count$ إدخال محفوظ",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_zero": {
+    "message": "معطل، الإدخالات المحفوظة: $count$",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_two": {
+    "message": "معطل، الإدخالات المحفوظة: $count$",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_few": {
+    "message": "معطل، الإدخالات المحفوظة: $count$",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_many": {
+    "message": "معطل، الإدخالات المحفوظة: $count$",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_other": {
+    "message": "معطل، الإدخالات المحفوظة: $count$",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_one": {
+    "message": "تم نسخ $count$ إدخال",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_zero": {
+    "message": "تم النسخ. عدد الإدخالات: $count$",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_two": {
+    "message": "تم النسخ. عدد الإدخالات: $count$",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_few": {
+    "message": "تم النسخ. عدد الإدخالات: $count$",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_many": {
+    "message": "تم النسخ. عدد الإدخالات: $count$",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_other": {
+    "message": "تم النسخ. عدد الإدخالات: $count$",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverablesGroupTitle": {
+    "message": "$label$ عناصر التسليم",
+    "placeholders": {
+      "label": {
+        "content": "$1"
+      }
+    }
+  },
+  "defaultDeliverablesGroupTitle": {
+    "message": "عناصر تسليم open-browser-use"
+  }
+}
