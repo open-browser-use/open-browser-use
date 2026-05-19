@@ -354,8 +354,12 @@ USAGE
 done
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/obu-install.XXXXXX")"
+PAYLOAD_STAGE_DIR=""
 cleanup() {
   rm -rf "$TMP_DIR"
+  if [ -n "$PAYLOAD_STAGE_DIR" ]; then
+    rm -rf "$PAYLOAD_STAGE_DIR"
+  fi
 }
 trap cleanup EXIT INT TERM
 
@@ -396,17 +400,43 @@ fi
 mkdir -p "$INSTALL_DIR/payloads" "$INSTALL_DIR/bin"
 PAYLOAD_NAME="$(artifact_name "$ARTIFACT_FILE")"
 PAYLOAD_DIR="$INSTALL_DIR/payloads/$PAYLOAD_NAME"
-rm -rf "$PAYLOAD_DIR.tmp" "$PAYLOAD_DIR"
-mkdir -p "$PAYLOAD_DIR.tmp"
+PAYLOAD_STAGE_DIR="$(mktemp -d "$INSTALL_DIR/payloads/.${PAYLOAD_NAME}.tmp.XXXXXX")"
+PAYLOAD_BACKUP_DIR="$INSTALL_DIR/payloads/.${PAYLOAD_NAME}.previous.$$"
+rm -rf "$PAYLOAD_BACKUP_DIR"
 log_verbose "extract: $ARTIFACT_FILE -> $PAYLOAD_DIR"
-if ! tar -xzf "$ARTIFACT_FILE" -C "$PAYLOAD_DIR.tmp"; then
+if ! tar -xzf "$ARTIFACT_FILE" -C "$PAYLOAD_STAGE_DIR"; then
   echo "extract failed: could not unpack $ARTIFACT_FILE" >&2
   echo "Check that the artifact is a valid open-browser-use .tar.gz file." >&2
   exit 1
 fi
-mv "$PAYLOAD_DIR.tmp" "$PAYLOAD_DIR"
+if [ -e "$PAYLOAD_DIR" ] || [ -L "$PAYLOAD_DIR" ]; then
+  if ! mv "$PAYLOAD_DIR" "$PAYLOAD_BACKUP_DIR"; then
+    echo "install failed: could not move existing payload $PAYLOAD_DIR aside" >&2
+    exit 1
+  fi
+fi
+if ! mv "$PAYLOAD_STAGE_DIR" "$PAYLOAD_DIR"; then
+  echo "install failed: could not activate new payload $PAYLOAD_DIR" >&2
+  if [ -e "$PAYLOAD_BACKUP_DIR" ] || [ -L "$PAYLOAD_BACKUP_DIR" ]; then
+    mv "$PAYLOAD_BACKUP_DIR" "$PAYLOAD_DIR" 2>/dev/null || true
+  fi
+  exit 1
+fi
+PAYLOAD_STAGE_DIR=""
+PREVIOUS_CURRENT="$(readlink "$INSTALL_DIR/payloads/current" 2>/dev/null || true)"
 rm -f "$INSTALL_DIR/payloads/current"
-ln -s "$PAYLOAD_NAME" "$INSTALL_DIR/payloads/current"
+if ! ln -s "$PAYLOAD_NAME" "$INSTALL_DIR/payloads/current"; then
+  echo "install failed: could not update current payload symlink" >&2
+  rm -rf "$PAYLOAD_DIR"
+  if [ -e "$PAYLOAD_BACKUP_DIR" ] || [ -L "$PAYLOAD_BACKUP_DIR" ]; then
+    mv "$PAYLOAD_BACKUP_DIR" "$PAYLOAD_DIR" 2>/dev/null || true
+  fi
+  if [ -n "$PREVIOUS_CURRENT" ]; then
+    ln -s "$PREVIOUS_CURRENT" "$INSTALL_DIR/payloads/current" 2>/dev/null || true
+  fi
+  exit 1
+fi
+rm -rf "$PAYLOAD_BACKUP_DIR"
 
 cat > "$INSTALL_DIR/bin/obu" <<'SHIM'
 #!/bin/sh
