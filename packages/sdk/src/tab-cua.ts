@@ -1,5 +1,6 @@
 import { withSessionMeta } from "./session-meta.js";
 import { Guards } from "./guards.js";
+import type { LoadState } from "./tab.js";
 import type { Transport } from "./wire/transport.js";
 import * as M from "./wire/methods.js";
 
@@ -18,7 +19,7 @@ export type TabCuaMouseOptions = TabCuaTimeoutOptions & {
   button?: "left" | "right" | "middle";
   modifiers?: string[];
   waitForNavigation?: boolean | {
-    waitUntil?: "domcontentloaded" | "load" | "networkidle";
+    waitUntil?: LoadState;
     timeout?: number;
   };
 };

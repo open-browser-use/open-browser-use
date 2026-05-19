@@ -15,9 +15,11 @@ import * as M from "./wire/methods.js";
 const DEFAULT_TIMEOUT_MS = 30_000;
 const DEFAULT_NAVIGATION_POLL_MS = 50;
 
+export type LoadState = "domcontentloaded" | "load";
+
 export type TabNavigationWaitOptions = {
   url?: string | RegExp;
-  waitUntil?: "domcontentloaded" | "load" | "networkidle";
+  waitUntil?: LoadState;
   timeout?: number;
   pollInterval?: number;
 };
@@ -172,7 +174,7 @@ export class Tab {
     await this.waitForURL(url, opts);
   }
 
-  async waitForLoadState(state = "load", opts: { timeout?: number } = {}): Promise<void> {
+  async waitForLoadState(state: LoadState = "load", opts: { timeout?: number } = {}): Promise<void> {
     await this.#ensureTabCommandAllowed(M.TAB_WAIT_FOR_LOAD_STATE, { state }, opts.timeout);
     await this.transport.sendRequest(M.TAB_WAIT_FOR_LOAD_STATE, withSessionMeta({ tab_id: this.id, state }), opts.timeout);
   }

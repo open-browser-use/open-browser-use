@@ -1,6 +1,7 @@
 import { FrameLocator } from "./frame-locator.js";
 import { Guards } from "./guards.js";
 import { withSessionMeta } from "./session-meta.js";
+import type { LoadState } from "./tab.js";
 import type { BoundingBox } from "./types.js";
 import type { Transport } from "./wire/transport.js";
 import * as M from "./wire/methods.js";
@@ -8,7 +9,7 @@ import * as M from "./wire/methods.js";
 const DEFAULT_TIMEOUT_MS = 30_000;
 type TextMatcher = string | RegExp;
 type LocatorNavigationWaitOptions = boolean | {
-  waitUntil?: "domcontentloaded" | "load" | "networkidle";
+  waitUntil?: LoadState;
   timeout?: number;
 };
 type LocatorClickOptions = {
