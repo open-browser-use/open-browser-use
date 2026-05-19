@@ -1,11 +1,14 @@
 //! Per-session in-memory browser state.
 
 use std::collections::{HashMap, HashSet};
+use std::hash::Hash;
 use std::sync::RwLock;
 use std::time::SystemTime;
 
 use crate::error::{HostError, Result};
 use crate::tab_state::{TabId, TabRecord, TabStatus};
+
+const MAX_STALE_DIAGNOSTICS_PER_KIND: usize = 128;
 
 /// Host-visible browser-control session state.
 #[derive(Debug, Clone)]
@@ -681,6 +684,7 @@ fn record_stale_tab_locked(inner: &mut Inner, record: TabRecord, reason: String)
             stale_at: SystemTime::now(),
         },
     );
+    prune_stale_map_locked(&mut inner.stale_tabs_by_id, |state| state.stale_at);
 }
 
 fn record_stale_file_chooser_locked(
@@ -699,6 +703,7 @@ fn record_stale_file_chooser_locked(
             stale_at: SystemTime::now(),
         },
     );
+    prune_stale_map_locked(&mut inner.stale_file_choosers_by_id, |state| state.stale_at);
 }
 
 fn record_stale_download_locked(
@@ -717,6 +722,23 @@ fn record_stale_download_locked(
             stale_at: SystemTime::now(),
         },
     );
+    prune_stale_map_locked(&mut inner.stale_downloads_by_id, |state| state.stale_at);
+}
+
+fn prune_stale_map_locked<K, V>(map: &mut HashMap<K, V>, stale_at: impl Fn(&V) -> SystemTime)
+where
+    K: Clone + Eq + Hash,
+{
+    while map.len() > MAX_STALE_DIAGNOSTICS_PER_KIND {
+        let Some(oldest_key) = map
+            .iter()
+            .min_by_key(|(_, state)| stale_at(state))
+            .map(|(key, _)| key.clone())
+        else {
+            return;
+        };
+        map.remove(&oldest_key);
+    }
 }
 
 fn describe_stale_handle(kind: &str, id: &str, state: &StaleHandleState) -> String {
@@ -743,4 +765,66 @@ fn describe_stale_tab(id: &str, state: &StaleTabState) -> String {
         state.record.origin, state.record.status
     ));
     message
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::tab_state::{TabOrigin, TabStatus};
+
+    #[test]
+    fn stale_tab_diagnostics_are_bounded() {
+        let registry = ServiceRegistry::default();
+
+        for index in 0..(MAX_STALE_DIAGNOSTICS_PER_KIND + 5) {
+            let tab_id = TabId::new(format!("tab-{index}"));
+            registry.insert(tab_record(tab_id.clone())).unwrap();
+            registry
+                .remove_with_reason(&tab_id, "test cleanup")
+                .unwrap();
+        }
+
+        let counts = registry.lifecycle_counts().unwrap();
+        assert_eq!(counts.stale_tabs, MAX_STALE_DIAGNOSTICS_PER_KIND);
+    }
+
+    #[test]
+    fn stale_handle_diagnostics_are_bounded() {
+        let registry = ServiceRegistry::default();
+        let tab_id = TabId::new("tab-1");
+
+        for index in 0..(MAX_STALE_DIAGNOSTICS_PER_KIND + 5) {
+            let id = FileChooserId(format!("chooser-{index}"));
+            registry
+                .insert_file_chooser(
+                    id.clone(),
+                    FileChooserState {
+                        tab_id: tab_id.clone(),
+                        owner_session_id: None,
+                        created_at: SystemTime::now(),
+                        backend_node_id: index as i64,
+                        is_multiple: false,
+                    },
+                )
+                .unwrap();
+            assert!(registry.take_file_chooser(&id).unwrap().is_some());
+        }
+
+        let counts = registry.lifecycle_counts().unwrap();
+        assert_eq!(counts.stale_file_choosers, MAX_STALE_DIAGNOSTICS_PER_KIND);
+    }
+
+    fn tab_record(id: TabId) -> TabRecord {
+        TabRecord {
+            id,
+            session_id: Some("session".to_string()),
+            target_id: "target".to_string(),
+            url: "https://example.test/".to_string(),
+            title: "Example".to_string(),
+            origin: TabOrigin::Agent,
+            status: TabStatus::Active,
+            attached: false,
+            cdp_session_id: None,
+        }
+    }
 }
