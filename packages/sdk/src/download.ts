@@ -11,13 +11,13 @@ export class Download {
     public readonly tabId?: string,
   ) {}
 
-  async path(): Promise<string> {
+  async path(opts: { timeout?: number } = {}): Promise<string> {
     const params = {
       ...(this.tabId ? { tab_id: this.tabId } : {}),
       download_id: this.id,
     };
     const currentUrl = this.tabId && this.guards.needsCurrentUrl(M.PLAYWRIGHT_DOWNLOAD_PATH)
-      ? await this.transport.sendRequest<string>(M.TAB_URL, withSessionMeta({ tab_id: this.tabId }))
+      ? await this.transport.sendRequest<string>(M.TAB_URL, withSessionMeta({ tab_id: this.tabId }), opts.timeout)
       : undefined;
     await this.guards.ensureCommandAllowed({
       command: M.PLAYWRIGHT_DOWNLOAD_PATH,
@@ -26,6 +26,7 @@ export class Download {
     const row = await this.transport.sendRequest<{ path: string }>(
       M.PLAYWRIGHT_DOWNLOAD_PATH,
       withSessionMeta(params),
+      opts.timeout,
     );
     return row.path;
   }

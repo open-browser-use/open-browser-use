@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { FrameDecoder, FrameEncoder } from "../src/wire/frames.js";
+import { FrameDecoder, FrameEncoder, MAX_FRAME_LEN } from "../src/wire/frames.js";
 
 describe("Frame codec", () => {
   it("round-trips one frame", () => {
@@ -20,5 +20,19 @@ describe("Frame codec", () => {
     const frames = decoder.feed(wire.slice(6));
     expect(frames).toHaveLength(1);
     expect(new TextDecoder().decode(frames[0])).toBe("ABCDE");
+  });
+
+  it("rejects oversize frame headers", () => {
+    const decoder = new FrameDecoder();
+    const header = new Uint8Array(4);
+    new DataView(header.buffer).setUint32(0, MAX_FRAME_LEN + 1, true);
+
+    expect(() => decoder.feed(header)).toThrow(/oversize frame/);
+  });
+
+  it("rejects oversize encoded payloads", () => {
+    const encoder = new FrameEncoder();
+
+    expect(() => encoder.encode(new Uint8Array(MAX_FRAME_LEN + 1))).toThrow(/oversize frame/);
   });
 });
