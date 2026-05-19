@@ -1,7 +1,9 @@
 //! WebSocket transport for Chrome DevTools Protocol.
 
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::sync::Arc;
+use std::sync::Mutex as StdMutex;
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
@@ -31,9 +33,28 @@ pub struct CdpEvent {
 /// Request/response correlated CDP transport.
 pub struct CdpTransport {
     next_id: Mutex<u64>,
-    pending: Mutex<HashMap<u64, oneshot::Sender<Result<Value, CdpError>>>>,
+    pending: StdMutex<HashMap<u64, oneshot::Sender<Result<Value, CdpError>>>>,
     write: Mutex<futures_util::stream::SplitSink<WsStream, Message>>,
     events: broadcast::Sender<CdpEvent>,
+}
+
+struct PendingRemovalGuard<'a, K, V>
+where
+    K: Copy + Eq + Hash,
+{
+    pending: &'a StdMutex<HashMap<K, V>>,
+    id: K,
+}
+
+impl<K, V> Drop for PendingRemovalGuard<'_, K, V>
+where
+    K: Copy + Eq + Hash,
+{
+    fn drop(&mut self) {
+        if let Ok(mut pending) = self.pending.lock() {
+            pending.remove(&self.id);
+        }
+    }
 }
 
 impl CdpTransport {
@@ -47,7 +68,7 @@ impl CdpTransport {
         let (events, _) = broadcast::channel(1024);
         let transport = Arc::new(Self {
             next_id: Mutex::new(1),
-            pending: Mutex::new(HashMap::new()),
+            pending: StdMutex::new(HashMap::new()),
             write: Mutex::new(write),
             events: events.clone(),
         });
@@ -87,7 +108,12 @@ impl CdpTransport {
                     } else {
                         Ok(value.get("result").cloned().unwrap_or(Value::Null))
                     };
-                    if let Some(tx) = reader_transport.pending.lock().await.remove(&id) {
+                    if let Some(tx) = reader_transport
+                        .pending
+                        .lock()
+                        .expect("cdp pending lock")
+                        .remove(&id)
+                    {
                         let _ = tx.send(result);
                     }
                     continue;
@@ -105,7 +131,12 @@ impl CdpTransport {
                 }
             }
 
-            for (_, tx) in reader_transport.pending.lock().await.drain() {
+            for (_, tx) in reader_transport
+                .pending
+                .lock()
+                .expect("cdp pending lock")
+                .drain()
+            {
                 let _ = tx.send(Err(CdpError::Disconnected));
             }
         });
@@ -136,7 +167,14 @@ impl CdpTransport {
         }
 
         let (tx, rx) = oneshot::channel();
-        self.pending.lock().await.insert(id, tx);
+        self.pending
+            .lock()
+            .expect("cdp pending lock")
+            .insert(id, tx);
+        let _pending_guard = PendingRemovalGuard {
+            pending: &self.pending,
+            id,
+        };
         if let Err(error) = self
             .write
             .lock()
@@ -144,22 +182,38 @@ impl CdpTransport {
             .send(Message::Text(payload.to_string().into()))
             .await
         {
-            self.pending.lock().await.remove(&id);
             return Err(error.into());
         }
 
         match timeout(DEFAULT_TIMEOUT, rx).await {
             Ok(Ok(result)) => result,
             Ok(Err(_)) => Err(CdpError::Disconnected),
-            Err(_) => {
-                self.pending.lock().await.remove(&id);
-                Err(CdpError::Timeout(DEFAULT_TIMEOUT))
-            }
+            Err(_) => Err(CdpError::Timeout(DEFAULT_TIMEOUT)),
         }
     }
 
     /// Subscribe to CDP events.
     pub fn subscribe_events(&self) -> broadcast::Receiver<CdpEvent> {
         self.events.subscribe()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::PendingRemovalGuard;
+    use std::collections::HashMap;
+    use std::sync::Mutex;
+
+    #[test]
+    fn pending_guard_removes_entry_on_drop() {
+        let pending = Mutex::new(HashMap::from([(7_u64, "pending")]));
+        {
+            let _guard = PendingRemovalGuard {
+                pending: &pending,
+                id: 7,
+            };
+            assert!(pending.lock().expect("pending lock").contains_key(&7));
+        }
+        assert!(!pending.lock().expect("pending lock").contains_key(&7));
     }
 }
