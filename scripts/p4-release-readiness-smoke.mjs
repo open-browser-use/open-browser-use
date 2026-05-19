@@ -68,6 +68,7 @@ assertNoWindows(Object.keys(nodeManifest.sources));
 const notices = await text("LICENSE-THIRD-PARTY.md");
 assert.match(notices, /## Node\.js Runtime/);
 assert.match(notices, /## jsonc-parser/);
+assert.match(notices, /## Meriyah/);
 assert.match(notices, /Playwright InjectedScript/);
 
 const distWorkspace = await text("dist-workspace.toml");

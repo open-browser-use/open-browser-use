@@ -6,7 +6,11 @@ packages/*/dist
 packages/*/.turbo
 packages/extension/.dev-native-host/
 dist/
-docs/
+docs/*
+!docs/chrome-web-store-review-pack.md
+!docs/install.md
+!docs/release-checklist.md
+!docs/troubleshooting.md
 !crates/obu-node-repl/tests/fixtures/**/dist/
 !crates/obu-node-repl/tests/fixtures/**/dist/**
 *.log
