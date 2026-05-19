@@ -50,6 +50,40 @@ obu doctor
 
 Then retry the MCP client.
 
+## MCP Server Ready But No Browser Backend
+
+MCP availability and browser availability are separate. An agent can have the
+`open-browser-use` MCP server configured and still see `browser_status` return
+an available SDK with `backends: []`. That means the MCP server can start, but
+no live browser backend descriptor is available yet.
+
+For a Store-channel extension, repair with the exact extension id copied from
+the extension popup:
+
+```bash
+obu doctor browser --repair --channel=store --extension-id=<STORE_EXTENSION_ID>
+```
+
+Do not infer this id from the unpacked extension manifest or another Chrome
+profile. The Chrome native messaging manifest must include the matching
+`allowed_origins` entry:
+
+```json
+["chrome-extension://<STORE_EXTENSION_ID>/"]
+```
+
+After repair, open the open-browser-use extension popup and click **Resume** if
+the popup is not connected. Static repair can make the native-host manifest and
+runtime descriptor directory valid, but the active WebExtension runtime
+descriptor is written only after the extension reconnects to the native host.
+Rerun:
+
+```bash
+obu doctor browser --channel=store --extension-id=<STORE_EXTENSION_ID>
+```
+
+Then retry `browser_status`.
+
 ## Agent JavaScript Pitfalls
 
 For agent setup and MCP wiring, use the popup's **Copy for Agent** handoff or
@@ -135,14 +169,15 @@ obu install-host --all
 For a Chrome Web Store-installed extension, repair with the Store channel:
 
 ```bash
-obu install-host --channel=store --browser chrome
-obu doctor browser --repair --channel=store
+obu install-host --channel=store --browser chrome --extension-id <STORE_EXTENSION_ID>
+obu doctor browser --repair --channel=store --extension-id <STORE_EXTENSION_ID>
 ```
 
 If the Store channel reports that the Store extension id is not configured,
 install a release payload that records `storeExtensionId`, use the Store popup
 agent handoff, or pass `--extension-id <STORE_EXTENSION_ID>` while testing a
-draft item.
+draft item. Prefer the id from the popup handoff over any guessed id; repair
+will write that exact origin into `allowed_origins`.
 
 The manifest path should point at an open-browser-use wrapper under
 `~/.obu/native-host/dev.obu.host/<browser>/obu-host-wrapper`, not directly at a

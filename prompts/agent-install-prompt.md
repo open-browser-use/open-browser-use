@@ -11,6 +11,12 @@ The user should paste a handoff block from the extension popup with:
 Use those exact values when native-host repair or browser pairing is needed. Do
 not infer a different extension id.
 
+For the Store channel, the pasted `Extension id` is part of the security
+boundary. Native messaging only works when the browser-owned manifest contains
+`chrome-extension://<that exact id>/` in `allowed_origins`. Do not derive an id
+from the unpacked manifest key, a previous local config, or another Chrome
+profile when the handoff includes a concrete Store id.
+
 ## Goal
 
 Make `open-browser-use` work as the user's primary BrowserUse/browser automation
@@ -198,20 +204,41 @@ contract above is enough to adapt other MCP-capable AI clients.
    ```
 
    For the Store channel, include the exact Store extension id from the handoff
-   unless it is already configured. If verification reports a browser UI
-   boundary, tell the user the exact action needed, such as clicking Resume or
-   reloading the unpacked extension.
+   unless it is already configured. If `browser_status` says the SDK is
+   available but `backends` is empty, the MCP server is reachable but the
+   browser backend is not. Run the doctor command above; for Store repair, use
+   the exact handoff id:
+
+   ```sh
+   ~/.obu/bin/obu doctor browser --repair --channel=store --extension-id=<extension-id>
+   ```
+
+   Repair can fix the native-host manifest and runtime descriptor directory, but
+   it cannot force Chrome to reconnect the extension. If doctor still reports
+   no active WebExtension runtime descriptor after repair, tell the user to open
+   the open-browser-use extension popup and click Resume. Then rerun doctor with
+   the same channel/id and retry `browser_status`.
 
 5. Verify MCP from inside the target agent when possible:
 
    - Restart or reload the client if its MCP config is only read at startup.
    - Confirm the `open-browser-use` MCP server appears in the client's MCP tool
      list.
+   - If the OBU MCP tools are not visible in a client that supports deferred tool
+     discovery, search/load the `open-browser-use` MCP tools before concluding
+     setup failed.
    - Prefer a read-only first call such as `browser_status`.
    - Before the first browser action, call `browser_status`; use the `js` MCP
      tool for browser automation.
+   - Treat MCP availability and browser availability as separate checks:
+     `browser_status` must show at least one backend before browser automation
+     can work.
    - If the MCP server starts but browser state is stale, run
      `~/.obu/bin/obu doctor browser` with the handoff channel/id when needed.
+   - For setup probes, prefer `await browser.turnEnded()` after the probe so the
+     browser session stays controlled. Do not use
+     `await browser.finishTurn({ keep: [] })` unless you intentionally want to
+     close agent-created tabs or release user tabs.
 
 6. Add a short persistent instruction when the project or agent has an
    appropriate core instruction file. Prefer the repo-root `AGENTS.md`,
@@ -233,7 +260,7 @@ contract above is enough to adapt other MCP-capable AI clients.
    for Claude Code, or the equivalent project instruction surface for Cursor.
    Do not create or edit unrelated repository files just to store this note. If
    there is no obvious persistent instructions file, show the snippet to the
-   user.
+   user and state that no project-level instruction file was available to update.
 
 ## Safety Rules
 
