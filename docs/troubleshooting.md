@@ -183,6 +183,20 @@ The manifest path should point at an open-browser-use wrapper under
 `~/.obu/native-host/dev.obu.host/<browser>/obu-host-wrapper`, not directly at a
 source-tree helper or versioned payload binary.
 
+## Turn Cleanup During Setup Probes
+
+For setup verification or short browser probes, end the SDK turn with:
+
+```js
+await browser.turnEnded();
+```
+
+`browser.turnEnded()` keeps active tabs controlled and preserves the browser
+session for follow-up checks. `browser.finishTurn({ keep: [] })` first finalizes
+tabs; on WebExtension sessions that closes agent-created tabs or releases
+user-claimed tabs before ending the turn. Use `finishTurn` only when that
+cleanup is intentional, not as the default connection probe closeout.
+
 ## Extension Debug Logs
 
 The unpacked extension popup has local debug logging controls. Open the
