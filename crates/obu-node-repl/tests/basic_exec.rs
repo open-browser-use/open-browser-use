@@ -1,5 +1,6 @@
 use obu_node_repl::repl_manager::{JsRuntimeManager, ManagerOptions};
 use serde_json::json;
+use std::sync::Arc;
 
 #[tokio::test]
 async fn js_one_plus_one() {
@@ -12,6 +13,24 @@ async fn js_one_plus_one() {
     assert_eq!(result.result, json!(2));
     assert_eq!(result.stdout, "");
     assert!(result.displays.is_empty());
+}
+
+#[tokio::test]
+async fn concurrent_boot_calls_share_one_kernel() {
+    let manager = Arc::new(
+        JsRuntimeManager::new(ManagerOptions::for_tests())
+            .await
+            .unwrap(),
+    );
+    let first = manager.clone();
+    let second = manager.clone();
+
+    let (first, second) = tokio::join!(first.boot(), second.boot());
+
+    first.unwrap();
+    second.unwrap();
+    let result = manager.exec("1 + 1", Some(1_000)).await.unwrap();
+    assert_eq!(result.result, json!(2));
 }
 
 #[tokio::test]

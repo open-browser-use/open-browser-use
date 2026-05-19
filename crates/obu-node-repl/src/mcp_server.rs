@@ -356,6 +356,7 @@ impl ObuServer {
     ) -> std::result::Result<CallToolResult, ErrorData> {
         let args: JsArgs = decode_args(arguments)?;
         let mut pending_progress_tasks = None;
+        let mut progress_sink = None;
         if let Some(progress_token) = meta.get_progress_token() {
             let peer = context.peer.clone();
             let tasks = Arc::new(StdMutex::new(Vec::new()));
@@ -375,15 +376,19 @@ impl ObuServer {
                 });
                 sink_tasks.lock().expect("progress task lock").push(task);
             });
-            self.runtime.set_progress_sink(Some(sink)).await;
+            progress_sink = Some(sink);
             pending_progress_tasks = Some(tasks);
         }
 
         let result = self
             .runtime
-            .exec_with_turn_id(&args.source, args.timeout_ms, client_turn_id(&meta))
+            .exec_with_turn_id_and_progress_sink(
+                &args.source,
+                args.timeout_ms,
+                client_turn_id(&meta),
+                progress_sink,
+            )
             .await;
-        self.runtime.set_progress_sink(None).await;
         if let Some(tasks) = pending_progress_tasks {
             let tasks = {
                 let mut tasks = tasks.lock().expect("progress task lock");

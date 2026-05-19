@@ -176,6 +176,7 @@ struct KernelGeneration {
 pub struct JsRuntimeManager {
     options: ManagerOptions,
     state: Mutex<KernelState>,
+    lifecycle: Mutex<()>,
     kernel: Mutex<Option<SpawnedKernel>>,
     registry: Arc<Mutex<ExecRegistry>>,
     sink: Arc<Mutex<Option<crate::display_router::ProgressSink>>>,
@@ -199,6 +200,7 @@ impl JsRuntimeManager {
             backend_state: StdMutex::new(backend_state),
             options,
             state: Mutex::new(KernelState::Idle),
+            lifecycle: Mutex::new(()),
             kernel: Mutex::new(None),
             registry: Arc::new(Mutex::new(ExecRegistry::default())),
             sink: Arc::new(Mutex::new(None)),
@@ -237,6 +239,11 @@ impl JsRuntimeManager {
 
     /// Spawn the Node child if it is not already ready.
     pub async fn boot(&self) -> Result<()> {
+        let _lifecycle = self.lifecycle.lock().await;
+        self.boot_locked().await
+    }
+
+    async fn boot_locked(&self) -> Result<()> {
         {
             let mut state = self.state.lock().await;
             if *state == KernelState::Ready {
@@ -341,8 +348,24 @@ impl JsRuntimeManager {
         timeout_ms: Option<u64>,
         client_turn_id: Option<String>,
     ) -> Result<JsExecResult> {
+        self.exec_with_turn_id_and_progress_sink(source, timeout_ms, client_turn_id, None)
+            .await
+    }
+
+    /// Execute JavaScript and install a progress sink only while this exec owns the kernel.
+    pub async fn exec_with_turn_id_and_progress_sink(
+        &self,
+        source: &str,
+        timeout_ms: Option<u64>,
+        client_turn_id: Option<String>,
+        progress_sink: Option<crate::display_router::ProgressSink>,
+    ) -> Result<JsExecResult> {
+        let _lifecycle = self
+            .lifecycle
+            .try_lock()
+            .map_err(|_| anyhow!("kernel is busy"))?;
         if *self.state.lock().await != KernelState::Ready {
-            self.boot().await?;
+            self.boot_locked().await?;
         }
 
         let exec_id = format!("exec-{}", Uuid::new_v4().simple());
@@ -356,9 +379,16 @@ impl JsRuntimeManager {
         self.registry.lock().await.start(exec_id.clone());
 
         let turn_id = client_turn_id.unwrap_or_else(|| exec_id.clone());
+        let installed_progress_sink = progress_sink.is_some();
+        if let Some(sink) = progress_sink {
+            self.set_progress_sink(Some(sink)).await;
+        }
         let outcome = self
             .exec_inner(source, timeout_ms, &exec_id, &turn_id)
             .await;
+        if installed_progress_sink {
+            self.set_progress_sink(None).await;
+        }
         match &outcome {
             Ok(_) => *self.state.lock().await = KernelState::Ready,
             Err(_) => {
@@ -536,12 +566,13 @@ impl JsRuntimeManager {
 
     /// Restart the kernel and clear REPL state.
     pub async fn reset(&self) -> Result<()> {
+        let _lifecycle = self.lifecycle.lock().await;
         *self.state.lock().await = KernelState::Restarting;
         self.kill_kernel().await;
         *self.registry.lock().await = ExecRegistry::default();
         self.refresh_backend_inventory();
         *self.state.lock().await = KernelState::Idle;
-        self.boot().await
+        self.boot_locked().await
     }
 
     /// Add a module search directory. The directory is sent to the kernel before
