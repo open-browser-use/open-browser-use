@@ -1,8 +1,11 @@
-import { access } from "node:fs/promises";
+import { access, readFile } from "node:fs/promises";
 import { constants } from "node:fs";
 import path from "node:path";
 import { spawn } from "node:child_process";
 
+import { parse, type ParseError } from "jsonc-parser";
+
+import { directEditConfigPath, isDirectEditAgentId } from "./direct-edit.js";
 import {
   findPrimaryInstruction,
   PRIMARY_BROWSER_INSTRUCTION,
@@ -35,6 +38,7 @@ export type AgentDoctorOptions = {
 };
 
 const DEFAULT_ADAPTER_TIMEOUT_MS = 5_000;
+const MCP_LIST_AGENT_IDS = new Set<AgentId>(["codex-cli", "claude-code", "gemini-cli"]);
 
 export async function doctorAgent(options: AgentDoctorOptions): Promise<AgentDoctorReport> {
   const checks = [
@@ -64,6 +68,14 @@ export function hasAgentDoctorFailures(report: AgentDoctorReport): boolean {
 
 async function checkMcpServer(options: AgentDoctorOptions): Promise<AgentDoctorCheck> {
   const config = renderAgentMcpConfig(options.agent, options.server);
+  if (isDirectEditAgentId(options.agent)) {
+    return checkDirectEditMcpConfig(options);
+  }
+  if (!MCP_LIST_AGENT_IDS.has(options.agent)) {
+    return warn("agent-mcp-server", "MCP server", `automatic MCP doctor is not implemented for ${options.agent}`, {
+      mode: config.mode,
+    });
+  }
   if (config.mode !== "shell") {
     return warn("agent-mcp-server", "MCP server", `automatic MCP doctor is not implemented for ${options.agent}`, {
       mode: config.mode,
@@ -71,19 +83,19 @@ async function checkMcpServer(options: AgentDoctorOptions): Promise<AgentDoctorC
   }
   const executable = await findExecutable(config.executable, options.env ?? process.env);
   if (!executable) {
-    return warn("agent-mcp-server", "MCP server", `${config.executable} was not found on PATH`, {
+    return fail("agent-mcp-server", "MCP server", `${config.executable} was not found on PATH`, {
       executable: config.executable,
     });
   }
   const probe = await runAdapter(executable, ["mcp", "list"], options.env ?? process.env, options.adapterTimeoutMs ?? DEFAULT_ADAPTER_TIMEOUT_MS);
   if (probe.timedOut) {
-    return warn("agent-mcp-server", "MCP server", `${config.executable} mcp list timed out`, {
+    return fail("agent-mcp-server", "MCP server", `${config.executable} mcp list timed out`, {
       executable,
       timeout_ms: options.adapterTimeoutMs ?? DEFAULT_ADAPTER_TIMEOUT_MS,
     });
   }
   if (probe.code !== 0) {
-    return warn("agent-mcp-server", "MCP server", `${config.executable} mcp list did not complete`, {
+    return fail("agent-mcp-server", "MCP server", `${config.executable} mcp list did not complete`, {
       executable,
       code: probe.code,
       stderr: probe.stderr.trim(),
@@ -91,7 +103,7 @@ async function checkMcpServer(options: AgentDoctorOptions): Promise<AgentDoctorC
   }
   const output = `${probe.stdout}\n${probe.stderr}`;
   if (!output.includes(options.server.name)) {
-    return warn("agent-mcp-server", "MCP server", `${options.agent} does not list ${options.server.name}`, {
+    return fail("agent-mcp-server", "MCP server", `${options.agent} does not list ${options.server.name}`, {
       executable,
     });
   }
@@ -105,6 +117,74 @@ async function checkMcpServer(options: AgentDoctorOptions): Promise<AgentDoctorC
   return pass("agent-mcp-server", "MCP server", `${options.agent} lists ${options.server.name}`, {
     executable,
   });
+}
+
+async function checkDirectEditMcpConfig(options: AgentDoctorOptions): Promise<AgentDoctorCheck> {
+  const agent = options.agent;
+  if (!isDirectEditAgentId(agent)) {
+    return warn("agent-mcp-server", "MCP server", `automatic MCP doctor is not implemented for ${agent}`);
+  }
+  const configPath = directEditConfigPath(agent, {
+    ...(options.homeDir ? { homeDir: options.homeDir } : {}),
+  });
+  const raw = await readOptionalFile(configPath).catch((error): ReadConfigResult => {
+    const nodeError = error as NodeJS.ErrnoException;
+    return {
+      status: "error",
+      error: nodeError.message ?? String(error),
+      ...(nodeError.code ? { code: nodeError.code } : {}),
+    };
+  });
+  if (raw.status === "missing") {
+    return fail("agent-mcp-server", "MCP server", `${options.agent} MCP config not found at ${configPath}`, {
+      path: configPath,
+    });
+  }
+  if (raw.status === "error") {
+    return fail("agent-mcp-server", "MCP server", `${options.agent} MCP config could not be read`, {
+      path: configPath,
+      ...raw,
+    });
+  }
+  const errors: ParseError[] = [];
+  const parsed = parse(raw.content, errors, { allowTrailingComma: true, disallowComments: false });
+  if (errors.length > 0) {
+    return fail("agent-mcp-server", "MCP server", `${options.agent} MCP config could not be parsed`, {
+      path: configPath,
+      errors: errors.map((error) => `parse error ${error.error} at offset ${error.offset}`),
+    });
+  }
+  const serverConfig = directEditServerConfig(parsed, options.agent, options.server.name);
+  if (!isRecord(serverConfig)) {
+    return fail("agent-mcp-server", "MCP server", `${options.agent} does not configure ${options.server.name}`, {
+      path: configPath,
+    });
+  }
+  if (!equivalentServerConfig(serverConfig, options.server, options.agent)) {
+    return fail("agent-mcp-server", "MCP server", `${options.agent} configures ${options.server.name} with different settings`, {
+      path: configPath,
+      expected: options.server,
+      actual: serverConfig,
+    });
+  }
+  return pass("agent-mcp-server", "MCP server", `${options.agent} configures ${options.server.name}`, {
+    path: configPath,
+  });
+}
+
+type ReadConfigResult =
+  | { status: "ok"; content: string }
+  | { status: "missing" }
+  | { status: "error"; error: string; code?: string };
+
+async function readOptionalFile(file: string): Promise<ReadConfigResult> {
+  try {
+    return { status: "ok", content: await readFile(file, "utf8") };
+  } catch (error) {
+    const nodeError = error as NodeJS.ErrnoException;
+    if (nodeError.code === "ENOENT") return { status: "missing" };
+    throw error;
+  }
 }
 
 async function checkPrimaryInstruction(options: AgentDoctorOptions): Promise<AgentDoctorCheck> {
@@ -124,10 +204,33 @@ async function checkPrimaryInstruction(options: AgentDoctorOptions): Promise<Age
   if (targets.length === 0) {
     return warn("agent-primary-instruction", "Primary browser instruction", `instruction check is not implemented for ${options.agent}`);
   }
-  return warn("agent-primary-instruction", "Primary browser instruction", "open-browser-use primary instruction not found", {
+  return fail("agent-primary-instruction", "Primary browser instruction", "open-browser-use primary instruction not found", {
     checked: targets.map((target) => target.path),
     remediation: PRIMARY_BROWSER_INSTRUCTION,
   });
+}
+
+function directEditServerConfig(config: unknown, agent: AgentId, serverName: string): unknown {
+  if (!isRecord(config)) return undefined;
+  if (agent === "zed") {
+    return isRecord(config.context_servers) ? config.context_servers[serverName] : undefined;
+  }
+  return isRecord(config.mcpServers) ? config.mcpServers[serverName] : undefined;
+}
+
+function equivalentServerConfig(config: Record<string, unknown>, server: McpServerInvocation, agent: AgentId): boolean {
+  const expectedName = agent === "zed" ? undefined : server.name;
+  return (
+    (expectedName === undefined || config.name === expectedName) &&
+    config.command === server.command &&
+    Array.isArray(config.args) &&
+    config.args.length === server.args.length &&
+    config.args.every((arg, index) => arg === server.args[index])
+  );
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
 async function findExecutable(name: string, env: NodeJS.ProcessEnv): Promise<string | undefined> {

@@ -88,6 +88,72 @@ exit 1
   assert.equal(payload.checks.find((check: any) => check.id === "agent-primary-instruction")?.status, "pass");
 });
 
+test("agent doctor fails when supported MCP or instruction checks are missing", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+
+  const result = await runCli(["agent", "doctor", "--agent=codex-cli", "--json"], {
+    HOME: home,
+    PATH: "",
+  });
+
+  assert.equal(result.code, 1);
+  assert.equal(result.stderr, "");
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.checks.find((check: any) => check.id === "agent-mcp-server")?.status, "fail");
+  assert.equal(payload.checks.find((check: any) => check.id === "agent-primary-instruction")?.status, "fail");
+});
+
+test("agent doctor reads Cursor direct-edit MCP config instead of running mcp list", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  await mkdir(path.join(home, ".cursor"), { recursive: true });
+  await writeFile(path.join(home, ".cursor", "mcp.json"), JSON.stringify({
+    mcpServers: {
+      "open-browser-use": {
+        name: "open-browser-use",
+        command: process.execPath,
+        args: [cliEntry, "mcp", "stdio"],
+      },
+    },
+  }, null, 2), "utf8");
+  const cursor = path.join(bin, "cursor");
+  await writeFile(cursor, "#!/bin/sh\nexit 17\n", "utf8");
+  await chmod(cursor, 0o755);
+
+  const result = await runCli(["agent", "doctor", "--agent=cursor", "--json"], {
+    HOME: home,
+    PATH: bin,
+  });
+
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.checks.find((check: any) => check.id === "agent-mcp-server")?.status, "pass");
+  assert.equal(payload.checks.find((check: any) => check.id === "agent-primary-instruction")?.status, "warn");
+});
+
+test("agent doctor does not run unsupported VS Code mcp-list probes", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  const code = path.join(bin, "code");
+  await writeFile(code, "#!/bin/sh\nexit 17\n", "utf8");
+  await chmod(code, 0o755);
+
+  const result = await runCli(["agent", "doctor", "--agent=vscode", "--json"], {
+    HOME: home,
+    PATH: bin,
+  });
+
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.checks.find((check: any) => check.id === "agent-mcp-server")?.status, "warn");
+  assert.match(payload.checks.find((check: any) => check.id === "agent-mcp-server")?.message ?? "", /not implemented/);
+});
+
 test("shellenv emits packaged install environment snippets", async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
   t.after(() => rm(home, { recursive: true, force: true }));
