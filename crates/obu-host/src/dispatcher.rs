@@ -7,13 +7,14 @@ use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::mpsc;
+use tokio::sync::{Semaphore, mpsc};
 use tokio_util::codec::Framed;
+use tokio_util::sync::CancellationToken;
 
 use obu_wire::{
     ErrorCode, ErrorObject, FrameCodec, Request, Response, RpcMessage,
     envelope::Id,
-    error::{ERR_CDP_FAILURE, ERR_PAGE_CLOSED, ERR_TAB_NOT_ATTACHED},
+    error::{ERR_CDP_FAILURE, ERR_OVERLOADED, ERR_PAGE_CLOSED, ERR_TAB_NOT_ATTACHED},
     error::{ERR_IO, ERR_NO_BACKEND, ERR_NOT_IMPLEMENTED, ERR_PEER_AUTH, ERR_PROTOCOL},
 };
 
@@ -24,6 +25,9 @@ use crate::peer_auth::check_capability_token;
 use crate::policy::{
     HostPolicy, MethodPolicyKind, PermissivePolicy, PolicyContext, guard_mode_disabled,
 };
+
+/// Default number of concurrent JSON-RPC requests allowed for one peer.
+pub const DEFAULT_MAX_IN_FLIGHT_REQUESTS: usize = 64;
 
 /// Per-session JSON-RPC dispatcher.
 #[derive(Clone)]
@@ -77,6 +81,34 @@ impl Dispatcher {
     where
         S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
     {
+        self.serve_peer_with_max_in_flight(stream, cap_token, DEFAULT_MAX_IN_FLIGHT_REQUESTS)
+            .await
+    }
+
+    /// Serve one peer with a custom concurrency limit.
+    #[doc(hidden)]
+    pub async fn serve_peer_with_max_in_flight_for_tests<S>(
+        &self,
+        stream: S,
+        cap_token: Option<&str>,
+        max_in_flight_requests: usize,
+    ) -> Result<()>
+    where
+        S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    {
+        self.serve_peer_with_max_in_flight(stream, cap_token, max_in_flight_requests)
+            .await
+    }
+
+    async fn serve_peer_with_max_in_flight<S>(
+        &self,
+        stream: S,
+        cap_token: Option<&str>,
+        max_in_flight_requests: usize,
+    ) -> Result<()>
+    where
+        S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
+    {
         let mut framed = Framed::new(stream, FrameCodec);
         let mut first_frame = None;
 
@@ -109,6 +141,8 @@ impl Dispatcher {
 
         let (mut sink, mut stream) = framed.split();
         let (tx, mut rx) = mpsc::channel::<Bytes>(128);
+        let request_slots = Arc::new(Semaphore::new(max_in_flight_requests.max(1)));
+        let peer_cancel = CancellationToken::new();
         let writer = tokio::spawn(async move {
             while let Some(bytes) = rx.recv().await {
                 if sink.send(bytes).await.is_err() {
@@ -118,17 +152,24 @@ impl Dispatcher {
         });
 
         if let Some(bytes) = first_frame.take() {
-            self.dispatch_frame(bytes, &tx).await;
+            self.dispatch_frame(bytes, &tx, request_slots.clone(), peer_cancel.clone())
+                .await;
         }
 
-        while let Some(frame) = stream.next().await {
-            let bytes = frame?;
-            self.dispatch_frame(bytes, &tx).await;
+        let read_result = async {
+            while let Some(frame) = stream.next().await {
+                let bytes = frame?;
+                self.dispatch_frame(bytes, &tx, request_slots.clone(), peer_cancel.clone())
+                    .await;
+            }
+            Ok(())
         }
+        .await;
 
+        peer_cancel.cancel();
         drop(tx);
         let _ = writer.await;
-        Ok(())
+        read_result
     }
 
     fn handle_auth(&self, req: Request, cap_token: Option<&str>) -> Response {
@@ -147,7 +188,13 @@ impl Dispatcher {
         Response::ok(req.id, Value::Null)
     }
 
-    async fn dispatch_frame(&self, bytes: Bytes, tx: &mpsc::Sender<Bytes>) {
+    async fn dispatch_frame(
+        &self,
+        bytes: Bytes,
+        tx: &mpsc::Sender<Bytes>,
+        request_slots: Arc<Semaphore>,
+        peer_cancel: CancellationToken,
+    ) {
         let message = match serde_json::from_slice::<RpcMessage>(&bytes) {
             Ok(message) => message,
             Err(error) => {
@@ -158,29 +205,49 @@ impl Dispatcher {
         let RpcMessage::Request(request) = message else {
             return;
         };
+        let Ok(permit) = request_slots.try_acquire_owned() else {
+            let response = Response::err(
+                request.id,
+                ErrorObject::new(
+                    ErrorCode::Server(ERR_OVERLOADED),
+                    "too many in-flight requests for this peer",
+                ),
+            );
+            if let Ok(bytes) = encode_response(&response) {
+                let _ = tx.send(bytes).await;
+            }
+            return;
+        };
         let dispatcher = self.clone();
         let tx = tx.clone();
         tokio::spawn(async move {
+            let _permit = permit;
             let id = request.id.clone();
             let method = request.method.clone();
             let timeout_ms = request_context(&request.params).client_timeout_ms;
-            let response = match timeout_ms {
-                Some(timeout_ms) => match tokio::time::timeout(
-                    Duration::from_millis(timeout_ms),
-                    dispatcher.route_request(request),
-                )
-                .await
-                {
-                    Ok(response) => response,
-                    Err(_) => Response::err(
-                        id,
-                        ErrorObject::new(
-                            ErrorCode::Server(obu_wire::error::ERR_TIMEOUT),
-                            format!("{method} request timed out after {timeout_ms}ms"),
+            let route = async move {
+                match timeout_ms {
+                    Some(timeout_ms) => match tokio::time::timeout(
+                        Duration::from_millis(timeout_ms),
+                        dispatcher.route_request(request),
+                    )
+                    .await
+                    {
+                        Ok(response) => response,
+                        Err(_) => Response::err(
+                            id,
+                            ErrorObject::new(
+                                ErrorCode::Server(obu_wire::error::ERR_TIMEOUT),
+                                format!("{method} request timed out after {timeout_ms}ms"),
+                            ),
                         ),
-                    ),
-                },
-                None => dispatcher.route_request(request).await,
+                    },
+                    None => dispatcher.route_request(request).await,
+                }
+            };
+            let response = tokio::select! {
+                _ = peer_cancel.cancelled() => return,
+                response = route => response,
             };
             if let Ok(bytes) = encode_response(&response) {
                 let _ = tx.send(bytes).await;

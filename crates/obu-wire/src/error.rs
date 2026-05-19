@@ -22,6 +22,8 @@ pub const ERR_NOT_IMPLEMENTED: i32 = -1003;
 pub const ERR_PROTOCOL: i32 = -1004;
 /// No usable browser backend is available.
 pub const ERR_NO_BACKEND: i32 = -1005;
+/// Peer has too many concurrent in-flight requests.
+pub const ERR_OVERLOADED: i32 = -1006;
 /// Generic I/O failure.
 pub const ERR_IO: i32 = -1099;
 
