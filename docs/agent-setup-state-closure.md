@@ -29,7 +29,8 @@ It returns exactly one high-level result:
 - `ready`: OBU has verified readiness for the requested target. For
   `verificationTarget: "cli"`, this means CLI-level readiness is complete for
   the selected agent config and browser, including a live browser backend
-  descriptor. For `verificationTarget: "agent_runtime"`, the selected agent
+  descriptor and a direct OBU MCP runtime status with at least one usable
+  backend. For `verificationTarget: "agent_runtime"`, the selected agent
   runtime has also proved at least one usable backend through OBU MCP status.
 - `needs_browser_popup`: local setup is correct, but Chrome has not activated
   the extension/native-host runtime descriptor yet.
@@ -75,7 +76,7 @@ one precise next action.
 
 ## Verification Layers
 
-Readiness spans seven layers. `obu verify` must evaluate them in a stable order
+Readiness spans eight layers. `obu verify` must evaluate them in a stable order
 and report each layer in JSON.
 
 1. **CLI install state**
@@ -111,8 +112,24 @@ and report each layer in JSON.
    - The descriptor points at a socket-like endpoint.
    - The descriptor responds to `getInfo`.
    - The descriptor lifecycle is not stale.
+   - Descriptor metadata matches the selected browser kind and exact extension
+     id when those fields are present. A Store-channel target cannot be
+     certified by a descriptor whose metadata proves a different extension id.
+   - If verification is profile-scoped, descriptor metadata or a future
+     popup/native-host status source must bind the runtime to the resolved
+     profile. Without profile identity evidence, the JSON must state that the
+     runtime proof is browser/extension-scoped rather than profile-bound.
 
-6. **Agent MCP state**
+6. **MCP runtime state**
+   - OBU can launch or probe its MCP server directly using the selected server
+     command and args.
+   - MCP status reports `sdk_bootstrap: "available"` in raw MCP status,
+     normalized to `sdkBootstrap: "available"` in verify JSON.
+   - MCP status reports at least one usable browser backend for the selected
+     browser/extension runtime.
+   - `backends: []` is a blocking state even when the MCP process starts.
+
+7. **Agent MCP state**
    - The target agent is configured to launch an MCP server named
      `open-browser-use`.
    - The server command and args are equivalent to:
@@ -125,15 +142,20 @@ and report each layer in JSON.
      }
      ```
 
-7. **Agent instruction state**
-   - Where the target agent supports durable instructions, the agent has
-     persistent guidance to prefer open-browser-use as the primary
+8. **Agent instruction state**
+   - Where the target agent supports durable instructions, OBU checks whether
+     persistent guidance exists to prefer open-browser-use as the primary
      BrowserUse/browser automation tool.
+   - This is advisory for default CLI readiness. Missing supported instructions
+     are a non-blocking `warn` with `reason: "missing_instruction"` because
+     `obu setup` writes instruction files only when the user explicitly requests
+     that mutation.
 
-Layers 1, 2, 6, and 7 are mostly file/config state. Layer 3 depends on the
+Layers 1, 2, 7, and 8 are mostly file/config state. Layer 3 depends on the
 resolved browser profile. Layers 4 and 5 depend on Chrome extension runtime
-activation. The CLI can repair deterministic file/config state, but it cannot
-force Chrome to keep an MV3 service worker alive.
+activation. Layer 6 depends on packaged runtime dependencies, SDK bootstrap
+state, and backend discovery. The CLI can repair deterministic file/config
+state, but it cannot force Chrome to keep an MV3 service worker alive.
 
 For CLI verification, extension runtime state is considered active when a
 runtime descriptor for the selected browser responds to `getInfo` and any
@@ -142,6 +164,14 @@ inactive when native-host and extension file/config state pass but no fresh
 descriptor can be probed. The corresponding check must include
 `details.source: "runtime_descriptor_probe"` unless a future popup/native-host
 status API supplies a more direct source.
+
+When descriptor metadata cannot prove profile identity, `obu verify` must expose
+that limitation explicitly in `browser.profile.runtimeBinding`. It must not
+claim profile-bound runtime readiness unless descriptor metadata or a direct
+popup/native-host status source identifies the resolved profile. For default
+discovery with a single matching profile, browser/extension-scoped runtime proof
+is acceptable for CLI readiness, but human output must not imply stronger
+profile-specific proof.
 
 ## Browser Profile Resolution
 
@@ -167,12 +197,30 @@ Default discovery must sort candidate profile directories deterministically:
 directories lexicographically by absolute path. `readdir` order is not a product
 contract.
 
+This requires a verify-specific profile resolver. Reusing lower-level browser
+doctor code is acceptable only if the resulting implementation supports explicit
+`--profile`, deterministic candidate ordering, candidate reporting, disabled
+extension state, and preservation of profile context in follow-up commands.
+
 The JSON response must include:
 
 - `browser.profile.path`: string path or `null`
 - `browser.profile.source`: `explicit | default_discovery`
 - `browser.profile.candidates`: array of candidate objects with `path`,
   `extensionInstalled`, and `extensionEnabled`
+- `browser.profile.runtimeBinding`: `profile_verified | single_candidate |
+  browser_extension_scope | not_available`
+
+`browser.profile.runtimeBinding` values mean:
+
+- `profile_verified`: descriptor metadata or direct popup/native-host status
+  identifies the resolved profile.
+- `single_candidate`: default discovery found exactly one matching profile, and
+  the runtime descriptor matches the selected browser and extension id but does
+  not expose profile identity.
+- `browser_extension_scope`: runtime proof matches only the selected browser and
+  extension id. Human output must not describe this as profile-bound readiness.
+- `not_available`: no runtime descriptor or status source is available.
 
 If an explicit profile is supplied and does not contain the target extension id,
 `browser.profile.path` must keep the explicit path,
@@ -187,6 +235,15 @@ id, `browser.profile.path` must be `null`, `browser.profile.source` must be
 `extensionInstalled` must be `missing`, and `nextAction.kind` must be
 `install_extension`.
 
+If a matching extension is present but disabled in the resolved profile,
+`extensionInstalled` must be `pass`, `extensionEnabled` must be `disabled`, and
+`nextAction.kind` must be `enable_extension`.
+
+When `--profile=<path>` is supplied, every generated rerun, repair, or follow-up
+command must preserve that exact `--profile` value. Default-discovery commands
+may omit `--profile` only when profile choice is deterministic and not material
+to the result.
+
 Human output should name the resolved profile only when profile choice affects
 the result or there are multiple candidates.
 
@@ -197,7 +254,8 @@ the result or there are multiple candidates.
 The top-level JSON field `verificationTarget` must be one of:
 
 - `cli`: default target. The command verifies local setup, selected agent
-  durable config, and a live browser backend descriptor.
+  durable config, a live browser backend descriptor, and direct OBU MCP runtime
+  status with at least one usable backend.
 - `agent_runtime`: stronger target. The command verifies CLI readiness and a
   status result from the selected, currently running agent process.
 
@@ -212,9 +270,11 @@ Required evidence:
 - Browser extension is installed and enabled in the resolved profile.
 - Runtime descriptor responds to `getInfo`.
 - `resumeRequired` is `false`.
+- Direct MCP runtime status has `mcpStarts: true`,
+  `sdkBootstrap: "available"`, and `backendCount > 0`.
 - Agent MCP config is equivalent to the expected OBU server.
 - Agent instruction check is either `pass` or a non-blocking `warn` with
-  `reason: "not_implemented"`.
+  `reason: "not_implemented"` or `reason: "missing_instruction"`.
 
 ### Agent-Runtime Readiness
 
@@ -262,6 +322,17 @@ obu verify \
   --extension-id=fblnfcjnjklpgnmfnngcihbcgojnpadj
 ```
 
+To verify a specific browser profile, add:
+
+```bash
+obu verify \
+  --agent=codex-cli \
+  --browser=chrome \
+  --profile="/Users/alex/Library/Application Support/Google/Chrome/Default" \
+  --channel=store \
+  --extension-id=fblnfcjnjklpgnmfnngcihbcgojnpadj
+```
+
 Read-only verification may inspect files, execute OBU binaries, probe runtime
 descriptors, and run read-only agent status commands. It must not write config,
 repair native-host manifests, create instruction files, or mutate agent MCP
@@ -281,6 +352,37 @@ This sets `verificationTarget: "agent_runtime"`. If OBU cannot obtain status
 from that agent process, the command must return a non-ready result with a
 single action such as restarting/reloading the agent or checking the agent's OBU
 MCP status from inside the client.
+
+Agent-runtime proof must come from a first-class agent-runtime status hook, not
+from a direct OBU MCP probe. The hook payload is the selected agent process's raw
+`browser_status` structured content plus enough envelope fields to bind it to the
+target agent and MCP server:
+
+```json
+{
+  "agentId": "codex-cli",
+  "mcpServerName": "open-browser-use",
+  "status": {
+    "sdk_bootstrap": "available",
+    "backends": [{ "...": "..." }]
+  }
+}
+```
+
+The initial CLI surface for this hook is:
+
+```bash
+obu verify --require-agent-runtime \
+  --agent-runtime-status-json=/path/to/status.json \
+  --agent=codex-cli \
+  --browser=chrome \
+  --channel=store \
+  --extension-id=fblnfcjnjklpgnmfnngcihbcgojnpadj
+```
+
+If `--require-agent-runtime` is set and no valid hook payload is supplied,
+`agent.runtimeStatus.status` must be `not_checked`,
+`readiness.agentRuntime` must be `blocked`, and the result must not be `ready`.
 
 ### Explicit Repair
 
@@ -371,6 +473,12 @@ Rationale:
 - Agent-runtime-required verification adds the agent runtime as a required layer;
   CLI-level readiness alone is not enough for `ready` in that mode.
 
+MCP zero-backend classification happens after descriptor activation is
+classified. If local file/config state passes but no fresh runtime descriptor is
+active, `backendCount: 0` is treated as downstream evidence of the same popup
+activation boundary, and the result is `needs_browser_popup` with
+`nextAction.kind: "open_popup"`, not `needs_repair`.
+
 Examples:
 
 - Divergent Codex MCP config plus missing runtime descriptor:
@@ -381,6 +489,9 @@ Examples:
   `needs_browser_popup`.
 - Descriptor responds and agent MCP config is equivalent:
   `ready` when `verificationTarget` is `cli`.
+- Descriptor responds and agent MCP config is equivalent, but direct MCP runtime
+  status has `backendCount: 0`: `needs_repair` or `needs_manual_action`,
+  depending on whether the zero-backend cause is safely repairable.
 - Descriptor responds and agent MCP config is equivalent, but
   `--require-agent-runtime` cannot check the running agent:
   `needs_manual_action`.
@@ -398,6 +509,7 @@ Action kinds:
 - `resolve_config_conflict`
 - `restart_agent`
 - `install_extension`
+- `enable_extension`
 - `unsupported`
 
 Result/action mapping:
@@ -406,19 +518,23 @@ Result/action mapping:
 | --- | --- | --- |
 | No runnable OBU CLI exists before handoff reaches the CLI | `needs_manual_action` | `install_cli` |
 | Selected extension is not installed in the resolved profile | `needs_manual_action` | `install_extension` |
+| Selected extension is installed but disabled in the resolved profile | `needs_manual_action` | `enable_extension` |
 | Native-host manifest, allowed origin, host path, runtime permissions, or stale descriptor can be repaired deterministically | `needs_repair` | `run_repair` |
 | Missing first-class auto-writable agent MCP config and no divergent config exists | `needs_repair` | `run_repair` |
+| Direct MCP runtime cannot start, SDK bootstrap is unavailable, or backend count is zero for a reason repair can fix after descriptor activation has been ruled out | `needs_repair` | `run_repair` |
+| Direct MCP runtime cannot start, SDK bootstrap is unavailable, or backend count is zero for a reason outside safe CLI repair after descriptor activation has been ruled out | `needs_manual_action` | `configure_agent` |
 | Agent MCP config is missing but cannot be safely written by OBU | `needs_manual_action` | `configure_agent` |
 | Existing agent MCP config for `open-browser-use` is divergent or unreadable | `needs_manual_action` | `resolve_config_conflict` |
 | CLI-level readiness passes but `verificationTarget: "agent_runtime"` cannot be proved until the client reloads | `needs_manual_action` | `restart_agent` |
 | Local setup is correct but no fresh runtime descriptor is active | `needs_browser_popup` | `open_popup` |
-| Platform, browser, agent, or command input is unsupported | `needs_manual_action` | `unsupported` |
+| A syntactically valid platform, browser, or agent target is unsupported by this OBU build | `needs_manual_action` | `unsupported` |
 
 Each action must include:
 
 - a human message;
 - a command when a command is available;
 - enough context to preserve browser, channel, agent, and extension id;
+- the explicit profile path when verification was profile-scoped;
 - no ambiguous extension id inference.
 
 The next action must be directly actionable. It should not say "check docs" if a
@@ -429,9 +545,25 @@ command, `command` must be omitted and the action must include explicit context
 instead, such as `url`, `browser`, and `profile.path`. A generic operating-system
 `open` command is not enough when it may target the wrong browser or profile.
 
+Every `rerun` or repair command emitted after an explicit `--profile` input must
+include that same `--profile` argument.
+
+Invalid command input, unknown flags, malformed extension ids, and unsupported
+platform states that prevent verification from running are usage errors. They
+exit with code `2` and do not produce a normal readiness result. The
+`unsupported` next action is reserved for valid requests where OBU can run
+verification and determine that the requested target is outside its supported
+automation surface.
+
 ## JSON Contract
 
 The JSON schema is stable for agents:
+
+`obu verify` JSON uses lower camelCase field names. Lower-level doctor and MCP
+payloads may use snake_case, such as `resume_required` or `sdk_bootstrap`, but
+verify must normalize those fields to `resumeRequired` and `sdkBootstrap` in its
+top-level contract. Raw source payloads may appear only under clearly named
+diagnostic fields such as `details.raw`.
 
 Allowed top-level result values:
 
@@ -452,6 +584,8 @@ Allowed check status values:
 - `fail`: the check blocks readiness.
 - `not_checked`: the check was intentionally skipped and the reason is present.
 
+Every `not_checked` status object must include a non-empty `reason`.
+
 Allowed readiness values:
 
 - `ready`: this readiness level is verified.
@@ -471,7 +605,7 @@ Allowed component state values for summary fields such as `extensionInstalled`,
 - `not_checked`: the component was intentionally not checked and the reason is
   present in details.
 
-Unsupported instruction checks must use:
+Instruction check warnings must use one of these reason values:
 
 ```json
 {
@@ -480,7 +614,15 @@ Unsupported instruction checks must use:
 }
 ```
 
-They must not introduce a separate check status named `not_implemented`.
+```json
+{
+  "status": "warn",
+  "reason": "missing_instruction"
+}
+```
+
+They must not introduce separate check statuses named `not_implemented` or
+`missing_instruction`.
 
 `checks[]` contains the normalized lower-level evidence used to compute the
 result:
@@ -544,6 +686,7 @@ Allowed `checks[].layer` values:
     "profile": {
       "path": "/Users/alex/Library/Application Support/Google/Chrome/Default",
       "source": "default_discovery",
+      "runtimeBinding": "single_candidate",
       "candidates": [
         {
           "path": "/Users/alex/Library/Application Support/Google/Chrome/Default",
@@ -610,6 +753,12 @@ Allowed `checks[].layer` values:
       "message": "chrome.json responded to getInfo"
     },
     {
+      "id": "mcp-runtime-backend",
+      "layer": "mcp_runtime",
+      "status": "pass",
+      "message": "direct MCP probe found 1 usable backend"
+    },
+    {
       "id": "agent-mcp-server",
       "layer": "agent_mcp",
       "status": "pass",
@@ -641,7 +790,10 @@ Non-ready result:
     "id": "codex-cli",
     "mcpConfig": { "status": "pass" },
     "instructions": { "status": "pass" },
-    "runtimeStatus": { "status": "not_checked" }
+    "runtimeStatus": {
+      "status": "not_checked",
+      "reason": "target agent runtime is outside this CLI process"
+    }
   },
   "browser": {
     "kind": "chrome",
@@ -650,6 +802,7 @@ Non-ready result:
     "profile": {
       "path": "/Users/alex/Library/Application Support/Google/Chrome/Default",
       "source": "default_discovery",
+      "runtimeBinding": "not_available",
       "candidates": [
         {
           "path": "/Users/alex/Library/Application Support/Google/Chrome/Default",
@@ -710,6 +863,12 @@ Non-ready result:
       "details": { "resumeRequired": true }
     },
     {
+      "id": "mcp-runtime-backend",
+      "layer": "mcp_runtime",
+      "status": "fail",
+      "message": "direct MCP probe found zero usable browser backends"
+    },
+    {
       "id": "agent-mcp-server",
       "layer": "agent_mcp",
       "status": "pass",
@@ -728,6 +887,7 @@ open-browser-use is CLI-ready.
 Agent: codex-cli
 Browser: chrome Store extension fblnfcjnjklpgnmfnngcihbcgojnpadj
 Backend: webextension descriptor chrome.json responded to getInfo
+MCP runtime: direct probe found 1 usable backend
 Agent runtime: not checked
 ```
 
@@ -881,6 +1041,14 @@ after it reloaded MCP tools. Only this source can make
 It can prove CLI-level backend readiness, but it must not be treated as proof
 that the selected agent process has reloaded MCP tools.
 
+When `source: "direct_mcp_probe"` and the MCP process cannot start,
+`mcpStarts` must be `false`, `sdkBootstrap` must be `not_checked`,
+`backendCount` must be `null`, `backends` must be an empty array, and the
+blocking check must include launch error details. If the MCP process starts but
+`browser_status` cannot be read, `mcpStarts` must be `true`, `sdkBootstrap` must
+be `not_checked`, `backendCount` must be `null`, and `backends` must be an empty
+array.
+
 `source: "not_checked"` means MCP runtime status was not probed. In that case
 `mcpStarts` must be `null`, `sdkBootstrap` must be `not_checked`,
 `backendCount` must be `null`, and `backends` must be an empty array.
@@ -901,7 +1069,8 @@ The product is complete only when all of the following are true:
   `verificationTarget`, object-shaped `agent.runtimeStatus`, required
   `mcpRuntime.backends`, and non-empty `checks[]` evidence.
 - Human output gives one next action and no ambiguous action chain.
-- `ready` is impossible when browser backend count is zero.
+- `ready` is impossible when `mcpRuntime.backendCount` is zero or
+  `mcpRuntime.sdkBootstrap` is not `available`.
 - `verificationTarget: "agent_runtime"` cannot return `ready` unless
   `readiness.agentRuntime` is `ready`.
 - Browser profile discovery is deterministic and reports candidate profile state.
@@ -919,6 +1088,12 @@ The product is complete only when all of the following are true:
   verify readiness through OBU.
 - Clean-home smoke tests cover Codex, Cursor, Store extension id preservation,
   popup-required descriptor state, and divergent config conflicts.
+- Smoke or unit tests cover direct MCP runtime zero-backend results, SDK
+  bootstrap missing/untrusted results, disabled extensions, explicit profile
+  mismatch, deterministic multi-profile selection, wrong-browser or
+  wrong-extension descriptors, explicit `--profile` preservation in rerun/repair
+  commands, read-only verification performing no writes, and `--repair` refusing
+  divergent agent config.
 
 ## Product Principle
 
