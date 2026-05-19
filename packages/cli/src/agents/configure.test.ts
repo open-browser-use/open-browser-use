@@ -67,6 +67,32 @@ test("configureAgents returns manual action when shell executable is missing", a
   assert.match(steps[0]?.nextActions?.[0]?.value ?? "", /mcp-config --agent=claude-code --print/);
 });
 
+test("configureAgents times out hung shell adapters with a manual action", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX shell script fixture");
+    return;
+  }
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-agent-config-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const bin = path.join(root, "bin");
+  await mkdir(bin, { recursive: true });
+  const codex = path.join(bin, "codex");
+  await writeFile(codex, "#!/bin/sh\nsleep 5\n", "utf8");
+  await chmod(codex, 0o755);
+
+  const steps = await configureAgents({
+    agents: ["codex-cli"],
+    server: server(root),
+    env: { PATH: bin },
+    adapterTimeoutMs: 25,
+  });
+
+  assert.equal(steps[0]?.status, "manual_action_required");
+  assert.match(steps[0]?.message ?? "", /timed out/);
+  assert.equal(steps[0]?.details?.timeout_ms, 25);
+  assert.match(steps[0]?.nextActions?.[0]?.value ?? "", /mcp-config --agent=codex-cli --print/);
+});
+
 test("configureAgents dry-run reports planned shell and direct-edit work", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "obu-agent-config-"));
   t.after(() => rm(root, { recursive: true, force: true }));
