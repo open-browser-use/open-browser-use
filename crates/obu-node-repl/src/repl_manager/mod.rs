@@ -223,7 +223,7 @@ impl JsRuntimeManager {
         self.sync_backend_inventory_to_kernel(&inventory).await?;
         let (sdk_bootstrap, sdk_bootstrap_detail) = self.sdk_bootstrap_status();
         let doctor_hint = if inventory.backends.is_empty() {
-            "obu doctor browser --repair"
+            "No browser backend discovered. Run `obu doctor browser --repair` with the exact extension channel/id from the popup handoff, then open the extension popup and click Resume if no runtime descriptor is active."
         } else {
             "obu doctor browser"
         };
