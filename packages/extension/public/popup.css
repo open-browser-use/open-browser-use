@@ -273,6 +273,11 @@ h2 {
   padding: var(--space-6);
 }
 
+.setup-panel {
+  overflow: hidden;
+  padding-bottom: 0;
+}
+
 .panel-head {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -294,19 +299,55 @@ h2 {
   display: none;
 }
 
-.command {
+.handoff-surface {
   min-height: 6.75rem;
   max-height: 6.75rem;
-  margin: 0;
-  padding: var(--space-5);
-  overflow: auto;
-  border: 1px solid var(--line);
-  border-radius: 6px;
+  margin: var(--space-1) calc(var(--space-6) * -1) 0;
+  padding: var(--space-5) var(--space-6) var(--space-6);
+  overflow-x: hidden;
+  overflow-y: auto;
+  border-top: 1px solid var(--line);
   background: var(--panel-muted);
   color: var(--ink);
+  cursor: copy;
   font: 0.75rem / 1.38 var(--font-mono);
-  white-space: pre-wrap;
   overflow-wrap: anywhere;
+  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-width: thin;
+  user-select: none;
+  white-space: pre-wrap;
+  -webkit-user-select: none;
+  transition:
+    background 150ms cubic-bezier(0.22, 1, 0.36, 1),
+    box-shadow 150ms cubic-bezier(0.22, 1, 0.36, 1),
+    color 150ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.handoff-surface::selection {
+  background: transparent;
+}
+
+.handoff-surface::-webkit-scrollbar {
+  width: 0.5rem;
+}
+
+.handoff-surface::-webkit-scrollbar-thumb {
+  border: 0.125rem solid var(--panel-muted);
+  border-radius: 999px;
+  background: var(--line-strong);
+}
+
+.handoff-surface:hover {
+  background: oklch(0.948 0.009 230);
+}
+
+.handoff-surface:active {
+  background: oklch(0.935 0.011 230);
+}
+
+.handoff-surface:focus-visible {
+  outline: 0;
+  box-shadow: inset 0 0 0 0.125rem oklch(0.58 0.125 155 / 0.32);
 }
 
 .actions {
@@ -380,6 +421,18 @@ h2 {
 
 .setup-panel[data-copy-state="copied"] .setup-copy {
   background: var(--green-ink);
+}
+
+.setup-panel[data-copy-state="copied"] .handoff-surface {
+  background: var(--green-soft);
+  box-shadow: inset 0 0 0 0.0625rem oklch(0.72 0.075 155 / 0.75);
+  color: var(--green-ink);
+}
+
+.setup-panel[data-copy-state="error"] .handoff-surface {
+  background: var(--red-soft);
+  box-shadow: inset 0 0 0 0.0625rem oklch(0.68 0.09 35 / 0.6);
+  color: var(--red);
 }
 
 .setup-panel[data-copy-state="copied"] #setup-copy-text,
@@ -479,6 +532,7 @@ h2 {
   .stop,
   .resume,
   .setup-copy,
+  .handoff-surface,
   .debug-actions button {
     transition: none;
   }

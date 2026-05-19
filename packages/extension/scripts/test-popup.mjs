@@ -194,6 +194,13 @@ async function runPopupHappyPath() {
   assertAgentHandoff(harness.elements);
   assert.equal(harness.elements.setupCopyText.textContent, "");
 
+  const handoffWritesBefore = harness.clipboardWrites.length;
+  harness.elements.agentHandoff.click();
+  await waitFor(() => harness.clipboardWrites.length === handoffWritesBefore + 1);
+  await waitFor(() => harness.elements.copyAgentButton.textContent === "Copied");
+  assert.match(harness.clipboardWrites.at(-1), /prompts\/agent-install-prompt\.md/);
+  assert.match(harness.elements.setupCopyText.textContent, /setup finishes/);
+
   harness.storageChanges.emit(
     {
       [statusKey]: {

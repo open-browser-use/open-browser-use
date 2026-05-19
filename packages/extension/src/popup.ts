@@ -52,7 +52,7 @@ const detailText = document.querySelector<HTMLParagraphElement>("#detail-text");
 const setupPanel = document.querySelector<HTMLElement>("#setup-panel");
 const setupLabel = document.querySelector<HTMLParagraphElement>("#setup-label");
 const setupText = document.querySelector<HTMLParagraphElement>("#setup-text");
-const agentHandoff = document.querySelector<HTMLPreElement>("#agent-handoff");
+const agentHandoff = document.querySelector<HTMLElement>("#agent-handoff");
 const copyAgentButton = document.querySelector<HTMLButtonElement>("#copy-agent-button");
 const setupCopyText = document.querySelector<HTMLParagraphElement>("#setup-copy-text");
 const versionText = document.querySelector<HTMLSpanElement>("#version-text");
@@ -90,6 +90,16 @@ resumeButton!.addEventListener("click", () => {
 });
 
 copyAgentButton!.addEventListener("click", () => {
+  void copyAgentHandoff();
+});
+
+agentHandoff!.addEventListener("click", () => {
+  void copyAgentHandoff();
+});
+
+agentHandoff!.addEventListener("keydown", (event) => {
+  if (event.key !== "Enter" && event.key !== " ") return;
+  event.preventDefault();
   void copyAgentHandoff();
 });
 
@@ -204,7 +214,7 @@ async function copySetupText(input: {
     setDataAttribute(setupPanel, "data-copy-state", "copied");
   } catch {
     input.button.textContent = "Try again";
-    setupCopyText!.textContent = "Copy unavailable. Select the handoff text manually.";
+    setupCopyText!.textContent = "Copy unavailable. Check clipboard permission, then try again.";
     setDataAttribute(setupPanel, "data-copy-state", "error");
   } finally {
     input.button.disabled = false;
