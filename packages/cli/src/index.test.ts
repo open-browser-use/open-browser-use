@@ -134,6 +134,29 @@ test("agent doctor reads Cursor direct-edit MCP config instead of running mcp li
   assert.equal(payload.checks.find((check: any) => check.id === "agent-primary-instruction")?.status, "warn");
 });
 
+test("agent doctor accepts generic mcpServers entries without a nested name", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  await mkdir(path.join(home, ".cursor"), { recursive: true });
+  await writeFile(path.join(home, ".cursor", "mcp.json"), JSON.stringify({
+    mcpServers: {
+      "open-browser-use": {
+        command: process.execPath,
+        args: [cliEntry, "mcp", "stdio"],
+      },
+    },
+  }, null, 2), "utf8");
+
+  const result = await runCli(["agent", "doctor", "--agent=cursor", "--json"], {
+    HOME: home,
+    PATH: "",
+  });
+
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.checks.find((check: any) => check.id === "agent-mcp-server")?.status, "pass");
+});
+
 test("agent doctor does not run unsupported VS Code mcp-list probes", async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
   const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));

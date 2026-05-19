@@ -219,7 +219,7 @@ function directEditServerConfig(config: unknown, agent: AgentId, serverName: str
 }
 
 function equivalentServerConfig(config: Record<string, unknown>, server: McpServerInvocation, agent: AgentId): boolean {
-  const expectedName = agent === "zed" ? undefined : server.name;
+  const expectedName = agent === "zed" || config.name === undefined ? undefined : server.name;
   return (
     (expectedName === undefined || config.name === expectedName) &&
     config.command === server.command &&
