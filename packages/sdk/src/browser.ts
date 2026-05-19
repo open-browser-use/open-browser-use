@@ -164,7 +164,9 @@ export class Browser {
   }
 
   async deliverables(opts: { timeout?: number } = {}): Promise<BrowserDeliverable[]> {
-    await this.tabs.list();
+    const listOpts: { timeout?: number } = {};
+    if (opts.timeout !== undefined) listOpts.timeout = opts.timeout;
+    await this.tabs.list(listOpts);
     const info = await this.transport.sendRequest<BrowserInfo>(M.GET_INFO, {}, opts.timeout);
     return deliverableSummaries(info).map((row) => {
       const deliverable: BrowserDeliverable = {

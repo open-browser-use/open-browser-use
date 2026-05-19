@@ -24,8 +24,8 @@ export class BrowserTabs {
     private readonly guards: Guards,
   ) {}
 
-  async list(): Promise<Tab[]> {
-    const rows = await this.transport.sendRequest<TabWire[]>(M.GET_TABS, withSessionMeta({}));
+  async list(opts: { timeout?: number } = {}): Promise<Tab[]> {
+    const rows = await this.transport.sendRequest<TabWire[]>(M.GET_TABS, withSessionMeta({}), opts.timeout);
     return rows.map((row) => this.fromWire(row));
   }
 

@@ -388,7 +388,7 @@ describe("SDK wire-shape contracts", () => {
     }
 
     expect(transport.calls).toEqual([
-      { method: M.GET_TABS, params: { ...meta }, timeout: undefined },
+      { method: M.GET_TABS, params: { ...meta }, timeout: 250 },
       { method: M.GET_INFO, params: {}, timeout: 250 },
       { method: M.CLAIM_USER_TAB, params: { tab_id: "deliverable-1", ...meta }, timeout: undefined },
     ]);
