@@ -78,7 +78,7 @@ let debugLog: DebugLogSnapshot = { enabled: false, entries: [] };
 let debugLogSave: Promise<void> = Promise.resolve();
 const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
 const sessions = new Map<string, BrowserSession>();
-const downloadOwnersByUrl = new Map<string, DownloadOwner>();
+const downloadOwnersByUrl = new Map<string, DownloadOwner[]>();
 const downloadOwnersById = new Map<number, DownloadOwner>();
 const debuggerAttachLocks = new Map<number, Promise<void>>();
 let helloTimer: ReturnType<typeof setTimeout> | undefined;
@@ -369,7 +369,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   if (!owner || !owner.session.attachedTabIds.has(tabId!)) return;
   appendDebugLog("debug", "debugger.event", { method, tabId });
   if (method === "Page.downloadWillBegin" && isRecord(params) && typeof params.url === "string") {
-    downloadOwnersByUrl.set(params.url, { sessionId: owner.sessionId, tabId });
+    enqueueDownloadOwner(params.url, { sessionId: owner.sessionId, tabId });
   }
   sendNotification("onCDPEvent", {
     session_id: owner.sessionId,
@@ -396,10 +396,9 @@ chrome.debugger.onDetach.addListener((source) => {
 });
 
 chrome.downloads.onCreated.addListener((item) => {
-  const owner = typeof item.url === "string" ? downloadOwnersByUrl.get(item.url) : undefined;
+  const owner = typeof item.url === "string" ? takeDownloadOwner(item.url) : undefined;
   if (!owner) return;
   appendDebugLog("debug", "download.created", { id: item.id, tabId: owner.tabId });
-  if (typeof item.url === "string") downloadOwnersByUrl.delete(item.url);
   downloadOwnersById.set(item.id, owner);
   sendNotification("onDownloadChange", {
     session_id: owner.sessionId,
@@ -434,8 +433,6 @@ async function handleDownloadChanged(delta: ChromeDownloadDelta): Promise<void> 
   });
   if (status === "complete" || status === "failed") {
     downloadOwnersById.delete(delta.id);
-    const url = item?.url ?? delta.url?.current;
-    if (typeof url === "string") downloadOwnersByUrl.delete(url);
   }
 }
 
@@ -1140,6 +1137,24 @@ function findSessionForTab(tabId: number): { sessionId: string; session: Browser
   return undefined;
 }
 
+function enqueueDownloadOwner(url: string, owner: DownloadOwner): void {
+  const queue = downloadOwnersByUrl.get(url) ?? [];
+  queue.push(owner);
+  downloadOwnersByUrl.set(url, queue);
+}
+
+function takeDownloadOwner(url: string): DownloadOwner | undefined {
+  const queue = downloadOwnersByUrl.get(url);
+  if (!queue || queue.length === 0) return undefined;
+  const owner = queue.shift();
+  if (queue.length === 0) {
+    downloadOwnersByUrl.delete(url);
+  } else {
+    downloadOwnersByUrl.set(url, queue);
+  }
+  return owner;
+}
+
 async function handleTabRemoved(tabId: number): Promise<void> {
   overlayCoordinator.forget(tabId);
   let changed = false;
@@ -1149,8 +1164,13 @@ async function handleTabRemoved(tabId: number): Promise<void> {
     if (session.attachedTabIds.delete(tabId)) changed = true;
     if (session.tabs.size === 0) session.groupId = undefined;
   }
-  for (const [url, owner] of downloadOwnersByUrl) {
-    if (owner.tabId === tabId) downloadOwnersByUrl.delete(url);
+  for (const [url, owners] of downloadOwnersByUrl) {
+    const remaining = owners.filter((owner) => owner.tabId !== tabId);
+    if (remaining.length === 0) {
+      downloadOwnersByUrl.delete(url);
+    } else if (remaining.length !== owners.length) {
+      downloadOwnersByUrl.set(url, remaining);
+    }
   }
   for (const [id, owner] of downloadOwnersById) {
     if (owner.tabId === tabId) downloadOwnersById.delete(id);

@@ -654,6 +654,46 @@ const downloadComplete = await waitFor(() =>
 );
 assert.equal(downloadComplete.params.filename, "/tmp/file.txt");
 
+await hostRequest(port, "executeCdp", {
+  session_id: "session",
+  turn_id: "turn",
+  target: { tabId: blankCreated.result.tab.tabId },
+  method: "Runtime.evaluate",
+});
+const duplicateDownloadStart = port.sent.length;
+debuggerEvents.emit({ tabId: 1 }, "Page.downloadWillBegin", {
+  url: "https://example.com/duplicate.txt",
+  guid: "guid-duplicate-1",
+});
+debuggerEvents.emit({ tabId: blankCreated.result.tab.tabId }, "Page.downloadWillBegin", {
+  url: "https://example.com/duplicate.txt",
+  guid: "guid-duplicate-2",
+});
+downloads.set(6, {
+  id: 6,
+  url: "https://example.com/duplicate.txt",
+  filename: "duplicate.txt",
+  state: "in_progress",
+});
+downloadCreates.emit({ id: 6, url: "https://example.com/duplicate.txt", filename: "duplicate.txt" });
+downloads.set(7, {
+  id: 7,
+  url: "https://example.com/duplicate.txt",
+  filename: "duplicate (1).txt",
+  state: "in_progress",
+});
+downloadCreates.emit({ id: 7, url: "https://example.com/duplicate.txt", filename: "duplicate (1).txt" });
+const duplicateStarted = await waitFor(() => {
+  const rows = port.sent
+    .slice(duplicateDownloadStart)
+    .filter((message) => message.method === "onDownloadChange" && message.params?.status === "started");
+  return rows.length >= 2 ? rows : undefined;
+});
+assert.equal(duplicateStarted[0].params.id, "6");
+assert.equal(duplicateStarted[0].params.source.tabId, 1);
+assert.equal(duplicateStarted[1].params.id, "7");
+assert.equal(duplicateStarted[1].params.source.tabId, blankCreated.result.tab.tabId);
+
 const releaseCreated = await hostRequest(port, "createTab", {
   session_id: "release-session",
   turn_id: "turn",
