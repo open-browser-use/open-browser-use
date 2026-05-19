@@ -1,0 +1,322 @@
+{
+  "extName": {
+    "message": "open-browser-use"
+  },
+  "extDescription": {
+    "message": "Steuere Chromium-basierte Browser mit open-browser-use."
+  },
+  "actionTitle": {
+    "message": "open-browser-use"
+  },
+  "popupTitle": {
+    "message": "Chrome mit jedem Agent steuern"
+  },
+  "settingsOpenTitle": {
+    "message": "Einstellungen"
+  },
+  "settingsOpenAriaLabel": {
+    "message": "Einstellungen öffnen"
+  },
+  "settingsDocumentTitle": {
+    "message": "open-browser-use Einstellungen"
+  },
+  "settingsPageTitle": {
+    "message": "Einstellungen"
+  },
+  "settingsPageSubtitle": {
+    "message": "Steuere, wie open-browser-use in diesem Browser wirkt."
+  },
+  "settingsLanguageTitle": {
+    "message": "Sprache"
+  },
+  "settingsLanguageDescription": {
+    "message": "Wähle die Sprache für Erweiterungsseiten."
+  },
+  "settingsLanguageAuto": {
+    "message": "Browsersprache verwenden"
+  },
+  "settingsSaved": {
+    "message": "Gespeichert"
+  },
+  "settingsSaveFailed": {
+    "message": "Einstellung konnte nicht gespeichert werden."
+  },
+  "versionAriaLabel": {
+    "message": "Installierte Erweiterungsversion"
+  },
+  "versionFallback": {
+    "message": "Version"
+  },
+  "versionLabel": {
+    "message": "Version $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "nativeHostLabel": {
+    "message": "Nativer Host"
+  },
+  "checkingStatus": {
+    "message": "Wird geprüft..."
+  },
+  "setupLabel": {
+    "message": "Einrichtung"
+  },
+  "agentSetupLabel": {
+    "message": "Agent-Einrichtung"
+  },
+  "agentHandoffTitle": {
+    "message": "Agent-Übergabe"
+  },
+  "copyForAgent": {
+    "message": "Für Agent kopieren"
+  },
+  "copyAgentSetupHandoff": {
+    "message": "Agent-Einrichtungsübergabe kopieren"
+  },
+  "stopButton": {
+    "message": "Ich übernehme"
+  },
+  "resumeButton": {
+    "message": "Fortsetzen"
+  },
+  "debugLogsLabel": {
+    "message": "Debug-Protokolle"
+  },
+  "disabled": {
+    "message": "Deaktiviert"
+  },
+  "debugEnable": {
+    "message": "Aktivieren"
+  },
+  "debugDisable": {
+    "message": "Deaktivieren"
+  },
+  "debugCopy": {
+    "message": "Kopieren"
+  },
+  "debugClear": {
+    "message": "Leeren"
+  },
+  "nativeHostStatusUnavailable": {
+    "message": "Status des nativen Hosts nicht verfügbar"
+  },
+  "debugUnavailable": {
+    "message": "Nicht verfügbar"
+  },
+  "debugCopyFailed": {
+    "message": "Kopieren fehlgeschlagen: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCleared": {
+    "message": "Geleert"
+  },
+  "copyAgentUnavailable": {
+    "message": "Agent-Einrichtungsübergabe nicht verfügbar"
+  },
+  "copyAgentSuccess": {
+    "message": "Kopiert. In deinen Agent einfügen. Kehre hierher zurück und klicke auf Fortsetzen, wenn die Einrichtung abgeschlossen ist."
+  },
+  "copying": {
+    "message": "Wird kopiert"
+  },
+  "copied": {
+    "message": "Kopiert"
+  },
+  "tryAgain": {
+    "message": "Erneut versuchen"
+  },
+  "copyUnavailable": {
+    "message": "Kopieren nicht verfügbar. Prüfe die Zwischenablageberechtigung und versuche es erneut."
+  },
+  "agentSetupDefaultText": {
+    "message": "Verbinde einen weiteren Agent mit dieser Übergabe. Kopiere sie in den Agent und lasse dieses Popup während der Kopplung geöffnet."
+  },
+  "statusConnected": {
+    "message": "Verbunden"
+  },
+  "statusConnecting": {
+    "message": "Verbindung wird hergestellt"
+  },
+  "statusUpdateNeeded": {
+    "message": "Update erforderlich"
+  },
+  "statusStopped": {
+    "message": "Sie haben die Kontrolle"
+  },
+  "statusNeedsSetup": {
+    "message": "Einrichtung erforderlich"
+  },
+  "statusReconnecting": {
+    "message": "Erneute Verbindung"
+  },
+  "hostVersionLabel": {
+    "message": "Host $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "hostReady": {
+    "message": "Host bereit"
+  },
+  "connectingNativeHost": {
+    "message": "Verbindung zum nativen Host wird hergestellt."
+  },
+  "disconnectedDetail": {
+    "message": "Erneuter Verbindungsversuch. Verwende Fortsetzen, nachdem die Einrichtung repariert wurde."
+  },
+  "versionMismatchDetail": {
+    "message": "Aktualisiere den lokalen Host und klicke dann auf Fortsetzen, um erneut zu verbinden."
+  },
+  "stoppedDetail": {
+    "message": "Schließe Anmeldung, Passwörter oder Seitenschritte ab und klicke dann auf Fortsetzen, um die Automatisierung fortzusetzen."
+  },
+  "errorDetail": {
+    "message": "Führe die Einrichtung aus und klicke dann auf Fortsetzen, um erneut zu verbinden."
+  },
+  "deliverableRecovery_one": {
+    "message": "$count$ lieferbarer Tab verfügbar. Verwende browser.deliverables() und dann claim(), um ihn wiederherzustellen.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_other": {
+    "message": "$count$ lieferbare Tabs verfügbar. Verwende browser.deliverables() und dann claim(), um sie wiederherzustellen.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "adviceUpdateHost": {
+    "message": "Aktualisiere den lokalen Host und verbinde erneut."
+  },
+  "setupTextUpdateHost": {
+    "message": "Kopiere diese Übergabe in deinen Agent. Kehre nach dem Update hierher zurück und klicke auf Fortsetzen."
+  },
+  "adviceInstallHost": {
+    "message": "Installiere den lokalen Host und verbinde erneut."
+  },
+  "setupTextInstallHost": {
+    "message": "Kopiere diese Übergabe in deinen Agent, um open-browser-use zu installieren und den nativen Host für diese Erweiterung zu registrieren."
+  },
+  "adviceRefreshHostPermission": {
+    "message": "Aktualisiere die Hostberechtigung dieser Erweiterung und verbinde erneut."
+  },
+  "setupTextRefreshHostPermission": {
+    "message": "Kopiere diese Übergabe in deinen Agent, um die native Hostregistrierung für diese Erweiterungs-ID zu aktualisieren."
+  },
+  "adviceRepairHost": {
+    "message": "Repariere den lokalen Host und verbinde erneut."
+  },
+  "setupTextRepairHost": {
+    "message": "Kopiere diese Übergabe in deinen Agent, um die open-browser-use-Einrichtung zu reparieren und den nativen Host zu prüfen."
+  },
+  "adviceRepairSetup": {
+    "message": "Repariere die Einrichtung und verbinde erneut."
+  },
+  "setupTextRepairSetup": {
+    "message": "Kopiere diese Übergabe in deinen Agent, um die open-browser-use-Einrichtung zu reparieren und die Browserkopplung zu prüfen."
+  },
+  "adviceCheckSetup": {
+    "message": "Prüfe die lokale Einrichtung und klicke dann auf Fortsetzen, um erneut zu verbinden."
+  },
+  "adviceDisconnectedPortObject": {
+    "message": "Der lokale Host ist nicht verbunden. Installiere ihn neu und verbinde erneut."
+  },
+  "setupTextDisconnectedPortObject": {
+    "message": "Kopiere diese Übergabe in deinen Agent, um open-browser-use neu zu installieren und den Host für diese Erweiterung zu registrieren."
+  },
+  "retryingInSeconds": {
+    "message": "Erneuter Versuch in $seconds$ s.",
+    "placeholders": {
+      "seconds": {
+        "content": "$1"
+      }
+    }
+  },
+  "statusStopping": {
+    "message": "Wird gestoppt..."
+  },
+  "statusStoppedByUser": {
+    "message": "Vom Benutzer gestoppt"
+  },
+  "statusVersionMismatch": {
+    "message": "Versionskonflikt"
+  },
+  "debugEnabledEntries_one": {
+    "message": "Aktiviert, $count$/$max$ Eintrag",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_other": {
+    "message": "Aktiviert, $count$/$max$ Einträge",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugDisabledEntries_one": {
+    "message": "Deaktiviert, $count$ gespeicherter Eintrag",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_other": {
+    "message": "Deaktiviert, $count$ gespeicherte Einträge",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_one": {
+    "message": "$count$ Eintrag kopiert",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_other": {
+    "message": "$count$ Einträge kopiert",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverablesGroupTitle": {
+    "message": "$label$ Lieferungen",
+    "placeholders": {
+      "label": {
+        "content": "$1"
+      }
+    }
+  },
+  "defaultDeliverablesGroupTitle": {
+    "message": "open-browser-use Lieferungen"
+  }
+}

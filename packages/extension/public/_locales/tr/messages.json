@@ -1,0 +1,322 @@
+{
+  "extName": {
+    "message": "open-browser-use"
+  },
+  "extDescription": {
+    "message": "Chromium ailesi tarayıcıları open-browser-use ile kontrol edin."
+  },
+  "actionTitle": {
+    "message": "open-browser-use"
+  },
+  "popupTitle": {
+    "message": "Chrome’u herhangi bir Agent ile kontrol edin"
+  },
+  "settingsOpenTitle": {
+    "message": "Ayarlar"
+  },
+  "settingsOpenAriaLabel": {
+    "message": "Ayarları aç"
+  },
+  "settingsDocumentTitle": {
+    "message": "open-browser-use Ayarları"
+  },
+  "settingsPageTitle": {
+    "message": "Ayarlar"
+  },
+  "settingsPageSubtitle": {
+    "message": "Bu tarayıcıda open-browser-use deneyimini yönetin."
+  },
+  "settingsLanguageTitle": {
+    "message": "Dil"
+  },
+  "settingsLanguageDescription": {
+    "message": "Uzantı sayfalarının dilini seçin."
+  },
+  "settingsLanguageAuto": {
+    "message": "Tarayıcı dilini kullan"
+  },
+  "settingsSaved": {
+    "message": "Kaydedildi"
+  },
+  "settingsSaveFailed": {
+    "message": "Ayar kaydedilemedi."
+  },
+  "versionAriaLabel": {
+    "message": "Yüklü uzantı sürümü"
+  },
+  "versionFallback": {
+    "message": "Sürüm"
+  },
+  "versionLabel": {
+    "message": "Sürüm $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "nativeHostLabel": {
+    "message": "Yerel ana makine"
+  },
+  "checkingStatus": {
+    "message": "Kontrol ediliyor..."
+  },
+  "setupLabel": {
+    "message": "Kurulum"
+  },
+  "agentSetupLabel": {
+    "message": "Agent kurulumu"
+  },
+  "agentHandoffTitle": {
+    "message": "Agent devri"
+  },
+  "copyForAgent": {
+    "message": "Agent için kopyala"
+  },
+  "copyAgentSetupHandoff": {
+    "message": "Agent kurulum devrini kopyala"
+  },
+  "stopButton": {
+    "message": "Kontrolü alıyorum"
+  },
+  "resumeButton": {
+    "message": "Sürdür"
+  },
+  "debugLogsLabel": {
+    "message": "Hata ayıklama günlükleri"
+  },
+  "disabled": {
+    "message": "Devre dışı"
+  },
+  "debugEnable": {
+    "message": "Etkinleştir"
+  },
+  "debugDisable": {
+    "message": "Devre dışı bırak"
+  },
+  "debugCopy": {
+    "message": "Kopyala"
+  },
+  "debugClear": {
+    "message": "Temizle"
+  },
+  "nativeHostStatusUnavailable": {
+    "message": "Yerel ana makine durumu kullanılamıyor"
+  },
+  "debugUnavailable": {
+    "message": "Kullanılamıyor"
+  },
+  "debugCopyFailed": {
+    "message": "Kopyalama başarısız: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCleared": {
+    "message": "Temizlendi"
+  },
+  "copyAgentUnavailable": {
+    "message": "Agent kurulum devri kullanılamıyor"
+  },
+  "copyAgentSuccess": {
+    "message": "Kopyalandı. Agent içine yapıştırın. Kurulum bitince buraya dönüp Sürdür’e tıklayın."
+  },
+  "copying": {
+    "message": "Kopyalanıyor"
+  },
+  "copied": {
+    "message": "Kopyalandı"
+  },
+  "tryAgain": {
+    "message": "Tekrar dene"
+  },
+  "copyUnavailable": {
+    "message": "Kopyalama kullanılamıyor. Pano iznini kontrol edip tekrar deneyin."
+  },
+  "agentSetupDefaultText": {
+    "message": "Bu devirle başka bir Agent bağlayın. Agent içine kopyalayın ve eşleşme sırasında bu açılır pencereyi açık tutun."
+  },
+  "statusConnected": {
+    "message": "Bağlandı"
+  },
+  "statusConnecting": {
+    "message": "Bağlanıyor"
+  },
+  "statusUpdateNeeded": {
+    "message": "Güncelleme gerekli"
+  },
+  "statusStopped": {
+    "message": "Kontrol sizde"
+  },
+  "statusNeedsSetup": {
+    "message": "Kurulum gerekli"
+  },
+  "statusReconnecting": {
+    "message": "Yeniden bağlanıyor"
+  },
+  "hostVersionLabel": {
+    "message": "Ana makine $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "hostReady": {
+    "message": "Ana makine hazır"
+  },
+  "connectingNativeHost": {
+    "message": "Yerel ana makineye bağlanıyor."
+  },
+  "disconnectedDetail": {
+    "message": "Yeniden bağlanmaya çalışıyor. Kurulum onarıldıktan sonra Sürdür’ü kullanın."
+  },
+  "versionMismatchDetail": {
+    "message": "Yerel ana makineyi güncelleyin, ardından yeniden bağlanmak için Sürdür’e tıklayın."
+  },
+  "stoppedDetail": {
+    "message": "Oturum açma, parola veya sayfa adımını bitirin, ardından otomasyona devam etmek için Sürdür’e tıklayın."
+  },
+  "errorDetail": {
+    "message": "Kurulumu çalıştırın, ardından yeniden bağlanmak için Sürdür’e tıklayın."
+  },
+  "deliverableRecovery_one": {
+    "message": "$count$ teslim edilebilir sekme var. Geri almak için browser.deliverables(), ardından claim() kullanın.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_other": {
+    "message": "$count$ teslim edilebilir sekme var. Geri almak için browser.deliverables(), ardından claim() kullanın.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "adviceUpdateHost": {
+    "message": "Yerel ana makineyi güncelleyin, ardından yeniden bağlanın."
+  },
+  "setupTextUpdateHost": {
+    "message": "Bu devri Agent içine kopyalayın. Güncelleme bitince buraya dönüp Sürdür’e tıklayın."
+  },
+  "adviceInstallHost": {
+    "message": "Yerel ana makineyi kurun, ardından yeniden bağlanın."
+  },
+  "setupTextInstallHost": {
+    "message": "open-browser-use kurmak ve bu uzantı için yerel ana makineyi kaydetmek üzere bu devri Agent içine kopyalayın."
+  },
+  "adviceRefreshHostPermission": {
+    "message": "Bu uzantının ana makine iznini yenileyin, ardından yeniden bağlanın."
+  },
+  "setupTextRefreshHostPermission": {
+    "message": "Bu uzantı ID’si için yerel ana makine kaydını yenilemek üzere bu devri Agent içine kopyalayın."
+  },
+  "adviceRepairHost": {
+    "message": "Yerel ana makineyi onarın, ardından yeniden bağlanın."
+  },
+  "setupTextRepairHost": {
+    "message": "open-browser-use kurulumunu onarmak ve yerel ana makineyi doğrulamak için bu devri Agent içine kopyalayın."
+  },
+  "adviceRepairSetup": {
+    "message": "Kurulumu onarın, ardından yeniden bağlanın."
+  },
+  "setupTextRepairSetup": {
+    "message": "open-browser-use kurulumunu onarmak ve tarayıcı eşleşmesini doğrulamak için bu devri Agent içine kopyalayın."
+  },
+  "adviceCheckSetup": {
+    "message": "Yerel kurulumu kontrol edin, ardından yeniden bağlanmak için Sürdür’e tıklayın."
+  },
+  "adviceDisconnectedPortObject": {
+    "message": "Yerel ana makine bağlı değil. Yeniden kurun, ardından yeniden bağlanın."
+  },
+  "setupTextDisconnectedPortObject": {
+    "message": "open-browser-use yeniden kurmak ve bu uzantı için ana makineyi kaydetmek üzere bu devri Agent içine kopyalayın."
+  },
+  "retryingInSeconds": {
+    "message": "$seconds$s içinde yeniden deneniyor.",
+    "placeholders": {
+      "seconds": {
+        "content": "$1"
+      }
+    }
+  },
+  "statusStopping": {
+    "message": "Durduruluyor..."
+  },
+  "statusStoppedByUser": {
+    "message": "Kullanıcı tarafından durduruldu"
+  },
+  "statusVersionMismatch": {
+    "message": "Sürüm uyumsuzluğu"
+  },
+  "debugEnabledEntries_one": {
+    "message": "Etkin, $count$/$max$ kayıt",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_other": {
+    "message": "Etkin, $count$/$max$ kayıt",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugDisabledEntries_one": {
+    "message": "Devre dışı, $count$ kayıt saklandı",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_other": {
+    "message": "Devre dışı, $count$ kayıt saklandı",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_one": {
+    "message": "$count$ kayıt kopyalandı",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_other": {
+    "message": "$count$ kayıt kopyalandı",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverablesGroupTitle": {
+    "message": "$label$ teslimatlar",
+    "placeholders": {
+      "label": {
+        "content": "$1"
+      }
+    }
+  },
+  "defaultDeliverablesGroupTitle": {
+    "message": "open-browser-use teslimatları"
+  }
+}

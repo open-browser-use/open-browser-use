@@ -12,6 +12,8 @@ declare const chrome: {
     id?: string;
     lastError?: { message?: string };
     getManifest(): { version: string };
+    getURL(path: string): string;
+    openOptionsPage?(): Promise<void>;
     connectNative(name: string): NativePort;
     sendMessage(message: unknown): Promise<unknown>;
     onMessage: {
@@ -23,6 +25,10 @@ declare const chrome: {
         ) => boolean | void,
       ): void;
     };
+  };
+  i18n: {
+    getMessage(messageName: string, substitutions?: string | string[]): string;
+    getUILanguage(): string;
   };
   alarms: {
     create(name: string, alarmInfo: { delayInMinutes?: number; periodInMinutes?: number; when?: number }): Promise<void>;

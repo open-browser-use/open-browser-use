@@ -1,0 +1,322 @@
+{
+  "extName": {
+    "message": "open-browser-use"
+  },
+  "extDescription": {
+    "message": "open-browser-use で Chromium 系ブラウザーを制御します。"
+  },
+  "actionTitle": {
+    "message": "open-browser-use"
+  },
+  "popupTitle": {
+    "message": "任意の Agent で Chrome を操作"
+  },
+  "settingsOpenTitle": {
+    "message": "設定"
+  },
+  "settingsOpenAriaLabel": {
+    "message": "設定を開く"
+  },
+  "settingsDocumentTitle": {
+    "message": "open-browser-use 設定"
+  },
+  "settingsPageTitle": {
+    "message": "設定"
+  },
+  "settingsPageSubtitle": {
+    "message": "このブラウザでの open-browser-use の表示を調整します。"
+  },
+  "settingsLanguageTitle": {
+    "message": "言語"
+  },
+  "settingsLanguageDescription": {
+    "message": "拡張機能ページの言語を選択します。"
+  },
+  "settingsLanguageAuto": {
+    "message": "ブラウザの言語に合わせる"
+  },
+  "settingsSaved": {
+    "message": "保存しました"
+  },
+  "settingsSaveFailed": {
+    "message": "設定を保存できませんでした。"
+  },
+  "versionAriaLabel": {
+    "message": "インストール済み拡張機能のバージョン"
+  },
+  "versionFallback": {
+    "message": "バージョン"
+  },
+  "versionLabel": {
+    "message": "バージョン $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "nativeHostLabel": {
+    "message": "ネイティブホスト"
+  },
+  "checkingStatus": {
+    "message": "確認中..."
+  },
+  "setupLabel": {
+    "message": "セットアップ"
+  },
+  "agentSetupLabel": {
+    "message": "Agent セットアップ"
+  },
+  "agentHandoffTitle": {
+    "message": "Agent ハンドオフ"
+  },
+  "copyForAgent": {
+    "message": "Agent 用にコピー"
+  },
+  "copyAgentSetupHandoff": {
+    "message": "Agent セットアップ用ハンドオフをコピー"
+  },
+  "stopButton": {
+    "message": "自分で操作する"
+  },
+  "resumeButton": {
+    "message": "再開"
+  },
+  "debugLogsLabel": {
+    "message": "デバッグログ"
+  },
+  "disabled": {
+    "message": "無効"
+  },
+  "debugEnable": {
+    "message": "有効化"
+  },
+  "debugDisable": {
+    "message": "無効化"
+  },
+  "debugCopy": {
+    "message": "コピー"
+  },
+  "debugClear": {
+    "message": "消去"
+  },
+  "nativeHostStatusUnavailable": {
+    "message": "ネイティブホストの状態を取得できません"
+  },
+  "debugUnavailable": {
+    "message": "利用できません"
+  },
+  "debugCopyFailed": {
+    "message": "コピーに失敗しました: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCleared": {
+    "message": "消去しました"
+  },
+  "copyAgentUnavailable": {
+    "message": "Agent セットアップ用ハンドオフを利用できません"
+  },
+  "copyAgentSuccess": {
+    "message": "コピーしました。Agent に貼り付けてください。セットアップ完了後、この画面に戻って「再開」をクリックします。"
+  },
+  "copying": {
+    "message": "コピー中"
+  },
+  "copied": {
+    "message": "コピー済み"
+  },
+  "tryAgain": {
+    "message": "再試行"
+  },
+  "copyUnavailable": {
+    "message": "コピーできません。クリップボード権限を確認してから再試行してください。"
+  },
+  "agentSetupDefaultText": {
+    "message": "このハンドオフで別の Agent を接続します。Agent にコピーし、ペアリング中はこのポップアップを開いたままにしてください。"
+  },
+  "statusConnected": {
+    "message": "接続済み"
+  },
+  "statusConnecting": {
+    "message": "接続中"
+  },
+  "statusUpdateNeeded": {
+    "message": "更新が必要"
+  },
+  "statusStopped": {
+    "message": "あなたが操作中"
+  },
+  "statusNeedsSetup": {
+    "message": "セットアップが必要"
+  },
+  "statusReconnecting": {
+    "message": "再接続中"
+  },
+  "hostVersionLabel": {
+    "message": "ホスト $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "hostReady": {
+    "message": "ホスト準備完了"
+  },
+  "connectingNativeHost": {
+    "message": "ネイティブホストに接続しています。"
+  },
+  "disconnectedDetail": {
+    "message": "再接続を試行しています。セットアップ修復後に「再開」を使用してください。"
+  },
+  "versionMismatchDetail": {
+    "message": "ローカルホストを更新してから、「再開」をクリックして再接続してください。"
+  },
+  "stoppedDetail": {
+    "message": "サインイン、パスワード、またはページ上の操作を完了してから、「再開」をクリックして自動化を続行してください。"
+  },
+  "errorDetail": {
+    "message": "セットアップを実行してから、「再開」をクリックして再接続してください。"
+  },
+  "deliverableRecovery_one": {
+    "message": "$count$ 個の成果物タブがあります。browser.deliverables() を使用し、claim() で復元してください。",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_other": {
+    "message": "$count$ 個の成果物タブがあります。browser.deliverables() を使用し、claim() で復元してください。",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "adviceUpdateHost": {
+    "message": "ローカルホストを更新してから再接続してください。"
+  },
+  "setupTextUpdateHost": {
+    "message": "このハンドオフを Agent にコピーしてください。更新完了後、この画面に戻って「再開」をクリックします。"
+  },
+  "adviceInstallHost": {
+    "message": "ローカルホストをインストールしてから再接続してください。"
+  },
+  "setupTextInstallHost": {
+    "message": "このハンドオフを Agent にコピーして、open-browser-use をインストールし、この拡張機能用のネイティブホストを登録してください。"
+  },
+  "adviceRefreshHostPermission": {
+    "message": "この拡張機能のホスト権限を更新してから再接続してください。"
+  },
+  "setupTextRefreshHostPermission": {
+    "message": "このハンドオフを Agent にコピーして、この拡張機能 ID 用のネイティブホスト登録を更新してください。"
+  },
+  "adviceRepairHost": {
+    "message": "ローカルホストを修復してから再接続してください。"
+  },
+  "setupTextRepairHost": {
+    "message": "このハンドオフを Agent にコピーして、open-browser-use のセットアップを修復し、ネイティブホストを確認してください。"
+  },
+  "adviceRepairSetup": {
+    "message": "セットアップを修復してから再接続してください。"
+  },
+  "setupTextRepairSetup": {
+    "message": "このハンドオフを Agent にコピーして、open-browser-use のセットアップを修復し、ブラウザーのペアリングを確認してください。"
+  },
+  "adviceCheckSetup": {
+    "message": "ローカルセットアップを確認してから、「再開」をクリックして再接続してください。"
+  },
+  "adviceDisconnectedPortObject": {
+    "message": "ローカルホストが接続されていません。再インストールしてから再接続してください。"
+  },
+  "setupTextDisconnectedPortObject": {
+    "message": "このハンドオフを Agent にコピーして、open-browser-use を再インストールし、この拡張機能用のホストを登録してください。"
+  },
+  "retryingInSeconds": {
+    "message": "$seconds$ 秒後に再試行します。",
+    "placeholders": {
+      "seconds": {
+        "content": "$1"
+      }
+    }
+  },
+  "statusStopping": {
+    "message": "停止中..."
+  },
+  "statusStoppedByUser": {
+    "message": "ユーザーにより停止"
+  },
+  "statusVersionMismatch": {
+    "message": "バージョン不一致"
+  },
+  "debugEnabledEntries_one": {
+    "message": "有効、$count$/$max$ 件",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_other": {
+    "message": "有効、$count$/$max$ 件",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugDisabledEntries_one": {
+    "message": "無効、$count$ 件保存済み",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_other": {
+    "message": "無効、$count$ 件保存済み",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_one": {
+    "message": "$count$ 件をコピーしました",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_other": {
+    "message": "$count$ 件をコピーしました",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverablesGroupTitle": {
+    "message": "$label$ 成果物",
+    "placeholders": {
+      "label": {
+        "content": "$1"
+      }
+    }
+  },
+  "defaultDeliverablesGroupTitle": {
+    "message": "open-browser-use 成果物"
+  }
+}

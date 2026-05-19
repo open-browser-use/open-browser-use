@@ -1,0 +1,322 @@
+{
+  "extName": {
+    "message": "open-browser-use"
+  },
+  "extDescription": {
+    "message": "Control Chromium-family browsers through open-browser-use."
+  },
+  "actionTitle": {
+    "message": "open-browser-use"
+  },
+  "popupTitle": {
+    "message": "Control Chrome with any Agent"
+  },
+  "settingsOpenTitle": {
+    "message": "Settings"
+  },
+  "settingsOpenAriaLabel": {
+    "message": "Open settings"
+  },
+  "settingsDocumentTitle": {
+    "message": "open-browser-use Settings"
+  },
+  "settingsPageTitle": {
+    "message": "Settings"
+  },
+  "settingsPageSubtitle": {
+    "message": "Control how open-browser-use feels in this browser."
+  },
+  "settingsLanguageTitle": {
+    "message": "Language"
+  },
+  "settingsLanguageDescription": {
+    "message": "Choose the language for extension pages."
+  },
+  "settingsLanguageAuto": {
+    "message": "Follow browser language"
+  },
+  "settingsSaved": {
+    "message": "Saved"
+  },
+  "settingsSaveFailed": {
+    "message": "Could not save setting."
+  },
+  "versionAriaLabel": {
+    "message": "Installed extension version"
+  },
+  "versionFallback": {
+    "message": "Version"
+  },
+  "versionLabel": {
+    "message": "Version $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "nativeHostLabel": {
+    "message": "Native host"
+  },
+  "checkingStatus": {
+    "message": "Checking..."
+  },
+  "setupLabel": {
+    "message": "Setup"
+  },
+  "agentSetupLabel": {
+    "message": "Agent setup"
+  },
+  "agentHandoffTitle": {
+    "message": "Agent handoff"
+  },
+  "copyForAgent": {
+    "message": "Copy for Agent"
+  },
+  "copyAgentSetupHandoff": {
+    "message": "Copy Agent setup handoff"
+  },
+  "stopButton": {
+    "message": "I'll take over"
+  },
+  "resumeButton": {
+    "message": "Resume"
+  },
+  "debugLogsLabel": {
+    "message": "Debug logs"
+  },
+  "disabled": {
+    "message": "Disabled"
+  },
+  "debugEnable": {
+    "message": "Enable"
+  },
+  "debugDisable": {
+    "message": "Disable"
+  },
+  "debugCopy": {
+    "message": "Copy"
+  },
+  "debugClear": {
+    "message": "Clear"
+  },
+  "nativeHostStatusUnavailable": {
+    "message": "Native host status unavailable"
+  },
+  "debugUnavailable": {
+    "message": "Unavailable"
+  },
+  "debugCopyFailed": {
+    "message": "Copy failed: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCleared": {
+    "message": "Cleared"
+  },
+  "copyAgentUnavailable": {
+    "message": "Agent setup handoff unavailable"
+  },
+  "copyAgentSuccess": {
+    "message": "Copied. Paste into your Agent. Return here and click Resume when setup finishes."
+  },
+  "copying": {
+    "message": "Copying"
+  },
+  "copied": {
+    "message": "Copied"
+  },
+  "tryAgain": {
+    "message": "Try again"
+  },
+  "copyUnavailable": {
+    "message": "Copy unavailable. Check clipboard permission, then try again."
+  },
+  "agentSetupDefaultText": {
+    "message": "Connect another Agent with this handoff. Copy it into the Agent, then keep this popup open while it pairs."
+  },
+  "statusConnected": {
+    "message": "Connected"
+  },
+  "statusConnecting": {
+    "message": "Connecting"
+  },
+  "statusUpdateNeeded": {
+    "message": "Update needed"
+  },
+  "statusStopped": {
+    "message": "You are in control"
+  },
+  "statusNeedsSetup": {
+    "message": "Needs setup"
+  },
+  "statusReconnecting": {
+    "message": "Reconnecting"
+  },
+  "hostVersionLabel": {
+    "message": "Host $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "hostReady": {
+    "message": "Host ready"
+  },
+  "connectingNativeHost": {
+    "message": "Connecting to the native host."
+  },
+  "disconnectedDetail": {
+    "message": "Trying to reconnect. Use Resume after setup is repaired."
+  },
+  "versionMismatchDetail": {
+    "message": "Update the local host, then click Resume to reconnect."
+  },
+  "stoppedDetail": {
+    "message": "Finish sign-in, passwords, or any page step, then click Resume to continue automation."
+  },
+  "errorDetail": {
+    "message": "Run setup, then click Resume to reconnect."
+  },
+  "deliverableRecovery_one": {
+    "message": "$count$ deliverable tab available. Use browser.deliverables(), then claim() to recover it.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_other": {
+    "message": "$count$ deliverable tabs available. Use browser.deliverables(), then claim() to recover them.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "adviceUpdateHost": {
+    "message": "Update the local host, then reconnect."
+  },
+  "setupTextUpdateHost": {
+    "message": "Copy this handoff into your Agent. Return here and click Resume after the update finishes."
+  },
+  "adviceInstallHost": {
+    "message": "Install the local host, then reconnect."
+  },
+  "setupTextInstallHost": {
+    "message": "Copy this handoff into your Agent to install open-browser-use and register the native host for this extension."
+  },
+  "adviceRefreshHostPermission": {
+    "message": "Refresh this extension's host permission, then reconnect."
+  },
+  "setupTextRefreshHostPermission": {
+    "message": "Copy this handoff into your Agent to refresh the native host registration for this extension ID."
+  },
+  "adviceRepairHost": {
+    "message": "Repair the local host, then reconnect."
+  },
+  "setupTextRepairHost": {
+    "message": "Copy this handoff into your Agent to repair open-browser-use setup and verify the native host."
+  },
+  "adviceRepairSetup": {
+    "message": "Repair setup, then reconnect."
+  },
+  "setupTextRepairSetup": {
+    "message": "Copy this handoff into your Agent to repair open-browser-use setup and verify browser pairing."
+  },
+  "adviceCheckSetup": {
+    "message": "Check local setup, then click Resume to reconnect."
+  },
+  "adviceDisconnectedPortObject": {
+    "message": "The local host is not connected. Reinstall it, then reconnect."
+  },
+  "setupTextDisconnectedPortObject": {
+    "message": "Copy this handoff into your Agent to reinstall open-browser-use and register the host for this extension."
+  },
+  "retryingInSeconds": {
+    "message": "Retrying in $seconds$s.",
+    "placeholders": {
+      "seconds": {
+        "content": "$1"
+      }
+    }
+  },
+  "statusStopping": {
+    "message": "Stopping..."
+  },
+  "statusStoppedByUser": {
+    "message": "Stopped by user"
+  },
+  "statusVersionMismatch": {
+    "message": "Version mismatch"
+  },
+  "debugEnabledEntries_one": {
+    "message": "Enabled, $count$/$max$ entry",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_other": {
+    "message": "Enabled, $count$/$max$ entries",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugDisabledEntries_one": {
+    "message": "Disabled, $count$ saved entry",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_other": {
+    "message": "Disabled, $count$ saved entries",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_one": {
+    "message": "Copied $count$ entry",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_other": {
+    "message": "Copied $count$ entries",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverablesGroupTitle": {
+    "message": "$label$ Deliverables",
+    "placeholders": {
+      "label": {
+        "content": "$1"
+      }
+    }
+  },
+  "defaultDeliverablesGroupTitle": {
+    "message": "open-browser-use Deliverables"
+  }
+}

@@ -1,0 +1,357 @@
+{
+  "extName": {
+    "message": "open-browser-use"
+  },
+  "extDescription": {
+    "message": "Controlla i browser della famiglia Chromium con open-browser-use."
+  },
+  "actionTitle": {
+    "message": "open-browser-use"
+  },
+  "popupTitle": {
+    "message": "Controlla Chrome con qualsiasi Agent"
+  },
+  "settingsOpenTitle": {
+    "message": "Impostazioni"
+  },
+  "settingsOpenAriaLabel": {
+    "message": "Apri impostazioni"
+  },
+  "settingsDocumentTitle": {
+    "message": "Impostazioni open-browser-use"
+  },
+  "settingsPageTitle": {
+    "message": "Impostazioni"
+  },
+  "settingsPageSubtitle": {
+    "message": "Controlla l’esperienza di open-browser-use in questo browser."
+  },
+  "settingsLanguageTitle": {
+    "message": "Lingua"
+  },
+  "settingsLanguageDescription": {
+    "message": "Scegli la lingua per le pagine dell’estensione."
+  },
+  "settingsLanguageAuto": {
+    "message": "Segui la lingua del browser"
+  },
+  "settingsSaved": {
+    "message": "Salvato"
+  },
+  "settingsSaveFailed": {
+    "message": "Impossibile salvare l’impostazione."
+  },
+  "versionAriaLabel": {
+    "message": "Versione dell'estensione installata"
+  },
+  "versionFallback": {
+    "message": "Versione"
+  },
+  "versionLabel": {
+    "message": "Versione $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "nativeHostLabel": {
+    "message": "Host nativo"
+  },
+  "checkingStatus": {
+    "message": "Controllo..."
+  },
+  "setupLabel": {
+    "message": "Configurazione"
+  },
+  "agentSetupLabel": {
+    "message": "Configurazione Agente"
+  },
+  "agentHandoffTitle": {
+    "message": "Passaggio all'Agente"
+  },
+  "copyForAgent": {
+    "message": "Copia per l'Agente"
+  },
+  "copyAgentSetupHandoff": {
+    "message": "Copia il passaggio di configurazione Agente"
+  },
+  "stopButton": {
+    "message": "Prendo il controllo"
+  },
+  "resumeButton": {
+    "message": "Riprendi"
+  },
+  "debugLogsLabel": {
+    "message": "Log di debug"
+  },
+  "disabled": {
+    "message": "Disattivato"
+  },
+  "debugEnable": {
+    "message": "Attiva"
+  },
+  "debugDisable": {
+    "message": "Disattiva"
+  },
+  "debugCopy": {
+    "message": "Copia"
+  },
+  "debugClear": {
+    "message": "Cancella"
+  },
+  "nativeHostStatusUnavailable": {
+    "message": "Stato dell'host nativo non disponibile"
+  },
+  "debugUnavailable": {
+    "message": "Non disponibile"
+  },
+  "debugCopyFailed": {
+    "message": "Copia non riuscita: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCleared": {
+    "message": "Cancellato"
+  },
+  "copyAgentUnavailable": {
+    "message": "Passaggio di configurazione Agente non disponibile"
+  },
+  "copyAgentSuccess": {
+    "message": "Copiato. Incolla nel tuo Agent. Torna qui e fai clic su Riprendi al termine della configurazione."
+  },
+  "copying": {
+    "message": "Copia in corso"
+  },
+  "copied": {
+    "message": "Copiato"
+  },
+  "tryAgain": {
+    "message": "Riprova"
+  },
+  "copyUnavailable": {
+    "message": "Copia non disponibile. Controlla il permesso degli appunti e riprova."
+  },
+  "agentSetupDefaultText": {
+    "message": "Collega un altro Agent con questo passaggio. Copialo nell'Agent e tieni aperto questo popup durante l'associazione."
+  },
+  "statusConnected": {
+    "message": "Connesso"
+  },
+  "statusConnecting": {
+    "message": "Connessione"
+  },
+  "statusUpdateNeeded": {
+    "message": "Aggiornamento necessario"
+  },
+  "statusStopped": {
+    "message": "Hai il controllo"
+  },
+  "statusNeedsSetup": {
+    "message": "Configurazione necessaria"
+  },
+  "statusReconnecting": {
+    "message": "Riconnessione"
+  },
+  "hostVersionLabel": {
+    "message": "Host $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "hostReady": {
+    "message": "Host pronto"
+  },
+  "connectingNativeHost": {
+    "message": "Connessione all'host nativo."
+  },
+  "disconnectedDetail": {
+    "message": "Tentativo di riconnessione. Usa Riprendi dopo aver riparato la configurazione."
+  },
+  "versionMismatchDetail": {
+    "message": "Aggiorna l'host locale, poi fai clic su Riprendi per riconnettere."
+  },
+  "stoppedDetail": {
+    "message": "Completa accesso, password o qualsiasi passaggio della pagina, poi fai clic su Riprendi per continuare l'automazione."
+  },
+  "errorDetail": {
+    "message": "Esegui la configurazione, poi fai clic su Riprendi per riconnettere."
+  },
+  "deliverableRecovery_one": {
+    "message": "$count$ scheda consegnabile disponibile. Usa browser.deliverables(), poi claim() per recuperarla.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_many": {
+    "message": "$count$ schede consegnabili disponibili. Usa browser.deliverables(), poi claim() per recuperarle.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_other": {
+    "message": "$count$ schede consegnabili disponibili. Usa browser.deliverables(), poi claim() per recuperarle.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "adviceUpdateHost": {
+    "message": "Aggiorna l'host locale, poi riconnetti."
+  },
+  "setupTextUpdateHost": {
+    "message": "Copia questo passaggio nel tuo Agent. Torna qui e fai clic su Riprendi al termine dell'aggiornamento."
+  },
+  "adviceInstallHost": {
+    "message": "Installa l'host locale, poi riconnetti."
+  },
+  "setupTextInstallHost": {
+    "message": "Copia questo passaggio nel tuo Agent per installare open-browser-use e registrare l'host nativo per questa estensione."
+  },
+  "adviceRefreshHostPermission": {
+    "message": "Aggiorna l'autorizzazione host di questa estensione, poi riconnetti."
+  },
+  "setupTextRefreshHostPermission": {
+    "message": "Copia questo passaggio nel tuo Agent per aggiornare la registrazione dell'host nativo per questo ID estensione."
+  },
+  "adviceRepairHost": {
+    "message": "Ripara l'host locale, poi riconnetti."
+  },
+  "setupTextRepairHost": {
+    "message": "Copia questo passaggio nel tuo Agent per riparare la configurazione open-browser-use e verificare l'host nativo."
+  },
+  "adviceRepairSetup": {
+    "message": "Ripara la configurazione, poi riconnetti."
+  },
+  "setupTextRepairSetup": {
+    "message": "Copia questo passaggio nel tuo Agent per riparare la configurazione open-browser-use e verificare l'associazione del browser."
+  },
+  "adviceCheckSetup": {
+    "message": "Controlla la configurazione locale, poi fai clic su Riprendi per riconnettere."
+  },
+  "adviceDisconnectedPortObject": {
+    "message": "L'host locale non è connesso. Reinstallalo, poi riconnetti."
+  },
+  "setupTextDisconnectedPortObject": {
+    "message": "Copia questo passaggio nel tuo Agent per reinstallare open-browser-use e registrare l'host per questa estensione."
+  },
+  "retryingInSeconds": {
+    "message": "Nuovo tentativo tra $seconds$s.",
+    "placeholders": {
+      "seconds": {
+        "content": "$1"
+      }
+    }
+  },
+  "statusStopping": {
+    "message": "Arresto..."
+  },
+  "statusStoppedByUser": {
+    "message": "Arrestato dall'utente"
+  },
+  "statusVersionMismatch": {
+    "message": "Versione non corrispondente"
+  },
+  "debugEnabledEntries_one": {
+    "message": "Attivato, $count$/$max$ voce",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_many": {
+    "message": "Attivato, $count$/$max$ voci",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_other": {
+    "message": "Attivato, $count$/$max$ voci",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugDisabledEntries_one": {
+    "message": "Disattivato, $count$ voce salvata",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_many": {
+    "message": "Disattivato, $count$ voci salvate",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_other": {
+    "message": "Disattivato, $count$ voci salvate",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_one": {
+    "message": "$count$ voce copiata",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_many": {
+    "message": "$count$ voci copiate",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_other": {
+    "message": "$count$ voci copiate",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverablesGroupTitle": {
+    "message": "$label$ consegnabili",
+    "placeholders": {
+      "label": {
+        "content": "$1"
+      }
+    }
+  },
+  "defaultDeliverablesGroupTitle": {
+    "message": "Consegnabili open-browser-use"
+  }
+}

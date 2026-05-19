@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, chmod, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, chmod, mkdtemp, readFile, readdir, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -13,6 +13,9 @@ const extensionId = extensionIdFromKey(manifest.key);
 
 assert.equal(manifest.manifest_version, 3);
 assert.equal(extensionId, "fblnfcjnjklpgnmfnngcihbcgojnpadj");
+assert.equal(manifest.name, "__MSG_extName__");
+assert.equal(manifest.description, "__MSG_extDescription__");
+assert.equal(manifest.default_locale, "en");
 assert.deepEqual(
   ["nativeMessaging", "debugger", "tabs", "tabGroups", "scripting", "storage", "history", "downloads", "alarms"].sort(),
   [...manifest.permissions].sort(),
@@ -30,6 +33,8 @@ assert.deepEqual(manifest.content_scripts, [
 ]);
 assert.equal(manifest.background.service_worker, "background.js");
 assert.equal(manifest.action.default_popup, "popup.html");
+assert.equal(manifest.action.default_title, "__MSG_actionTitle__");
+assert.deepEqual(manifest.options_ui, { page: "options.html", open_in_tab: false });
 assert.deepEqual(manifest.icons, {
   16: "icons/icon-16.png",
   32: "icons/icon-32.png",
@@ -42,6 +47,107 @@ assert.deepEqual(manifest.action.default_icon, {
 });
 for (const icon of Object.values(manifest.icons)) {
   await access(path.join(packageRoot, "public", icon));
+}
+
+const localeRoot = path.join(packageRoot, "public", "_locales");
+const locales = (await readdir(localeRoot, { withFileTypes: true }))
+  .filter((entry) => entry.isDirectory())
+  .map((entry) => entry.name)
+  .sort();
+assert.deepEqual(locales, [
+  "ar",
+  "de",
+  "en",
+  "es",
+  "fr",
+  "hi",
+  "id",
+  "it",
+  "ja",
+  "ko",
+  "nl",
+  "pl",
+  "pt_BR",
+  "ru",
+  "tr",
+  "vi",
+  "zh_CN",
+  "zh_TW",
+]);
+const englishMessages = JSON.parse(await readFile(path.join(localeRoot, "en", "messages.json"), "utf8"));
+const englishMessageKeys = Object.keys(englishMessages).sort();
+const pluralMessageBases = [
+  "deliverableRecovery",
+  "debugEnabledEntries",
+  "debugDisabledEntries",
+  "debugCopiedEntries",
+];
+const pluralCategories = ["zero", "one", "two", "few", "many", "other"];
+const knownExtraPluralKeys = new Set(
+  pluralMessageBases
+    .flatMap((base) => pluralCategories.map((category) => `${base}_${category}`))
+    .filter((key) => !englishMessageKeys.includes(key)),
+);
+const allowedUntranslatedKeys = new Map([
+  ["ar", ["actionTitle", "extName"]],
+  ["de", ["actionTitle", "extName", "hostVersionLabel", "versionFallback", "versionLabel"]],
+  ["es", ["actionTitle", "extName", "hostVersionLabel"]],
+  ["fr", ["actionTitle", "extName", "versionFallback", "versionLabel"]],
+  ["hi", ["actionTitle", "extName"]],
+  ["id", ["actionTitle", "extName", "hostVersionLabel"]],
+  ["it", ["actionTitle", "extName", "hostVersionLabel"]],
+  ["ja", ["actionTitle", "extName"]],
+  ["ko", ["actionTitle", "extName"]],
+  ["nl", ["actionTitle", "extName", "hostVersionLabel", "nativeHostLabel"]],
+  ["pl", ["actionTitle", "extName", "hostVersionLabel"]],
+  ["pt_BR", ["actionTitle", "extName", "hostVersionLabel"]],
+  ["ru", ["actionTitle", "extName"]],
+  ["tr", ["actionTitle", "extName"]],
+  ["vi", ["actionTitle", "extName"]],
+  ["zh_CN", ["actionTitle", "extName"]],
+  ["zh_TW", ["actionTitle", "extName"]],
+]);
+for (const locale of locales) {
+  const messages = JSON.parse(await readFile(path.join(localeRoot, locale, "messages.json"), "utf8"));
+  const messageKeys = Object.keys(messages).sort();
+  const actualRegularKeys = messageKeys.filter((key) => !knownExtraPluralKeys.has(key)).sort();
+  assert.deepEqual(actualRegularKeys, englishMessageKeys, `${locale} regular message keys differ from en`);
+  const expectedExtraPluralKeys = requiredExtraPluralKeys(locale).sort();
+  const actualExtraPluralKeys = messageKeys.filter((key) => knownExtraPluralKeys.has(key)).sort();
+  assert.deepEqual(actualExtraPluralKeys, expectedExtraPluralKeys, `${locale} plural message keys differ from Intl.PluralRules`);
+  for (const key of [
+    "extName",
+    "extDescription",
+    "actionTitle",
+    "popupTitle",
+    "copyForAgent",
+    "settingsPageTitle",
+    "settingsLanguageTitle",
+    "settingsLanguageAuto",
+  ]) {
+    assert.equal(typeof messages[key]?.message, "string", `${locale} is missing ${key}`);
+  }
+  for (const key of englishMessageKeys) {
+    assert.deepEqual(
+      Object.keys(messages[key].placeholders ?? {}).sort(),
+      Object.keys(englishMessages[key].placeholders ?? {}).sort(),
+      `${locale}.${key} placeholders differ from en`,
+    );
+  }
+  for (const key of actualExtraPluralKeys) {
+    const base = pluralBaseForKey(key);
+    const reference = messages[`${base}_other`];
+    assert.equal(typeof messages[key]?.message, "string", `${locale} is missing ${key}`);
+    assert.deepEqual(
+      Object.keys(messages[key].placeholders ?? {}).sort(),
+      Object.keys(reference?.placeholders ?? {}).sort(),
+      `${locale}.${key} placeholders differ from ${base}_other`,
+    );
+  }
+  if (locale !== "en") {
+    const untranslated = englishMessageKeys.filter((key) => messages[key].message === englishMessages[key].message);
+    assert.deepEqual(untranslated, allowedUntranslatedKeys.get(locale), `${locale} has unexpected untranslated UI messages`);
+  }
 }
 
 const tmp = await mkdtemp(path.join(os.tmpdir(), "obu-extension-manifest-test-"));
@@ -97,4 +203,19 @@ function extensionIdFromKey(key) {
 
 function escapeRegExp(value) {
   return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+function requiredExtraPluralKeys(locale) {
+  const categories = new Intl.PluralRules(locale.replace("_", "-")).resolvedOptions().pluralCategories;
+  return pluralMessageBases
+    .flatMap((base) => categories.map((category) => `${base}_${category}`))
+    .filter((key) => knownExtraPluralKeys.has(key));
+}
+
+function pluralBaseForKey(key) {
+  for (const category of pluralCategories) {
+    const suffix = `_${category}`;
+    if (key.endsWith(suffix)) return key.slice(0, -suffix.length);
+  }
+  throw new Error(`not a plural message key: ${key}`);
 }

@@ -52,18 +52,45 @@ try {
   assert.equal(summary.popupChannel, "store");
   assert.match(summary.artifact, /^open-browser-use-chrome-web-store-.+\.zip$/);
   assert.match(summary.sha256, /^sha256:[0-9a-f]{64}$/);
-  assert.deepEqual([...summary.contents].sort(), [
+  const expectedBaseContents = [
     "background.js",
     "cursor.js",
+    "i18n.js",
     "icons/icon-128.png",
     "icons/icon-16.png",
     "icons/icon-32.png",
     "icons/icon-48.png",
     "manifest.json",
+    "options.css",
+    "options.html",
+    "options.js",
     "popup.css",
     "popup.html",
     "popup.js",
-  ]);
+  ].sort();
+  const expectedLocaleContents = [
+    "ar",
+    "de",
+    "en",
+    "es",
+    "fr",
+    "hi",
+    "id",
+    "it",
+    "ja",
+    "ko",
+    "nl",
+    "pl",
+    "pt_BR",
+    "ru",
+    "tr",
+    "vi",
+    "zh_CN",
+    "zh_TW",
+  ].map((locale) => `_locales/${locale}/messages.json`).sort();
+  const actualContents = [...summary.contents].sort();
+  assert.deepEqual(actualContents.filter((file) => !file.startsWith("_locales/")), expectedBaseContents);
+  assert.deepEqual(actualContents.filter((file) => file.startsWith("_locales/")), expectedLocaleContents);
   const zippedManifest = JSON.parse(readZipEntry(path.join(tmp, "store", summary.artifact), "manifest.json"));
   assert.equal(zippedManifest.key, undefined, "Chrome Web Store upload manifest must omit key");
 

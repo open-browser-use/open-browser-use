@@ -93,6 +93,14 @@ globalThis.chrome = {
     },
     onMessage: runtimeMessages,
   },
+  i18n: {
+    getMessage() {
+      return "";
+    },
+    getUILanguage() {
+      return "en";
+    },
+  },
   alarms: {
     async create(name, alarmInfo) {
       calls.alarmsCreate.push({ name, alarmInfo });

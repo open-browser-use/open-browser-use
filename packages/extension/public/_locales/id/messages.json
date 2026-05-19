@@ -1,0 +1,322 @@
+{
+  "extName": {
+    "message": "open-browser-use"
+  },
+  "extDescription": {
+    "message": "Kendalikan browser keluarga Chromium melalui open-browser-use."
+  },
+  "actionTitle": {
+    "message": "open-browser-use"
+  },
+  "popupTitle": {
+    "message": "Kontrol Chrome dengan Agent apa pun"
+  },
+  "settingsOpenTitle": {
+    "message": "Pengaturan"
+  },
+  "settingsOpenAriaLabel": {
+    "message": "Buka pengaturan"
+  },
+  "settingsDocumentTitle": {
+    "message": "Pengaturan open-browser-use"
+  },
+  "settingsPageTitle": {
+    "message": "Pengaturan"
+  },
+  "settingsPageSubtitle": {
+    "message": "Atur pengalaman open-browser-use di browser ini."
+  },
+  "settingsLanguageTitle": {
+    "message": "Bahasa"
+  },
+  "settingsLanguageDescription": {
+    "message": "Pilih bahasa untuk halaman ekstensi."
+  },
+  "settingsLanguageAuto": {
+    "message": "Ikuti bahasa browser"
+  },
+  "settingsSaved": {
+    "message": "Tersimpan"
+  },
+  "settingsSaveFailed": {
+    "message": "Tidak dapat menyimpan pengaturan."
+  },
+  "versionAriaLabel": {
+    "message": "Versi ekstensi terpasang"
+  },
+  "versionFallback": {
+    "message": "Versi"
+  },
+  "versionLabel": {
+    "message": "Versi $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "nativeHostLabel": {
+    "message": "Host native"
+  },
+  "checkingStatus": {
+    "message": "Memeriksa..."
+  },
+  "setupLabel": {
+    "message": "Penyiapan"
+  },
+  "agentSetupLabel": {
+    "message": "Penyiapan Agent"
+  },
+  "agentHandoffTitle": {
+    "message": "Serah terima Agent"
+  },
+  "copyForAgent": {
+    "message": "Salin untuk Agent"
+  },
+  "copyAgentSetupHandoff": {
+    "message": "Salin serah terima penyiapan Agent"
+  },
+  "stopButton": {
+    "message": "Saya ambil alih"
+  },
+  "resumeButton": {
+    "message": "Lanjutkan"
+  },
+  "debugLogsLabel": {
+    "message": "Log debug"
+  },
+  "disabled": {
+    "message": "Dinonaktifkan"
+  },
+  "debugEnable": {
+    "message": "Aktifkan"
+  },
+  "debugDisable": {
+    "message": "Nonaktifkan"
+  },
+  "debugCopy": {
+    "message": "Salin"
+  },
+  "debugClear": {
+    "message": "Bersihkan"
+  },
+  "nativeHostStatusUnavailable": {
+    "message": "Status host native tidak tersedia"
+  },
+  "debugUnavailable": {
+    "message": "Tidak tersedia"
+  },
+  "debugCopyFailed": {
+    "message": "Gagal menyalin: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCleared": {
+    "message": "Dibersihkan"
+  },
+  "copyAgentUnavailable": {
+    "message": "Serah terima penyiapan Agent tidak tersedia"
+  },
+  "copyAgentSuccess": {
+    "message": "Disalin. Tempel ke Agent Anda. Kembali ke sini dan klik Lanjutkan saat penyiapan selesai."
+  },
+  "copying": {
+    "message": "Menyalin"
+  },
+  "copied": {
+    "message": "Disalin"
+  },
+  "tryAgain": {
+    "message": "Coba lagi"
+  },
+  "copyUnavailable": {
+    "message": "Penyalinan tidak tersedia. Periksa izin clipboard, lalu coba lagi."
+  },
+  "agentSetupDefaultText": {
+    "message": "Hubungkan Agent lain dengan serah terima ini. Salin ke Agent, lalu biarkan popup ini terbuka saat pemasangan."
+  },
+  "statusConnected": {
+    "message": "Terhubung"
+  },
+  "statusConnecting": {
+    "message": "Menghubungkan"
+  },
+  "statusUpdateNeeded": {
+    "message": "Perlu pembaruan"
+  },
+  "statusStopped": {
+    "message": "Anda memegang kontrol"
+  },
+  "statusNeedsSetup": {
+    "message": "Perlu penyiapan"
+  },
+  "statusReconnecting": {
+    "message": "Menghubungkan ulang"
+  },
+  "hostVersionLabel": {
+    "message": "Host $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "hostReady": {
+    "message": "Host siap"
+  },
+  "connectingNativeHost": {
+    "message": "Menghubungkan ke host native."
+  },
+  "disconnectedDetail": {
+    "message": "Mencoba menghubungkan ulang. Gunakan Lanjutkan setelah penyiapan diperbaiki."
+  },
+  "versionMismatchDetail": {
+    "message": "Perbarui host lokal, lalu klik Lanjutkan untuk menghubungkan ulang."
+  },
+  "stoppedDetail": {
+    "message": "Selesaikan masuk, kata sandi, atau langkah halaman, lalu klik Lanjutkan untuk melanjutkan otomatisasi."
+  },
+  "errorDetail": {
+    "message": "Jalankan penyiapan, lalu klik Lanjutkan untuk menghubungkan ulang."
+  },
+  "deliverableRecovery_one": {
+    "message": "$count$ tab hasil tersedia. Gunakan browser.deliverables(), lalu claim() untuk memulihkannya.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_other": {
+    "message": "$count$ tab hasil tersedia. Gunakan browser.deliverables(), lalu claim() untuk memulihkannya.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "adviceUpdateHost": {
+    "message": "Perbarui host lokal, lalu hubungkan ulang."
+  },
+  "setupTextUpdateHost": {
+    "message": "Salin serah terima ini ke Agent Anda. Kembali ke sini dan klik Lanjutkan setelah pembaruan selesai."
+  },
+  "adviceInstallHost": {
+    "message": "Instal host lokal, lalu hubungkan ulang."
+  },
+  "setupTextInstallHost": {
+    "message": "Salin serah terima ini ke Agent untuk menginstal open-browser-use dan mendaftarkan host native untuk ekstensi ini."
+  },
+  "adviceRefreshHostPermission": {
+    "message": "Segarkan izin host ekstensi ini, lalu hubungkan ulang."
+  },
+  "setupTextRefreshHostPermission": {
+    "message": "Salin serah terima ini ke Agent untuk menyegarkan pendaftaran host native bagi ID ekstensi ini."
+  },
+  "adviceRepairHost": {
+    "message": "Perbaiki host lokal, lalu hubungkan ulang."
+  },
+  "setupTextRepairHost": {
+    "message": "Salin serah terima ini ke Agent untuk memperbaiki penyiapan open-browser-use dan memverifikasi host native."
+  },
+  "adviceRepairSetup": {
+    "message": "Perbaiki penyiapan, lalu hubungkan ulang."
+  },
+  "setupTextRepairSetup": {
+    "message": "Salin serah terima ini ke Agent untuk memperbaiki penyiapan open-browser-use dan memverifikasi pemasangan browser."
+  },
+  "adviceCheckSetup": {
+    "message": "Periksa penyiapan lokal, lalu klik Lanjutkan untuk menghubungkan ulang."
+  },
+  "adviceDisconnectedPortObject": {
+    "message": "Host lokal tidak terhubung. Instal ulang, lalu hubungkan ulang."
+  },
+  "setupTextDisconnectedPortObject": {
+    "message": "Salin serah terima ini ke Agent untuk menginstal ulang open-browser-use dan mendaftarkan host untuk ekstensi ini."
+  },
+  "retryingInSeconds": {
+    "message": "Mencoba lagi dalam $seconds$d.",
+    "placeholders": {
+      "seconds": {
+        "content": "$1"
+      }
+    }
+  },
+  "statusStopping": {
+    "message": "Menghentikan..."
+  },
+  "statusStoppedByUser": {
+    "message": "Dihentikan oleh pengguna"
+  },
+  "statusVersionMismatch": {
+    "message": "Versi tidak cocok"
+  },
+  "debugEnabledEntries_one": {
+    "message": "Aktif, $count$/$max$ entri",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_other": {
+    "message": "Aktif, $count$/$max$ entri",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugDisabledEntries_one": {
+    "message": "Nonaktif, $count$ entri tersimpan",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_other": {
+    "message": "Nonaktif, $count$ entri tersimpan",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_one": {
+    "message": "$count$ entri disalin",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_other": {
+    "message": "$count$ entri disalin",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverablesGroupTitle": {
+    "message": "$label$ hasil",
+    "placeholders": {
+      "label": {
+        "content": "$1"
+      }
+    }
+  },
+  "defaultDeliverablesGroupTitle": {
+    "message": "Hasil open-browser-use"
+  }
+}

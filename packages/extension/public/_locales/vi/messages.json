@@ -1,0 +1,322 @@
+{
+  "extName": {
+    "message": "open-browser-use"
+  },
+  "extDescription": {
+    "message": "Điều khiển các trình duyệt họ Chromium bằng open-browser-use."
+  },
+  "actionTitle": {
+    "message": "open-browser-use"
+  },
+  "popupTitle": {
+    "message": "Điều khiển Chrome bằng bất kỳ Agent nào"
+  },
+  "settingsOpenTitle": {
+    "message": "Cài đặt"
+  },
+  "settingsOpenAriaLabel": {
+    "message": "Mở cài đặt"
+  },
+  "settingsDocumentTitle": {
+    "message": "Cài đặt open-browser-use"
+  },
+  "settingsPageTitle": {
+    "message": "Cài đặt"
+  },
+  "settingsPageSubtitle": {
+    "message": "Điều chỉnh trải nghiệm open-browser-use trong trình duyệt này."
+  },
+  "settingsLanguageTitle": {
+    "message": "Ngôn ngữ"
+  },
+  "settingsLanguageDescription": {
+    "message": "Chọn ngôn ngữ cho các trang của tiện ích."
+  },
+  "settingsLanguageAuto": {
+    "message": "Theo ngôn ngữ trình duyệt"
+  },
+  "settingsSaved": {
+    "message": "Đã lưu"
+  },
+  "settingsSaveFailed": {
+    "message": "Không thể lưu cài đặt."
+  },
+  "versionAriaLabel": {
+    "message": "Phiên bản tiện ích đã cài đặt"
+  },
+  "versionFallback": {
+    "message": "Phiên bản"
+  },
+  "versionLabel": {
+    "message": "Phiên bản $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "nativeHostLabel": {
+    "message": "Máy chủ native"
+  },
+  "checkingStatus": {
+    "message": "Đang kiểm tra..."
+  },
+  "setupLabel": {
+    "message": "Thiết lập"
+  },
+  "agentSetupLabel": {
+    "message": "Thiết lập Agent"
+  },
+  "agentHandoffTitle": {
+    "message": "Bàn giao cho Agent"
+  },
+  "copyForAgent": {
+    "message": "Sao chép cho Agent"
+  },
+  "copyAgentSetupHandoff": {
+    "message": "Sao chép nội dung bàn giao thiết lập Agent"
+  },
+  "stopButton": {
+    "message": "Tôi sẽ tiếp quản"
+  },
+  "resumeButton": {
+    "message": "Tiếp tục"
+  },
+  "debugLogsLabel": {
+    "message": "Nhật ký gỡ lỗi"
+  },
+  "disabled": {
+    "message": "Đã tắt"
+  },
+  "debugEnable": {
+    "message": "Bật"
+  },
+  "debugDisable": {
+    "message": "Tắt"
+  },
+  "debugCopy": {
+    "message": "Sao chép"
+  },
+  "debugClear": {
+    "message": "Xóa"
+  },
+  "nativeHostStatusUnavailable": {
+    "message": "Không có trạng thái máy chủ native"
+  },
+  "debugUnavailable": {
+    "message": "Không khả dụng"
+  },
+  "debugCopyFailed": {
+    "message": "Sao chép thất bại: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCleared": {
+    "message": "Đã xóa"
+  },
+  "copyAgentUnavailable": {
+    "message": "Không có nội dung bàn giao thiết lập Agent"
+  },
+  "copyAgentSuccess": {
+    "message": "Đã sao chép. Dán vào Agent của bạn. Quay lại đây và nhấn Tiếp tục khi thiết lập xong."
+  },
+  "copying": {
+    "message": "Đang sao chép"
+  },
+  "copied": {
+    "message": "Đã sao chép"
+  },
+  "tryAgain": {
+    "message": "Thử lại"
+  },
+  "copyUnavailable": {
+    "message": "Không thể sao chép. Kiểm tra quyền clipboard rồi thử lại."
+  },
+  "agentSetupDefaultText": {
+    "message": "Kết nối một Agent khác bằng nội dung bàn giao này. Sao chép vào Agent, rồi giữ popup này mở trong khi ghép đôi."
+  },
+  "statusConnected": {
+    "message": "Đã kết nối"
+  },
+  "statusConnecting": {
+    "message": "Đang kết nối"
+  },
+  "statusUpdateNeeded": {
+    "message": "Cần cập nhật"
+  },
+  "statusStopped": {
+    "message": "Bạn đang điều khiển"
+  },
+  "statusNeedsSetup": {
+    "message": "Cần thiết lập"
+  },
+  "statusReconnecting": {
+    "message": "Đang kết nối lại"
+  },
+  "hostVersionLabel": {
+    "message": "Máy chủ $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "hostReady": {
+    "message": "Máy chủ sẵn sàng"
+  },
+  "connectingNativeHost": {
+    "message": "Đang kết nối tới máy chủ native."
+  },
+  "disconnectedDetail": {
+    "message": "Đang thử kết nối lại. Dùng Tiếp tục sau khi sửa thiết lập."
+  },
+  "versionMismatchDetail": {
+    "message": "Cập nhật máy chủ cục bộ, rồi nhấn Tiếp tục để kết nối lại."
+  },
+  "stoppedDetail": {
+    "message": "Hoàn tất đăng nhập, mật khẩu hoặc bước trên trang, rồi nhấn Tiếp tục để tiếp tục tự động hóa."
+  },
+  "errorDetail": {
+    "message": "Chạy thiết lập, rồi nhấn Tiếp tục để kết nối lại."
+  },
+  "deliverableRecovery_one": {
+    "message": "Có $count$ tab bàn giao. Dùng browser.deliverables(), rồi claim() để khôi phục tab đó.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_other": {
+    "message": "Có $count$ tab bàn giao. Dùng browser.deliverables(), rồi claim() để khôi phục chúng.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "adviceUpdateHost": {
+    "message": "Cập nhật máy chủ cục bộ, rồi kết nối lại."
+  },
+  "setupTextUpdateHost": {
+    "message": "Sao chép nội dung bàn giao này vào Agent của bạn. Quay lại đây và nhấn Tiếp tục sau khi cập nhật xong."
+  },
+  "adviceInstallHost": {
+    "message": "Cài đặt máy chủ cục bộ, rồi kết nối lại."
+  },
+  "setupTextInstallHost": {
+    "message": "Sao chép nội dung bàn giao này vào Agent để cài đặt open-browser-use và đăng ký máy chủ native cho tiện ích này."
+  },
+  "adviceRefreshHostPermission": {
+    "message": "Làm mới quyền máy chủ của tiện ích này, rồi kết nối lại."
+  },
+  "setupTextRefreshHostPermission": {
+    "message": "Sao chép nội dung bàn giao này vào Agent để làm mới đăng ký máy chủ native cho ID tiện ích này."
+  },
+  "adviceRepairHost": {
+    "message": "Sửa máy chủ cục bộ, rồi kết nối lại."
+  },
+  "setupTextRepairHost": {
+    "message": "Sao chép nội dung bàn giao này vào Agent để sửa thiết lập open-browser-use và xác minh máy chủ native."
+  },
+  "adviceRepairSetup": {
+    "message": "Sửa thiết lập, rồi kết nối lại."
+  },
+  "setupTextRepairSetup": {
+    "message": "Sao chép nội dung bàn giao này vào Agent để sửa thiết lập open-browser-use và xác minh ghép đôi trình duyệt."
+  },
+  "adviceCheckSetup": {
+    "message": "Kiểm tra thiết lập cục bộ, rồi nhấn Tiếp tục để kết nối lại."
+  },
+  "adviceDisconnectedPortObject": {
+    "message": "Máy chủ cục bộ chưa kết nối. Cài đặt lại, rồi kết nối lại."
+  },
+  "setupTextDisconnectedPortObject": {
+    "message": "Sao chép nội dung bàn giao này vào Agent để cài đặt lại open-browser-use và đăng ký máy chủ cho tiện ích này."
+  },
+  "retryingInSeconds": {
+    "message": "Thử lại sau $seconds$ giây.",
+    "placeholders": {
+      "seconds": {
+        "content": "$1"
+      }
+    }
+  },
+  "statusStopping": {
+    "message": "Đang dừng..."
+  },
+  "statusStoppedByUser": {
+    "message": "Đã dừng bởi người dùng"
+  },
+  "statusVersionMismatch": {
+    "message": "Không khớp phiên bản"
+  },
+  "debugEnabledEntries_one": {
+    "message": "Đã bật, $count$/$max$ mục",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_other": {
+    "message": "Đã bật, $count$/$max$ mục",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugDisabledEntries_one": {
+    "message": "Đã tắt, đã lưu $count$ mục",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_other": {
+    "message": "Đã tắt, đã lưu $count$ mục",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_one": {
+    "message": "Đã sao chép $count$ mục",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_other": {
+    "message": "Đã sao chép $count$ mục",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverablesGroupTitle": {
+    "message": "$label$ bàn giao",
+    "placeholders": {
+      "label": {
+        "content": "$1"
+      }
+    }
+  },
+  "defaultDeliverablesGroupTitle": {
+    "message": "Bàn giao open-browser-use"
+  }
+}

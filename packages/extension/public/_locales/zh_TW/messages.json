@@ -1,0 +1,322 @@
+{
+  "extName": {
+    "message": "open-browser-use"
+  },
+  "extDescription": {
+    "message": "透過 open-browser-use 控制 Chromium 系列瀏覽器。"
+  },
+  "actionTitle": {
+    "message": "open-browser-use"
+  },
+  "popupTitle": {
+    "message": "用任何 Agent 控制 Chrome"
+  },
+  "settingsOpenTitle": {
+    "message": "設定"
+  },
+  "settingsOpenAriaLabel": {
+    "message": "開啟設定"
+  },
+  "settingsDocumentTitle": {
+    "message": "open-browser-use 設定"
+  },
+  "settingsPageTitle": {
+    "message": "設定"
+  },
+  "settingsPageSubtitle": {
+    "message": "管理 open-browser-use 在此瀏覽器中的顯示體驗。"
+  },
+  "settingsLanguageTitle": {
+    "message": "語言"
+  },
+  "settingsLanguageDescription": {
+    "message": "選擇擴充功能頁面使用的語言。"
+  },
+  "settingsLanguageAuto": {
+    "message": "跟隨瀏覽器語言"
+  },
+  "settingsSaved": {
+    "message": "已儲存"
+  },
+  "settingsSaveFailed": {
+    "message": "無法儲存設定。"
+  },
+  "versionAriaLabel": {
+    "message": "已安裝的擴充功能版本"
+  },
+  "versionFallback": {
+    "message": "版本"
+  },
+  "versionLabel": {
+    "message": "版本 $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "nativeHostLabel": {
+    "message": "本機主機"
+  },
+  "checkingStatus": {
+    "message": "正在檢查..."
+  },
+  "setupLabel": {
+    "message": "設定"
+  },
+  "agentSetupLabel": {
+    "message": "Agent 設定"
+  },
+  "agentHandoffTitle": {
+    "message": "Agent 交接"
+  },
+  "copyForAgent": {
+    "message": "複製給 Agent"
+  },
+  "copyAgentSetupHandoff": {
+    "message": "複製 Agent 設定交接內容"
+  },
+  "stopButton": {
+    "message": "我來接管"
+  },
+  "resumeButton": {
+    "message": "繼續"
+  },
+  "debugLogsLabel": {
+    "message": "除錯記錄"
+  },
+  "disabled": {
+    "message": "已停用"
+  },
+  "debugEnable": {
+    "message": "啟用"
+  },
+  "debugDisable": {
+    "message": "停用"
+  },
+  "debugCopy": {
+    "message": "複製"
+  },
+  "debugClear": {
+    "message": "清除"
+  },
+  "nativeHostStatusUnavailable": {
+    "message": "本機主機狀態無法使用"
+  },
+  "debugUnavailable": {
+    "message": "無法使用"
+  },
+  "debugCopyFailed": {
+    "message": "複製失敗：$error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCleared": {
+    "message": "已清除"
+  },
+  "copyAgentUnavailable": {
+    "message": "Agent 設定交接內容無法使用"
+  },
+  "copyAgentSuccess": {
+    "message": "已複製。貼給 Agent，設定完成後回到這裡點擊「繼續」。"
+  },
+  "copying": {
+    "message": "正在複製"
+  },
+  "copied": {
+    "message": "已複製"
+  },
+  "tryAgain": {
+    "message": "重試"
+  },
+  "copyUnavailable": {
+    "message": "無法複製。請檢查剪貼簿權限，然後重試。"
+  },
+  "agentSetupDefaultText": {
+    "message": "複製這段交接內容給 Agent，並在配對期間保持此彈窗開啟。"
+  },
+  "statusConnected": {
+    "message": "已連線"
+  },
+  "statusConnecting": {
+    "message": "正在連線"
+  },
+  "statusUpdateNeeded": {
+    "message": "需要更新"
+  },
+  "statusStopped": {
+    "message": "你正在控制"
+  },
+  "statusNeedsSetup": {
+    "message": "需要設定"
+  },
+  "statusReconnecting": {
+    "message": "正在重新連線"
+  },
+  "hostVersionLabel": {
+    "message": "主機 $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "hostReady": {
+    "message": "主機就緒"
+  },
+  "connectingNativeHost": {
+    "message": "正在連接本機主機。"
+  },
+  "disconnectedDetail": {
+    "message": "正在嘗試重新連線。修復設定後使用「繼續」。"
+  },
+  "versionMismatchDetail": {
+    "message": "更新本機主機，然後點擊「繼續」重新連線。"
+  },
+  "stoppedDetail": {
+    "message": "完成登入、密碼或任何頁面步驟後，點擊「繼續」恢復自動化。"
+  },
+  "errorDetail": {
+    "message": "執行設定，然後點擊「繼續」重新連線。"
+  },
+  "deliverableRecovery_one": {
+    "message": "有 $count$ 個可交付分頁。使用 browser.deliverables()，然後用 claim() 復原它。",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_other": {
+    "message": "有 $count$ 個可交付分頁。使用 browser.deliverables()，然後用 claim() 復原它們。",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "adviceUpdateHost": {
+    "message": "更新本機主機，然後重新連線。"
+  },
+  "setupTextUpdateHost": {
+    "message": "複製給 Agent。更新完成後回到這裡點擊「繼續」。"
+  },
+  "adviceInstallHost": {
+    "message": "安裝本機主機，然後重新連線。"
+  },
+  "setupTextInstallHost": {
+    "message": "複製給 Agent，用於安裝 open-browser-use 並為此擴充功能註冊本機主機。"
+  },
+  "adviceRefreshHostPermission": {
+    "message": "重新整理此擴充功能的主機權限，然後重新連線。"
+  },
+  "setupTextRefreshHostPermission": {
+    "message": "複製給 Agent，用於重新整理此擴充功能 ID 的本機主機註冊。"
+  },
+  "adviceRepairHost": {
+    "message": "修復本機主機，然後重新連線。"
+  },
+  "setupTextRepairHost": {
+    "message": "複製給 Agent，用於修復 open-browser-use 設定並驗證本機主機。"
+  },
+  "adviceRepairSetup": {
+    "message": "修復設定，然後重新連線。"
+  },
+  "setupTextRepairSetup": {
+    "message": "複製給 Agent，用於修復 open-browser-use 設定並驗證瀏覽器配對。"
+  },
+  "adviceCheckSetup": {
+    "message": "檢查本機設定，然後點擊「繼續」重新連線。"
+  },
+  "adviceDisconnectedPortObject": {
+    "message": "本機主機未連線。重新安裝後再重新連線。"
+  },
+  "setupTextDisconnectedPortObject": {
+    "message": "複製給 Agent，用於重新安裝 open-browser-use 並為此擴充功能註冊主機。"
+  },
+  "retryingInSeconds": {
+    "message": "$seconds$ 秒後重試。",
+    "placeholders": {
+      "seconds": {
+        "content": "$1"
+      }
+    }
+  },
+  "statusStopping": {
+    "message": "正在停止..."
+  },
+  "statusStoppedByUser": {
+    "message": "使用者已停止"
+  },
+  "statusVersionMismatch": {
+    "message": "版本不相符"
+  },
+  "debugEnabledEntries_one": {
+    "message": "已啟用，$count$/$max$ 筆記錄",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_other": {
+    "message": "已啟用，$count$/$max$ 筆記錄",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugDisabledEntries_one": {
+    "message": "已停用，已儲存 $count$ 筆記錄",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_other": {
+    "message": "已停用，已儲存 $count$ 筆記錄",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_one": {
+    "message": "已複製 $count$ 筆記錄",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_other": {
+    "message": "已複製 $count$ 筆記錄",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverablesGroupTitle": {
+    "message": "$label$ 可交付內容",
+    "placeholders": {
+      "label": {
+        "content": "$1"
+      }
+    }
+  },
+  "defaultDeliverablesGroupTitle": {
+    "message": "open-browser-use 可交付內容"
+  }
+}

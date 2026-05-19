@@ -1,0 +1,322 @@
+{
+  "extName": {
+    "message": "open-browser-use"
+  },
+  "extDescription": {
+    "message": "通过 open-browser-use 控制 Chromium 系列浏览器。"
+  },
+  "actionTitle": {
+    "message": "open-browser-use"
+  },
+  "popupTitle": {
+    "message": "用任何 Agent 控制 Chrome"
+  },
+  "settingsOpenTitle": {
+    "message": "设置"
+  },
+  "settingsOpenAriaLabel": {
+    "message": "打开设置"
+  },
+  "settingsDocumentTitle": {
+    "message": "open-browser-use 设置"
+  },
+  "settingsPageTitle": {
+    "message": "设置"
+  },
+  "settingsPageSubtitle": {
+    "message": "管理 open-browser-use 在此浏览器中的显示体验。"
+  },
+  "settingsLanguageTitle": {
+    "message": "语言"
+  },
+  "settingsLanguageDescription": {
+    "message": "选择扩展页面使用的语言。"
+  },
+  "settingsLanguageAuto": {
+    "message": "跟随浏览器语言"
+  },
+  "settingsSaved": {
+    "message": "已保存"
+  },
+  "settingsSaveFailed": {
+    "message": "无法保存设置。"
+  },
+  "versionAriaLabel": {
+    "message": "已安装的扩展版本"
+  },
+  "versionFallback": {
+    "message": "版本"
+  },
+  "versionLabel": {
+    "message": "版本 $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "nativeHostLabel": {
+    "message": "本地主机"
+  },
+  "checkingStatus": {
+    "message": "正在检查..."
+  },
+  "setupLabel": {
+    "message": "设置"
+  },
+  "agentSetupLabel": {
+    "message": "Agent 设置"
+  },
+  "agentHandoffTitle": {
+    "message": "Agent 交接"
+  },
+  "copyForAgent": {
+    "message": "复制给 Agent"
+  },
+  "copyAgentSetupHandoff": {
+    "message": "复制 Agent 设置交接内容"
+  },
+  "stopButton": {
+    "message": "我来接管"
+  },
+  "resumeButton": {
+    "message": "继续"
+  },
+  "debugLogsLabel": {
+    "message": "调试日志"
+  },
+  "disabled": {
+    "message": "已禁用"
+  },
+  "debugEnable": {
+    "message": "启用"
+  },
+  "debugDisable": {
+    "message": "禁用"
+  },
+  "debugCopy": {
+    "message": "复制"
+  },
+  "debugClear": {
+    "message": "清除"
+  },
+  "nativeHostStatusUnavailable": {
+    "message": "本地主机状态不可用"
+  },
+  "debugUnavailable": {
+    "message": "不可用"
+  },
+  "debugCopyFailed": {
+    "message": "复制失败：$error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCleared": {
+    "message": "已清除"
+  },
+  "copyAgentUnavailable": {
+    "message": "Agent 设置交接内容不可用"
+  },
+  "copyAgentSuccess": {
+    "message": "已复制。粘贴给 Agent，设置完成后回到这里点击“继续”。"
+  },
+  "copying": {
+    "message": "正在复制"
+  },
+  "copied": {
+    "message": "已复制"
+  },
+  "tryAgain": {
+    "message": "重试"
+  },
+  "copyUnavailable": {
+    "message": "无法复制。请检查剪贴板权限，然后重试。"
+  },
+  "agentSetupDefaultText": {
+    "message": "复制这段交接内容给 Agent，并在配对期间保持此弹窗打开。"
+  },
+  "statusConnected": {
+    "message": "已连接"
+  },
+  "statusConnecting": {
+    "message": "正在连接"
+  },
+  "statusUpdateNeeded": {
+    "message": "需要更新"
+  },
+  "statusStopped": {
+    "message": "你正在控制"
+  },
+  "statusNeedsSetup": {
+    "message": "需要设置"
+  },
+  "statusReconnecting": {
+    "message": "正在重连"
+  },
+  "hostVersionLabel": {
+    "message": "主机 $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "hostReady": {
+    "message": "主机就绪"
+  },
+  "connectingNativeHost": {
+    "message": "正在连接本地主机。"
+  },
+  "disconnectedDetail": {
+    "message": "正在尝试重连。修复设置后使用“继续”。"
+  },
+  "versionMismatchDetail": {
+    "message": "更新本地主机，然后点击“继续”重连。"
+  },
+  "stoppedDetail": {
+    "message": "完成登录、密码输入或页面操作后，点击“继续”恢复自动化。"
+  },
+  "errorDetail": {
+    "message": "运行设置，然后点击“继续”重连。"
+  },
+  "deliverableRecovery_one": {
+    "message": "有 $count$ 个可交付标签页。使用 browser.deliverables()，然后用 claim() 恢复它。",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_other": {
+    "message": "有 $count$ 个可交付标签页。使用 browser.deliverables()，然后用 claim() 恢复它们。",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "adviceUpdateHost": {
+    "message": "更新本地主机，然后重连。"
+  },
+  "setupTextUpdateHost": {
+    "message": "复制给 Agent。更新完成后回到这里点击“继续”。"
+  },
+  "adviceInstallHost": {
+    "message": "安装本地主机，然后重连。"
+  },
+  "setupTextInstallHost": {
+    "message": "复制给 Agent，用于安装 open-browser-use 并为此扩展注册本地主机。"
+  },
+  "adviceRefreshHostPermission": {
+    "message": "刷新此扩展的主机权限，然后重连。"
+  },
+  "setupTextRefreshHostPermission": {
+    "message": "复制给 Agent，用于刷新此扩展 ID 的本地主机注册。"
+  },
+  "adviceRepairHost": {
+    "message": "修复本地主机，然后重连。"
+  },
+  "setupTextRepairHost": {
+    "message": "复制给 Agent，用于修复 open-browser-use 设置并验证本地主机。"
+  },
+  "adviceRepairSetup": {
+    "message": "修复设置，然后重连。"
+  },
+  "setupTextRepairSetup": {
+    "message": "复制给 Agent，用于修复 open-browser-use 设置并验证浏览器配对。"
+  },
+  "adviceCheckSetup": {
+    "message": "检查本地设置，然后点击“继续”重连。"
+  },
+  "adviceDisconnectedPortObject": {
+    "message": "本地主机未连接。重新安装后重连。"
+  },
+  "setupTextDisconnectedPortObject": {
+    "message": "复制给 Agent，用于重新安装 open-browser-use 并为此扩展注册主机。"
+  },
+  "retryingInSeconds": {
+    "message": "$seconds$ 秒后重试。",
+    "placeholders": {
+      "seconds": {
+        "content": "$1"
+      }
+    }
+  },
+  "statusStopping": {
+    "message": "正在停止..."
+  },
+  "statusStoppedByUser": {
+    "message": "用户已停止"
+  },
+  "statusVersionMismatch": {
+    "message": "版本不匹配"
+  },
+  "debugEnabledEntries_one": {
+    "message": "已启用，$count$/$max$ 条记录",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_other": {
+    "message": "已启用，$count$/$max$ 条记录",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugDisabledEntries_one": {
+    "message": "已禁用，已保存 $count$ 条记录",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_other": {
+    "message": "已禁用，已保存 $count$ 条记录",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_one": {
+    "message": "已复制 $count$ 条记录",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_other": {
+    "message": "已复制 $count$ 条记录",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverablesGroupTitle": {
+    "message": "$label$ 可交付内容",
+    "placeholders": {
+      "label": {
+        "content": "$1"
+      }
+    }
+  },
+  "defaultDeliverablesGroupTitle": {
+    "message": "open-browser-use 可交付内容"
+  }
+}

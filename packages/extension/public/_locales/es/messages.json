@@ -1,0 +1,357 @@
+{
+  "extName": {
+    "message": "open-browser-use"
+  },
+  "extDescription": {
+    "message": "Controla navegadores de la familia Chromium con open-browser-use."
+  },
+  "actionTitle": {
+    "message": "open-browser-use"
+  },
+  "popupTitle": {
+    "message": "Controla Chrome con cualquier Agent"
+  },
+  "settingsOpenTitle": {
+    "message": "Configuración"
+  },
+  "settingsOpenAriaLabel": {
+    "message": "Abrir configuración"
+  },
+  "settingsDocumentTitle": {
+    "message": "Configuración de open-browser-use"
+  },
+  "settingsPageTitle": {
+    "message": "Configuración"
+  },
+  "settingsPageSubtitle": {
+    "message": "Controla cómo se siente open-browser-use en este navegador."
+  },
+  "settingsLanguageTitle": {
+    "message": "Idioma"
+  },
+  "settingsLanguageDescription": {
+    "message": "Elige el idioma de las páginas de la extensión."
+  },
+  "settingsLanguageAuto": {
+    "message": "Seguir idioma del navegador"
+  },
+  "settingsSaved": {
+    "message": "Guardado"
+  },
+  "settingsSaveFailed": {
+    "message": "No se pudo guardar la configuración."
+  },
+  "versionAriaLabel": {
+    "message": "Versión de la extensión instalada"
+  },
+  "versionFallback": {
+    "message": "Versión"
+  },
+  "versionLabel": {
+    "message": "Versión $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "nativeHostLabel": {
+    "message": "Host nativo"
+  },
+  "checkingStatus": {
+    "message": "Comprobando..."
+  },
+  "setupLabel": {
+    "message": "Configuración"
+  },
+  "agentSetupLabel": {
+    "message": "Configuración del Agente"
+  },
+  "agentHandoffTitle": {
+    "message": "Traspaso al Agente"
+  },
+  "copyForAgent": {
+    "message": "Copiar para el Agente"
+  },
+  "copyAgentSetupHandoff": {
+    "message": "Copiar traspaso de configuración del Agente"
+  },
+  "stopButton": {
+    "message": "Yo tomo el control"
+  },
+  "resumeButton": {
+    "message": "Reanudar"
+  },
+  "debugLogsLabel": {
+    "message": "Registros de depuración"
+  },
+  "disabled": {
+    "message": "Desactivado"
+  },
+  "debugEnable": {
+    "message": "Activar"
+  },
+  "debugDisable": {
+    "message": "Desactivar"
+  },
+  "debugCopy": {
+    "message": "Copiar"
+  },
+  "debugClear": {
+    "message": "Borrar"
+  },
+  "nativeHostStatusUnavailable": {
+    "message": "Estado del host nativo no disponible"
+  },
+  "debugUnavailable": {
+    "message": "No disponible"
+  },
+  "debugCopyFailed": {
+    "message": "Error al copiar: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCleared": {
+    "message": "Borrado"
+  },
+  "copyAgentUnavailable": {
+    "message": "Traspaso de configuración del Agente no disponible"
+  },
+  "copyAgentSuccess": {
+    "message": "Copiado. Pégalo en tu Agent. Vuelve aquí y haz clic en Reanudar cuando termine la configuración."
+  },
+  "copying": {
+    "message": "Copiando"
+  },
+  "copied": {
+    "message": "Copiado"
+  },
+  "tryAgain": {
+    "message": "Intentar de nuevo"
+  },
+  "copyUnavailable": {
+    "message": "Copia no disponible. Comprueba el permiso del portapapeles y vuelve a intentarlo."
+  },
+  "agentSetupDefaultText": {
+    "message": "Conecta otro Agent con este traspaso. Cópialo en el Agente y mantén esta ventana abierta mientras se empareja."
+  },
+  "statusConnected": {
+    "message": "Conectado"
+  },
+  "statusConnecting": {
+    "message": "Conectando"
+  },
+  "statusUpdateNeeded": {
+    "message": "Actualización necesaria"
+  },
+  "statusStopped": {
+    "message": "Tienes el control"
+  },
+  "statusNeedsSetup": {
+    "message": "Requiere configuración"
+  },
+  "statusReconnecting": {
+    "message": "Reconectando"
+  },
+  "hostVersionLabel": {
+    "message": "Host $version$",
+    "placeholders": {
+      "version": {
+        "content": "$1"
+      }
+    }
+  },
+  "hostReady": {
+    "message": "Host listo"
+  },
+  "connectingNativeHost": {
+    "message": "Conectando con el host nativo."
+  },
+  "disconnectedDetail": {
+    "message": "Intentando reconectar. Usa Reanudar después de reparar la configuración."
+  },
+  "versionMismatchDetail": {
+    "message": "Actualiza el host local y luego haz clic en Reanudar para reconectar."
+  },
+  "stoppedDetail": {
+    "message": "Termina el inicio de sesión, las contraseñas o cualquier paso de la página y luego haz clic en Reanudar para continuar la automatización."
+  },
+  "errorDetail": {
+    "message": "Ejecuta la configuración y luego haz clic en Reanudar para reconectar."
+  },
+  "deliverableRecovery_one": {
+    "message": "$count$ pestaña entregable disponible. Usa browser.deliverables() y luego claim() para recuperarla.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_many": {
+    "message": "$count$ pestañas entregables disponibles. Usa browser.deliverables() y luego claim() para recuperarlas.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverableRecovery_other": {
+    "message": "$count$ pestañas entregables disponibles. Usa browser.deliverables() y luego claim() para recuperarlas.",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "adviceUpdateHost": {
+    "message": "Actualiza el host local y luego reconecta."
+  },
+  "setupTextUpdateHost": {
+    "message": "Copia este traspaso en tu Agent. Vuelve aquí y haz clic en Reanudar cuando termine la actualización."
+  },
+  "adviceInstallHost": {
+    "message": "Instala el host local y luego reconecta."
+  },
+  "setupTextInstallHost": {
+    "message": "Copia este traspaso en tu Agent para instalar open-browser-use y registrar el host nativo para esta extensión."
+  },
+  "adviceRefreshHostPermission": {
+    "message": "Actualiza el permiso de host de esta extensión y luego reconecta."
+  },
+  "setupTextRefreshHostPermission": {
+    "message": "Copia este traspaso en tu Agent para actualizar el registro del host nativo para este ID de extensión."
+  },
+  "adviceRepairHost": {
+    "message": "Repara el host local y luego reconecta."
+  },
+  "setupTextRepairHost": {
+    "message": "Copia este traspaso en tu Agent para reparar la configuración de open-browser-use y verificar el host nativo."
+  },
+  "adviceRepairSetup": {
+    "message": "Repara la configuración y luego reconecta."
+  },
+  "setupTextRepairSetup": {
+    "message": "Copia este traspaso en tu Agent para reparar la configuración de open-browser-use y verificar el emparejamiento del navegador."
+  },
+  "adviceCheckSetup": {
+    "message": "Comprueba la configuración local y luego haz clic en Reanudar para reconectar."
+  },
+  "adviceDisconnectedPortObject": {
+    "message": "El host local no está conectado. Reinstálalo y luego reconecta."
+  },
+  "setupTextDisconnectedPortObject": {
+    "message": "Copia este traspaso en tu Agent para reinstalar open-browser-use y registrar el host para esta extensión."
+  },
+  "retryingInSeconds": {
+    "message": "Reintentando en $seconds$s.",
+    "placeholders": {
+      "seconds": {
+        "content": "$1"
+      }
+    }
+  },
+  "statusStopping": {
+    "message": "Deteniendo..."
+  },
+  "statusStoppedByUser": {
+    "message": "Detenido por el usuario"
+  },
+  "statusVersionMismatch": {
+    "message": "Versión no coincidente"
+  },
+  "debugEnabledEntries_one": {
+    "message": "Activado, $count$/$max$ entrada",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_many": {
+    "message": "Activado, $count$/$max$ entradas",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugEnabledEntries_other": {
+    "message": "Activado, $count$/$max$ entradas",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      },
+      "max": {
+        "content": "$2"
+      }
+    }
+  },
+  "debugDisabledEntries_one": {
+    "message": "Desactivado, $count$ entrada guardada",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_many": {
+    "message": "Desactivado, $count$ entradas guardadas",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugDisabledEntries_other": {
+    "message": "Desactivado, $count$ entradas guardadas",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_one": {
+    "message": "$count$ entrada copiada",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_many": {
+    "message": "$count$ entradas copiadas",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "debugCopiedEntries_other": {
+    "message": "$count$ entradas copiadas",
+    "placeholders": {
+      "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "deliverablesGroupTitle": {
+    "message": "$label$ Entregables",
+    "placeholders": {
+      "label": {
+        "content": "$1"
+      }
+    }
+  },
+  "defaultDeliverablesGroupTitle": {
+    "message": "Entregables de open-browser-use"
+  }
+}

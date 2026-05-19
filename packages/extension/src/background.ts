@@ -1,3 +1,5 @@
+import { initI18n, msg } from "./i18n.js";
+
 const HOST_NAME = "dev.obu.host";
 const STATUS_KEY = "OBU_NATIVE_HOST_STATUS";
 const INSTANCE_KEY = "OBU_EXTENSION_INSTANCE_ID";
@@ -1068,7 +1070,10 @@ async function moveTabToDeliverableGroup(session: BrowserSession, tabId: number)
   await releaseTabFromSessionGroup(tabId);
   const groupId = await groupTab(tabId, session.deliverableGroupId);
   session.deliverableGroupId = groupId;
-  const title = session.label ? `${session.label} Deliverables` : "open-browser-use Deliverables";
+  await initI18n();
+  const title = session.label
+    ? msg("deliverablesGroupTitle", [session.label])
+    : msg("defaultDeliverablesGroupTitle");
   await chrome.tabGroups.update(groupId, { title, color: "green" });
 }
 

@@ -62,6 +62,12 @@ function assertStoreManifest(manifest) {
   if (manifest.manifest_version !== 3) issues.push("manifest_version must be 3");
   if (typeof manifest.name !== "string" || manifest.name.length === 0) issues.push("name is required");
   if (typeof manifest.description !== "string" || manifest.description.length === 0) issues.push("description is required");
+  if (
+    (manifest.name.startsWith("__MSG_") || manifest.description.startsWith("__MSG_")) &&
+    typeof manifest.default_locale !== "string"
+  ) {
+    issues.push("default_locale is required for localized manifest fields");
+  }
   if (typeof manifest.version !== "string" || !/^\d+\.\d+\.\d+/.test(manifest.version)) issues.push("version must be semver-like");
   if (manifest.background?.service_worker !== "background.js") issues.push("background.service_worker must be background.js");
   if (manifest.action?.default_popup !== "popup.html") issues.push("action.default_popup must be popup.html");
@@ -98,21 +104,50 @@ function assertStorePopup(contents) {
 }
 
 function assertStoreContents(files) {
-  const expected = [
+  const expectedLocales = [
+    "ar",
+    "de",
+    "en",
+    "es",
+    "fr",
+    "hi",
+    "id",
+    "it",
+    "ja",
+    "ko",
+    "nl",
+    "pl",
+    "pt_BR",
+    "ru",
+    "tr",
+    "vi",
+    "zh_CN",
+    "zh_TW",
+  ];
+  const expectedBase = [
     "background.js",
     "cursor.js",
+    "i18n.js",
     "icons/icon-128.png",
     "icons/icon-16.png",
     "icons/icon-32.png",
     "icons/icon-48.png",
     "manifest.json",
+    "options.css",
+    "options.html",
+    "options.js",
     "popup.css",
     "popup.html",
     "popup.js",
   ].sort();
+  const expectedLocaleFiles = expectedLocales.map((locale) => `_locales/${locale}/messages.json`).sort();
   const actual = [...files].sort();
-  const extra = actual.filter((file) => !expected.includes(file));
-  const missing = expected.filter((file) => !actual.includes(file));
+  const localeFiles = actual.filter((file) => file.startsWith("_locales/")).sort();
+  const actualBase = actual.filter((file) => !file.startsWith("_locales/"));
+  const extra = actualBase.filter((file) => !expectedBase.includes(file));
+  const missing = expectedBase.filter((file) => !actualBase.includes(file));
+  extra.push(...localeFiles.filter((file) => !expectedLocaleFiles.includes(file)));
+  missing.push(...expectedLocaleFiles.filter((file) => !localeFiles.includes(file)));
   if (extra.length > 0 || missing.length > 0) {
     throw new Error(`Store artifact contents mismatch; missing=[${missing.join(", ")}] extra=[${extra.join(", ")}]`);
   }
