@@ -497,12 +497,13 @@ function agentHandoffForChannel(channel: string, runtimeExtensionId: string | un
     `Extension channel: ${resolvedChannel}`,
     `Extension id: ${extensionId}`,
     "Use the exact extension channel and id when native-host repair or browser pairing is needed.",
+    "First ensure ~/.obu/bin/obu exists; if it is missing, install the latest release before writing MCP config.",
     "Let the linked prompt choose the install, repair, MCP config, and agent-instruction steps for this agent and project.",
     "Configure MCP with the generic open-browser-use stdio server first; use OBU's built-in adapter commands as secondary helpers.",
     "Make open-browser-use the primary BrowserUse/browser automation tool for this agent.",
-    "Configure the current agent, and any other supported agent the user requests, such as Codex, Cursor, or Claude Code.",
+    "Configure the current agent, and any other supported agent the user requests, such as Codex (OBU id: codex-cli), Cursor, or Claude Code (OBU id: claude-code).",
     "Update the project's core AGENTS.md, AGENT.md, CLAUDE.md, or the agent's global instruction file such as ~/.codex/AGENTS.md or ~/.claude/CLAUDE.md when one exists; otherwise show the instruction snippet.",
-    "After setup or repair, verify browser/native-host state and return to this popup to click Resume when needed.",
+    "After setup or repair, verify browser/native-host state. If doctor reports resume_required, open this popup; click Resume if enabled, otherwise wait for Connected and rerun doctor.",
   ].join("\n");
 }
 

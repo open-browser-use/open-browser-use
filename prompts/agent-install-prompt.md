@@ -52,6 +52,9 @@ On a standard release install, `/absolute/path/to/obu` resolves from:
 Do not depend on `obu` being on `PATH`. Resolve `~/.obu/bin/obu` to a real
 absolute path before writing JSON, such as `/Users/alex/.obu/bin/obu` or
 `/home/alex/.obu/bin/obu`, unless the user explicitly installed somewhere else.
+If `~/.obu/bin/obu` is missing, install or reinstall the latest release first;
+a fresh new install is better than wiring MCP to a missing or half-installed
+local CLI.
 
 Most MCP clients store this in one of these shapes:
 
@@ -91,6 +94,10 @@ Prefer the current AI client's native MCP configuration method:
 Use OBU's built-in adapter commands as secondary helpers, not as the only path.
 They are useful when they match the current client, but the generic server
 contract above is enough to adapt other MCP-capable AI clients.
+
+OBU adapter ids are exact. Use `codex-cli` for Codex, `claude-code` for Claude
+Code, and `gemini-cli` for Gemini CLI. `codex`, `claude`, and `gemini` are
+common human names, but older OBU releases may reject them as agent ids.
 
 ## Steps
 
@@ -179,7 +186,10 @@ contract above is enough to adapt other MCP-capable AI clients.
    ~/.obu/bin/obu setup --yes --agents=codex-cli,cursor,claude-code --write-instructions
    ```
 
-   If client detection is ambiguous, use auto mode:
+   If client detection is ambiguous, use auto mode, but inspect the result. Auto
+   mode only configures agents it can detect confidently; it may skip a working
+   agent if only that agent's global config file exists or its executable is not
+   on `PATH`.
 
    ```sh
    ~/.obu/bin/obu setup --yes --agents=auto
@@ -224,8 +234,10 @@ contract above is enough to adapt other MCP-capable AI clients.
    Repair can fix the native-host manifest and runtime descriptor directory, but
    it cannot force Chrome to reconnect the extension. If doctor still reports
    no active WebExtension runtime descriptor after repair, tell the user to open
-   the open-browser-use extension popup and click Resume. Then rerun doctor with
-   the same channel/id and retry `browser_status`.
+   the open-browser-use extension popup. Click Resume if it is enabled; if
+   Resume is disabled but the popup says the local host is connected, leave the
+   popup open briefly and rerun doctor with the same channel/id, then retry
+   `browser_status`.
 
 5. Verify MCP from inside the target agent when possible:
 
