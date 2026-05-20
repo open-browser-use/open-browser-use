@@ -2,11 +2,14 @@
 
 Date: 2026-05-19
 
-Status: target product contract / implementation plan. This document describes
-the intended `obu verify` behavior. Until `obu verify` is implemented and wired
-into setup output, existing `obu setup`, `obu doctor browser`, and
-`obu agent doctor` commands remain lower-level diagnostics rather than the
-canonical readiness surface described here.
+Status: the agent setup closure branch implements CLI-level `obu verify` as the
+canonical readiness surface. This document also records the stronger
+agent-runtime verification contract. The current build does not register trusted
+agent-runtime hooks, so `--require-agent-runtime` reports
+`agent_runtime_hook_unavailable` once CLI readiness is proved, and user-supplied
+status files remain diagnostic-only. Existing `obu setup`, `obu doctor browser`,
+and `obu agent doctor` commands remain mutating setup or lower-level diagnostics
+rather than the canonical readiness surface described here.
 
 ## Product Contract
 
@@ -19,7 +22,7 @@ user or agent stitching together partial signals from install logs,
 `obu setup`, `obu doctor browser`, `obu agent doctor`, MCP `browser_status`, and
 the extension popup.
 
-Once `obu verify` exists in a runnable OBU CLI, the canonical surface is:
+In a runnable OBU CLI, the canonical surface is:
 
 ```bash
 obu verify --agent=<agent-id> --browser=<browser> --channel=<channel> --extension-id=<id>
@@ -1995,8 +1998,8 @@ Setup requirements:
 - Write primary-browser instructions only when explicitly requested.
 - Include the final verification command in next actions.
 
-Once `obu verify` is implemented, final setup output should tell users to run
-`obu verify`, not ask them to interpret setup completion as browser readiness.
+Final setup output should tell users to run `obu verify`, not ask them to
+interpret setup completion as browser readiness.
 
 ## Doctor Contract
 
@@ -2195,9 +2198,8 @@ The product is complete only when all of the following are true:
 - Popup status distinguishes native-host connection from descriptor readiness.
 - Extension handoff text preserves exact Store extension id and tells agents to
   verify readiness through OBU.
-- When `obu verify` lands, popup handoff text and tests replace doctor retry
-  guidance with verify retry guidance while preserving the current fallback until
-  the command exists.
+- Popup handoff text and tests replace doctor retry guidance with verify retry
+  guidance while preserving doctor as a lower-level diagnostic fallback.
 - Clean-home smoke tests cover Codex, Cursor, Store extension id preservation,
   popup-required descriptor state, and divergent config conflicts.
 - Smoke or unit tests cover direct MCP runtime zero-backend results, SDK

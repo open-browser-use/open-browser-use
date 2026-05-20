@@ -13,7 +13,7 @@ for driving an installed browser profile without `--remote-debugging-port`.
 | `crates/obu-host` | Per-session broker daemon and browser backend dispatcher. |
 | `crates/obu-node-repl` | MCP JavaScript runtime with trusted SDK/native-pipe support. |
 | `packages/sdk` | Agent-facing TypeScript SDK. |
-| `packages/cli` | User-facing setup and diagnostics commands such as `obu doctor browser`. |
+| `packages/cli` | User-facing setup, readiness, and diagnostics commands such as `obu verify`. |
 | `packages/extension` | Chromium MV3 extension and dev native-host manifest writer. |
 | `docs/install.md` | Preview install, setup, and agent wiring guide. |
 
@@ -145,34 +145,37 @@ The scripted gate can also install/use that binary automatically:
 OBU_WEBEXT_E2E_AUTO_INSTALL=1 scripts/p3-webext-e2e.sh
 ```
 
-To diagnose browser/profile/extension/native-host setup and reconnect issues,
-build the CLI and run the browser doctor:
+To verify browser/profile/extension/native-host setup and reconnect state for a
+selected agent/browser pair, build the CLI and run `obu verify`:
 
 ```bash
 pnpm -C packages/cli build
-node packages/cli/dist/index.js doctor browser --browser chrome
-node packages/cli/dist/index.js doctor browser --browser chrome --json
-node packages/cli/dist/index.js doctor browser --browser chrome --repair
+node packages/cli/dist/index.js verify --agent=codex-cli --browser chrome
+node packages/cli/dist/index.js verify --agent=codex-cli --browser chrome --json
+node packages/cli/dist/index.js verify --repair --agent=codex-cli --browser chrome
 ```
 
-The human output includes repair hints for warnings and failures. The JSON
-output includes check details for automation, including runtime descriptor
-lifecycle diagnostics from `getInfo`; stale session reasons, compact
-deliverable tab summaries, and deliverable recovery hints are also summarized in
-the human report. A reachable
+`obu verify` returns one readiness result and one next action. Use
+`doctor browser` as a lower-level diagnostic when you need browser-only details.
+`verify --repair` delegates browser-side repair to `doctor browser`, refreshes
+agent MCP wiring for the selected agent, and then re-evaluates readiness for the
+same target.
+The browser doctor JSON output includes runtime descriptor lifecycle diagnostics
+from `getInfo`; stale session reasons, compact deliverable tab summaries, and
+deliverable recovery hints are also summarized in the human report. A reachable
 runtime descriptor is reported as `WARN`, not `PASS`, when host lifecycle
 diagnostics contain stale sessions, tabs, file chooser handles, or download
-handles. `--repair` performs conservative local repairs: it can regenerate an
-invalid native-host manifest through a wrapper script, create the runtime
-descriptor directory, and chmod descriptor directories/files back to owner-only
-modes. It can also remove stale WebExtension runtime descriptors whose recorded
-process is gone, whose socket path is clearly invalid, whose descriptor auth is
-rejected, or whose `getInfo` probe is inconsistent. When a live descriptor
-reports stale lifecycle diagnostics, `--repair` asks the host to clear those
-acknowledged stale diagnostic tombstones and then probes again.
+handles. Browser doctor repair performs conservative local repairs: it can
+regenerate an invalid native-host manifest through a wrapper script, create the
+runtime descriptor directory, and chmod descriptor directories/files back to
+owner-only modes. It can also remove stale WebExtension runtime descriptors
+whose recorded process is gone, whose socket path is clearly invalid, whose
+descriptor auth is rejected, or whose `getInfo` probe is inconsistent. When a
+live descriptor reports stale lifecycle diagnostics, repair asks the host to
+clear those acknowledged stale diagnostic tombstones and then probes again.
 Inside the SDK, `agent.browsers.diagnostics()` returns ignored runtime
 descriptor reasons surfaced by `obu-node-repl`, and no-backend errors include
-those reasons before pointing back to `obu doctor browser`. Durable tabs
+those reasons before pointing back to `obu verify`. Durable tabs
 finalized as deliverables can be inspected and reclaimed with
 `await browser.deliverables()` and each returned handle's `claim()` method.
 Acknowledged stale lifecycle diagnostics can also be cleared from host apps with

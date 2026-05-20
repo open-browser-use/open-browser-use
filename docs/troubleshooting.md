@@ -1,15 +1,21 @@
 # open-browser-use Troubleshooting
 
-Start with:
+For readiness issues, start with the selected agent/browser pair. Replace
+`<agent-id>` with the current agent's canonical OBU adapter id, such as
+`codex-cli` for Codex, `claude-code` for Claude Code, `gemini-cli`, `cursor`, or
+`vscode`. If you are working from a popup **Copy for agent** handoff, use the
+agent receiving that handoff unless the user asked to configure another client.
+
+```bash
+obu verify --agent=<agent-id> --browser=chrome
+obu verify --agent=<agent-id> --browser=chrome --json
+```
+
+Use doctor for lower-level diagnostics and CI drift checks:
 
 ```bash
 obu doctor
 obu doctor --json
-```
-
-Use strict mode in CI:
-
-```bash
 obu doctor --strict --json
 ```
 
@@ -32,7 +38,7 @@ The directory must be owner-only and must not be a symlink. Repairable
 permission issues can be fixed by rerunning setup or:
 
 ```bash
-obu doctor browser --repair
+obu verify --repair --agent=<agent-id> --browser=chrome
 ```
 
 ## MCP Stdio Exits Before Starting
@@ -44,8 +50,8 @@ writes a short error to stderr.
 Run:
 
 ```bash
-obu setup --yes
-obu doctor
+obu setup --yes --agents=<agent-id>
+obu verify --agent=<agent-id> --browser=chrome
 ```
 
 Then retry the MCP client.
@@ -57,11 +63,12 @@ MCP availability and browser availability are separate. An agent can have the
 an available SDK with `backends: []`. That means the MCP server can start, but
 no live browser backend descriptor is available yet.
 
-For a Store-channel extension, repair with the exact extension id copied from
-the extension popup:
+For a Store-channel extension, repair the same agent/browser/channel/id tuple
+that produced the stale status. Use the exact extension id copied from the
+extension popup:
 
 ```bash
-obu doctor browser --repair --channel=store --extension-id=<STORE_EXTENSION_ID>
+obu verify --repair --agent=<agent-id> --browser=chrome --channel=store --extension-id=<STORE_EXTENSION_ID>
 ```
 
 Do not infer this id from the unpacked extension manifest or another Chrome
@@ -79,12 +86,13 @@ descriptor is written only after the extension reconnects to the native host.
 Rerun:
 
 ```bash
-obu doctor browser --channel=store --extension-id=<STORE_EXTENSION_ID>
+obu verify --agent=<agent-id> --browser=chrome --channel=store --extension-id=<STORE_EXTENSION_ID>
 ```
 
-Then retry `browser_status`. Current `doctor browser` output includes
-`resume required: yes/no` on the runtime descriptor probe so agents do not need
-to infer popup state from deliverable counts or low-level descriptor details.
+Then retry `browser_status`. If verify asks for deeper browser diagnostics,
+`doctor browser` includes `resume required: yes/no` on the runtime descriptor
+probe so agents do not need to infer popup state from deliverable counts or
+low-level descriptor details.
 
 ## Agent JavaScript Pitfalls
 
@@ -172,7 +180,7 @@ For a Chrome Web Store-installed extension, repair with the Store channel:
 
 ```bash
 obu install-host --channel=store --browser chrome --extension-id <STORE_EXTENSION_ID>
-obu doctor browser --repair --channel=store --extension-id <STORE_EXTENSION_ID>
+obu verify --repair --agent=<agent-id> --browser=chrome --channel=store --extension-id <STORE_EXTENSION_ID>
 ```
 
 If the Store channel reports that the Store extension id is not configured,
