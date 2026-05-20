@@ -111,6 +111,6 @@ function noBackend(kind: string, diagnostics: BackendDiscoveryDiagnostic[]): Obu
       message += `; +${diagnostics.length - visibleDiagnostics.length} more`;
     }
   }
-  message += ". Run obu doctor browser for setup diagnostics.";
+  message += ". Run obu verify for readiness; use obu doctor browser only for lower-level browser diagnostics.";
   return new ObuError(ERR_NO_BACKEND, message);
 }
