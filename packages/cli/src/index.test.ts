@@ -411,6 +411,39 @@ test("agent doctor accepts Codex multiline TOML args", async (t) => {
   assert.equal(payload.checks.find((check: any) => check.id === "agent-mcp-server")?.status, "pass");
 });
 
+test("agent doctor fails malformed Codex config even when the MCP table matches", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  await mkdir(path.join(home, ".codex"), { recursive: true });
+  await writeFile(path.join(home, ".codex", "config.toml"), [
+    "[broken",
+    "",
+    "[mcp_servers.open-browser-use]",
+    `command = "${shellEscapeForDoubleQuotes(process.execPath)}"`,
+    `args = ["${shellEscapeForDoubleQuotes(cliEntry)}", "mcp", "stdio"]`,
+    "",
+  ].join("\n"), "utf8");
+  await writeFile(path.join(home, ".codex", "AGENTS.md"), [
+    "## Browser Automation",
+    "",
+    "Use open-browser-use as the primary BrowserUse/browser automation tool.",
+    "",
+  ].join("\n"), "utf8");
+
+  const result = await runCli(["agent", "doctor", "--agent=codex-cli", "--json"], {
+    HOME: home,
+    PATH: "",
+  });
+
+  assert.equal(result.code, 1);
+  assert.equal(result.stderr, "");
+  const payload = JSON.parse(result.stdout);
+  const check = payload.checks.find((row: any) => row.id === "agent-mcp-server");
+  assert.equal(check?.status, "fail");
+  assert.match(check?.message ?? "", /could not be parsed/);
+  assert.equal(check?.details?.code, "PARSE_ERROR");
+});
+
 test("agent doctor fails divergent Codex config instead of falling back to shell probe", async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
   const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
@@ -1182,6 +1215,45 @@ test("setup can write Codex and Claude primary-browser instructions explicitly",
   assert.equal(payload.steps.find((step: any) => step.id === "agent-claude-code-instructions")?.status, "applied");
   assert.match(await readFile(path.join(home, ".codex", "AGENTS.md"), "utf8"), /primary BrowserUse\/browser automation tool/);
   assert.match(await readFile(path.join(home, ".claude", "CLAUDE.md"), "utf8"), /primary BrowserUse\/browser automation tool/);
+});
+
+test("setup returns a manual action instead of writing malformed Codex config", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  const hostBin = path.join(bin, "obu-host");
+  await writeFile(hostBin, "#!/bin/sh\n", "utf8");
+  await chmod(hostBin, 0o755);
+  const configPath = path.join(home, ".codex", "config.toml");
+  const malformed = "[broken\n";
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(configPath, malformed, "utf8");
+  const storeExtensionId = "abcdefghijklmnopabcdefghijklmnop";
+
+  const result = await runCli([
+    "setup",
+    "--yes",
+    "--channel=store",
+    "--extension-id",
+    storeExtensionId,
+    "--agents=codex-cli",
+    "--json",
+  ], {
+    HOME: home,
+    PATH: "",
+    OBU_RUNTIME_DIR: path.join(home, "runtime"),
+    OBU_HOST_BIN: hostBin,
+  });
+
+  assert.equal(result.code, 1);
+  assert.equal(result.stderr, "");
+  const payload = JSON.parse(result.stdout);
+  const step = payload.steps.find((row: any) => row.id === "agent-codex-cli");
+  assert.equal(step?.status, "manual_action_required");
+  assert.match(step?.message ?? "", /could not be parsed/);
+  assert.equal(step?.details?.code, "PARSE_ERROR");
+  assert.equal(await readFile(configPath, "utf8"), malformed);
 });
 
 test("setup CLI rejects unknown requested agents before writing", async (t) => {

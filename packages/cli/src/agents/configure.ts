@@ -182,10 +182,13 @@ async function configureCodex(
     };
   }
   if (current.status === "error") {
+    const parsed = current.code === "PARSE_ERROR";
     return {
       id: "agent-codex-cli",
       status: "manual_action_required",
-      message: "codex-cli MCP config could not be read; configure it manually",
+      message: parsed
+        ? "codex-cli MCP config could not be parsed; configure it manually"
+        : "codex-cli MCP config could not be read; configure it manually",
       details: { path: current.path, message: current.message, ...(current.code ? { code: current.code } : {}) },
       nextActions: [manualAction],
     };
@@ -205,6 +208,15 @@ async function configureCodex(
       status: "manual_action_required",
       message: "codex-cli MCP config could not be written; configure it manually",
       details: { path: result.path, message: result.message, ...(result.code ? { code: result.code } : {}) },
+      nextActions: [manualAction],
+    };
+  }
+  if (result.status === "parse_error") {
+    return {
+      id: "agent-codex-cli",
+      status: "manual_action_required",
+      message: "codex-cli MCP config could not be parsed; configure it manually",
+      details: { path: result.path, message: result.message, code: result.code },
       nextActions: [manualAction],
     };
   }

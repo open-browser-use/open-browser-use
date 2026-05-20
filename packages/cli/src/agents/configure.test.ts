@@ -166,6 +166,28 @@ test("configureAgents does not overwrite divergent Codex MCP config", async (t) 
   assert.doesNotMatch(config, new RegExp(escapeRegExp(path.join(root, "obu"))));
 });
 
+test("configureAgents does not append to malformed Codex config", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-agent-config-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configPath = path.join(root, ".codex", "config.toml");
+  const malformed = "[broken\n";
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(configPath, malformed, "utf8");
+
+  const steps = await configureAgents({
+    agents: ["codex-cli"],
+    server: server(root),
+    env: { PATH: "" },
+    homeDir: root,
+  });
+
+  assert.equal(steps[0]?.status, "manual_action_required");
+  assert.match(steps[0]?.message ?? "", /could not be parsed/);
+  assert.equal(steps[0]?.details?.code, "PARSE_ERROR");
+  assert.match(steps[0]?.nextActions?.[0]?.value ?? "", /mcp-config --agent=codex-cli --print/);
+  assert.equal(await readFile(configPath, "utf8"), malformed);
+});
+
 test("configureAgents writes JSONC direct-edit adapters and skips unchanged reruns", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "obu-agent-config-"));
   t.after(() => rm(root, { recursive: true, force: true }));

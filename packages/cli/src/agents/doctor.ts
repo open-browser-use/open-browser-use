@@ -129,7 +129,8 @@ async function checkCodexConfigMcpServer(options: AgentDoctorOptions): Promise<A
     ...(options.homeDir ? { homeDir: options.homeDir } : {}),
   });
   if (state.status === "error") {
-    return fail("agent-mcp-server", "MCP server", "codex-cli MCP config could not be read", {
+    const parsed = state.code === "PARSE_ERROR";
+    return fail("agent-mcp-server", "MCP server", parsed ? "codex-cli MCP config could not be parsed" : "codex-cli MCP config could not be read", {
       path: state.path,
       message: state.message,
       ...(state.code ? { code: state.code } : {}),

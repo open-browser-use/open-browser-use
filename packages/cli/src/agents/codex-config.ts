@@ -18,6 +18,7 @@ export type CodexMcpServerState =
 export type CodexMcpWriteResult =
   | { status: "applied"; path: string; backupPath?: string }
   | { status: "skipped"; path: string; reason: "unchanged" }
+  | { status: "parse_error"; path: string; message: string; code: "PARSE_ERROR" }
   | { status: "io_error"; path: string; message: string; code?: string };
 
 export function codexConfigPath(options: CodexConfigOptions = {}): string {
@@ -38,6 +39,8 @@ export async function readCodexMcpServer(
   const raw = await readOptionalFile(configPath).catch((error): CodexMcpServerState => ioState(configPath, error));
   if (raw === undefined) return { status: "missing", path: configPath };
   if (typeof raw !== "string") return raw;
+  const parseIssue = validateCodexToml(raw);
+  if (parseIssue) return codexParseState(configPath, parseIssue);
   const table = findMcpServerTable(raw, serverName);
   if (!table) return { status: "missing", path: configPath };
   return { status: "found", path: configPath, server: parseServerTable(table.body) };
@@ -56,6 +59,10 @@ export async function writeCodexMcpServer(
   }
 
   const raw = existing ?? "";
+  if (existing !== undefined) {
+    const parseIssue = validateCodexToml(raw);
+    if (parseIssue) return codexParseError(configPath, parseIssue);
+  }
   const table = renderMcpServerTable(server);
   const current = findMcpServerTable(raw, server.name);
   const next = current
@@ -102,6 +109,124 @@ async function readOptionalFile(file: string): Promise<string | undefined> {
 
 async function exists(file: string): Promise<boolean> {
   return access(file, constants.F_OK).then(() => true).catch(() => false);
+}
+
+const TOML_KEY_PATTERN = String.raw`(?:"(?:\\.|[^"\\])*"|'[^']*'|[A-Za-z0-9_-]+)(?:\s*\.\s*(?:"(?:\\.|[^"\\])*"|'[^']*'|[A-Za-z0-9_-]+))*`;
+const TOML_TABLE_HEADER_PATTERN = new RegExp(String.raw`^\s*\[\s*${TOML_KEY_PATTERN}\s*\]\s*$`);
+const TOML_ARRAY_TABLE_HEADER_PATTERN = new RegExp(String.raw`^\s*\[\[\s*${TOML_KEY_PATTERN}\s*\]\]\s*$`);
+
+type TomlStringState = {
+  quote: `"` | "'";
+  multiline: boolean;
+  escaped: boolean;
+  startedAtLine: number;
+  startedAtColumn: number;
+};
+
+function validateCodexToml(raw: string): string | undefined {
+  let stringState: TomlStringState | undefined;
+  let inComment = false;
+  let bracketDepth = 0;
+  const lines = raw.match(/^.*(?:\r?\n|$)/gm) ?? [];
+
+  for (let lineIndex = 0; lineIndex < lines.length; lineIndex += 1) {
+    const line = lines[lineIndex]!;
+    const lineNumber = lineIndex + 1;
+    if (!stringState && bracketDepth === 0 && line.trimStart().startsWith("[")) {
+      const header = stripTomlLineComment(line).trim();
+      if (!TOML_TABLE_HEADER_PATTERN.test(header) && !TOML_ARRAY_TABLE_HEADER_PATTERN.test(header)) {
+        return `malformed table header at line ${lineNumber}`;
+      }
+    }
+
+    for (let column = 0; column < line.length; column += 1) {
+      const char = line[column]!;
+      const columnNumber = column + 1;
+      if (char === "\r" || char === "\n") {
+        if (stringState && !stringState.multiline) {
+          return `unterminated string starting at line ${stringState.startedAtLine}, column ${stringState.startedAtColumn}`;
+        }
+        inComment = false;
+        continue;
+      }
+      if (inComment) continue;
+      if (stringState) {
+        if (stringState.quote === `"` && stringState.escaped) {
+          stringState.escaped = false;
+          continue;
+        }
+        if (stringState.quote === `"` && char === "\\") {
+          stringState.escaped = true;
+          continue;
+        }
+        if (char === stringState.quote) {
+          if (stringState.multiline) {
+            if (line[column + 1] === char && line[column + 2] === char) {
+              stringState = undefined;
+              column += 2;
+            }
+          } else {
+            stringState = undefined;
+          }
+        }
+        continue;
+      }
+      if (char === "#") {
+        inComment = true;
+        continue;
+      }
+      if (char === `"` || char === "'") {
+        const multiline = line[column + 1] === char && line[column + 2] === char;
+        stringState = {
+          quote: char,
+          multiline,
+          escaped: false,
+          startedAtLine: lineNumber,
+          startedAtColumn: columnNumber,
+        };
+        if (multiline) column += 2;
+        continue;
+      }
+      if (char === "[") {
+        bracketDepth += 1;
+        continue;
+      }
+      if (char === "]") {
+        bracketDepth -= 1;
+        if (bracketDepth < 0) return `unexpected closing bracket at line ${lineNumber}, column ${columnNumber}`;
+      }
+    }
+  }
+
+  if (stringState) {
+    return `unterminated string starting at line ${stringState.startedAtLine}, column ${stringState.startedAtColumn}`;
+  }
+  if (bracketDepth > 0) return "unterminated bracketed expression";
+  return undefined;
+}
+
+function stripTomlLineComment(line: string): string {
+  let inString: `"` | "'" | undefined;
+  let escaped = false;
+  for (let index = 0; index < line.length; index += 1) {
+    const char = line[index]!;
+    if (inString) {
+      if (inString === `"` && escaped) {
+        escaped = false;
+      } else if (inString === `"` && char === "\\") {
+        escaped = true;
+      } else if (char === inString) {
+        inString = undefined;
+      }
+      continue;
+    }
+    if (char === `"` || char === "'") {
+      inString = char;
+      continue;
+    }
+    if (char === "#") return line.slice(0, index);
+  }
+  return line;
 }
 
 function findMcpServerTable(raw: string, serverName: string): { start: number; end: number; body: string } | undefined {
@@ -282,6 +407,24 @@ function ioState(file: string, error: unknown): CodexMcpServerState {
     path: file,
     message: nodeError.message ?? String(error),
     ...(nodeError.code ? { code: nodeError.code } : {}),
+  };
+}
+
+function codexParseState(file: string, issue: string): CodexMcpServerState {
+  return {
+    status: "error",
+    path: file,
+    message: `codex-cli MCP config could not be parsed: ${issue}`,
+    code: "PARSE_ERROR",
+  };
+}
+
+function codexParseError(file: string, issue: string): CodexMcpWriteResult {
+  return {
+    status: "parse_error",
+    path: file,
+    message: `codex-cli MCP config could not be parsed: ${issue}`,
+    code: "PARSE_ERROR",
   };
 }
 
