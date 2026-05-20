@@ -1023,12 +1023,12 @@ Action derivation sources:
 | Next action kind | Required source check layer | Required status | Required `blocks` | Candidate result |
 | --- | --- | --- | --- | --- |
 | `install_cli` | `cli_install` | `fail` | `["cli"]` | `needs_manual_action` |
-| `unsupported` | `target_support` | `fail` | `["cli"]` or `["agent_runtime"]` | `needs_manual_action` |
+| `unsupported` | `target_support` or `agent_runtime` | `fail` | `["cli"]` or `["agent_runtime"]` | `needs_manual_action` |
 | `resolve_config_conflict` | `agent_mcp` | `fail` | `["cli"]` | `needs_manual_action` |
 | `select_profile` | `browser_profile` | `fail` | `["cli"]` | `needs_manual_action` |
 | `install_extension` | `browser_extension` | `fail` | `["cli"]` | `needs_manual_action` |
 | `enable_extension` | `browser_extension` | `fail` | `["cli"]` | `needs_manual_action` |
-| `collect_agent_runtime_status` | `agent_runtime` | `not_checked` | `["agent_runtime"]` | `needs_manual_action` |
+| `collect_agent_runtime_status` | `agent_runtime` | `fail` | `["agent_runtime"]` | `needs_manual_action` |
 | `restart_agent` | `agent_runtime` | `fail` | `["agent_runtime"]` | `needs_manual_action` |
 | `configure_agent` | `agent_mcp`, `mcp_runtime`, or `agent_runtime` | `fail` | `["cli"]` or `["agent_runtime"]` | `needs_manual_action` |
 | `run_repair` | first repairable blocking layer | `fail` | `["cli"]` | `needs_repair` |
@@ -1652,14 +1652,15 @@ Non-ready result:
   },
   "mcpRuntime": {
     "cli": {
-      "source": "direct_mcp_probe",
-      "provenance": "expected_obu_invocation",
-      "probeCommandSource": "expected_obu_invocation",
+      "source": "not_checked",
+      "provenance": "not_applicable",
+      "probeCommandSource": "not_applicable",
       "mcpConfigured": true,
-      "mcpStarts": true,
-      "sdkBootstrap": "available",
-      "backendCount": 0,
-      "backends": []
+      "mcpStarts": null,
+      "sdkBootstrap": "not_checked",
+      "backendCount": null,
+      "backends": [],
+      "reason": "runtime_descriptor_not_active"
     },
     "agentRuntime": {
       "source": "not_checked",
@@ -1807,17 +1808,9 @@ Non-ready result:
     {
       "id": "mcp-runtime-backend",
       "layer": "mcp_runtime",
-      "status": "fail",
-      "blocks": [
-        "cli"
-      ],
-      "reason": "zero_backends_after_popup_boundary",
-      "message": "direct MCP probe found zero usable browser backends",
-      "actionCandidate": {
-        "kind": "open_popup",
-        "priority": 1,
-        "result": "needs_browser_popup"
-      },
+      "status": "not_checked",
+      "reason": "runtime_descriptor_not_active",
+      "message": "direct MCP probe was not run",
       "target": {
         "agent": "codex-cli",
         "browser": "chrome",
@@ -1978,10 +1971,9 @@ The extension handoff prompt must include:
 - popup guidance that says "click Resume if enabled" rather than assuming Resume
   is always clickable.
 
-Until `obu verify` is implemented, shipped popup handoff text may continue to
-point users at `obu doctor browser`. The verify implementation must update the
-popup handoff copy and tests in the same change that makes `obu verify` the
-canonical readiness command.
+Shipped popup handoff text must point users at `obu verify` as the canonical
+readiness command. It may reference `obu doctor browser` only as a lower-level
+diagnostic after verify has identified a browser-specific boundary.
 
 The Store extension id is security-sensitive native messaging state. Every
 doctor, setup, repair, verify, and generated command must preserve the exact
@@ -1998,7 +1990,8 @@ Setup requirements:
 - Write each first-class agent config to the same surface that doctor verifies.
 - Do not overwrite divergent MCP server settings.
 - Return manual action for unreadable or divergent config.
-- Preserve exact Store extension ids in all suggested doctor/repair commands.
+- Preserve exact Store extension ids in all suggested verify and repair
+  commands.
 - Write primary-browser instructions only when explicitly requested.
 - Include the final verification command in next actions.
 

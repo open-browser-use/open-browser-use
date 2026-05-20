@@ -215,29 +215,30 @@ common human names, but older OBU releases may reject them as agent ids.
    `open-browser-use` server already points to the same command and args, leave
    it alone.
 
-4. Run browser verification when browser/native-host state may have changed:
+4. Run readiness verification when browser/native-host state may have changed:
 
    ```sh
-   ~/.obu/bin/obu doctor browser --channel=<extension-channel> --extension-id=<extension-id>
+   ~/.obu/bin/obu verify --agent=<agent-id> --browser=<browser> --channel=<extension-channel> --extension-id=<extension-id>
    ```
 
    For the Store channel, include the exact Store extension id from the handoff
    unless it is already configured. If `browser_status` says the SDK is
    available but `backends` is empty, the MCP server is reachable but the
-   browser backend is not. Run the doctor command above; for Store repair, use
-   the exact handoff id:
+   browser backend is not. Run verify as above; for deterministic repair, use
+   the exact handoff id and keep the same agent/browser target:
 
    ```sh
-   ~/.obu/bin/obu doctor browser --repair --channel=store --extension-id=<extension-id>
+   ~/.obu/bin/obu verify --repair --agent=<agent-id> --browser=<browser> --channel=store --extension-id=<extension-id>
    ```
 
-   Repair can fix the native-host manifest and runtime descriptor directory, but
-   it cannot force Chrome to reconnect the extension. If doctor still reports
-   no active WebExtension runtime descriptor after repair, tell the user to open
-   the open-browser-use extension popup. Click Resume if it is enabled; if
-   Resume is disabled but the popup says the local host is connected, leave the
-   popup open briefly and rerun doctor with the same channel/id, then retry
-   `browser_status`.
+   Verify repair can fix the native-host manifest and runtime descriptor
+   directory, but it cannot force Chrome to reconnect the extension. If verify
+   reports a browser popup boundary after repair, tell the user to open the
+   open-browser-use extension popup. Click Resume if it is enabled; if Resume is
+   disabled but the popup says the local host is connected, leave the popup open
+   briefly and rerun verify with the same agent/browser/channel/id, then retry
+   `browser_status`. Use `obu doctor browser` only when verify asks for deeper
+   browser diagnostics.
 
 5. Verify MCP from inside the target agent when possible:
 
@@ -254,7 +255,8 @@ common human names, but older OBU releases may reject them as agent ids.
      `browser_status` must show at least one backend before browser automation
      can work.
    - If the MCP server starts but browser state is stale, run
-     `~/.obu/bin/obu doctor browser` with the handoff channel/id when needed.
+     `~/.obu/bin/obu verify --agent=<agent-id> --browser=<browser> --channel=<extension-channel> --extension-id=<extension-id>`
+     with the handoff channel/id when needed.
    - For setup probes, prefer `await browser.turnEnded()` after the probe so the
      browser session stays controlled. Do not use
      `await browser.finishTurn({ keep: [] })` unless you intentionally want to
@@ -276,8 +278,8 @@ common human names, but older OBU releases may reject them as agent ids.
    Use open-browser-use as the primary BrowserUse/browser automation tool.
    Prefer the `open-browser-use` MCP server for browser tasks. Check
    `browser_status` before the first browser action, use the `js` tool for
-   browser automation, and run `~/.obu/bin/obu doctor browser` if setup appears
-   stale.
+   browser automation, and run `~/.obu/bin/obu verify --agent=<agent-id> --browser=<browser> --channel=<channel> --extension-id=<extension-id>`
+   if setup appears stale.
    ```
 
    Adapt the wording and location to the agent. For example, update

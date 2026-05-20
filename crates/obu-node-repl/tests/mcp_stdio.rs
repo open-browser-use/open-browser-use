@@ -183,9 +183,10 @@ async fn mcp_stdio_lists_tools_and_executes_js() {
     let structured = &status["result"]["structuredContent"];
     let doctor_hint = structured["doctor_hint"].as_str().unwrap();
     if structured["backends"].as_array().unwrap().is_empty() {
+        assert!(doctor_hint.contains("obu verify --repair"));
         assert!(doctor_hint.contains("exact extension channel/id"));
     } else {
-        assert_eq!(doctor_hint, "obu doctor browser");
+        assert!(doctor_hint.contains("obu verify"));
     }
 
     send(

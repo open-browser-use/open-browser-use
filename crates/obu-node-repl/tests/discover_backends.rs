@@ -60,6 +60,12 @@ async fn browser_status_reports_missing_sdk_and_no_backend() {
         status["doctor_hint"]
             .as_str()
             .unwrap()
+            .contains("obu verify --repair")
+    );
+    assert!(
+        status["doctor_hint"]
+            .as_str()
+            .unwrap()
             .contains("exact extension channel/id")
     );
 }
