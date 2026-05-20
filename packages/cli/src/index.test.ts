@@ -8,6 +8,7 @@ import test from "node:test";
 import { fileURLToPath } from "node:url";
 
 import { browserProfileRoot, nativeMessagingHostDir } from "./browser-paths.js";
+import { nativeHostWrapperContent, nativeHostWrapperPath } from "./native-host.js";
 
 const cliEntry = fileURLToPath(new URL("./index.js", import.meta.url));
 
@@ -79,7 +80,7 @@ test("verify reports browser popup boundary with one next action", async (t) => 
   const runtimeDir = path.join(home, "runtime");
   const hostBin = await writeExecutable(path.join(bin, "obu-host"), "#!/bin/sh\nexit 0\n");
   await writeCodexMcpConfig(home);
-  await writeNativeHostManifest(home, hostBin, extensionId);
+  await writeNativeHostManifest(home, hostBin, extensionId, runtimeDir);
   const profilePath = path.join(browserProfileRoot("chrome", process.platform, home), "Default");
   await writeChromePreferences(profilePath, extensionId, 1);
   await mkdir(path.join(runtimeDir, "webextension"), { recursive: true, mode: 0o700 });
@@ -116,6 +117,65 @@ test("verify reports browser popup boundary with one next action", async (t) => 
   assert.equal(payload.checks.find((check: any) => check.id === "agent-primary-instruction")?.reason, "missing_instruction");
 });
 
+test("verify repairs stale native-host manifests before popup handoff", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  withTestXdgConfigHome(t, home);
+  const extensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const runtimeDir = path.join(home, "runtime");
+  const staleHostBin = await writeExecutable(path.join(bin, "stale-obu-host"), "#!/bin/sh\nexit 0\n");
+  await writeCodexMcpConfig(home);
+  const manifestPath = path.join(nativeMessagingHostDir("chrome", process.platform, home), "dev.obu.host.json");
+  await mkdir(path.dirname(manifestPath), { recursive: true });
+  await writeFile(manifestPath, JSON.stringify({
+    name: "dev.obu.host",
+    description: "stale open-browser-use native messaging host",
+    path: staleHostBin,
+    type: "stdio",
+    allowed_origins: [`chrome-extension://${extensionId}/`],
+  }, null, 2), "utf8");
+  const profilePath = path.join(browserProfileRoot("chrome", process.platform, home), "Default");
+  await writeChromePreferences(profilePath, extensionId, 1);
+  await mkdir(path.join(runtimeDir, "webextension"), { recursive: true, mode: 0o700 });
+  await chmod(runtimeDir, 0o700);
+  await chmod(path.join(runtimeDir, "webextension"), 0o700);
+
+  const env = {
+    HOME: home,
+    OBU_HOST_BIN: staleHostBin,
+    OBU_RUNTIME_DIR: runtimeDir,
+  };
+  const verifyArgs = [
+    "verify",
+    "--agent=codex-cli",
+    "--browser=chrome",
+    "--channel=store",
+    `--extension-id=${extensionId}`,
+    "--json",
+  ];
+  const result = await runCli(verifyArgs, env);
+
+  assert.equal(result.code, 1);
+  const payload = JSON.parse(result.stdout);
+  const nativeHost = payload.checks.find((check: any) => check.id === "native-host-manifest");
+  assert.equal(payload.result, "needs_repair");
+  assert.equal(payload.nextAction.kind, "run_repair");
+  assert.equal(nativeHost?.status, "fail");
+  assert.equal(nativeHost?.reason, "native_host_manifest_invalid");
+  assert.match(nativeHost?.message ?? "", /managed wrapper/);
+
+  const repaired = await runCli([...verifyArgs.slice(0, -1), "--repair", "--json"], env);
+  assert.equal(repaired.code, 1);
+  const repairedPayload = JSON.parse(repaired.stdout);
+  const repairedNativeHost = repairedPayload.checks.find((check: any) => check.id === "native-host-manifest");
+  const repairedManifest = JSON.parse(await readFile(manifestPath, "utf8"));
+  assert.equal(repairedPayload.result, "needs_browser_popup");
+  assert.equal(repairedNativeHost?.status, "pass");
+  assert.match(repairedManifest.path, /native-host\/dev\.obu\.host\/chrome\/obu-host-wrapper$/);
+});
+
 test("verify asks for profile selection when multiple matching profiles are ambiguous", async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
   const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
@@ -126,7 +186,7 @@ test("verify asks for profile selection when multiple matching profiles are ambi
   const runtimeDir = path.join(home, "runtime");
   const hostBin = await writeExecutable(path.join(bin, "obu-host"), "#!/bin/sh\nexit 0\n");
   await writeCodexMcpConfig(home);
-  await writeNativeHostManifest(home, hostBin, extensionId);
+  await writeNativeHostManifest(home, hostBin, extensionId, runtimeDir);
   const profileRoot = browserProfileRoot("chrome", process.platform, home);
   const defaultProfile = path.join(profileRoot, "Default");
   const secondProfile = path.join(profileRoot, "Profile 2");
@@ -184,7 +244,7 @@ test("verify treats missing Codex config as repairable when codex is not on PATH
   const extensionId = "abcdefghijklmnopabcdefghijklmnop";
   const runtimeDir = path.join(home, "runtime");
   const hostBin = await writeExecutable(path.join(bin, "obu-host"), "#!/bin/sh\nexit 0\n");
-  await writeNativeHostManifest(home, hostBin, extensionId);
+  await writeNativeHostManifest(home, hostBin, extensionId, runtimeDir);
   const profilePath = path.join(browserProfileRoot("chrome", process.platform, home), "Default");
   await writeChromePreferences(profilePath, extensionId, 1);
   await mkdir(path.join(runtimeDir, "webextension"), { recursive: true, mode: 0o700 });
@@ -226,7 +286,7 @@ test("verify does not issue trusted agent-runtime challenges without a registere
   const hostBin = await writeExecutable(path.join(bin, "obu-host"), "#!/bin/sh\nexit 0\n");
   const fakeObu = await writeFakeMcpObu(bin, extensionId);
   await writeCodexMcpConfig(home, fakeObu, ["mcp", "stdio"]);
-  await writeNativeHostManifest(home, hostBin, extensionId);
+  await writeNativeHostManifest(home, hostBin, extensionId, runtimeDir);
   const profilePath = path.join(browserProfileRoot("chrome", process.platform, home), "Default");
   await writeChromePreferences(profilePath, extensionId, 1);
   await mkdir(path.join(runtimeDir, "webextension"), { recursive: true, mode: 0o700 });
@@ -1473,13 +1533,24 @@ function send(payload) {
   ].join("\n"));
 }
 
-async function writeNativeHostManifest(home: string, hostBin: string, extensionId: string): Promise<void> {
+async function writeNativeHostManifest(home: string, hostBin: string, extensionId: string, runtimeDir: string): Promise<void> {
   const manifestPath = path.join(nativeMessagingHostDir("chrome", process.platform, home), "dev.obu.host.json");
+  const wrapperPath = nativeHostWrapperPath({
+    nativeHostInstallRoot: path.join(home, ".obu", "native-host"),
+    browser: "chrome",
+  });
+  await mkdir(path.dirname(wrapperPath), { recursive: true });
+  await writeFile(wrapperPath, nativeHostWrapperContent({
+    hostBin,
+    browser: "chrome",
+    runtimeDir,
+  }), "utf8");
+  await chmod(wrapperPath, 0o755);
   await mkdir(path.dirname(manifestPath), { recursive: true });
   await writeFile(manifestPath, JSON.stringify({
     name: "dev.obu.host",
     description: "open-browser-use native messaging host",
-    path: hostBin,
+    path: wrapperPath,
     type: "stdio",
     allowed_origins: [`chrome-extension://${extensionId}/`],
   }, null, 2), "utf8");

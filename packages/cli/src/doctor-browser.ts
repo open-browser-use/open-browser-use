@@ -9,6 +9,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { browserInstallPath, browserProfileRoot, nativeMessagingHostDir, type BrowserKind } from "./browser-paths.js";
 import { type ExtensionChannel, type ExtensionIdSource } from "./extension-channel.js";
+import { nativeHostWrapperContent, nativeHostWrapperPath } from "./native-host.js";
 import { resolveRuntimeLayout, validateRuntimeDir, type RuntimeLayout } from "./runtime-layout.js";
 
 const execFileAsync = promisify(execFile);
@@ -277,8 +278,18 @@ async function repairNativeHostManifest(input: NativeHostRepairInput): Promise<D
       },
     ];
   }
+  const wrapperPath = nativeHostWrapperPath({
+    nativeHostInstallRoot: input.nativeHostInstallRoot,
+    browser: input.browser,
+  });
+  const wrapper = nativeHostWrapperContent({
+    hostBin: input.hostBinary,
+    browser: input.browser,
+    runtimeDir: input.runtimeDir,
+  });
   const current = await checkNativeHostManifest(input.nativeManifestPath, input.extensionId);
-  if (current.status === "pass") {
+  const executable = await access(input.hostBinary, constants.X_OK).then(() => true).catch(() => false);
+  if (current.status === "pass" && executable && await nativeHostManifestUsesCurrentWrapper(input.nativeManifestPath, wrapperPath, wrapper)) {
     return [
       {
         id: "native-host-manifest",
@@ -288,7 +299,6 @@ async function repairNativeHostManifest(input: NativeHostRepairInput): Promise<D
       },
     ];
   }
-  const executable = await access(input.hostBinary, constants.X_OK).then(() => true).catch(() => false);
   if (!executable) {
     return [
       {
@@ -300,33 +310,9 @@ async function repairNativeHostManifest(input: NativeHostRepairInput): Promise<D
     ];
   }
 
-  const browserKind = input.browser === "chrome-for-testing" ? "chrome" : input.browser;
-  const wrapperDir = path.join(input.nativeHostInstallRoot, HOST_NAME, input.browser);
-  const wrapperPath = path.join(wrapperDir, "obu-host-wrapper");
+  const wrapperDir = path.dirname(wrapperPath);
   await mkdir(wrapperDir, { recursive: true });
-  await writeFile(
-    wrapperPath,
-    [
-      "#!/bin/sh",
-      "set -eu",
-      `export OBU_BROWSER_KIND=${shellQuote(browserKind)}`,
-      `export OBU_RUNTIME_DIR=${shellQuote(input.runtimeDir)}`,
-      "if [ -L \"$OBU_RUNTIME_DIR\" ]; then",
-      "  echo \"open-browser-use runtime directory is a symlink: $OBU_RUNTIME_DIR\" >&2",
-      "  exit 1",
-      "fi",
-      "if [ -e \"$OBU_RUNTIME_DIR\" ] && [ ! -d \"$OBU_RUNTIME_DIR\" ]; then",
-      "  echo \"open-browser-use runtime path is not a directory: $OBU_RUNTIME_DIR\" >&2",
-      "  exit 1",
-      "fi",
-      "if [ ! -e \"$OBU_RUNTIME_DIR\" ]; then",
-      "  mkdir -m 700 -p \"$OBU_RUNTIME_DIR\"",
-      "fi",
-      `exec ${shellQuote(input.hostBinary)} --native-messaging`,
-      "",
-    ].join("\n"),
-    "utf8",
-  );
+  await writeFile(wrapperPath, wrapper, "utf8");
   await chmod(wrapperPath, 0o755);
   await mkdir(path.dirname(input.nativeManifestPath), { recursive: true });
   await writeFile(
@@ -349,6 +335,28 @@ async function repairNativeHostManifest(input: NativeHostRepairInput): Promise<D
       details: { path: input.nativeManifestPath, wrapperPath, extensionId: input.extensionId },
     },
   ];
+}
+
+async function nativeHostManifestUsesCurrentWrapper(
+  manifestPath: string,
+  wrapperPath: string,
+  expectedWrapper: string,
+): Promise<boolean> {
+  const manifest = await readJson(manifestPath).catch(() => undefined);
+  if (!isRecord(manifest) || typeof manifest.path !== "string") return false;
+  if (!sameNativeHostPath(manifest.path, wrapperPath)) return false;
+  const executable = await access(wrapperPath, constants.X_OK).then(() => true).catch(() => false);
+  if (!executable) return false;
+  const actualWrapper = await readFile(wrapperPath, "utf8").catch(() => undefined);
+  return actualWrapper === expectedWrapper;
+}
+
+function sameNativeHostPath(left: string, right: string): boolean {
+  const normalize = (value: string) => {
+    const resolved = path.resolve(value);
+    return process.platform === "darwin" || process.platform === "win32" ? resolved.toLocaleLowerCase("en-US") : resolved;
+  };
+  return normalize(left) === normalize(right);
 }
 
 async function repairRuntimeDescriptors(descriptorDir: string): Promise<DoctorRepairAction[]> {
@@ -1133,8 +1141,4 @@ function repairHint(id: string, status: DoctorStatus, details: Record<string, un
     default:
       return undefined;
   }
-}
-
-function shellQuote(value: string): string {
-  return `'${value.replaceAll("'", "'\\''")}'`;
 }

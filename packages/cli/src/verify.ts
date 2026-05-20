@@ -13,7 +13,7 @@ import { appendShellArgs } from "./command-line.js";
 import { doctorBrowser } from "./doctor-browser.js";
 import { type ExtensionChannel, type ExtensionIdSource } from "./extension-channel.js";
 import { browserProfileRoot, nativeMessagingHostDir, type BrowserKind } from "./browser-paths.js";
-import { supportedNativeHostBrowsers } from "./native-host.js";
+import { nativeHostWrapperContent, nativeHostWrapperPath, supportedNativeHostBrowsers } from "./native-host.js";
 import { executableExists, packageVersion, type RuntimeLayout } from "./runtime-layout.js";
 
 const HOST_NAME = "dev.obu.host";
@@ -611,6 +611,10 @@ async function checkNativeHost(options: VerifyOptions, homeDir: string, target: 
   const manifestPath = path.join(nativeMessagingHostDir(options.browser, process.platform, homeDir), `${HOST_NAME}.json`);
   const manifest = await readJson(manifestPath).catch(() => undefined);
   const command = repairCommand(options);
+  const expectedWrapperPath = nativeHostWrapperPath({
+    nativeHostInstallRoot: options.layout.nativeHostInstallRoot,
+    browser: options.browser,
+  });
   if (!isRecord(manifest)) {
     return {
       state: "missing",
@@ -633,11 +637,32 @@ async function checkNativeHost(options: VerifyOptions, homeDir: string, target: 
   if (manifest.name !== HOST_NAME) issues.push(`name must be ${HOST_NAME}`);
   if (manifest.type !== "stdio") issues.push("type must be stdio");
   if (typeof manifest.path !== "string" || !path.isAbsolute(manifest.path)) issues.push("path must be absolute");
+  if (typeof manifest.path === "string" && path.isAbsolute(manifest.path) && !samePath(manifest.path, expectedWrapperPath)) {
+    issues.push(`path must be the open-browser-use managed wrapper: ${expectedWrapperPath}`);
+  }
   if (!Array.isArray(manifest.allowed_origins) || !manifest.allowed_origins.includes(allowedOrigin)) {
     issues.push(`allowed_origins must include ${allowedOrigin}`);
   }
   if (typeof manifest.path === "string" && !await access(manifest.path, constants.X_OK).then(() => true).catch(() => false)) {
     issues.push(`native host path is not executable: ${manifest.path}`);
+  }
+  if (!await access(options.layout.hostBin, constants.X_OK).then(() => true).catch(() => false)) {
+    issues.push(`obu-host is not executable: ${options.layout.hostBin}`);
+  }
+  if (typeof manifest.path === "string" && path.isAbsolute(manifest.path) && samePath(manifest.path, expectedWrapperPath)) {
+    const expectedWrapper = nativeHostWrapperContent({
+      hostBin: options.layout.hostBin,
+      browser: options.browser,
+      runtimeDir: options.layout.runtimeDir,
+    });
+    const actualWrapper = await readFile(expectedWrapperPath, "utf8").catch((error) => {
+      const nodeError = error as NodeJS.ErrnoException;
+      issues.push(`native host wrapper cannot be read: ${nodeError.message ?? String(error)}`);
+      return undefined;
+    });
+    if (actualWrapper !== undefined && actualWrapper !== expectedWrapper) {
+      issues.push(`native host wrapper is stale: ${expectedWrapperPath}`);
+    }
   }
   if (issues.length > 0) {
     return {
@@ -650,7 +675,7 @@ async function checkNativeHost(options: VerifyOptions, homeDir: string, target: 
         message: issues.join("; "),
         target,
         evidence: expectedEvidence("native_host_manifest"),
-        details: { path: manifestPath, issues },
+        details: { path: manifestPath, expectedWrapperPath, issues },
         actionCandidate: repairAction(command, "Repair the native host manifest for the selected browser and extension."),
       }),
     };
@@ -663,7 +688,7 @@ async function checkNativeHost(options: VerifyOptions, homeDir: string, target: 
       message: `native host allows ${allowedOrigin}`,
       target,
       evidence: expectedEvidence("native_host_manifest"),
-      details: { path: manifestPath },
+      details: { path: manifestPath, expectedWrapperPath },
     }),
   };
 }

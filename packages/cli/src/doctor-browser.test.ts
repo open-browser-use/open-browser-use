@@ -14,6 +14,7 @@ import {
   type DoctorBrowserOptions,
   type DoctorReport,
 } from "./doctor-browser.js";
+import { nativeHostWrapperContent, nativeHostWrapperPath } from "./native-host.js";
 
 const HOST_NAME = "dev.obu.host";
 const EXTENSION_KEY = Buffer.from("open-browser-use test extension key").toString("base64");
@@ -903,21 +904,31 @@ async function createDoctorFixture(t: TestContext): Promise<DoctorFixture> {
   await writeFile(hostBinary, "#!/bin/sh\necho obu-host 0.1.0\n", "utf8");
   await chmod(hostBinary, 0o700);
 
+  const runtimeDir = path.join(root, "runtime");
+  const runtimeDescriptorDir = path.join(runtimeDir, "webextension");
+  await mkdir(runtimeDescriptorDir, { recursive: true, mode: 0o700 });
+  await chmod(runtimeDir, 0o700);
+  await chmod(runtimeDescriptorDir, 0o700);
+
+  const nativeHostInstallRoot = path.join(homeDir, ".obu", "native-host");
+  const wrapperPath = nativeHostWrapperPath({ nativeHostInstallRoot, browser });
+  await mkdir(path.dirname(wrapperPath), { recursive: true });
+  await writeFile(wrapperPath, nativeHostWrapperContent({
+    hostBin: hostBinary,
+    browser,
+    runtimeDir,
+  }), "utf8");
+  await chmod(wrapperPath, 0o755);
+
   const nativeManifestDir = path.join(root, "NativeMessagingHosts");
   await mkdir(nativeManifestDir, { recursive: true });
   const nativeHostManifestPath = path.join(nativeManifestDir, `${HOST_NAME}.json`);
   await writeJson(nativeHostManifestPath, {
     name: HOST_NAME,
     type: "stdio",
-    path: hostBinary,
+    path: wrapperPath,
     allowed_origins: [`chrome-extension://${extensionId}/`],
   });
-
-  const runtimeDir = path.join(root, "runtime");
-  const runtimeDescriptorDir = path.join(runtimeDir, "webextension");
-  await mkdir(runtimeDescriptorDir, { recursive: true, mode: 0o700 });
-  await chmod(runtimeDir, 0o700);
-  await chmod(runtimeDescriptorDir, 0o700);
 
   return {
     root,
