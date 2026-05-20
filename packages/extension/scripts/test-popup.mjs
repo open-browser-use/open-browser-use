@@ -51,14 +51,16 @@ await runPopupInitialFailure("runtime rejection", [new Error("status boom")], "R
 
 function assertAgentHandoff(elements, channel = "unpacked-dev") {
   const handoff = elements.agentHandoff.textContent;
-  assert.match(handoff, /github\.com\/open-browser-use\/open-browser-use\/blob\/main\/prompts\/agent-install-prompt\.md/);
+  assert.match(handoff, /raw\.githubusercontent\.com\/open-browser-use\/open-browser-use\/main\/prompts\/agent-install-prompt\.md/);
   assert.doesNotMatch(handoff, /blob\/v0\.1\.2\/prompts\/agent-install-prompt\.md/);
+  assert.doesNotMatch(handoff, /github\.com\/open-browser-use\/open-browser-use\/blob\/main/);
   assert.match(handoff, new RegExp(`Extension channel: ${channel}`));
   assert.match(handoff, new RegExp(`Extension id: ${runtimeExtensionId}`));
   assert.match(handoff, /generic open-browser-use stdio server/);
   assert.match(handoff, /primary BrowserUse\/browser automation tool/);
   assert.match(handoff, /~\/\.codex\/AGENTS\.md/);
   assert.match(handoff, /~\/\.claude\/CLAUDE\.md/);
+  assert.match(handoff, /currently executing this prompt/);
   assert.match(handoff, /Codex \(OBU id: codex-cli\), Cursor, or Claude Code \(OBU id: claude-code\)/);
   assert.match(handoff, /~\/\.obu\/bin\/obu exists/);
   assert.match(handoff, /run obu verify/);

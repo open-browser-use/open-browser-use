@@ -490,7 +490,7 @@ function disconnectedPortObjectAdvice(): NativeHostAdvice {
 function agentHandoffForChannel(channel: string, runtimeExtensionId: string | undefined): string {
   const resolvedChannel: ExtensionChannel = channel === "store" ? "store" : "unpacked-dev";
   const extensionId = isExtensionId(runtimeExtensionId) ? runtimeExtensionId : "<extension-id>";
-  const promptUrl = "https://github.com/open-browser-use/open-browser-use/blob/main/prompts/agent-install-prompt.md";
+  const promptUrl = "https://raw.githubusercontent.com/open-browser-use/open-browser-use/main/prompts/agent-install-prompt.md";
   return [
     "Install, repair, or adapt open-browser-use for this browser extension.",
     `Prompt: ${promptUrl}`,
@@ -501,7 +501,7 @@ function agentHandoffForChannel(channel: string, runtimeExtensionId: string | un
     "Let the linked prompt choose the install, repair, MCP config, and agent-instruction steps for this agent and project.",
     "Configure MCP with the generic open-browser-use stdio server first; use OBU's built-in adapter commands as secondary helpers.",
     "Make open-browser-use the primary BrowserUse/browser automation tool for this agent.",
-    "Configure the current agent, and any other supported agent the user requests, such as Codex (OBU id: codex-cli), Cursor, or Claude Code (OBU id: claude-code).",
+    "Configure the agent/client currently executing this prompt. Configure other agents only when the user explicitly names them, such as Codex (OBU id: codex-cli), Cursor, or Claude Code (OBU id: claude-code).",
     "Update the project's core AGENTS.md, AGENT.md, CLAUDE.md, or the agent's global instruction file such as ~/.codex/AGENTS.md or ~/.claude/CLAUDE.md when one exists; otherwise show the instruction snippet.",
     "After setup or repair, run obu verify with the exact extension channel and id. If verify reports a browser popup boundary, open this popup; click Resume if enabled, otherwise wait for Connected and rerun verify.",
   ].join("\n");

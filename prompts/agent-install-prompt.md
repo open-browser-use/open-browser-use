@@ -3,6 +3,16 @@
 You are helping the user install, repair, or adapt `open-browser-use` for
 browser automation.
 
+## Execution Rules
+
+This prompt is the source of truth. Do not use README files, local copies, repo
+search, or inferred project state as substitutes.
+
+Configure the agent/client currently executing this prompt. Configure other
+agents only when the user explicitly names them.
+
+If this prompt cannot be read, stop and report the blocker.
+
 The user should paste a handoff block from the extension popup with:
 
 - `Extension channel`
@@ -22,13 +32,13 @@ profile when the handoff includes a concrete Store id.
 Make `open-browser-use` work as the user's primary BrowserUse/browser automation
 tool from this browser extension. Use the pasted extension channel/id exactly,
 but adapt the install, MCP wiring, and persistent agent instructions to the
-current project and the agent clients the user wants to use.
+current executing agent and any additional agents the user explicitly names.
 
-The user may already have one working agent, such as Codex, and now want to add
+The user may already have one working agent and now explicitly ask to add
 another one, such as Cursor or Claude Code. In that case, do not reinstall or
 rewrite unrelated setup just because the native host is already connected.
-Configure the additional agent and verify that the browser connection still
-works.
+Configure the explicitly requested additional agent and verify that the browser
+connection still works.
 
 ## MCP Contract
 
@@ -87,9 +97,8 @@ Prefer the current AI client's native MCP configuration method:
   `open-browser-use` server there.
 - If the client uses a global config and the user is asking for global agent
   access, update the global config carefully.
-- If the client is unknown, inspect existing config files and docs available in
-  the project before choosing a schema. Do not invent a config shape when the
-  client requires a different one.
+- If the client is unknown or its MCP config format is unclear, stop and report
+  the blocker. Do not invent a config shape.
 
 Use OBU's built-in adapter commands as secondary helpers, not as the only path.
 They are useful when they match the current client, but the generic server
@@ -139,8 +148,8 @@ common human names, but older OBU releases may reject them as agent ids.
    that agent. Configure the target agent's MCP settings directly with the
    generic MCP contract above.
 
-3. Configure MCP for the current agent and for any other agent the user wants
-   connected.
+3. Configure MCP for the current executing agent first. Additional agents are
+   out of scope unless explicitly requested by the user.
 
    Primary method: add this server to the client's MCP configuration using the
    client's own mechanism:
@@ -186,10 +195,8 @@ common human names, but older OBU releases may reject them as agent ids.
    ~/.obu/bin/obu setup --yes --agents=codex-cli,cursor,claude-code --write-instructions
    ```
 
-   If client detection is ambiguous, use auto mode, but inspect the result. Auto
-   mode only configures agents it can detect confidently; it may skip a working
-   agent if only that agent's global config file exists or its executable is not
-   on `PATH`.
+   Do not use auto mode to infer extra agents from config files. Use auto mode
+   only when the user explicitly asks for automatic multi-agent setup.
 
    ```sh
    ~/.obu/bin/obu setup --yes --agents=auto
