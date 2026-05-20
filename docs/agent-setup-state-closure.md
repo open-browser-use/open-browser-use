@@ -27,8 +27,10 @@ obu verify --agent=<agent-id> --browser=<browser> --channel=<channel> --extensio
 
 By default, `obu verify` answers CLI-level readiness for the selected agent's
 durable configuration and the selected browser backend. Agent-runtime readiness
-is a stronger target and must be requested or supplied by an agent-runtime status
-hook. The JSON always states which target was used.
+is a stronger target and must be requested explicitly, for example with
+`--require-agent-runtime`. Trusted agent-runtime hook evidence can satisfy that
+target, but it must not implicitly change the requested target. The JSON always
+states which target was used.
 
 It returns exactly one high-level result:
 
@@ -126,8 +128,11 @@ make `readiness.agentRuntime` ready. A user-supplied status file without trusted
 agent-runtime provenance must not be reported as `source: "agent_runtime"` and
 must not make `verificationTarget: "agent_runtime"` return `ready`.
 
-Every blocking check may emit an `actionCandidate`. The final `nextAction` is
-selected from blocking candidates by result class, action priority, then
+Every blocking check may emit an `actionCandidate`. Result selection is
+dependency-gated before priority is applied: CLI-blocking candidates are eligible
+first, and agent-runtime candidates are considered only after CLI readiness is
+ready and `verificationTarget` is `agent_runtime`. Within the eligible blocker
+set, the final `nextAction` is selected by result class, action priority, then
 verification layer order. This keeps one-next-action behavior derived from the
 same evidence that produced the result.
 
@@ -518,12 +523,20 @@ its MCP tools and its own OBU MCP status reports at least one usable backend.
 
 Required evidence:
 
-```json
-{
-  "sdk_bootstrap": "available",
-  "backends": [{ "...": "..." }]
-}
-```
+- CLI-level readiness is complete.
+- Status came from the selected running agent process through a trusted
+  first-class agent-runtime hook with `provenance: "agent_runtime_hook"`.
+- The hook transport is trusted for the selected agent, such as
+  `agent_connector`, `agent_owned_ipc`, or `in_process_adapter`.
+- The hook identity is registered for the selected canonical `agentId`, and
+  `hook.trusted` is derived by OBU from registry and transport validation rather
+  than accepted from payload fields.
+- The status envelope is fresh, challenge-bound, and target-bound to the selected
+  agent, MCP server name, browser, channel, extension id, and explicit profile
+  value when one was supplied.
+- The selected agent's MCP status reports `sdk_bootstrap: "available"` and at
+  least one usable WebExtension backend with verified extension identity matching
+  `browser.extensionId`.
 
 An MCP server with `backends: []` is not ready for browser automation. It only
 proves that the MCP process can start.
@@ -829,7 +842,12 @@ The default exit codes are:
 
 - `0`: `ready`
 - `1`: `needs_browser_popup`, `needs_repair`, or `needs_manual_action`
-- `2`: invalid command input or unsupported platform
+- `2`: invalid command input, unknown flags, malformed arguments, or platform
+  states that prevent verification from running
+
+Valid requests for targets that OBU can inspect but cannot automate still return
+exit code `1` with `result: "needs_manual_action"` and
+`nextAction.kind: "unsupported"`.
 
 ## Agent Identity Contract
 
