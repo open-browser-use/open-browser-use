@@ -152,8 +152,8 @@ Verify installer support for:
 - stable `bin/obu` shim pointing at `payloads/current`;
 - packaged `obu shellenv` output and installer Next steps without writing
   arbitrary current-`PATH` shims.
-- packaged `obu doctor --json` payload integrity checks and `obu mcp stdio`
-  initialize/list-tools through the installed shim.
+- packaged `obu doctor --json` payload integrity checks, `obu verify` readiness
+  checks, and `obu mcp stdio` initialize/list-tools through the installed shim.
 - installed-payload `obu setup --yes --skip-agents`,
   `obu setup --yes --agents=codex-cli --write-instructions` using a fake Codex
   CLI, and `obu agent doctor --agent=codex-cli`.
@@ -212,7 +212,7 @@ Required draft checks:
 
    ```bash
    obu bootstrap --yes --all --channel=store --extension-id <STORE_EXTENSION_ID> --agents=auto
-   obu doctor browser --channel=store --extension-id <STORE_EXTENSION_ID> --json
+   obu verify --agent=codex-cli --browser=chrome --channel=store --extension-id <STORE_EXTENSION_ID> --json
    ```
 
 Verify:
@@ -221,9 +221,15 @@ Verify:
   `storeExtensionId`.
 - native-host manifests include
   `chrome-extension://<STORE_EXTENSION_ID>/`.
+- `verify --agent=codex-cli --browser=chrome --channel=store --extension-id
+  <STORE_EXTENSION_ID> --json` reports the Store target and returns exactly one
+  readiness result plus one next action when not ready.
+- In a clean profile before popup activation, Store verify may return
+  `needs_browser_popup` with `nextAction.kind: "open_popup"`; after the popup is
+  connected, the same command should return `ready`.
 - `doctor browser --channel=store --extension-id <STORE_EXTENSION_ID> --json`
-  reports channel, extension id, id source, and `resume_required` on the runtime
-  descriptor probe.
+  remains available as a lower-level diagnostic and reports `resume_required` on
+  the runtime descriptor probe.
 - the popup agent handoff preserves `Extension channel: store`, the exact Store
   extension id, and does not expose a Terminal command.
 - the popup agent handoff links to the version-tagged
@@ -245,6 +251,7 @@ Run from a fresh temp home with Chrome or Chrome for Testing:
 
 ```bash
 obu bootstrap --yes --all --agents=auto
+obu verify --agent=codex-cli --browser=chrome --json
 obu doctor --json
 obu doctor --strict --json
 ```
@@ -285,8 +292,8 @@ MCP/browser-use compatibility gates:
 - `tools/list` shows `js`, `browser_status`, `js_reset`, and
   `js_add_module_dir`, and `initialize` advertises both tools and resources.
 - `browser_status` returns SDK bootstrap state, discovered backends,
-  diagnostics, runtime dir, and a doctor hint without leaking descriptor auth
-  tokens or capability tokens.
+  diagnostics, runtime dir, a verify hint, and the legacy doctor hint alias
+  without leaking descriptor auth tokens or capability tokens.
 - A `display({ __obuImage: true, mime_type, data })` call returns a resource
   link, and `resources/read` fetches the artifact bytes.
 - A huge `console.log` or huge final result stays bounded and sets the matching
