@@ -508,10 +508,10 @@ Required evidence:
   `profile_runtime_not_bound` warning for explicit profile verification, or
   `single_candidate` for default discovery with exactly one matching profile.
 - `resumeRequired` is `false`.
-- Direct MCP runtime status has `mcpStarts: true`,
+- `mcpRuntime.cli` has `source: "direct_mcp_probe"`, `mcpStarts: true`,
   `sdkBootstrap: "available"`, and `backendCount > 0`.
-- At least one usable WebExtension backend in direct MCP status has normalized
-  extension identity matching the selected `browser.extensionId`.
+- At least one usable WebExtension backend in `mcpRuntime.cli.backends` has
+  normalized extension identity matching the selected `browser.extensionId`.
 - Agent MCP config is equivalent to the expected OBU server.
 - Agent instruction check is either `pass` or a non-blocking `warn` with
   `reason: "not_implemented"` or `reason: "missing_instruction"`.
@@ -534,9 +534,9 @@ Required evidence:
 - The status envelope is fresh, challenge-bound, and target-bound to the selected
   agent, MCP server name, browser, channel, extension id, and explicit profile
   value when one was supplied.
-- The selected agent's MCP status reports `sdk_bootstrap: "available"` and at
-  least one usable WebExtension backend with verified extension identity matching
-  `browser.extensionId`.
+- `mcpRuntime.agentRuntime` has `source: "agent_runtime"`,
+  `sdkBootstrap: "available"`, and at least one usable WebExtension backend with
+  verified extension identity matching `browser.extensionId`.
 
 An MCP server with `backends: []` is not ready for browser automation. It only
 proves that the MCP process can start.
@@ -712,7 +712,7 @@ obu verify --require-agent-runtime \
 
 OBU invokes the registered hook for `codex-cli`, validates the returned envelope,
 derives `agent.runtimeStatus.hook.trusted: true`, and reports
-`mcpRuntime.source: "agent_runtime"` only for trusted hook evidence.
+`mcpRuntime.agentRuntime.source: "agent_runtime"` only for trusted hook evidence.
 
 Some hooks may need a user-mediated in-agent collection step after CLI readiness
 passes. In that case OBU issues a challenge for the trusted hook, not for an
@@ -774,10 +774,11 @@ obu verify --require-agent-runtime \
 `--agent-runtime-status-json` is a file transport, not a trust mechanism. If the
 payload is only a user-supplied status file, verification must report
 `agent.runtimeStatus.provenance: "user_supplied_status_file"` and
-`mcpRuntime.source: "agent_runtime_status_file"`, then treat it as diagnostic
-evidence only. Only a trusted first-class hook can report
+`mcpRuntime.agentRuntime.source: "agent_runtime_status_file"`, then treat it as
+diagnostic evidence only. Only a trusted first-class hook can report
 `agent.runtimeStatus.provenance: "agent_runtime_hook"` and
-`mcpRuntime.source: "agent_runtime"` to make `readiness.agentRuntime` ready.
+`mcpRuntime.agentRuntime.source: "agent_runtime"` to make
+`readiness.agentRuntime` ready.
 
 The challenge-out command is a challenge-issuance verification pass. If CLI-level
 readiness is blocked, it returns the normal blocking result and may omit the
@@ -1131,7 +1132,11 @@ Allowed component state values for summary fields such as `profileExists`,
 - `not_checked`: the component was intentionally not checked and the reason is
   present on the containing object.
 
-`agent.runtimeStatus` uses this shape:
+`agent.runtimeStatus` is a discriminated object. Its shape depends on
+`provenance` and `reason`; diagnostic and pending states must be as stable as the
+trusted success state.
+
+Trusted hook success:
 
 ```json
 {
@@ -1157,6 +1162,56 @@ Allowed `agent.runtimeStatus.hook.transport` values are `agent_connector`,
 exist in OBU's compiled trusted agent-runtime hook registry for the selected
 `agent.id`. `agent.runtimeStatus.hook.trusted` is an OBU-derived output field;
 payload-provided `trusted` values must be ignored.
+
+Trusted hook failure keeps the trusted hook envelope but reports `status: "fail"`
+with a machine-readable `reason`, such as `stale_status`, `target_mismatch`,
+`challenge_mismatch`, `sdk_bootstrap_missing`, or `zero_backends`. It may include
+`targetBound` and `challengeBound` booleans because the transport itself is
+trusted.
+
+User-supplied status files are diagnostic only. They must not include a trusted
+hook object, and parsed challenge or target matches must stay under
+`diagnostic`; top-level `targetBound` and `challengeBound` are reserved for
+trusted hook evidence:
+
+```json
+{
+  "status": "not_checked",
+  "provenance": "user_supplied_status_file",
+  "reason": "diagnostic_status_file_not_trusted",
+  "diagnostic": {
+    "statusFile": "/path/to/status.json",
+    "targetBound": true,
+    "challengeBound": true
+  }
+}
+```
+
+Challenge issuance without a returned trusted hook payload is a pending
+agent-runtime proof state:
+
+```json
+{
+  "status": "not_checked",
+  "provenance": "not_applicable",
+  "reason": "agent_runtime_challenge_issued",
+  "trustedHook": {
+    "id": "codex-cli-runtime-status",
+    "transport": "agent_connector"
+  }
+}
+```
+
+CLI-target verification that did not request agent-runtime proof is explicitly
+not checked:
+
+```json
+{
+  "status": "not_checked",
+  "provenance": "not_applicable",
+  "reason": "verification_target_cli"
+}
+```
 
 Instruction check warnings must use one of these reason values:
 
@@ -1287,7 +1342,7 @@ normal readiness result.
     "runtimeStatus": {
       "status": "not_checked",
       "provenance": "not_applicable",
-      "reason": "target agent runtime is outside this CLI process"
+      "reason": "verification_target_cli"
     }
   },
   "browser": {
@@ -1321,28 +1376,40 @@ normal readiness result.
     }
   },
   "mcpRuntime": {
-    "source": "direct_mcp_probe",
-    "provenance": "expected_obu_invocation",
-    "probeCommandSource": "expected_obu_invocation",
-    "mcpConfigured": true,
-    "mcpStarts": true,
-    "sdkBootstrap": "available",
-    "backendCount": 1,
-    "backends": [
-      {
-        "type": "webextension",
-        "browser": "chrome",
-        "extensionId": "fblnfcjnjklpgnmfnngcihbcgojnpadj",
-        "extensionIdentity": {
-          "source": "descriptor_metadata",
-          "verified": true
-        },
-        "metadata": {
-          "browserKind": "chrome",
-          "extensionId": "fblnfcjnjklpgnmfnngcihbcgojnpadj"
+    "cli": {
+      "source": "direct_mcp_probe",
+      "provenance": "expected_obu_invocation",
+      "probeCommandSource": "expected_obu_invocation",
+      "mcpConfigured": true,
+      "mcpStarts": true,
+      "sdkBootstrap": "available",
+      "backendCount": 1,
+      "backends": [
+        {
+          "type": "webextension",
+          "browser": "chrome",
+          "extensionId": "fblnfcjnjklpgnmfnngcihbcgojnpadj",
+          "extensionIdentity": {
+            "source": "descriptor_metadata",
+            "verified": true
+          },
+          "metadata": {
+            "browserKind": "chrome",
+            "extensionId": "fblnfcjnjklpgnmfnngcihbcgojnpadj"
+          }
         }
-      }
-    ]
+      ]
+    },
+    "agentRuntime": {
+      "source": "not_checked",
+      "provenance": "not_applicable",
+      "probeCommandSource": "not_applicable",
+      "mcpConfigured": true,
+      "mcpStarts": null,
+      "sdkBootstrap": "not_checked",
+      "backendCount": null,
+      "backends": []
+    }
   },
   "nextAction": null,
   "checks": [
@@ -1491,6 +1558,21 @@ normal readiness result.
         "provenance": "expected_obu_invocation",
         "source": "agent_instruction_file"
       }
+    },
+    {
+      "id": "agent-runtime-status",
+      "layer": "agent_runtime",
+      "status": "not_checked",
+      "reason": "verification_target_cli",
+      "message": "agent-runtime status was not requested",
+      "target": {
+        "agent": "codex-cli"
+      },
+      "evidence": {
+        "scope": "agent_runtime",
+        "provenance": "not_applicable",
+        "source": "verification_target_cli"
+      }
     }
   ]
 }
@@ -1519,7 +1601,7 @@ Non-ready result:
     "runtimeStatus": {
       "status": "not_checked",
       "provenance": "not_applicable",
-      "reason": "target agent runtime is outside this CLI process"
+      "reason": "verification_target_cli"
     }
   },
   "browser": {
@@ -1551,14 +1633,26 @@ Non-ready result:
     "resumeRequired": true
   },
   "mcpRuntime": {
-    "source": "direct_mcp_probe",
-    "provenance": "expected_obu_invocation",
-    "probeCommandSource": "expected_obu_invocation",
-    "mcpConfigured": true,
-    "mcpStarts": true,
-    "sdkBootstrap": "available",
-    "backendCount": 0,
-    "backends": []
+    "cli": {
+      "source": "direct_mcp_probe",
+      "provenance": "expected_obu_invocation",
+      "probeCommandSource": "expected_obu_invocation",
+      "mcpConfigured": true,
+      "mcpStarts": true,
+      "sdkBootstrap": "available",
+      "backendCount": 0,
+      "backends": []
+    },
+    "agentRuntime": {
+      "source": "not_checked",
+      "provenance": "not_applicable",
+      "probeCommandSource": "not_applicable",
+      "mcpConfigured": true,
+      "mcpStarts": null,
+      "sdkBootstrap": "not_checked",
+      "backendCount": null,
+      "backends": []
+    }
   },
   "nextAction": {
     "kind": "open_popup",
@@ -1746,6 +1840,21 @@ Non-ready result:
         "provenance": "expected_obu_invocation",
         "source": "agent_instruction_file"
       }
+    },
+    {
+      "id": "agent-runtime-status",
+      "layer": "agent_runtime",
+      "status": "not_checked",
+      "reason": "verification_target_cli",
+      "message": "agent-runtime status was not requested",
+      "target": {
+        "agent": "codex-cli"
+      },
+      "evidence": {
+        "scope": "agent_runtime",
+        "provenance": "not_applicable",
+        "source": "verification_target_cli"
+      }
     }
   ]
 }
@@ -1899,9 +2008,12 @@ those checks into one product result.
 
 ## MCP Runtime Contract
 
-MCP status is split into server availability and browser backend availability.
+MCP runtime JSON is split by trust boundary. `mcpRuntime.cli` records direct
+OBU-owned MCP probing for CLI readiness. `mcpRuntime.agentRuntime` records the
+selected running agent process's MCP status when a trusted hook is available, or
+an explicit diagnostic/not-checked state when it is not.
 
-Required fields:
+Both summaries use the same normalized fields:
 
 - `source`: `agent_runtime | agent_runtime_status_file | direct_mcp_probe |
   not_checked`.
@@ -1919,8 +2031,19 @@ Required fields:
   `extensionIdentity`. A WebExtension backend without verified extension identity
   cannot contribute to `backendCount` for extension-scoped readiness.
 
-`source: "agent_runtime"` means the status came from the selected agent process
-after it reloaded MCP tools. Only this source can make
+`mcpRuntime.cli.source` may be only `direct_mcp_probe` or `not_checked`.
+`mcpRuntime.agentRuntime.source` may be only `agent_runtime`,
+`agent_runtime_status_file`, or `not_checked`.
+
+For `verificationTarget: "cli"`, `mcpRuntime.agentRuntime.source` is normally
+`not_checked`; the agent-runtime layer still appears in `checks[]` as a
+non-blocking `not_checked` check. For `verificationTarget: "agent_runtime"`, a
+ready result requires both `mcpRuntime.cli` and `mcpRuntime.agentRuntime` to have
+`sdkBootstrap: "available"` and `backendCount > 0`, each from its own trust
+boundary.
+
+`mcpRuntime.agentRuntime.source: "agent_runtime"` means the status came from the
+selected agent process after it reloaded MCP tools. Only this source can make
 `readiness.agentRuntime` become `ready`; `probeCommandSource` must be
 `agent_runtime_hook` and `provenance` must be `agent_runtime_hook`. The
 corresponding `agent.runtimeStatus` object must include the trusted hook id,
@@ -1928,26 +2051,27 @@ transport, freshness, and target-binding result. Since OBU did not directly
 launch the MCP process in this mode, `mcpStarts` may be `null`; `sdkBootstrap`,
 `backendCount`, and `backends` are normalized from the trusted hook payload.
 
-`source: "direct_mcp_probe"` means OBU launched or probed the MCP server itself.
-It can prove CLI-level backend readiness, but it must not be treated as proof
-that the selected agent process has reloaded MCP tools. The command must be the
-expected OBU MCP invocation for the current layout, not a command copied from a
-divergent agent config. `provenance` must be `expected_obu_invocation`.
+`mcpRuntime.cli.source: "direct_mcp_probe"` means OBU launched or probed the MCP
+server itself. It can prove CLI-level backend readiness, but it must not be
+treated as proof that the selected agent process has reloaded MCP tools. The
+command must be the expected OBU MCP invocation for the current layout, not a
+command copied from a divergent agent config. `provenance` must be
+`expected_obu_invocation`.
 
-`source: "agent_runtime_status_file"` means OBU read a user-supplied status file
-that may contain challenge-bound agent-runtime evidence, but the transport itself
-is not trusted agent-runtime provenance. It must use
-`provenance: "user_supplied_status_file"` and
+`mcpRuntime.agentRuntime.source: "agent_runtime_status_file"` means OBU read a
+user-supplied status file that may contain challenge-bound agent-runtime
+evidence, but the transport itself is not trusted agent-runtime provenance. It
+must use `provenance: "user_supplied_status_file"` and
 `probeCommandSource: "not_applicable"`, and it must not make
-`readiness.agentRuntime` ready. Because this source is diagnostic-only,
-readiness summary fields must not be populated from the file payload:
-`mcpStarts` must be `null`, `sdkBootstrap` must be `not_checked`,
-`backendCount` must be `null`, and `backends` must be an empty array. The raw
-file payload may appear only under `details.raw` or
-`mcpRuntime.diagnostic.raw`; parsed diagnostic summaries, if any, must live under
-`mcpRuntime.diagnostic` and must not affect `readiness`.
+`readiness.agentRuntime` ready. Because this source is diagnostic-only, readiness
+summary fields must not be populated from the file payload: `mcpStarts` must be
+`null`, `sdkBootstrap` must be `not_checked`, `backendCount` must be `null`, and
+`backends` must be an empty array. The raw file payload may appear only under
+`details.raw` or `mcpRuntime.agentRuntime.diagnostic.raw`; parsed diagnostic
+summaries, if any, must live under `mcpRuntime.agentRuntime.diagnostic` and must
+not affect `readiness`.
 
-When `source: "direct_mcp_probe"` and the MCP process cannot start,
+When `mcpRuntime.cli.source: "direct_mcp_probe"` and the MCP process cannot start,
 `mcpStarts` must be `false`, `sdkBootstrap` must be `not_checked`,
 `backendCount` must be `null`, `backends` must be an empty array, and the
 blocking check must include launch error details. If the MCP process starts but
@@ -1955,10 +2079,10 @@ blocking check must include launch error details. If the MCP process starts but
 be `not_checked`, `backendCount` must be `null`, and `backends` must be an empty
 array.
 
-`source: "not_checked"` means MCP runtime status was not probed. In that case
-`provenance` and `probeCommandSource` must be `not_applicable`, `mcpStarts` must
-be `null`, `sdkBootstrap` must be `not_checked`, `backendCount` must be `null`,
-and `backends` must be an empty array.
+`source: "not_checked"` means that summary's MCP runtime status was not probed.
+In that case `provenance` and `probeCommandSource` must be `not_applicable`,
+`mcpStarts` must be `null`, `sdkBootstrap` must be `not_checked`, `backendCount`
+must be `null`, and `backends` must be an empty array.
 
 `backendCount: 0` means not ready for browser automation even if
 `sdkBootstrap: "available"`.
@@ -1999,12 +2123,15 @@ The product is complete only when all of the following are true:
 - One command, `obu verify`, returns the canonical readiness result.
 - JSON output has the stable schema described above, including
   `verificationTarget`, object-shaped `agent.runtimeStatus`, required
-  `mcpRuntime.backends`, and non-empty `checks[]` evidence.
+  `mcpRuntime.cli.backends`, `mcpRuntime.agentRuntime.backends`, and non-empty
+  `checks[]` evidence.
 - Human output gives one next action and no ambiguous action chain.
 - Result selection is dependency-gated: CLI-blocking checks determine the result
   before any agent-runtime blocker can be selected.
-- `ready` is impossible when `mcpRuntime.backendCount` is zero or
-  `mcpRuntime.sdkBootstrap` is not `available`.
+- `ready` is impossible when a required runtime summary has `backendCount` zero
+  or `sdkBootstrap` not `available`: CLI readiness requires
+  `mcpRuntime.cli`, and agent-runtime readiness requires both `mcpRuntime.cli`
+  and `mcpRuntime.agentRuntime`.
 - `verificationTarget: "agent_runtime"` cannot return `ready` unless
   `readiness.agentRuntime` is `ready`, and agent-runtime evidence has fresh
   challenge binding, target binding, `provenance: "agent_runtime_hook"`, trusted
