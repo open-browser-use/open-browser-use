@@ -700,7 +700,8 @@ Raw `browser_status` output or a standalone status JSON without a fresh matching
 challenge is diagnostic evidence only; it must not produce
 `verificationTarget: "agent_runtime"` / `result: "ready"`.
 
-When a trusted hook is available, the normal command is still:
+When a trusted hook implementation and transport are registered for the selected
+agent, the normal command is still:
 
 ```bash
 obu verify --require-agent-runtime \
@@ -710,9 +711,12 @@ obu verify --require-agent-runtime \
   --extension-id=fblnfcjnjklpgnmfnngcihbcgojnpadj
 ```
 
-OBU invokes the registered hook for `codex-cli`, validates the returned envelope,
-derives `agent.runtimeStatus.hook.trusted: true`, and reports
+OBU invokes the registered hook, validates the returned envelope, derives
+`agent.runtimeStatus.hook.trusted: true`, and reports
 `mcpRuntime.agentRuntime.source: "agent_runtime"` only for trusted hook evidence.
+If this OBU build has no registered trusted hook for the selected agent, the
+command must return `agent_runtime_hook_unavailable`; it must not emit a
+`trustedHook` object or write a challenge file for an unimplemented transport.
 
 Some hooks may need a user-mediated in-agent collection step after CLI readiness
 passes. In that case OBU issues a challenge for the trusted hook, not for an
@@ -780,11 +784,13 @@ diagnostic evidence only. Only a trusted first-class hook can report
 `mcpRuntime.agentRuntime.source: "agent_runtime"` to make
 `readiness.agentRuntime` ready.
 
-The challenge-out command is a challenge-issuance verification pass. If CLI-level
-readiness is blocked, it returns the normal blocking result and may omit the
-challenge file. If CLI-level readiness is complete and the challenge file is
-written, but no valid trusted hook payload has been supplied yet, the command
-returns:
+The challenge-out command is a challenge-issuance verification pass only when a
+trusted hook is registered. If CLI-level readiness is blocked, it returns the
+normal blocking result and may omit the challenge file. If no trusted hook is
+registered for the selected agent, it returns `agent_runtime_hook_unavailable`
+and must not write a challenge file. If CLI-level readiness is complete, a
+trusted hook is registered, and the challenge file is written, but no valid
+trusted hook payload has been supplied yet, the command returns:
 
 - exit code `1`;
 - `result: "needs_manual_action"`;
@@ -803,8 +809,8 @@ If `--require-agent-runtime` is set and no valid hook payload is supplied,
 `readiness.agentRuntime` must be `blocked`, and the result must not be `ready`.
 The blocking check must use `checks[].layer: "agent_runtime"`,
 `blocks: ["agent_runtime"]`, and an `actionCandidate` for
-`collect_agent_runtime_status`, `restart_agent`, or `configure_agent` as
-appropriate.
+`unsupported`, `collect_agent_runtime_status`, `restart_agent`, or
+`configure_agent` as appropriate.
 
 ### Explicit Repair
 
@@ -1006,7 +1012,8 @@ Result/action mapping:
 | Direct MCP runtime cannot start, SDK bootstrap is unavailable, or backend count is zero for a reason outside safe CLI repair after descriptor activation has been ruled out | `needs_manual_action` | `configure_agent` |
 | Agent MCP config is missing but cannot be safely written by OBU | `needs_manual_action` | `configure_agent` |
 | Existing agent MCP config for `open-browser-use` is divergent or unreadable | `needs_manual_action` | `resolve_config_conflict` |
-| CLI-level readiness passes and an agent-runtime challenge has been issued but no valid trusted hook payload is available yet | `needs_manual_action` | `collect_agent_runtime_status` |
+| CLI-level readiness passes but no trusted agent-runtime hook is registered for the selected agent in this build | `needs_manual_action` | `unsupported` |
+| CLI-level readiness passes, a trusted agent-runtime hook is registered, and an agent-runtime challenge has been issued but no valid trusted hook payload is available yet | `needs_manual_action` | `collect_agent_runtime_status` |
 | CLI-level readiness passes but `verificationTarget: "agent_runtime"` cannot be proved until the client reloads | `needs_manual_action` | `restart_agent` |
 | Local setup is correct but no fresh runtime descriptor is active | `needs_browser_popup` | `open_popup` |
 | A syntactically valid platform, browser, or agent target is unsupported by this OBU build | `needs_manual_action` | `unsupported` |
@@ -1187,8 +1194,19 @@ trusted hook evidence:
 }
 ```
 
-Challenge issuance without a returned trusted hook payload is a pending
-agent-runtime proof state:
+When no trusted hook is registered for the selected agent, agent-runtime proof is
+unavailable in this build:
+
+```json
+{
+  "status": "not_checked",
+  "provenance": "not_applicable",
+  "reason": "agent_runtime_hook_unavailable"
+}
+```
+
+Challenge issuance through a registered trusted hook without a returned trusted
+hook payload is a pending agent-runtime proof state:
 
 ```json
 {
@@ -2167,8 +2185,10 @@ The product is complete only when all of the following are true:
 - Every allowed `nextAction.kind` is covered by the action derivation source
   table.
 - Every check includes explicit `target` and `evidence` objects.
-- Agent-runtime challenge issuance has a defined `needs_manual_action` pending
-  state with `nextAction.kind: "collect_agent_runtime_status"`.
+- Agent-runtime hook unavailability has a defined `needs_manual_action` state
+  with `nextAction.kind: "unsupported"`, and registered-hook challenge issuance
+  has a defined pending state with
+  `nextAction.kind: "collect_agent_runtime_status"`.
 - Direct MCP probes never execute divergent or unreadable agent-config commands.
 - `needs_browser_popup` is returned when local setup is correct but descriptor
   activation is missing.

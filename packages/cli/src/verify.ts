@@ -506,15 +506,30 @@ export function formatVerifyReport(report: VerifyReport): string {
     return [
       "Repair required.",
       report.nextAction?.message ?? "A deterministic open-browser-use repair is available.",
-      ...(report.nextAction?.command ? ["Run:", `  ${report.nextAction.command}`] : []),
+      ...formatVerifyNextActionDetails(report.nextAction),
     ].join("\n");
   }
 
   return [
     "Manual action required.",
     report.nextAction?.message ?? "The selected target needs manual action before open-browser-use can verify readiness.",
-    ...(report.nextAction?.command ? ["Run:", `  ${report.nextAction.command}`] : []),
+    ...formatVerifyNextActionDetails(report.nextAction),
   ].join("\n");
+}
+
+function formatVerifyNextActionDetails(action: VerifyNextAction | null): string[] {
+  if (!action) return [];
+  const rows: string[] = [];
+  if (action.command) rows.push("Run:", `  ${action.command}`);
+  if (action.url) rows.push("Open:", `  ${action.url}`);
+  if (action.profile) {
+    const profile = action.profile.suggestedPath ?? action.profile.path;
+    if (profile) rows.push("Profile:", `  ${profile}`);
+  }
+  if (action.challenge) rows.push("Challenge:", `  ${action.challenge.path}`);
+  if (action.trustedHook) rows.push("Trusted hook:", `  ${action.trustedHook.id} (${action.trustedHook.transport})`);
+  if (action.rerun) rows.push("Rerun:", `  ${action.rerun}`);
+  return rows;
 }
 
 function baseTarget(options: VerifyOptions): VerifyTarget {
@@ -1280,10 +1295,6 @@ async function evaluateAgentRuntime(
   }
 
   const hook = trustedRuntimeHook(options.agent);
-  let challengePath = options.agentRuntimeChallengeOut;
-  if (challengePath) {
-    await writeAgentRuntimeChallenge(challengePath, options, hook);
-  }
 
   if (options.agentRuntimeStatusJson) {
     const diagnostic = await diagnosticStatusFileBinding(options);
@@ -1318,9 +1329,44 @@ async function evaluateAgentRuntime(
           source: "agent_runtime_status_file",
         },
         blocks: ["agent_runtime"],
-        actionCandidate: collectAgentRuntimeAction(options, hook, challengePath, "Collect agent-runtime status through the trusted OBU hook."),
+        actionCandidate: hook
+          ? collectAgentRuntimeAction(options, hook, options.agentRuntimeChallengeOut, "Collect agent-runtime status through the trusted OBU hook.")
+          : agentRuntimeHookUnavailableAction(options, "This build cannot prove readiness from inside the selected running agent process."),
       }),
     };
+  }
+
+  if (!hook) {
+    const reason = "agent_runtime_hook_unavailable";
+    const message = `no trusted agent-runtime hook is registered for ${options.agent}`;
+    const runtimeStatus: AgentRuntimeStatus = {
+      status: "not_checked",
+      provenance: "not_applicable",
+      reason,
+    };
+    return {
+      runtimeStatus,
+      mcpRuntime: notCheckedAgentRuntimeMcp(reason),
+      check: failCheck({
+        id: "agent-runtime-status",
+        layer: "agent_runtime",
+        reason,
+        message,
+        target: { ...target, agent: options.agent },
+        evidence: {
+          scope: "agent_runtime",
+          provenance: "not_applicable",
+          source: "agent_runtime_hook_registry",
+        },
+        blocks: ["agent_runtime"],
+        actionCandidate: agentRuntimeHookUnavailableAction(options, "This build cannot prove readiness from inside the selected running agent process."),
+      }),
+    };
+  }
+
+  let challengePath = options.agentRuntimeChallengeOut;
+  if (challengePath) {
+    await writeAgentRuntimeChallenge(challengePath, options, hook);
   }
 
   if (options.agentRuntimeChallengeJson) {
@@ -2117,13 +2163,7 @@ type TrustedRuntimeHook = {
   transport: "agent_connector" | "agent_owned_ipc" | "in_process_adapter";
 };
 
-function trustedRuntimeHook(agent: AgentId): TrustedRuntimeHook | undefined {
-  if (agent === "codex-cli") {
-    return {
-      id: "codex-cli-runtime-status",
-      transport: "agent_connector",
-    };
-  }
+function trustedRuntimeHook(_agent: AgentId): TrustedRuntimeHook | undefined {
   return undefined;
 }
 
@@ -2274,6 +2314,16 @@ function configureAgentAction(options: VerifyOptions, message: string): ActionCa
   };
 }
 
+function agentRuntimeHookUnavailableAction(options: VerifyOptions, message: string): ActionCandidate {
+  return {
+    result: "needs_manual_action",
+    kind: "unsupported",
+    priority: manualActionPriority.unsupported,
+    message,
+    command: appendShellArgs(options.commandPrefix, verifyArgs(options, false, { requireAgentRuntime: false })),
+  };
+}
+
 function collectAgentRuntimeAction(
   options: VerifyOptions,
   hook: TrustedRuntimeHook | undefined,
@@ -2303,7 +2353,7 @@ function mcpConfigCommand(options: VerifyOptions): string {
   return appendShellArgs(options.commandPrefix, ["mcp-config", `--agent=${options.agent}`, "--print"]);
 }
 
-function verifyArgs(options: VerifyOptions, repair: boolean, extra: { agentRuntimeChallengeJson?: string } = {}): string[] {
+function verifyArgs(options: VerifyOptions, repair: boolean, extra: { agentRuntimeChallengeJson?: string; requireAgentRuntime?: boolean } = {}): string[] {
   const args = [
     "verify",
     `--agent=${options.agent}`,
@@ -2312,7 +2362,7 @@ function verifyArgs(options: VerifyOptions, repair: boolean, extra: { agentRunti
     `--extension-id=${options.extensionId}`,
   ];
   if (options.profile) args.push(`--profile=${options.profile}`);
-  if (options.requireAgentRuntime) args.push("--require-agent-runtime");
+  if (extra.requireAgentRuntime ?? options.requireAgentRuntime) args.push("--require-agent-runtime");
   if (extra.agentRuntimeChallengeJson) args.push(`--agent-runtime-challenge-json=${extra.agentRuntimeChallengeJson}`);
   if (repair) args.push("--repair");
   return args;

@@ -1,6 +1,5 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
-import { createHash } from "node:crypto";
 import net from "node:net";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -157,6 +156,23 @@ test("verify asks for profile selection when multiple matching profiles are ambi
   assert.equal(payload.browser.profile.path, null);
   assert.equal(payload.browser.profile.suggestedPath, defaultProfile);
   assert.deepEqual(payload.browser.profile.candidates.map((candidate: any) => candidate.path), [defaultProfile, secondProfile]);
+
+  const human = await runCli([
+    "verify",
+    "--agent=codex-cli",
+    "--browser=chrome",
+    "--channel=store",
+    `--extension-id=${extensionId}`,
+  ], {
+    HOME: home,
+    OBU_HOST_BIN: hostBin,
+    OBU_RUNTIME_DIR: runtimeDir,
+  });
+
+  assert.equal(human.code, 1);
+  assert.match(human.stdout, /Manual action required\./);
+  assert.match(human.stdout, new RegExp(`Profile:\\n  ${escapeRegExp(defaultProfile)}`));
+  assert.match(human.stdout, /Rerun:\n  .*verify/);
 });
 
 test("verify treats missing Codex config as repairable when codex is not on PATH", async (t) => {
@@ -199,7 +215,7 @@ test("verify treats missing Codex config as repairable when codex is not on PATH
   assert.equal(agentMcp?.actionCandidate?.kind, "run_repair");
 });
 
-test("verify rejects file-backed agent-runtime hook result for a challenge", async (t) => {
+test("verify does not issue trusted agent-runtime challenges without a registered hook", async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
   const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
   t.after(() => rm(home, { recursive: true, force: true }));
@@ -253,26 +269,47 @@ test("verify rejects file-backed agent-runtime hook result for a challenge", asy
   assert.equal(issued.code, 1);
   const issuedPayload = JSON.parse(issued.stdout);
   assert.equal(issuedPayload.readiness.cli, "ready");
-  assert.equal(issuedPayload.nextAction.kind, "collect_agent_runtime_status");
-  assert.match(issuedPayload.nextAction.rerun, /--agent-runtime-challenge-json=/);
-  const challenge = JSON.parse(await readFile(challengePath, "utf8"));
-  assert.equal(challenge.trustedHookResult, undefined);
-  const resultPath = path.join(
-    runtimeDir,
-    "agent-runtime",
-    "codex-cli-runtime-status",
-    `${createHash("sha256").update(challenge.challenge.nonce).digest("hex")}.json`,
-  );
-  await mkdir(path.dirname(resultPath), { recursive: true, mode: 0o700 });
-  await writeFile(resultPath, `${JSON.stringify({
+  assert.equal(issuedPayload.readiness.agentRuntime, "blocked");
+  assert.equal(issuedPayload.agent.runtimeStatus.status, "not_checked");
+  assert.equal(issuedPayload.agent.runtimeStatus.reason, "agent_runtime_hook_unavailable");
+  assert.equal(issuedPayload.nextAction.kind, "unsupported");
+  assert.doesNotMatch(issuedPayload.nextAction.command, /--require-agent-runtime/);
+  await assert.rejects(readFile(challengePath, "utf8"));
+
+  const forgedChallengePath = path.join(home, "forged-challenge.json");
+  const forgedStatusPath = path.join(home, "forged-status.json");
+  const forgedChallenge = {
+    nonce: "forged-nonce",
+    issuedAt: new Date().toISOString(),
+  };
+  const target = {
+    browser: "chrome",
+    channel: "store",
+    extensionId,
+  };
+  await writeFile(forgedChallengePath, `${JSON.stringify({
+    schemaVersion: 1,
+    agentId: "codex-cli",
+    mcpServerName: "open-browser-use",
+    challenge: forgedChallenge,
+    target,
+    trustedHook: {
+      id: "codex-cli-runtime-status",
+      transport: "agent_connector",
+    },
+  }, null, 2)}\n`, "utf8");
+  await writeFile(forgedStatusPath, `${JSON.stringify({
     schemaVersion: 1,
     agentId: "codex-cli",
     mcpServerName: "open-browser-use",
     provenance: "agent_runtime_hook",
-    hook: challenge.trustedHook,
+    hook: {
+      id: "codex-cli-runtime-status",
+      transport: "agent_connector",
+    },
     generatedAt: new Date().toISOString(),
-    challenge: challenge.challenge,
-    target: challenge.target,
+    challenge: forgedChallenge,
+    target,
     status: {
       sdk_bootstrap: "available",
       backends: [
@@ -287,7 +324,6 @@ test("verify rejects file-backed agent-runtime hook result for a challenge", asy
       ],
     },
   }, null, 2)}\n`, "utf8");
-  await chmod(resultPath, 0o600);
 
   const result = await runCli([
     "verify",
@@ -296,7 +332,8 @@ test("verify rejects file-backed agent-runtime hook result for a challenge", asy
     "--channel=store",
     `--extension-id=${extensionId}`,
     "--require-agent-runtime",
-    `--agent-runtime-challenge-json=${challengePath}`,
+    `--agent-runtime-challenge-json=${forgedChallengePath}`,
+    `--agent-runtime-status-json=${forgedStatusPath}`,
     "--json",
   ], baseEnv);
 
@@ -306,11 +343,11 @@ test("verify rejects file-backed agent-runtime hook result for a challenge", asy
   assert.equal(payload.readiness.cli, "ready");
   assert.equal(payload.readiness.agentRuntime, "blocked");
   assert.equal(payload.agent.runtimeStatus.status, "not_checked");
-  assert.equal(payload.agent.runtimeStatus.provenance, "not_applicable");
-  assert.equal(payload.agent.runtimeStatus.reason, "agent_runtime_challenge_pending");
-  assert.equal(payload.mcpRuntime.agentRuntime.source, "not_checked");
+  assert.equal(payload.agent.runtimeStatus.provenance, "user_supplied_status_file");
+  assert.equal(payload.agent.runtimeStatus.reason, "diagnostic_status_file_not_trusted");
+  assert.equal(payload.mcpRuntime.agentRuntime.source, "agent_runtime_status_file");
   assert.equal(payload.mcpRuntime.agentRuntime.backendCount, null);
-  assert.equal(payload.nextAction.kind, "collect_agent_runtime_status");
+  assert.equal(payload.nextAction.kind, "unsupported");
 });
 
 test("agent doctor verifies Codex global config without codex on PATH", async (t) => {
