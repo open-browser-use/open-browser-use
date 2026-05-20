@@ -1,12 +1,13 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import net from "node:net";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
 
-import { nativeMessagingHostDir } from "./browser-paths.js";
+import { browserProfileRoot, nativeMessagingHostDir } from "./browser-paths.js";
 
 const cliEntry = fileURLToPath(new URL("./index.js", import.meta.url));
 
@@ -66,6 +67,240 @@ test("agent commands accept common human agent aliases", async (t) => {
   assert.equal(result.code, 0);
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.agent, "codex-cli");
+});
+
+test("verify reports browser popup boundary with one next action", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  withTestXdgConfigHome(t, home);
+  const extensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const runtimeDir = path.join(home, "runtime");
+  const hostBin = await writeExecutable(path.join(bin, "obu-host"), "#!/bin/sh\nexit 0\n");
+  await writeCodexMcpConfig(home);
+  await writeNativeHostManifest(home, hostBin, extensionId);
+  const profilePath = path.join(browserProfileRoot("chrome", process.platform, home), "Default");
+  await writeChromePreferences(profilePath, extensionId, 1);
+  await mkdir(path.join(runtimeDir, "webextension"), { recursive: true, mode: 0o700 });
+  await chmod(runtimeDir, 0o700);
+  await chmod(path.join(runtimeDir, "webextension"), 0o700);
+
+  const result = await runCli([
+    "verify",
+    "--agent=codex",
+    "--browser=chrome",
+    "--channel=store",
+    "--extension-id",
+    extensionId,
+    "--json",
+  ], {
+    HOME: home,
+    OBU_HOST_BIN: hostBin,
+    OBU_RUNTIME_DIR: runtimeDir,
+  });
+
+  assert.equal(result.code, 1);
+  assert.equal(result.stderr, "");
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.result, "needs_browser_popup");
+  assert.equal(payload.nextAction.kind, "open_popup");
+  assert.equal(payload.agent.id, "codex-cli");
+  assert.equal(payload.agent.runtimeStatus.reason, "verification_target_cli");
+  assert.equal(payload.browser.profile.path, profilePath);
+  assert.equal(payload.browser.profile.runtimeBinding, "not_available");
+  assert.equal(payload.browser.extensionInstalled, "pass");
+  assert.equal(payload.browser.extensionEnabled, "pass");
+  assert.equal(payload.checks.filter((check: any) => check.status === "fail" && check.actionCandidate).length > 0, true);
+  assert.equal(payload.checks.find((check: any) => check.id === "agent-primary-instruction")?.status, "warn");
+  assert.equal(payload.checks.find((check: any) => check.id === "agent-primary-instruction")?.reason, "missing_instruction");
+});
+
+test("verify asks for profile selection when multiple matching profiles are ambiguous", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  withTestXdgConfigHome(t, home);
+  const extensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const runtimeDir = path.join(home, "runtime");
+  const hostBin = await writeExecutable(path.join(bin, "obu-host"), "#!/bin/sh\nexit 0\n");
+  await writeCodexMcpConfig(home);
+  await writeNativeHostManifest(home, hostBin, extensionId);
+  const profileRoot = browserProfileRoot("chrome", process.platform, home);
+  const defaultProfile = path.join(profileRoot, "Default");
+  const secondProfile = path.join(profileRoot, "Profile 2");
+  await writeChromePreferences(secondProfile, extensionId, 1);
+  await writeChromePreferences(defaultProfile, extensionId, 1);
+  await mkdir(path.join(runtimeDir, "webextension"), { recursive: true, mode: 0o700 });
+  await chmod(runtimeDir, 0o700);
+  await chmod(path.join(runtimeDir, "webextension"), 0o700);
+
+  const result = await runCli([
+    "verify",
+    "--agent=codex-cli",
+    "--browser=chrome",
+    "--channel=store",
+    `--extension-id=${extensionId}`,
+    "--json",
+  ], {
+    HOME: home,
+    OBU_HOST_BIN: hostBin,
+    OBU_RUNTIME_DIR: runtimeDir,
+  });
+
+  assert.equal(result.code, 1);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.result, "needs_manual_action");
+  assert.equal(payload.nextAction.kind, "select_profile");
+  assert.equal(payload.browser.profile.path, null);
+  assert.equal(payload.browser.profile.suggestedPath, defaultProfile);
+  assert.deepEqual(payload.browser.profile.candidates.map((candidate: any) => candidate.path), [defaultProfile, secondProfile]);
+});
+
+test("verify treats missing Codex config as repairable when codex is not on PATH", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  withTestXdgConfigHome(t, home);
+  const extensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const runtimeDir = path.join(home, "runtime");
+  const hostBin = await writeExecutable(path.join(bin, "obu-host"), "#!/bin/sh\nexit 0\n");
+  await writeNativeHostManifest(home, hostBin, extensionId);
+  const profilePath = path.join(browserProfileRoot("chrome", process.platform, home), "Default");
+  await writeChromePreferences(profilePath, extensionId, 1);
+  await mkdir(path.join(runtimeDir, "webextension"), { recursive: true, mode: 0o700 });
+  await chmod(runtimeDir, 0o700);
+  await chmod(path.join(runtimeDir, "webextension"), 0o700);
+
+  const result = await runCli([
+    "verify",
+    "--agent=codex-cli",
+    "--browser=chrome",
+    "--channel=store",
+    `--extension-id=${extensionId}`,
+    "--json",
+  ], {
+    HOME: home,
+    PATH: "",
+    OBU_HOST_BIN: hostBin,
+    OBU_RUNTIME_DIR: runtimeDir,
+  });
+
+  assert.equal(result.code, 1);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.result, "needs_repair");
+  assert.equal(payload.nextAction.kind, "run_repair");
+  assert.match(payload.nextAction.command, /verify .*--repair/);
+  const agentMcp = payload.checks.find((check: any) => check.id === "agent-mcp-server");
+  assert.equal(agentMcp?.reason, "agent_mcp_missing");
+  assert.equal(agentMcp?.actionCandidate?.kind, "run_repair");
+});
+
+test("verify accepts trusted agent-runtime hook result for a challenge", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  withTestXdgConfigHome(t, home);
+  const extensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const runtimeDir = path.join(home, "runtime");
+  const hostBin = await writeExecutable(path.join(bin, "obu-host"), "#!/bin/sh\nexit 0\n");
+  const fakeObu = await writeFakeMcpObu(bin, extensionId);
+  await writeCodexMcpConfig(home, fakeObu, ["mcp", "stdio"]);
+  await writeNativeHostManifest(home, hostBin, extensionId);
+  const profilePath = path.join(browserProfileRoot("chrome", process.platform, home), "Default");
+  await writeChromePreferences(profilePath, extensionId, 1);
+  await mkdir(path.join(runtimeDir, "webextension"), { recursive: true, mode: 0o700 });
+  await chmod(runtimeDir, 0o700);
+  await chmod(path.join(runtimeDir, "webextension"), 0o700);
+  const socketPath = path.join(runtimeDir, "webextension", "chrome.sock");
+  await startRuntimeDescriptorServer(t, socketPath);
+  await writeRuntimeDescriptor(path.join(runtimeDir, "webextension", "chrome.json"), {
+    schema_version: 1,
+    type: "webextension",
+    name: "chrome",
+    socketPath,
+    sdk_auth_token: "token",
+    pid: process.pid,
+    metadata: {
+      browser_kind: "chrome",
+      extension_id: extensionId,
+      profile_path: profilePath,
+    },
+  });
+  const challengePath = path.join(home, "challenge.json");
+  const baseEnv = {
+    HOME: home,
+    OBU_COMMAND: fakeObu,
+    OBU_HOST_BIN: hostBin,
+    OBU_RUNTIME_DIR: runtimeDir,
+  };
+
+  const issued = await runCli([
+    "verify",
+    "--agent=codex-cli",
+    "--browser=chrome",
+    "--channel=store",
+    `--extension-id=${extensionId}`,
+    "--require-agent-runtime",
+    `--agent-runtime-challenge-out=${challengePath}`,
+    "--json",
+  ], baseEnv);
+
+  assert.equal(issued.code, 1);
+  const issuedPayload = JSON.parse(issued.stdout);
+  assert.equal(issuedPayload.readiness.cli, "ready");
+  assert.equal(issuedPayload.nextAction.kind, "collect_agent_runtime_status");
+  assert.match(issuedPayload.nextAction.rerun, /--agent-runtime-challenge-json=/);
+  const challenge = JSON.parse(await readFile(challengePath, "utf8"));
+  const resultPath = challenge.trustedHookResult.path;
+  await mkdir(path.dirname(resultPath), { recursive: true, mode: 0o700 });
+  await writeFile(resultPath, `${JSON.stringify({
+    schemaVersion: 1,
+    agentId: "codex-cli",
+    mcpServerName: "open-browser-use",
+    provenance: "agent_runtime_hook",
+    hook: challenge.trustedHook,
+    generatedAt: new Date().toISOString(),
+    challenge: challenge.challenge,
+    target: challenge.target,
+    status: {
+      sdk_bootstrap: "available",
+      backends: [
+        {
+          type: "webextension",
+          name: "chrome",
+          metadata: {
+            browser_kind: "chrome",
+            extension_id: extensionId,
+          },
+        },
+      ],
+    },
+  }, null, 2)}\n`, "utf8");
+  await chmod(resultPath, 0o600);
+
+  const result = await runCli([
+    "verify",
+    "--agent=codex-cli",
+    "--browser=chrome",
+    "--channel=store",
+    `--extension-id=${extensionId}`,
+    "--require-agent-runtime",
+    `--agent-runtime-challenge-json=${challengePath}`,
+    "--json",
+  ], baseEnv);
+
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.result, "ready");
+  assert.equal(payload.readiness.agentRuntime, "ready");
+  assert.equal(payload.agent.runtimeStatus.status, "pass");
+  assert.equal(payload.agent.runtimeStatus.hook.trusted, true);
+  assert.equal(payload.mcpRuntime.agentRuntime.source, "agent_runtime");
+  assert.equal(payload.mcpRuntime.agentRuntime.backendCount, 1);
 });
 
 test("agent doctor verifies Codex global config without codex on PATH", async (t) => {
@@ -519,7 +754,8 @@ test("setup summary preserves manual agent next actions", async (t) => {
   assert.equal(result.stderr, "");
   assert.match(result.stdout, /Setup needs 1 follow-up step\./);
   assert.match(result.stdout, new RegExp(`${escapeRegExp(obuCommand)} mcp-config --agent=continue --print`));
-  assert.match(result.stdout, new RegExp(`${escapeRegExp(obuCommand)} doctor browser --channel=store --extension-id=${storeExtensionId}`));
+  assert.match(result.stdout, new RegExp(`${escapeRegExp(obuCommand)} verify --agent=continue --browser=chrome --channel=store --extension-id=${storeExtensionId}`));
+  assert.doesNotMatch(result.stdout, /doctor browser/);
   assert.doesNotMatch(result.stdout, /agent-continue:/);
 
   const recovery = await runCli(["setup", "--yes", "--recovery", "--channel=store", "--extension-id", storeExtensionId, "--agents=continue"], {
@@ -960,6 +1196,165 @@ test("repl command is explicitly deferred in P4a", async (t) => {
   assert.match(result.stderr, /repl is deferred in P4a/);
 });
 
+function withTestXdgConfigHome(t: { after: (fn: () => void | Promise<void>) => void }, home: string): void {
+  const previous = process.env.XDG_CONFIG_HOME;
+  process.env.XDG_CONFIG_HOME = path.join(home, ".config");
+  t.after(() => {
+    if (previous === undefined) {
+      delete process.env.XDG_CONFIG_HOME;
+    } else {
+      process.env.XDG_CONFIG_HOME = previous;
+    }
+  });
+}
+
+async function writeExecutable(file: string, content: string): Promise<string> {
+  await mkdir(path.dirname(file), { recursive: true });
+  await writeFile(file, content, "utf8");
+  await chmod(file, 0o755);
+  return file;
+}
+
+async function writeCodexMcpConfig(home: string, command = process.execPath, args = [cliEntry, "mcp", "stdio"]): Promise<void> {
+  await mkdir(path.join(home, ".codex"), { recursive: true });
+  await writeFile(path.join(home, ".codex", "config.toml"), [
+    "[mcp_servers.open-browser-use]",
+    `command = "${shellEscapeForDoubleQuotes(command)}"`,
+    `args = [${args.map((arg) => `"${shellEscapeForDoubleQuotes(arg)}"`).join(", ")}]`,
+    "",
+  ].join("\n"), "utf8");
+}
+
+async function writeFakeMcpObu(bin: string, extensionId: string): Promise<string> {
+  const mcpScript = path.join(bin, "fake-mcp.js");
+  await writeFile(mcpScript, `
+const extensionId = ${JSON.stringify(extensionId)};
+let buffer = "";
+process.stdin.setEncoding("utf8");
+process.stdin.on("data", (chunk) => {
+  buffer += chunk;
+  for (;;) {
+    const index = buffer.indexOf("\\n");
+    if (index < 0) break;
+    const line = buffer.slice(0, index).trim();
+    buffer = buffer.slice(index + 1);
+    if (!line) continue;
+    const request = JSON.parse(line);
+    if (request.method === "initialize") {
+      send({ jsonrpc: "2.0", id: request.id, result: { capabilities: { tools: {} }, serverInfo: { name: "fake-obu", version: "0.0.0" } } });
+    } else if (request.method === "tools/call" && request.params?.name === "browser_status") {
+      send({
+        jsonrpc: "2.0",
+        id: request.id,
+        result: {
+          structuredContent: {
+            sdk_bootstrap: "available",
+            backends: [
+              { type: "webextension", name: "chrome", metadata: { browser_kind: "chrome", extension_id: extensionId } },
+            ],
+          },
+        },
+      });
+    }
+  }
+});
+function send(payload) {
+  process.stdout.write(JSON.stringify(payload) + "\\n");
+}
+`, "utf8");
+  const fakeObu = path.join(bin, "obu");
+  return writeExecutable(fakeObu, [
+    "#!/bin/sh",
+    "set -eu",
+    "if [ \"${1:-}\" = \"mcp\" ] && [ \"${2:-}\" = \"stdio\" ]; then",
+    `  exec ${shellQuote(process.execPath)} ${shellQuote(mcpScript)}`,
+    "fi",
+    "exit 1",
+    "",
+  ].join("\n"));
+}
+
+async function writeNativeHostManifest(home: string, hostBin: string, extensionId: string): Promise<void> {
+  const manifestPath = path.join(nativeMessagingHostDir("chrome", process.platform, home), "dev.obu.host.json");
+  await mkdir(path.dirname(manifestPath), { recursive: true });
+  await writeFile(manifestPath, JSON.stringify({
+    name: "dev.obu.host",
+    description: "open-browser-use native messaging host",
+    path: hostBin,
+    type: "stdio",
+    allowed_origins: [`chrome-extension://${extensionId}/`],
+  }, null, 2), "utf8");
+}
+
+async function writeChromePreferences(profilePath: string, extensionId: string, state: number): Promise<void> {
+  await mkdir(profilePath, { recursive: true });
+  await writeFile(path.join(profilePath, "Preferences"), JSON.stringify({
+    extensions: {
+      settings: {
+        [extensionId]: {
+          state,
+          manifest: { version: "0.1.0" },
+        },
+      },
+    },
+  }, null, 2), "utf8");
+}
+
+async function writeRuntimeDescriptor(file: string, value: Record<string, unknown>): Promise<void> {
+  await writeFile(file, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
+  await chmod(file, 0o600);
+}
+
+async function startRuntimeDescriptorServer(t: { after: (fn: () => void | Promise<void>) => void }, socketPath: string): Promise<void> {
+  const server = net.createServer((socket) => {
+    let authenticated = false;
+    let buffer = Buffer.alloc(0);
+    socket.on("data", (chunk) => {
+      buffer = Buffer.concat([buffer, chunk]);
+      while (buffer.length >= 4) {
+        const length = buffer.readUInt32LE(0);
+        if (buffer.length < 4 + length) return;
+        const body = buffer.subarray(4, 4 + length);
+        buffer = buffer.subarray(4 + length);
+        const request = JSON.parse(body.toString("utf8"));
+        if (request.method === "auth") {
+          authenticated = true;
+          socket.write(encodeTestFrame({ jsonrpc: "2.0", id: request.id, result: { ok: true } }));
+          continue;
+        }
+        if (authenticated && request.method === "getInfo") {
+          socket.write(encodeTestFrame({
+            jsonrpc: "2.0",
+            id: request.id,
+            result: { type: "webextension", name: "chrome", metadata: { diagnostics: { lifecycle: {} } } },
+          }));
+          continue;
+        }
+        socket.write(encodeTestFrame({ jsonrpc: "2.0", id: request.id, error: { code: -32601, message: "method not found" } }));
+      }
+    });
+  });
+  await new Promise<void>((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(socketPath, () => {
+      server.off("error", reject);
+      resolve();
+    });
+  });
+  await chmod(socketPath, 0o600);
+  t.after(async () => {
+    await new Promise<void>((resolve) => server.close(() => resolve()));
+  });
+}
+
+function encodeTestFrame(payload: Record<string, unknown>): Buffer {
+  const body = Buffer.from(JSON.stringify(payload));
+  const frame = Buffer.alloc(4 + body.length);
+  frame.writeUInt32LE(body.length, 0);
+  body.copy(frame, 4);
+  return frame;
+}
+
 function runCli(args: string[], env: NodeJS.ProcessEnv = {}): Promise<{ code: number | null; stdout: string; stderr: string }> {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [cliEntry, ...args], {
@@ -989,4 +1384,8 @@ function escapeRegExp(value: string): string {
 
 function shellEscapeForDoubleQuotes(value: string): string {
   return value.replaceAll("\\", "\\\\").replaceAll('"', '\\"').replaceAll("$", "\\$").replaceAll("`", "\\`");
+}
+
+function shellQuote(value: string): string {
+  return /^[A-Za-z0-9_./:=@+-]+$/.test(value) ? value : `'${value.replaceAll("'", "'\\''")}'`;
 }

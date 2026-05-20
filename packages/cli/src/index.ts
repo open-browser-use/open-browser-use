@@ -29,6 +29,7 @@ import { updateExtension } from "./extension-update.js";
 import { installNativeHosts, supportedNativeHostBrowsers } from "./native-host.js";
 import { ensureRuntimeDir, executableExists, packageVersion, resolveRuntimeLayout, validateRuntimeDir, writeUserConfig } from "./runtime-layout.js";
 import { setupOpenBrowserUse, type SetupJson } from "./setup.js";
+import { formatVerifyReport, verifyExitCode, verifyOpenBrowserUse } from "./verify.js";
 
 type ParsedArgs = {
   command?: string;
@@ -55,6 +56,11 @@ type ParsedArgs = {
   skipExtension: boolean;
   skipAgents: boolean;
   writeInstructions: boolean;
+  requireAgentRuntime: boolean;
+  profile?: string;
+  agentRuntimeChallengeOut?: string;
+  agentRuntimeChallengeJson?: string;
+  agentRuntimeStatusJson?: string;
 };
 
 async function main(argv: string[]): Promise<number> {
@@ -69,6 +75,9 @@ async function main(argv: string[]): Promise<number> {
   }
   if (args.command === "doctor") {
     return runDoctor(args);
+  }
+  if (args.command === "verify") {
+    return runVerify(args);
   }
   if (args.command === "mcp-config") {
     return runMcpConfig(args);
@@ -276,6 +285,63 @@ async function runSetup(args: ParsedArgs): Promise<number> {
   if (report.result === "complete") return 0;
   if (report.result === "manual_action_required" && args.recovery && isBrowserRecoveryBoundary(report)) return 0;
   return 1;
+}
+
+async function runVerify(args: ParsedArgs): Promise<number> {
+  if (!args.agent) throw new Error("verify requires --agent=<id>");
+  const agent = normalizeAgentId(args.agent);
+  if (!agent) throw new Error(unsupportedAgentMessage([args.agent]));
+  const layout = await resolveRuntimeLayout();
+  if (layout.configIssue) {
+    console.error(`open-browser-use user config is invalid: ${layout.configIssue.message}. Fix or remove ${layout.configIssue.path}, then rerun obu verify.`);
+    return 2;
+  }
+  let extensionTarget;
+  try {
+    extensionTarget = await resolveExtensionTarget({
+      layout,
+      channel: args.channel,
+      explicitExtensionId: args.extensionId,
+      env: process.env,
+    });
+  } catch (error) {
+    console.error(error instanceof Error ? error.message : String(error));
+    return 2;
+  }
+  const browser = args.browser ?? ("chrome" as BrowserKind);
+  const invocation = await resolveMcpInvocation(layout.openBrowserUseCommand, layout.cliEntry);
+  const server: McpServerInvocation = {
+    name: "open-browser-use",
+    command: invocation.command,
+    args: invocation.args,
+  };
+  const commandPrefix = await resolveHumanCommandPrefix(layout);
+  const report = await verifyOpenBrowserUse({
+    layout,
+    agent,
+    agentInput: args.agent,
+    browser,
+    channel: extensionTarget.channel,
+    extensionId: extensionTarget.extensionId,
+    extensionIdSource: extensionTarget.extensionIdSource,
+    server,
+    commandPrefix,
+    repair: args.repair,
+    requireAgentRuntime: args.requireAgentRuntime,
+    env: process.env,
+    homeDir: path.dirname(path.dirname(layout.userConfigPath)),
+    projectDir: process.cwd(),
+    ...(args.profile ? { profile: args.profile } : {}),
+    ...(args.agentRuntimeChallengeOut ? { agentRuntimeChallengeOut: args.agentRuntimeChallengeOut } : {}),
+    ...(args.agentRuntimeChallengeJson ? { agentRuntimeChallengeJson: args.agentRuntimeChallengeJson } : {}),
+    ...(args.agentRuntimeStatusJson ? { agentRuntimeStatusJson: args.agentRuntimeStatusJson } : {}),
+  });
+  if (args.json) {
+    console.log(JSON.stringify(report, null, 2));
+  } else {
+    console.log(formatVerifyReport(report));
+  }
+  return verifyExitCode(report);
 }
 
 async function runShellenv(args: ParsedArgs): Promise<number> {
@@ -627,7 +693,7 @@ function formatBootstrapSummary(setupReport: SetupJson, browserReport: DoctorRep
   const agentLine = bootstrapAgentSummary(setupReport);
   if (agentLine) rows.push(agentLine);
   if (browserResumeRequired(browserReport)) {
-    rows.push("Open the extension popup; click Resume if it is enabled, otherwise wait for Connected and rerun doctor.");
+    rows.push("Open the extension popup; click Resume if it is enabled, otherwise wait for Connected and rerun verify.");
   }
   return rows.join("\n");
 }
@@ -701,6 +767,7 @@ function parseArgs(argv: string[]): ParsedArgs {
     skipExtension: false,
     skipAgents: false,
     writeInstructions: false,
+    requireAgentRuntime: false,
     help: false,
     version: false,
   };
@@ -789,6 +856,21 @@ function parseArgs(argv: string[]): ParsedArgs {
       case "--write-instructions":
         args.writeInstructions = true;
         break;
+      case "--require-agent-runtime":
+        args.requireAgentRuntime = true;
+        break;
+      case "--profile":
+        args.profile = readValue();
+        break;
+      case "--agent-runtime-challenge-out":
+        args.agentRuntimeChallengeOut = readValue();
+        break;
+      case "--agent-runtime-challenge-json":
+        args.agentRuntimeChallengeJson = readValue();
+        break;
+      case "--agent-runtime-status-json":
+        args.agentRuntimeStatusJson = readValue();
+        break;
       case "--version":
       case "-V":
         args.version = true;
@@ -819,6 +901,7 @@ function printHelp(): void {
   obu --version
   obu bootstrap [--yes] [--browser chrome|chrome-for-testing|edge|brave|arc|chromium|--all] [--agents=auto|none|<list>] [--channel unpacked-dev|store] [--extension-id <id>] [--skip-extension] [--write-instructions] [--dry-run] [--json]
   obu setup [--yes] [--browser chrome|chrome-for-testing|edge|brave|arc|chromium|--all] [--agents=auto|none|<list>] [--channel unpacked-dev|store] [--extension-id <id>] [--skip-extension] [--skip-agents] [--write-instructions] [--dry-run] [--recovery] [--verbose] [--json]
+  obu verify --agent=<id> [--browser chrome|chrome-for-testing|edge|brave|arc|chromium] [--profile <path>] [--channel unpacked-dev|store] [--extension-id <id>] [--require-agent-runtime] [--agent-runtime-challenge-out <path>] [--agent-runtime-challenge-json <path>] [--agent-runtime-status-json <path>] [--repair] [--json]
   obu doctor [browser] [--browser chrome|chrome-for-testing|edge|brave|arc|chromium] [--channel unpacked-dev|store] [--extension-id <id>] [--verbose] [--json] [--strict] [--repair] [--clean-backups]
   obu install-host [--browser chrome|chrome-for-testing|edge|brave|arc|chromium|--all] [--channel unpacked-dev|store] [--extension-id <id>] [--dry-run] [--verbose] [--json]
   obu update-extension [--path <dir>] [--channel unpacked-dev] [--no-wait] [--dry-run] [--verbose] [--json]
