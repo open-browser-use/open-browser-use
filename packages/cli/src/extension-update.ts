@@ -47,7 +47,7 @@ export async function updateExtension(options: UpdateExtensionOptions): Promise<
       details: { sourceDir, version: manifest.version },
     });
   } catch (error) {
-    return result("failed", dryRun, currentDir, [
+    return result("failed", dryRun, options.layout, [
       {
         id: "extension-source",
         status: "failed",
@@ -71,7 +71,7 @@ export async function updateExtension(options: UpdateExtensionOptions): Promise<
       message: `would refresh stable extension path ${currentDir}`,
       details: { currentDir },
     });
-    return result("manual_action_required", dryRun, currentDir, steps);
+    return result("manual_action_required", dryRun, options.layout, steps);
   }
 
   try {
@@ -96,7 +96,7 @@ export async function updateExtension(options: UpdateExtensionOptions): Promise<
       message: `could not refresh stable extension path ${currentDir}`,
       details: { currentDir, error: String(error) },
     });
-    return result("failed", dryRun, currentDir, steps);
+    return result("failed", dryRun, options.layout, steps);
   }
 
   if (noWait) {
@@ -106,7 +106,7 @@ export async function updateExtension(options: UpdateExtensionOptions): Promise<
       message: "skipped runtime descriptor wait",
       details: { runtimeDir: options.layout.runtimeDir },
     });
-    return result("manual_action_required", dryRun, currentDir, steps);
+    return result("manual_action_required", dryRun, options.layout, steps);
   }
 
   if (await hasActiveWebExtensionRuntimeDescriptor(options.layout.runtimeDir)) {
@@ -116,7 +116,7 @@ export async function updateExtension(options: UpdateExtensionOptions): Promise<
       message: "found an active WebExtension runtime descriptor",
       details: { runtimeDir: options.layout.runtimeDir },
     });
-    return result("complete", dryRun, currentDir, steps);
+    return result("complete", dryRun, options.layout, steps);
   }
 
   steps.push({
@@ -125,7 +125,7 @@ export async function updateExtension(options: UpdateExtensionOptions): Promise<
     message: "no active WebExtension runtime descriptor found",
     details: { runtimeDir: options.layout.runtimeDir },
   });
-  return result("manual_action_required", dryRun, currentDir, steps);
+  return result("manual_action_required", dryRun, options.layout, steps);
 }
 
 type ExtensionManifest = {
@@ -175,25 +175,37 @@ async function replaceCurrentDir(versionDir: string, currentDir: string): Promis
 function result(
   state: ExtensionUpdateResult["result"],
   dryRun: boolean,
-  extensionCurrentDir: string,
+  layout: RuntimeLayout,
   steps: ExtensionUpdateStep[],
 ): ExtensionUpdateResult {
+  const verifyAction = verifyNextAction(layout);
   const nextActions: ExtensionUpdateResult["nextActions"] = state === "complete"
-    ? [{ kind: "command", value: "obu doctor browser" }]
+    ? [verifyAction]
     : [
       {
         kind: "manual",
-        value: `Open chrome://extensions, enable Developer mode, then Load unpacked or Reload the open-browser-use extension from ${extensionCurrentDir}`,
+        value: `Open chrome://extensions, enable Developer mode, then Load unpacked or Reload the open-browser-use extension from ${layout.extensionCurrentDir}`,
       },
-      { kind: "command", value: "obu doctor browser" },
+      verifyAction,
     ];
   return {
     schemaVersion: 1,
     command: "update-extension",
     dryRun,
     result: state,
-    extensionCurrentDir,
+    extensionCurrentDir: layout.extensionCurrentDir,
     steps,
     nextActions,
+  };
+}
+
+function verifyNextAction(layout: RuntimeLayout): ExtensionUpdateResult["nextActions"][number] {
+  const channel = layout.userConfig?.extensionChannel ?? "<channel>";
+  const extensionId = layout.userConfig?.extensionChannel === "store" && layout.userConfig.storeExtensionId
+    ? layout.userConfig.storeExtensionId
+    : "<extension-id>";
+  return {
+    kind: "manual",
+    value: `Choose the agent and browser target, then run obu verify --agent=<agent-id> --browser=<browser> --channel=${channel} --extension-id=${extensionId}.`,
   };
 }

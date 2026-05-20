@@ -20,6 +20,7 @@ import {
   formatDoctorSummary,
   formatInstallHostSummary,
   formatInstallHostVerbose,
+  formatNextActions,
   formatSetupSummary,
   formatSetupVerbose,
   formatUpdateExtensionSummary,
@@ -196,12 +197,22 @@ async function runBootstrap(args: ParsedArgs): Promise<number> {
       command: "bootstrap";
       result: "complete" | "manual_action_required" | "failed";
       setup: SetupJson;
+      nextActions: SetupJson["nextActions"];
+      readinessVerification: {
+        status: "not_verified";
+        nextActions: SetupJson["nextActions"];
+      };
       browserDoctor?: DoctorReport;
     } = {
       schemaVersion: 1,
       command: "bootstrap",
       result,
       setup: setupReport,
+      nextActions: setupReport.nextActions,
+      readinessVerification: {
+        status: "not_verified",
+        nextActions: setupReport.nextActions,
+      },
     };
     if (browserReport) payload.browserDoctor = browserReport;
     console.log(JSON.stringify(payload, null, 2));
@@ -678,12 +689,12 @@ function formatBootstrapSummary(setupReport: SetupJson, browserReport: DoctorRep
     const browserFailed = hasDoctorFailures(browserReport);
     const needsPopup = browserResumeRequired(browserReport);
     rows.push(setupReport.dryRun
-      ? `Browser pairing would be checked for ${channelLabel} ${setupReport.extensionId}.`
+      ? `Browser setup checks would run for ${channelLabel} ${setupReport.extensionId}.`
       : browserFailed
         ? `Browser repair ran for ${channelLabel} ${setupReport.extensionId}.`
         : needsPopup
-          ? `Browser pairing repaired for ${channelLabel} ${setupReport.extensionId}; extension popup activation is still required.`
-          : `Browser pairing ready for ${channelLabel} ${setupReport.extensionId}.`);
+          ? `Browser setup checks completed for ${channelLabel} ${setupReport.extensionId}; extension popup activation is still required.`
+          : `Browser setup checks completed for ${channelLabel} ${setupReport.extensionId}.`);
     if (browserFailed) {
       const failed = browserReport.checks.filter((check) => check.status === "fail");
       rows.push(`Browser doctor still found ${plural(failed.length, "problem")}: ${failed.map((check) => check.label).join(", ")}.`);
@@ -695,6 +706,7 @@ function formatBootstrapSummary(setupReport: SetupJson, browserReport: DoctorRep
   if (browserResumeRequired(browserReport)) {
     rows.push("Open the extension popup; click Resume if it is enabled, otherwise wait for Connected and rerun verify.");
   }
+  rows.push(...formatNextActions(setupReport.nextActions));
   return rows.join("\n");
 }
 

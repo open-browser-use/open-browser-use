@@ -86,7 +86,9 @@ test("updateExtension reports complete when a runtime descriptor probes successf
   const result = await updateExtension({ layout, sourceDir });
 
   assert.equal(result.result, "complete");
-  assert.equal(result.nextActions[0]?.value, "obu doctor browser");
+  assert.equal(result.nextActions[0]?.kind, "manual");
+  assert.match(result.nextActions[0]?.value ?? "", /obu verify --agent=<agent-id>/);
+  assert.doesNotMatch(result.nextActions[0]?.value ?? "", /doctor browser/);
 });
 
 async function extensionSource(root: string, version: string): Promise<string> {

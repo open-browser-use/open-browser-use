@@ -160,7 +160,7 @@ function formatFailedSteps(steps: Array<{ status: string; id: string; message: s
   return ["Problems:", ...failed.map((step) => `  ${step.id}: ${step.message}`)];
 }
 
-function formatNextActions(actions: NextAction[], heading = "Next actions:"): string[] {
+export function formatNextActions(actions: NextAction[], heading = "Next actions:"): string[] {
   if (actions.length === 0) return [];
   const rows = ["", heading];
   for (const action of actions) {

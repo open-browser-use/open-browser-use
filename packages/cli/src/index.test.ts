@@ -819,6 +819,8 @@ test("bootstrap continues through manual agent setup and runs browser repair", a
   assert.equal(payload.result, "manual_action_required");
   assert.equal(payload.setup.result, "manual_action_required");
   assert.equal(payload.setup.steps.some((step: any) => step.id === "agent-continue" && step.status === "manual_action_required"), true);
+  assert.equal(payload.nextActions.some((action: any) => action.value.includes("verify --agent=continue")), true);
+  assert.equal(payload.readinessVerification.status, "not_verified");
   assert.equal(payload.browserDoctor.extensionChannel, "store");
   assert.equal(payload.browserDoctor.extensionId, storeExtensionId);
   assert.equal(payload.browserDoctor.repairs.some((repair: any) => repair.id === "native-host-manifest"), true);
@@ -855,6 +857,9 @@ test("bootstrap summary reports skipped agent setup without naming the adapter p
   assert.match(result.stdout, /MCP agent setup skipped\./);
   assert.doesNotMatch(result.stdout, /MCP agents already configured: adapters/);
   assert.match(result.stdout, /extension popup activation is still required/);
+  assert.match(result.stdout, /verify .*'?--agent=<agent-id>'?/);
+  assert.doesNotMatch(result.stdout, /Browser pairing ready/);
+  assert.doesNotMatch(result.stdout, /doctor browser/);
 });
 
 test("setup CLI accepts explicit auto and none agent modes", async (t) => {
