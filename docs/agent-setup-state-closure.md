@@ -38,8 +38,8 @@ It returns exactly one high-level result:
   descriptor and a direct OBU MCP runtime status with at least one usable
   backend. For `verificationTarget: "agent_runtime"`, the selected agent
   runtime has also proved at least one usable backend through OBU MCP status.
-- `needs_browser_popup`: local setup is correct, but Chrome has not activated
-  the extension/native-host runtime descriptor yet.
+- `needs_browser_popup`: local setup is correct, but the selected Chromium-family
+  browser has not activated the extension/native-host runtime descriptor yet.
 - `needs_repair`: OBU found a deterministic repair it can apply with an
   explicit repair command.
 - `needs_manual_action`: the remaining action is outside safe CLI control.
@@ -69,7 +69,7 @@ Clean-install feedback exposed state mismatches across the setup flow:
   adapter ids such as `codex-cli`, `claude-code`, and `gemini-cli`.
 - `setup --agents=auto` can configure one path while `agent doctor` checks a
   different path.
-- Browser pairing can be repaired on disk while Chrome has not activated the
+- Browser pairing can be repaired on disk while the browser has not activated the
   WebExtension runtime descriptor.
 - MCP server availability and browser backend availability are separate states,
   but agents often treat them as one status.
@@ -79,6 +79,57 @@ Clean-install feedback exposed state mismatches across the setup flow:
 
 State closure means OBU turns these partial facts into one truthful result and
 one precise next action.
+
+## Verification Evidence Model
+
+`obu verify` is a normalization surface before it is a formatter. Each lower
+level signal must be converted into a check that states:
+
+- the target it applies to: agent, browser, channel, extension id, and profile
+  when profile-scoped;
+- the evidence source and provenance;
+- the scope that evidence can prove;
+- whether the check blocks CLI readiness, agent-runtime readiness, or neither;
+- the candidate next action if the check blocks readiness.
+
+The product result must never promote evidence beyond the scope it actually
+proves.
+
+Evidence scopes:
+
+- `cli`: local OBU files, selected agent durable config, selected browser
+  configuration, runtime descriptor probes, and direct OBU MCP probes.
+- `browser_extension`: a live WebExtension backend proves only the selected
+  browser and extension id unless profile identity is also present.
+- `profile`: descriptor metadata or a direct popup/native-host status source
+  identifies the resolved browser profile.
+- `agent_runtime`: the selected running agent process has reloaded the
+  `open-browser-use` MCP server and reports a usable backend through a trusted
+  first-class agent-runtime hook.
+
+Evidence provenance:
+
+- `runtime_descriptor_probe`: OBU probed a local runtime descriptor directly.
+- `expected_obu_invocation`: OBU launched or probed the expected OBU MCP
+  invocation for the current runtime layout.
+- `agent_runtime_hook`: a trusted first-class integration with the selected
+  running agent process supplied the status.
+- `user_supplied_status_file`: a local file was supplied by the user or an
+  agent-mediated workflow. A challenge-bound file can be useful diagnostic
+  evidence, but by itself it does not prove that the selected running agent
+  process produced the payload.
+- `not_applicable`: no runtime evidence was collected for that field.
+
+Only evidence with sufficient scope and provenance can advance the corresponding
+readiness field. A direct MCP probe can make `readiness.cli` ready but cannot
+make `readiness.agentRuntime` ready. A user-supplied status file without trusted
+agent-runtime provenance must not be reported as `source: "agent_runtime"` and
+must not make `verificationTarget: "agent_runtime"` return `ready`.
+
+Every blocking check may emit an `actionCandidate`. The final `nextAction` is
+selected from blocking candidates by result class, action priority, then
+verification layer order. This keeps one-next-action behavior derived from the
+same evidence that produced the result.
 
 ## Verification Layers
 
@@ -113,7 +164,7 @@ and report each layer in JSON.
    - The extension channel and id match the verification target.
 
 5. **Extension runtime state**
-   - Chrome has activated the extension runtime.
+   - The selected Chromium-family browser has activated the extension runtime.
    - The extension has connected to native messaging.
    - The popup can expose this as native-host connection state.
    - The CLI must report the evidence source. Outside the popup, runtime
@@ -156,13 +207,13 @@ and report each layer in JSON.
      invocation for the current runtime layout. For a packaged install this is
      normally:
 
-     ```json
-     {
-       "name": "open-browser-use",
-       "command": "/absolute/path/to/obu",
-       "args": ["mcp", "stdio"]
-     }
-     ```
+   ```json
+   {
+     "name": "open-browser-use",
+     "command": "/absolute/path/to/obu",
+     "args": ["mcp", "stdio"]
+   }
+   ```
 
      Repo or development layouts may be equivalent through `process.execPath`
      plus the CLI entrypoint and `["mcp", "stdio"]`. JSON must report the
@@ -179,10 +230,11 @@ and report each layer in JSON.
 
 Layers 1, 2, 8, and 9 are mostly file/config state. Layer 3 depends on
 browser profile discovery. Layer 4 depends on the resolved browser profile's
-extension preferences. Layers 5 and 6 depend on Chrome extension runtime
-activation. Layer 7 depends on packaged runtime dependencies, SDK bootstrap
-state, and backend discovery. The CLI can repair deterministic file/config
-state, but it cannot force Chrome to keep an MV3 service worker alive.
+extension preferences. Layers 5 and 6 depend on the selected browser's extension
+runtime activation. Layer 7 depends on packaged runtime dependencies, SDK
+bootstrap state, and backend discovery. The CLI can repair deterministic
+file/config state, but it cannot force the browser to keep an MV3 service worker
+alive.
 
 For CLI verification, extension runtime state is considered active when a
 runtime descriptor for the selected browser responds to `getInfo` and
@@ -212,6 +264,8 @@ For profile-scoped verification, runtime proof is explicit:
   `nextAction.kind: "select_profile"`. Supplying an explicit `--profile` is one
   way to resolve the ambiguity, but the resulting runtime proof may still be
   browser/extension-scoped unless a future profile identity source exists.
+  Deterministic sorting may produce a suggested profile, but suggestion is not
+  resolution.
 - `single_candidate` is only acceptable for CLI readiness when default discovery
   found exactly one matching enabled extension profile.
 
@@ -223,21 +277,29 @@ Profile resolution order:
 
 1. If `--profile=<path>` is supplied, verify only that profile.
 2. If the explicit profile path does not exist or cannot be inspected, keep that
-   profile path in JSON and return `needs_manual_action` with
-   `nextAction.kind: "select_profile"`.
+   profile path in JSON, distinguish `missing` from `unreadable`, and return
+   `needs_manual_action` with `nextAction.kind: "select_profile"`.
 3. If no profile is supplied, use the same default profile discovery as
    `obu doctor browser` for the selected browser.
 4. If default discovery cannot find a profile root for the selected browser,
    return `needs_manual_action` with `nextAction.kind: "select_profile"`.
-5. If multiple candidate profiles contain the target extension id, choose the
-   first profile with an enabled matching extension after deterministic sorting,
-   and report all candidates in JSON.
-6. If an explicit profile is supplied but does not contain the target extension
+5. If exactly one candidate profile contains the target extension id, resolve
+   that profile and continue with extension enabled/runtime checks.
+6. If multiple candidate profiles contain the target extension id, sort them
+   deterministically, report all candidates in JSON, and record the first enabled
+   matching profile as `browser.profile.suggestedPath`. Do not treat that
+   suggestion as the resolved profile unless runtime evidence is `profile_verified`
+   for that same profile.
+7. If an explicit profile is supplied but does not contain the target extension
    id, keep that profile path in JSON and return `needs_manual_action` with
    `nextAction.kind: "install_extension"`.
-7. If default discovery finds profiles for the browser but no candidate contains
-   the target extension id, return `needs_manual_action` with
-   `nextAction.kind: "install_extension"`.
+8. If default discovery finds exactly one inspectable profile but it does not
+   contain the target extension id, resolve that profile and return
+   `needs_manual_action` with `nextAction.kind: "install_extension"`.
+9. If default discovery finds multiple inspectable profiles but none contains the
+   target extension id, report all candidates, record the deterministic first
+   inspectable profile as `browser.profile.suggestedPath`, and return
+   `needs_manual_action` with `nextAction.kind: "select_profile"`.
 
 Profile existence and extension installation are separate states. Do not tell a
 user to install the extension into a profile that OBU could not find or inspect;
@@ -255,13 +317,30 @@ extension state, and preservation of profile context in follow-up commands.
 
 The JSON response must include:
 
-- `browser.profile.path`: string path or `null`
+- `browser.profile.path`: selected/resolved profile path or `null`. It is the
+  explicit profile, the only matching default-discovered profile, the only
+  inspectable default-discovered profile when the next action is to install the
+  extension there, or a profile-verified runtime target. It must be `null` when
+  default discovery is ambiguous and runtime evidence is not profile-bound.
+- `browser.profile.suggestedPath`: string path or `null`; deterministic first
+  profile OBU can suggest when default discovery is ambiguous. For multiple
+  matching extensions this is the first enabled matching candidate. For multiple
+  inspectable profiles with no installed target extension this is the first
+  inspectable profile. It is not a resolved profile.
 - `browser.profile.source`: `explicit | default_discovery`
 - `browser.profile.candidates`: array of candidate objects with `path`,
   `profileExists`, `extensionInstalled`, `extensionEnabled`, and optional
-  `reasons` keyed by those field names when any candidate field is `not_checked`
+  `reasons` keyed by those field names when any candidate field is not `pass`
 - `browser.profile.runtimeBinding`: `profile_verified | single_candidate |
   browser_extension_scope | not_available`
+
+Top-level `browser.extensionInstalled` and `browser.extensionEnabled` summarize
+the selected/resolved profile only. If no profile is resolved, or if the selected
+profile cannot be inspected, both fields must be `not_checked` with
+`browser.reasons.extensionInstalled` and `browser.reasons.extensionEnabled`. If a
+resolved profile lacks the extension, `browser.extensionInstalled` must be
+`missing`, `browser.extensionEnabled` must be `not_checked`, and both fields must
+have browser-level reasons.
 
 `browser.profile.runtimeBinding` values mean:
 
@@ -274,41 +353,73 @@ The JSON response must include:
   extension id. Human output must not describe this as profile-bound readiness.
 - `not_available`: no runtime descriptor or status source is available.
 
-If an explicit profile is supplied and the path does not exist or cannot be
-inspected, `browser.profile.path` must keep the explicit path,
-`browser.profile.source` must be `explicit`, `browser.profile.candidates` must
-contain only that path with `profileExists: "missing"`,
-`extensionInstalled: "not_checked"`, and `extensionEnabled: "not_checked"`.
-The candidate must include `reasons.extensionInstalled` and
+If an explicit profile is supplied and the path does not exist,
+`browser.profile.path` must keep the explicit path, `browser.profile.source` must
+be `explicit`, `browser.profile.suggestedPath` must be `null`, and
+`browser.profile.candidates` must contain only that path with
+`profileExists: "missing"`, `extensionInstalled: "not_checked"`, and
+`extensionEnabled: "not_checked"`. The candidate must include
+`reasons.profileExists`, `reasons.extensionInstalled`, and
 `reasons.extensionEnabled` explaining that extension state cannot be inspected
-until the profile exists. `nextAction.kind` must be `select_profile`.
+until the profile exists.
+`nextAction.kind` must be `select_profile`.
+
+If an explicit profile path exists but cannot be inspected,
+`browser.profile.path` must keep the explicit path and the candidate must use
+`profileExists: "unreadable"`, with `extensionInstalled: "not_checked"` and
+`extensionEnabled: "not_checked"` plus per-field reasons for all three fields.
+The blocking `browser_profile` check must include a specific reason such as
+`profile_unreadable` or `profile_preferences_unreadable`. `nextAction.kind` must
+be `select_profile`.
 
 If an explicit profile is supplied and does not contain the target extension id,
 `browser.profile.path` must keep the explicit path,
 `browser.profile.source` must be `explicit`, `browser.profile.candidates` must
 contain only that path with `profileExists: "pass"`,
 `extensionInstalled: "missing"`, and `extensionEnabled: "not_checked"`. The
-candidate must include `reasons.extensionEnabled` explaining that enablement was
-not inspected because the extension is missing. Top-level `extensionInstalled`
-must be `missing`, and `nextAction.kind` must be
-`install_extension`.
+candidate must include `reasons.extensionInstalled` and
+`reasons.extensionEnabled` explaining that enablement was not inspected because
+the extension is missing. Top-level `extensionInstalled` must be `missing`, and
+top-level `extensionEnabled` must be `not_checked`, with browser-level reasons
+for both fields. `nextAction.kind` must be `install_extension`.
 
 If default discovery cannot find or inspect the selected browser profile root,
 `browser.profile.path` must be `null`, `browser.profile.source` must be
-`default_discovery`, `browser.profile.candidates` must be an empty array,
-`extensionInstalled` must be `not_checked`, and the blocking
-`browser_profile` check must include `reason: "profile_root_missing"` or a more
-specific inspection failure reason. `nextAction.kind` must be `select_profile`.
+`default_discovery`, `browser.profile.suggestedPath` must be `null`,
+`browser.profile.candidates` must be an empty array, `extensionInstalled` must be
+`not_checked`, `extensionEnabled` must be `not_checked`, browser-level reasons
+must explain that no profile can be inspected, and the blocking
+`browser_profile` check must include `reason: "profile_root_missing"`,
+`reason: "profile_root_unreadable"`, or a more specific inspection failure
+reason. `nextAction.kind` must be `select_profile`.
 
-If default discovery finds browser profiles but no candidate profile containing
-the target extension id, `browser.profile.path` must be `null`,
-`browser.profile.source` must be `default_discovery`,
-`browser.profile.candidates` must include the inspected profile paths,
-`extensionInstalled` must be `missing`, and `nextAction.kind` must be
-`install_extension`.
+If default discovery finds exactly one inspectable browser profile but it does
+not contain the target extension id, `browser.profile.path` must contain that
+profile path, `browser.profile.source` must be `default_discovery`,
+`browser.profile.suggestedPath` must be `null`, `browser.profile.candidates`
+must include that profile, `extensionInstalled` must be `missing`, and
+`extensionEnabled` must be `not_checked`, with browser-level reasons for both
+fields. `nextAction.kind` must be `install_extension`.
+
+If default discovery finds multiple inspectable browser profiles but no
+candidate profile containing the target extension id, `browser.profile.path` must
+be `null`, `browser.profile.source` must be `default_discovery`,
+`browser.profile.suggestedPath` must contain the deterministic first inspectable
+profile, `browser.profile.candidates` must include all inspected profile paths,
+`extensionInstalled` must be `not_checked`, `extensionEnabled` must be
+`not_checked`, browser-level reasons must explain that profile choice is
+ambiguous, and `nextAction.kind` must be `select_profile`. The human message
+should ask the user to choose the profile before installing the extension.
+
+If default discovery finds multiple matching profiles and no profile-bound
+runtime proof is available, `browser.profile.path` must be `null`,
+`browser.profile.suggestedPath` must contain the deterministic first enabled
+matching profile, all candidates must be reported, and `nextAction.kind` must be
+`select_profile`.
 
 If a matching extension is present but disabled in the resolved profile,
 `extensionInstalled` must be `pass`, `extensionEnabled` must be `disabled`, and
+the candidate or browser summary must include `reasons.extensionEnabled`.
 `nextAction.kind` must be `enable_extension`.
 
 When `--profile=<path>` is supplied, every generated rerun, repair, or follow-up
@@ -400,6 +511,15 @@ obu verify \
   --extension-id=fblnfcjnjklpgnmfnngcihbcgojnpadj
 ```
 
+Store-channel handoff, repair, and generated verification commands must include
+the exact `--channel=store` and `--extension-id=<id>` values from the handoff.
+`obu verify --agent=<agent-id>` may omit browser/channel/extension arguments only
+when OBU can resolve them from trusted local state, and JSON must report the
+resulting `browser.channel`, `browser.extensionId`, and `browser.extensionIdSource`.
+For Store readiness, `extensionIdSource` is part of the readiness evidence, not a
+diagnostic aside. Human handoff output should still prefer the full command even
+when omission would work.
+
 To verify a specific browser profile, add:
 
 ```bash
@@ -437,14 +557,15 @@ MCP status from inside the client.
 
 Agent-runtime proof must come from a first-class agent-runtime status hook, not
 from a direct OBU MCP probe. The hook payload is the selected agent process's raw
-`browser_status` structured content plus enough envelope fields to prove
-freshness, provenance, and target binding:
+`browser_status` structured content plus envelope fields for freshness,
+provenance, and target binding:
 
 ```json
 {
   "schemaVersion": 1,
   "agentId": "codex-cli",
   "mcpServerName": "open-browser-use",
+  "provenance": "agent_runtime_hook",
   "generatedAt": "2026-05-19T12:34:56.000Z",
   "challenge": {
     "nonce": "verify-issued-random-nonce",
@@ -472,12 +593,16 @@ freshness, provenance, and target binding:
 }
 ```
 
-The CLI must reject stale or unbound agent-runtime payloads as proof. A payload
-can make `readiness.agentRuntime` become `ready` only when all of these are true:
+The CLI must reject stale, unbound, or unauthoritative agent-runtime payloads as
+proof. A payload can make `readiness.agentRuntime` become `ready` only when all
+of these are true:
 
 - `generatedAt` is within the freshness window, normally 60 seconds.
 - The challenge nonce matches the challenge JSON supplied to this verification
   command, or an equivalent first-class challenge stored by the CLI.
+- `provenance` is `agent_runtime_hook`, and the CLI can trust the transport or
+  integration that supplied that provenance. A field in a user-edited file is not
+  sufficient by itself.
 - `agentId`, `mcpServerName`, browser, channel, extension id, and explicit
   profile value match the verification target.
 - At least one WebExtension backend in the status payload has normalized
@@ -489,7 +614,7 @@ Raw `browser_status` output or a standalone status JSON without a fresh matching
 challenge is diagnostic evidence only; it must not produce
 `verificationTarget: "agent_runtime"` / `result: "ready"`.
 
-The initial CLI surface for this hook is:
+The initial user-mediated CLI surface for collecting this evidence is:
 
 ```bash
 obu verify --require-agent-runtime \
@@ -500,7 +625,7 @@ obu verify --require-agent-runtime \
   --extension-id=fblnfcjnjklpgnmfnngcihbcgojnpadj
 
 # The selected agent process calls browser_status through its configured OBU MCP
-# server and writes the envelope above with the challenge nonce.
+# server and writes an envelope with the challenge nonce.
 
 obu verify --require-agent-runtime \
   --agent-runtime-challenge-json=/path/to/challenge.json \
@@ -510,6 +635,14 @@ obu verify --require-agent-runtime \
   --channel=store \
   --extension-id=fblnfcjnjklpgnmfnngcihbcgojnpadj
 ```
+
+`--agent-runtime-status-json` is a file transport, not a trust mechanism. If the
+payload is only a user-supplied status file, verification must report
+`agent.runtimeStatus.provenance: "user_supplied_status_file"` and
+`mcpRuntime.source: "agent_runtime_status_file"`, then treat it as diagnostic or
+pending evidence. Only a trusted first-class hook can report
+`agent.runtimeStatus.provenance: "agent_runtime_hook"` and
+`mcpRuntime.source: "agent_runtime"` to make `readiness.agentRuntime` ready.
 
 The first command is a challenge-issuance verification pass. If CLI-level
 readiness is blocked, it returns the normal blocking result and may omit the
@@ -627,8 +760,9 @@ active, `backendCount: 0` is treated as downstream evidence of the same popup
 activation boundary, and the result is `needs_browser_popup` with
 `nextAction.kind: "open_popup"`, not `needs_repair`.
 
-After the top-level result is selected, `obu verify` chooses the single
-`nextAction` deterministically within that result class.
+Each blocking check should emit an `actionCandidate` when OBU knows the next
+action. After the top-level result is selected, `obu verify` chooses the single
+`nextAction` deterministically from those candidates within that result class.
 
 For `needs_manual_action`, action priority is:
 
@@ -642,10 +776,17 @@ For `needs_manual_action`, action priority is:
 8. `restart_agent`
 9. `configure_agent`
 
+`actionCandidate.priority` is a positive integer. It must use the numeric rank
+from the priority list for its result class. Lower numbers win. For example,
+`select_profile` has priority `4` within `needs_manual_action`.
+
 For `needs_repair`, the `run_repair` command should target the first repairable
 blocking layer in verification order. The repair command may repair multiple
 deterministic OBU-owned issues, but the human message must name the first
 blocking issue that determined the action.
+
+For `needs_repair`, `run_repair` uses priority `1`. For
+`needs_browser_popup`, `open_popup` uses priority `1`.
 
 Examples:
 
@@ -692,6 +833,7 @@ Result/action mapping:
 | No runnable OBU CLI exists before handoff reaches the CLI | `needs_manual_action` | `install_cli` |
 | Explicit profile path does not exist, cannot be inspected, or default discovery cannot find a profile root | `needs_manual_action` | `select_profile` |
 | Multiple matching profiles exist but runtime proof is not profile-bound | `needs_manual_action` | `select_profile` |
+| Multiple inspectable profiles exist but none contains the selected extension | `needs_manual_action` | `select_profile` |
 | Selected extension is not installed in the resolved profile | `needs_manual_action` | `install_extension` |
 | Selected extension is installed but disabled in the resolved profile | `needs_manual_action` | `enable_extension` |
 | Native-host manifest, allowed origin, host path, runtime permissions, or stale descriptor can be repaired deterministically | `needs_repair` | `run_repair` |
@@ -715,6 +857,10 @@ Each action must include:
 
 The next action must be directly actionable. It should not say "check docs" if a
 specific repair or configuration command is known.
+
+The selected `nextAction` must be traceable to a blocking check's
+`actionCandidate`. The aggregator should not synthesize a different action that
+cannot be explained by normalized evidence.
 
 When a browser/profile-specific action cannot be represented safely as a shell
 command, `command` must be omitted and the action must include explicit context
@@ -753,6 +899,20 @@ Allowed `verificationTarget` values:
 - `cli`
 - `agent_runtime`
 
+Allowed `browser.channel` values:
+
+- `unpacked-dev`
+- `store`
+
+Allowed `browser.extensionIdSource` values:
+
+- `explicit-argument`
+- `environment`
+- `user-config`
+- `payload-metadata`
+- `repo-release-metadata`
+- `manifest-key`
+
 Allowed check status values:
 
 - `pass`: the check succeeded.
@@ -760,9 +920,11 @@ Allowed check status values:
 - `fail`: the check blocks readiness.
 - `not_checked`: the check was intentionally skipped and the reason is present.
 
-Every `not_checked` status object must include a non-empty `reason`. Scalar
-component fields with value `not_checked` must have a sibling `reason` or
-`reasons.<fieldName>` entry on the containing object.
+Every `not_checked` status object must include a non-empty `reason`. Component
+summary fields on `browser` or `browser.profile.candidates[]` with any value
+other than `pass` must have a sibling `reason` or a
+`reasons.<fieldName>` entry on the containing object. Browser-level component
+reasons belong under `browser.reasons`.
 
 Allowed readiness values:
 
@@ -778,11 +940,12 @@ Allowed component state values for summary fields such as `profileExists`,
 - `warn`: the component has a non-blocking issue.
 - `fail`: the component has a blocking issue.
 - `missing`: the component is absent.
+- `unreadable`: the component exists but cannot be inspected.
 - `disabled`: the component exists but is disabled.
 - `stale`: the component exists but its lifecycle state is stale.
 - `invalid`: the component exists but has invalid shape or contents.
 - `not_checked`: the component was intentionally not checked and the reason is
-  present in details.
+  present on the containing object.
 
 Instruction check warnings must use one of these reason values:
 
@@ -811,6 +974,7 @@ result. Check objects use this shape:
   "id": "agent-mcp-server",
   "layer": "agent_mcp",
   "status": "pass",
+  "blocks": [],
   "reason": "equivalent_config",
   "message": "codex-cli configures open-browser-use",
   "details": {
@@ -823,6 +987,28 @@ result. Check objects use this shape:
 `warn`, `fail`, and `not_checked` checks. Instruction warnings use
 `reason: "not_implemented"` or `reason: "missing_instruction"` on the check
 object, not a synthetic status value.
+
+`blocks` is optional for pass checks and required for blocking checks. It is an
+array containing `cli`, `agent_runtime`, or both. Blocking checks should include
+an `actionCandidate` with `kind`, `priority`, and enough command/context fields
+to construct the final `nextAction`.
+
+`actionCandidate` uses this shape:
+
+```json
+{
+  "result": "needs_browser_popup",
+  "kind": "open_popup",
+  "priority": 1,
+  "message": "Open the open-browser-use extension popup."
+}
+```
+
+`result` must be one of the non-ready result values, `kind` must be one of the
+allowed next action kinds, and `priority` must follow the result-class priority
+rules above. `message`, `command`, `url`, `browser`, `profile`, `rerun`, and
+other context fields may be included when they are needed to construct the final
+`nextAction`.
 
 Allowed `checks[].layer` values:
 
@@ -862,6 +1048,7 @@ Allowed `checks[].layer` values:
     },
     "runtimeStatus": {
       "status": "not_checked",
+      "provenance": "not_applicable",
       "reason": "target agent runtime is outside this CLI process"
     }
   },
@@ -869,8 +1056,10 @@ Allowed `checks[].layer` values:
     "kind": "chrome",
     "channel": "store",
     "extensionId": "fblnfcjnjklpgnmfnngcihbcgojnpadj",
+    "extensionIdSource": "explicit-argument",
     "profile": {
       "path": "/Users/alex/Library/Application Support/Google/Chrome/Default",
+      "suggestedPath": null,
       "source": "default_discovery",
       "runtimeBinding": "single_candidate",
       "candidates": [
@@ -895,6 +1084,7 @@ Allowed `checks[].layer` values:
   },
   "mcpRuntime": {
     "source": "direct_mcp_probe",
+    "provenance": "expected_obu_invocation",
     "probeCommandSource": "expected_obu_invocation",
     "mcpConfigured": true,
     "mcpStarts": true,
@@ -902,7 +1092,7 @@ Allowed `checks[].layer` values:
     "backendCount": 1,
     "backends": [
       {
-        "kind": "webextension",
+        "type": "webextension",
         "browser": "chrome",
         "extensionId": "fblnfcjnjklpgnmfnngcihbcgojnpadj",
         "extensionIdentity": {
@@ -995,6 +1185,7 @@ Non-ready result:
     "instructions": { "status": "pass" },
     "runtimeStatus": {
       "status": "not_checked",
+      "provenance": "not_applicable",
       "reason": "target agent runtime is outside this CLI process"
     }
   },
@@ -1002,8 +1193,10 @@ Non-ready result:
     "kind": "chrome",
     "channel": "store",
     "extensionId": "fblnfcjnjklpgnmfnngcihbcgojnpadj",
+    "extensionIdSource": "explicit-argument",
     "profile": {
       "path": "/Users/alex/Library/Application Support/Google/Chrome/Default",
+      "suggestedPath": null,
       "source": "default_discovery",
       "runtimeBinding": "not_available",
       "candidates": [
@@ -1019,10 +1212,14 @@ Non-ready result:
     "extensionEnabled": "pass",
     "nativeHost": "pass",
     "runtimeDescriptor": "missing",
+    "reasons": {
+      "runtimeDescriptor": "no active WebExtension descriptor found"
+    },
     "resumeRequired": true
   },
   "mcpRuntime": {
     "source": "direct_mcp_probe",
+    "provenance": "expected_obu_invocation",
     "probeCommandSource": "expected_obu_invocation",
     "mcpConfigured": true,
     "mcpStarts": true,
@@ -1069,24 +1266,42 @@ Non-ready result:
       "id": "extension-runtime",
       "layer": "extension_runtime",
       "status": "fail",
+      "blocks": ["cli"],
       "reason": "runtime_descriptor_not_active",
       "message": "extension runtime is not active from CLI-observable evidence",
-      "details": { "source": "runtime_descriptor_probe" }
+      "details": { "source": "runtime_descriptor_probe" },
+      "actionCandidate": {
+        "kind": "open_popup",
+        "priority": 1,
+        "result": "needs_browser_popup"
+      }
     },
     {
       "id": "runtime-descriptor-probe",
       "layer": "runtime_descriptor",
       "status": "fail",
+      "blocks": ["cli"],
       "reason": "descriptor_missing",
       "message": "no active WebExtension descriptor found",
-      "details": { "resumeRequired": true }
+      "details": { "resumeRequired": true },
+      "actionCandidate": {
+        "kind": "open_popup",
+        "priority": 1,
+        "result": "needs_browser_popup"
+      }
     },
     {
       "id": "mcp-runtime-backend",
       "layer": "mcp_runtime",
       "status": "fail",
+      "blocks": ["cli"],
       "reason": "zero_backends_after_popup_boundary",
-      "message": "direct MCP probe found zero usable browser backends"
+      "message": "direct MCP probe found zero usable browser backends",
+      "actionCandidate": {
+        "kind": "open_popup",
+        "priority": 1,
+        "result": "needs_browser_popup"
+      }
     },
     {
       "id": "agent-mcp-server",
@@ -1171,8 +1386,8 @@ false`.
 
 ## Browser Popup Boundary
 
-Opening the popup is sometimes required because Chrome controls MV3 extension
-runtime activation.
+Opening the popup is sometimes required because the selected Chromium-family
+browser controls MV3 extension runtime activation.
 
 `obu verify --repair` can fix:
 
@@ -1182,7 +1397,7 @@ runtime activation.
 - runtime directory permissions;
 - stale or invalid descriptor files.
 
-It cannot force Chrome to:
+It cannot force the browser to:
 
 - wake the MV3 service worker immediately;
 - reconnect the extension to native messaging from outside the browser;
@@ -1256,7 +1471,10 @@ MCP status is split into server availability and browser backend availability.
 
 Required fields:
 
-- `source`: `agent_runtime | direct_mcp_probe | not_checked`.
+- `source`: `agent_runtime | agent_runtime_status_file | direct_mcp_probe |
+  not_checked`.
+- `provenance`: `agent_runtime_hook | expected_obu_invocation |
+  user_supplied_status_file | not_applicable`.
 - `mcpConfigured`: whether the target agent has an equivalent server config.
 - `probeCommandSource`: `expected_obu_invocation | agent_runtime_hook |
   not_applicable`; direct probes must use `expected_obu_invocation`.
@@ -1264,21 +1482,28 @@ Required fields:
   checked directly.
 - `sdkBootstrap`: `available | missing | untrusted | not_checked`.
 - `backendCount`: `number | null`; number of usable browser backends.
-- `backends`: backend summaries when available. WebExtension backend summaries
-  must include normalized `browser`, `extensionId`, and `extensionIdentity`
-  fields. A WebExtension backend without verified extension identity cannot
-  contribute to `backendCount` for extension-scoped readiness.
+- `backends`: normalized backend summaries when available. WebExtension backend
+  summaries must include `type`, `browser`, `extensionId`, and
+  `extensionIdentity`. A WebExtension backend without verified extension identity
+  cannot contribute to `backendCount` for extension-scoped readiness.
 
 `source: "agent_runtime"` means the status came from the selected agent process
 after it reloaded MCP tools. Only this source can make
 `readiness.agentRuntime` become `ready`; `probeCommandSource` must be
-`agent_runtime_hook`.
+`agent_runtime_hook` and `provenance` must be `agent_runtime_hook`.
 
 `source: "direct_mcp_probe"` means OBU launched or probed the MCP server itself.
 It can prove CLI-level backend readiness, but it must not be treated as proof
 that the selected agent process has reloaded MCP tools. The command must be the
 expected OBU MCP invocation for the current layout, not a command copied from a
-divergent agent config.
+divergent agent config. `provenance` must be `expected_obu_invocation`.
+
+`source: "agent_runtime_status_file"` means OBU read a user-supplied status file
+that may contain challenge-bound agent-runtime evidence, but the transport itself
+is not trusted agent-runtime provenance. It must use
+`provenance: "user_supplied_status_file"` and
+`probeCommandSource: "not_applicable"`, and it must not make
+`readiness.agentRuntime` ready.
 
 When `source: "direct_mcp_probe"` and the MCP process cannot start,
 `mcpStarts` must be `false`, `sdkBootstrap` must be `not_checked`,
@@ -1289,12 +1514,37 @@ be `not_checked`, `backendCount` must be `null`, and `backends` must be an empty
 array.
 
 `source: "not_checked"` means MCP runtime status was not probed. In that case
-`probeCommandSource` must be `not_applicable`, `mcpStarts` must be `null`,
-`sdkBootstrap` must be `not_checked`, `backendCount` must be `null`, and
-`backends` must be an empty array.
+`provenance` and `probeCommandSource` must be `not_applicable`, `mcpStarts` must
+be `null`, `sdkBootstrap` must be `not_checked`, `backendCount` must be `null`,
+and `backends` must be an empty array.
 
 `backendCount: 0` means not ready for browser automation even if
 `sdkBootstrap: "available"`.
+
+Normalized backend summary shape:
+
+```json
+{
+  "type": "webextension",
+  "browser": "chrome",
+  "extensionId": "fblnfcjnjklpgnmfnngcihbcgojnpadj",
+  "extensionIdentity": {
+    "source": "descriptor_metadata",
+    "verified": true
+  },
+  "socketPath": "/path/to/socket",
+  "metadata": {
+    "browserKind": "chrome",
+    "extensionId": "fblnfcjnjklpgnmfnngcihbcgojnpadj"
+  }
+}
+```
+
+`socketPath` may be omitted from human output, but if it is present in JSON it
+must be the canonical socket path used for the verified backend. Raw MCP backend
+payloads use fields such as `type`, `name`, `socketPath`, and
+`metadata.browser_kind`; verify may include those raw payloads only under
+`details.raw`.
 
 For setup probes, agents should end turns with `turnEnded()` when the goal is to
 keep the browser connection alive. `finishTurn({ keep: [] })` intentionally
@@ -1313,20 +1563,31 @@ The product is complete only when all of the following are true:
   `mcpRuntime.sdkBootstrap` is not `available`.
 - `verificationTarget: "agent_runtime"` cannot return `ready` unless
   `readiness.agentRuntime` is `ready`, and agent-runtime evidence has fresh
-  challenge binding, target binding, and verified WebExtension extension
-  identity matching `browser.extensionId`.
+  challenge binding, target binding, `provenance: "agent_runtime_hook"`, trusted
+  hook transport, and verified WebExtension extension identity matching
+  `browser.extensionId`.
+- User-supplied agent-runtime status files without trusted hook provenance remain
+  diagnostic or pending evidence and cannot make agent-runtime readiness `ready`.
 - WebExtension `backendCount` excludes metadata-less, `"unknown"`, wrong-browser,
   or wrong-extension backends; Store-channel readiness always requires exact
-  extension id proof.
+  extension id proof and JSON reports `browser.extensionIdSource`.
+- Normalized backend summaries use the documented `type`, `browser`,
+  `extensionId`, and `extensionIdentity` shape; raw backend payloads stay under
+  `details.raw`.
 - Browser profile discovery is deterministic and reports candidate profile state.
+- Multi-profile default discovery reports `suggestedPath` but does not treat it
+  as `browser.profile.path` unless runtime proof is `profile_verified`.
 - Explicit-profile readiness may be browser/extension-scoped only when JSON and
   human output warn with `reason: "profile_runtime_not_bound"`; multi-profile
   default readiness still requires `profile_verified` or `select_profile`.
 - Missing profile roots or nonexistent explicit profiles produce
   `nextAction.kind: "select_profile"`, not `install_extension`.
-- Candidate fields using `not_checked` include per-field reasons.
-- Same-result-class failures choose `nextAction` by the deterministic priority
-  table in this document.
+- Unreadable profile roots or profile files produce unreadable/profile-inspection
+  reasons instead of being collapsed into `missing`.
+- Component summary fields using any value other than `pass` include per-field
+  reasons.
+- Same-result-class failures choose `nextAction` from blocking checks'
+  `actionCandidate` values by the deterministic priority table in this document.
 - Agent-runtime challenge issuance has a defined `needs_manual_action` pending
   state with `nextAction.kind: "collect_agent_runtime_status"`.
 - Direct MCP probes never execute divergent or unreadable agent-config commands.
