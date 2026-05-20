@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { spawn } from "node:child_process";
+import { createHash } from "node:crypto";
 import net from "node:net";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
@@ -198,7 +199,7 @@ test("verify treats missing Codex config as repairable when codex is not on PATH
   assert.equal(agentMcp?.actionCandidate?.kind, "run_repair");
 });
 
-test("verify accepts trusted agent-runtime hook result for a challenge", async (t) => {
+test("verify rejects file-backed agent-runtime hook result for a challenge", async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
   const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
   t.after(() => rm(home, { recursive: true, force: true }));
@@ -255,7 +256,13 @@ test("verify accepts trusted agent-runtime hook result for a challenge", async (
   assert.equal(issuedPayload.nextAction.kind, "collect_agent_runtime_status");
   assert.match(issuedPayload.nextAction.rerun, /--agent-runtime-challenge-json=/);
   const challenge = JSON.parse(await readFile(challengePath, "utf8"));
-  const resultPath = challenge.trustedHookResult.path;
+  assert.equal(challenge.trustedHookResult, undefined);
+  const resultPath = path.join(
+    runtimeDir,
+    "agent-runtime",
+    "codex-cli-runtime-status",
+    `${createHash("sha256").update(challenge.challenge.nonce).digest("hex")}.json`,
+  );
   await mkdir(path.dirname(resultPath), { recursive: true, mode: 0o700 });
   await writeFile(resultPath, `${JSON.stringify({
     schemaVersion: 1,
@@ -293,14 +300,17 @@ test("verify accepts trusted agent-runtime hook result for a challenge", async (
     "--json",
   ], baseEnv);
 
-  assert.equal(result.code, 0);
+  assert.equal(result.code, 1);
   const payload = JSON.parse(result.stdout);
-  assert.equal(payload.result, "ready");
-  assert.equal(payload.readiness.agentRuntime, "ready");
-  assert.equal(payload.agent.runtimeStatus.status, "pass");
-  assert.equal(payload.agent.runtimeStatus.hook.trusted, true);
-  assert.equal(payload.mcpRuntime.agentRuntime.source, "agent_runtime");
-  assert.equal(payload.mcpRuntime.agentRuntime.backendCount, 1);
+  assert.equal(payload.result, "needs_manual_action");
+  assert.equal(payload.readiness.cli, "ready");
+  assert.equal(payload.readiness.agentRuntime, "blocked");
+  assert.equal(payload.agent.runtimeStatus.status, "not_checked");
+  assert.equal(payload.agent.runtimeStatus.provenance, "not_applicable");
+  assert.equal(payload.agent.runtimeStatus.reason, "agent_runtime_challenge_pending");
+  assert.equal(payload.mcpRuntime.agentRuntime.source, "not_checked");
+  assert.equal(payload.mcpRuntime.agentRuntime.backendCount, null);
+  assert.equal(payload.nextAction.kind, "collect_agent_runtime_status");
 });
 
 test("agent doctor verifies Codex global config without codex on PATH", async (t) => {

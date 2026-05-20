@@ -1,4 +1,4 @@
-import { createHash, randomBytes } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { access, chmod, lstat, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import net from "node:net";
@@ -19,7 +19,6 @@ import { executableExists, packageVersion, type RuntimeLayout } from "./runtime-
 const HOST_NAME = "dev.obu.host";
 const SERVER_NAME = "open-browser-use";
 const DEFAULT_MCP_PROBE_TIMEOUT_MS = 8_000;
-const AGENT_RUNTIME_FRESHNESS_MS = 60_000;
 
 export type VerificationTarget = "cli" | "agent_runtime";
 export type VerifyResult = "ready" | "needs_browser_popup" | "needs_repair" | "needs_manual_action";
@@ -1345,21 +1344,12 @@ async function evaluateAgentRuntime(
       };
     }
     return {
-      runtimeStatus: trustedResult.status === "fail" && hook
-        ? {
-          status: "fail",
-          provenance: "agent_runtime_hook",
-          reason: trustedResult.reason,
-          hook: { ...hook, trusted: true },
-          targetBound: false,
-          challengeBound: false,
-        }
-        : {
-          status: "not_checked",
-          provenance: "not_applicable",
-          reason: trustedResult.reason,
-          ...(hook ? { trustedHook: hook } : {}),
-        },
+      runtimeStatus: {
+        status: "not_checked",
+        provenance: "not_applicable",
+        reason: trustedResult.reason,
+        ...(hook ? { trustedHook: hook } : {}),
+      },
       mcpRuntime: trustedResult.status === "fail" ? trustedResult.mcpRuntime : notCheckedAgentRuntimeMcp(trustedResult.reason),
       check: failCheck({
         id: "agent-runtime-status",
@@ -1369,8 +1359,8 @@ async function evaluateAgentRuntime(
         target: { ...target, agent: options.agent },
         evidence: {
           scope: "agent_runtime",
-          provenance: hook ? "agent_runtime_hook" : "not_applicable",
-          source: "agent_runtime_hook",
+          provenance: "not_applicable",
+          source: "agent_runtime_hook_registry",
         },
         blocks: ["agent_runtime"],
         actionCandidate: collectAgentRuntimeAction(options, hook, options.agentRuntimeChallengeJson, "Collect agent-runtime status through the trusted OBU hook."),
@@ -1993,7 +1983,6 @@ function normalizeBackend(value: unknown, options: VerifyOptions): NormalizedBac
 
 async function writeAgentRuntimeChallenge(file: string, options: VerifyOptions, hook: TrustedRuntimeHook | undefined): Promise<void> {
   const nonce = randomBytes(24).toString("hex");
-  const resultPath = hook ? trustedRuntimeResultPath(options.layout.runtimeDir, hook, nonce) : undefined;
   const payload = {
     schemaVersion: 1,
     agentId: options.agent,
@@ -2009,13 +1998,8 @@ async function writeAgentRuntimeChallenge(file: string, options: VerifyOptions, 
       ...(options.profile ? { profile: options.profile } : {}),
     },
     ...(hook ? { trustedHook: hook } : {}),
-    ...(resultPath ? { trustedHookResult: { path: resultPath } } : {}),
   };
   await mkdir(path.dirname(file), { recursive: true, mode: 0o700 });
-  if (resultPath) {
-    await mkdir(path.dirname(resultPath), { recursive: true, mode: 0o700 });
-    if (process.platform !== "win32") await chmod(path.dirname(resultPath), 0o700);
-  }
   await writeFile(file, `${JSON.stringify(payload, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   if (process.platform !== "win32") await chmod(file, 0o600);
 }
@@ -2051,30 +2035,12 @@ async function readTrustedRuntimeHookResult(options: VerifyOptions, hook: Truste
   const challenge = await readAgentRuntimeChallenge(options, hook);
   if (challenge.status === "fail") return challenge;
 
-  const resultPath = trustedRuntimeResultPath(options.layout.runtimeDir, hook, challenge.nonce);
-  const payload = await readJson(resultPath).catch((error) => {
-    const nodeError = error as NodeJS.ErrnoException;
-    if (nodeError.code === "ENOENT") return undefined;
-    return { __obu_read_error: nodeError.message ?? String(error) };
-  });
-  if (payload === undefined) {
-    return {
-      status: "pending",
-      reason: "agent_runtime_challenge_pending",
-      message: "trusted agent-runtime hook result has not been delivered for this challenge",
-      details: { challengePath: options.agentRuntimeChallengeJson, resultPath },
-    };
-  }
-  if (isRecord(payload) && typeof payload.__obu_read_error === "string") {
-    return {
-      status: "fail",
-      reason: "agent_runtime_result_unreadable",
-      message: "trusted agent-runtime hook result could not be read",
-      mcpRuntime: notCheckedAgentRuntimeMcp("agent_runtime_result_unreadable"),
-      details: { challengePath: options.agentRuntimeChallengeJson, resultPath, error: payload.__obu_read_error },
-    };
-  }
-  return validateTrustedRuntimeEnvelope(payload, options, hook, challenge, resultPath);
+  return {
+    status: "pending",
+    reason: "agent_runtime_challenge_pending",
+    message: "agent-runtime challenge is valid, but no trusted hook transport has delivered status for this CLI process",
+    details: { challengePath: options.agentRuntimeChallengeJson, trustedHook: hook },
+  };
 }
 
 async function readAgentRuntimeChallenge(
@@ -2128,93 +2094,6 @@ async function readAgentRuntimeChallenge(
   };
 }
 
-function validateTrustedRuntimeEnvelope(
-  payload: unknown,
-  options: VerifyOptions,
-  hook: TrustedRuntimeHook,
-  challenge: { nonce: string; issuedAt?: string },
-  resultPath: string,
-): TrustedRuntimeResult {
-  const detailsBase = { challengePath: options.agentRuntimeChallengeJson, resultPath };
-  if (!isRecord(payload)) {
-    return trustedHookFailure("agent_runtime_result_invalid", "trusted agent-runtime hook result is not an object", detailsBase);
-  }
-  const payloadHook = isRecord(payload.hook) ? payload.hook : undefined;
-  const hookBound = payloadHook?.id === hook.id && payloadHook.transport === hook.transport;
-  const targetBound =
-    payload.schemaVersion === 1 &&
-    payload.agentId === options.agent &&
-    payload.mcpServerName === SERVER_NAME &&
-    payload.provenance === "agent_runtime_hook" &&
-    targetMatches(payload.target, options);
-  const challengeBound = isRecord(payload.challenge) && payload.challenge.nonce === challenge.nonce;
-  const generatedAt = typeof payload.generatedAt === "string" ? payload.generatedAt : undefined;
-  const generatedAtMs = generatedAt === undefined ? NaN : Date.parse(generatedAt);
-  const fresh = Number.isFinite(generatedAtMs) &&
-    generatedAtMs <= Date.now() + 5_000 &&
-    Date.now() - generatedAtMs <= AGENT_RUNTIME_FRESHNESS_MS;
-  if (!hookBound || !targetBound || !challengeBound || generatedAt === undefined || !fresh) {
-    return trustedHookFailure("agent_runtime_result_untrusted", "trusted agent-runtime hook result is stale, unbound, or from the wrong hook", {
-      ...detailsBase,
-      hookBound,
-      targetBound,
-      challengeBound,
-      fresh,
-      generatedAt,
-    });
-  }
-  const trustedGeneratedAt = generatedAt;
-
-  const statusPayload = isRecord(payload.status) ? payload.status : {};
-  const rawBackends = Array.isArray(statusPayload.backends) ? statusPayload.backends : [];
-  const backends = rawBackends.map((backend) => normalizeBackend(backend, options));
-  const usable = backends.filter((backend) => backend.extensionIdentity.verified);
-  const sdkBootstrap = typeof statusPayload.sdk_bootstrap === "string" ? statusPayload.sdk_bootstrap : "missing";
-  const mcpRuntime: McpRuntimeStatus = {
-    source: "agent_runtime",
-    provenance: "agent_runtime_hook",
-    probeCommandSource: "agent_runtime_hook",
-    mcpConfigured: true,
-    mcpStarts: true,
-    sdkBootstrap,
-    backendCount: usable.length,
-    backends: usable,
-    details: { raw: statusPayload, resultPath },
-    ...(sdkBootstrap !== "available" ? { reason: `agent-runtime sdk bootstrap is ${sdkBootstrap}` } : usable.length === 0 ? { reason: "agent-runtime hook reported zero usable browser backends" } : {}),
-  };
-  if (sdkBootstrap !== "available") {
-    return {
-      status: "fail",
-      reason: "agent_runtime_sdk_unavailable",
-      message: `agent-runtime MCP status reported sdk bootstrap ${sdkBootstrap}`,
-      mcpRuntime,
-      details: { ...detailsBase, generatedAt },
-    };
-  }
-  if (usable.length === 0) {
-    return {
-      status: "fail",
-      reason: "agent_runtime_zero_backends",
-      message: "agent-runtime MCP status reported zero usable browser backends",
-      mcpRuntime,
-      details: { ...detailsBase, generatedAt },
-    };
-  }
-  return {
-    status: "pass",
-    runtimeStatus: {
-      status: "pass",
-      provenance: "agent_runtime_hook",
-      hook: { ...hook, trusted: true },
-      generatedAt: trustedGeneratedAt,
-      targetBound: true,
-      challengeBound: true,
-    },
-    mcpRuntime,
-    details: { ...detailsBase, generatedAt: trustedGeneratedAt, backendCount: usable.length },
-  };
-}
-
 function trustedHookFailure(reason: string, message: string, details?: Record<string, unknown>): Extract<TrustedRuntimeResult, { status: "fail" }> {
   return {
     status: "fail",
@@ -2246,11 +2125,6 @@ function trustedRuntimeHook(agent: AgentId): TrustedRuntimeHook | undefined {
     };
   }
   return undefined;
-}
-
-function trustedRuntimeResultPath(runtimeDir: string, hook: TrustedRuntimeHook, nonce: string): string {
-  const nonceHash = createHash("sha256").update(nonce).digest("hex");
-  return path.join(runtimeDir, "agent-runtime", hook.id, `${nonceHash}.json`);
 }
 
 function passCheck(input: {
