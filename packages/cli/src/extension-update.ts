@@ -2,6 +2,7 @@ import { cp, mkdir, readFile, rename, rm } from "node:fs/promises";
 import path from "node:path";
 
 import { hasActiveWebExtensionRuntimeDescriptor } from "./doctor-browser.js";
+import { extensionIdFromManifestKey, type ExtensionChannel } from "./extension-channel.js";
 import type { RuntimeLayout } from "./runtime-layout.js";
 
 export type ExtensionUpdateStatus = "applied" | "skipped" | "would_apply" | "manual_action_required" | "failed";
@@ -28,6 +29,10 @@ export type UpdateExtensionOptions = {
   sourceDir?: string;
   dryRun?: boolean;
   noWait?: boolean;
+  verifyTarget?: {
+    channel: ExtensionChannel;
+    extensionId?: string;
+  };
 };
 
 export async function updateExtension(options: UpdateExtensionOptions): Promise<ExtensionUpdateResult> {
@@ -54,7 +59,7 @@ export async function updateExtension(options: UpdateExtensionOptions): Promise<
         message: `could not validate extension payload ${sourceDir}`,
         details: { sourceDir, error: String(error) },
       },
-    ]);
+    ], options.verifyTarget);
   }
 
   const versionDir = path.join(options.layout.extensionInstallRoot, "versions", manifest.version);
@@ -71,7 +76,7 @@ export async function updateExtension(options: UpdateExtensionOptions): Promise<
       message: `would refresh stable extension path ${currentDir}`,
       details: { currentDir },
     });
-    return result("manual_action_required", dryRun, options.layout, steps);
+    return result("manual_action_required", dryRun, options.layout, steps, options.verifyTarget, manifest);
   }
 
   try {
@@ -96,7 +101,7 @@ export async function updateExtension(options: UpdateExtensionOptions): Promise<
       message: `could not refresh stable extension path ${currentDir}`,
       details: { currentDir, error: String(error) },
     });
-    return result("failed", dryRun, options.layout, steps);
+    return result("failed", dryRun, options.layout, steps, options.verifyTarget, manifest);
   }
 
   if (noWait) {
@@ -106,7 +111,7 @@ export async function updateExtension(options: UpdateExtensionOptions): Promise<
       message: "skipped runtime descriptor wait",
       details: { runtimeDir: options.layout.runtimeDir },
     });
-    return result("manual_action_required", dryRun, options.layout, steps);
+    return result("manual_action_required", dryRun, options.layout, steps, options.verifyTarget, manifest);
   }
 
   if (await hasActiveWebExtensionRuntimeDescriptor(options.layout.runtimeDir)) {
@@ -116,7 +121,7 @@ export async function updateExtension(options: UpdateExtensionOptions): Promise<
       message: "found an active WebExtension runtime descriptor",
       details: { runtimeDir: options.layout.runtimeDir },
     });
-    return result("complete", dryRun, options.layout, steps);
+    return result("complete", dryRun, options.layout, steps, options.verifyTarget, manifest);
   }
 
   steps.push({
@@ -125,7 +130,7 @@ export async function updateExtension(options: UpdateExtensionOptions): Promise<
     message: "no active WebExtension runtime descriptor found",
     details: { runtimeDir: options.layout.runtimeDir },
   });
-  return result("manual_action_required", dryRun, options.layout, steps);
+  return result("manual_action_required", dryRun, options.layout, steps, options.verifyTarget, manifest);
 }
 
 type ExtensionManifest = {
@@ -177,8 +182,10 @@ function result(
   dryRun: boolean,
   layout: RuntimeLayout,
   steps: ExtensionUpdateStep[],
+  verifyTarget?: UpdateExtensionOptions["verifyTarget"],
+  manifest?: ExtensionManifest,
 ): ExtensionUpdateResult {
-  const verifyAction = verifyNextAction(layout);
+  const verifyAction = verifyNextAction(verifyTarget, manifest);
   const nextActions: ExtensionUpdateResult["nextActions"] = state === "complete"
     ? [verifyAction]
     : [
@@ -199,13 +206,23 @@ function result(
   };
 }
 
-function verifyNextAction(layout: RuntimeLayout): ExtensionUpdateResult["nextActions"][number] {
-  const channel = layout.userConfig?.extensionChannel ?? "<channel>";
-  const extensionId = layout.userConfig?.extensionChannel === "store" && layout.userConfig.storeExtensionId
-    ? layout.userConfig.storeExtensionId
-    : "<extension-id>";
+function verifyNextAction(
+  verifyTarget: UpdateExtensionOptions["verifyTarget"],
+  manifest?: ExtensionManifest,
+): ExtensionUpdateResult["nextActions"][number] {
+  const channel = verifyTarget?.channel ?? "unpacked-dev";
+  const extensionId = verifyTarget?.extensionId ?? extensionIdForVerify(manifest) ?? "<extension-id>";
   return {
     kind: "manual",
     value: `Choose the agent and browser target, then run obu verify --agent=<agent-id> --browser=<browser> --channel=${channel} --extension-id=${extensionId}.`,
   };
+}
+
+function extensionIdForVerify(manifest: ExtensionManifest | undefined): string | undefined {
+  if (!manifest?.key) return undefined;
+  try {
+    return extensionIdFromManifestKey(manifest.key);
+  } catch {
+    return undefined;
+  }
 }

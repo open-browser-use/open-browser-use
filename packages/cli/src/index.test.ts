@@ -704,6 +704,40 @@ test("update-extension CLI rejects a persisted Store channel by default", async 
   assert.match(result.stderr, /Chrome Web Store manages Store extension updates/);
 });
 
+test("update-extension CLI channel override does not reuse a stale Store verify target", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const source = await mkdtemp(path.join(os.tmpdir(), "obu-cli-extension-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(source, { recursive: true, force: true }));
+  await writeFile(path.join(source, "manifest.json"), JSON.stringify({ manifest_version: 3, version: "0.5.2" }), "utf8");
+  const configPath = path.join(home, ".obu", "config.json");
+  const staleStoreId = "ponmlkjihgfedcbaponmlkjihgfedcba";
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(configPath, JSON.stringify({
+    schemaVersion: 1,
+    runtimeDir: path.join(home, "runtime"),
+    extensionCurrentDir: path.join(home, ".obu", "extension", "current"),
+    nativeHostInstallRoot: path.join(home, ".obu", "native-host"),
+    extensionChannel: "store",
+    storeExtensionId: staleStoreId,
+  }), "utf8");
+
+  const result = await runCli(["update-extension", "--channel=unpacked-dev", "--path", source, "--no-wait", "--json"], {
+    HOME: home,
+  });
+
+  assert.equal(result.code, 1);
+  assert.equal(result.stderr, "");
+  const payload = JSON.parse(result.stdout);
+  const nextActions = payload.nextActions.map((action: any) => action.value).join("\n");
+  assert.match(nextActions, /--channel=unpacked-dev --extension-id=<extension-id>/);
+  assert.doesNotMatch(nextActions, /--channel=store/);
+  assert.doesNotMatch(nextActions, new RegExp(staleStoreId));
+  const config = JSON.parse(await readFile(configPath, "utf8"));
+  assert.equal(config.extensionChannel, "unpacked-dev");
+  assert.equal("storeExtensionId" in config, false);
+});
+
 test("setup default output summarizes dry-run planned work and verbose keeps step ids", async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
   const source = await mkdtemp(path.join(os.tmpdir(), "obu-cli-extension-"));
@@ -1037,6 +1071,47 @@ test("setup CLI runs deterministic steps before extension manual boundary", asyn
   assert.match(nativeHost.details.nativeManifestPath, new RegExp(`^${escapeRegExp(home)}`));
   assert.equal(payload.steps.some((step: any) => step.id === "extension-current" && step.status === "applied"), true);
   assert.equal(await readFile(path.join(home, ".obu", "extension", "current", "marker.txt"), "utf8"), "setup-extension");
+});
+
+test("setup next actions do not reuse a stale Store verify target for unpacked-dev", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const source = await mkdtemp(path.join(os.tmpdir(), "obu-cli-extension-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(source, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  await writeFile(path.join(source, "manifest.json"), JSON.stringify({
+    manifest_version: 3,
+    version: "0.8.3",
+    key: Buffer.from("open-browser-use cli setup target key").toString("base64"),
+  }), "utf8");
+  const hostBin = path.join(bin, "obu-host");
+  await writeFile(hostBin, "#!/bin/sh\n", "utf8");
+  await chmod(hostBin, 0o755);
+  const configPath = path.join(home, ".obu", "config.json");
+  const staleStoreId = "ponmlkjihgfedcbaponmlkjihgfedcba";
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(configPath, JSON.stringify({
+    schemaVersion: 1,
+    runtimeDir: path.join(home, "runtime"),
+    extensionCurrentDir: path.join(home, ".obu", "extension", "current"),
+    nativeHostInstallRoot: path.join(home, ".obu", "native-host"),
+    extensionChannel: "store",
+    storeExtensionId: staleStoreId,
+  }), "utf8");
+
+  const result = await runCli(["setup", "--yes", "--channel=unpacked-dev", "--path", source, "--agents=none", "--json"], {
+    HOME: home,
+    OBU_HOST_BIN: hostBin,
+  });
+
+  assert.equal(result.code, 1);
+  assert.equal(result.stderr, "");
+  const payload = JSON.parse(result.stdout);
+  const nextActions = payload.nextActions.map((action: any) => action.value).join("\n");
+  assert.match(nextActions, new RegExp(`--channel=unpacked-dev --extension-id=${payload.extensionId}`));
+  assert.doesNotMatch(nextActions, /--channel=store/);
+  assert.doesNotMatch(nextActions, new RegExp(staleStoreId));
 });
 
 test("setup CLI supports Store channel without staging an unpacked extension", async (t) => {

@@ -122,6 +122,10 @@ export async function setupOpenBrowserUse(options: SetupOptions): Promise<SetupJ
     const extension = await updateExtension({
       layout: options.layout,
       dryRun,
+      verifyTarget: {
+        channel: options.extensionChannel,
+        extensionId: options.extensionId,
+      },
       ...(options.extensionPath ? { sourceDir: options.extensionPath } : {}),
     });
     for (const step of extension.steps) steps.push(mapExtensionStep(step));

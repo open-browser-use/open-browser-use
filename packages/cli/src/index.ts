@@ -15,7 +15,7 @@ import { appendShellArgs, formatShellCommand } from "./command-line.js";
 import { doctorAggregate, formatAggregateDoctorReport } from "./doctor.js";
 import { doctorJson } from "./doctor-json.js";
 import { doctorBrowser, formatDoctorReport, hasDoctorFailures, type BrowserKind, type DoctorReport } from "./doctor-browser.js";
-import { parseExtensionChannel, resolveExtensionTarget, userConfigForExtensionTarget } from "./extension-channel.js";
+import { assertExtensionId, parseExtensionChannel, resolveExtensionTarget, userConfigForExtensionTarget } from "./extension-channel.js";
 import {
   formatDoctorSummary,
   formatInstallHostSummary,
@@ -374,6 +374,14 @@ async function runUpdateExtension(args: ParsedArgs): Promise<number> {
     console.error("update-extension is not available for --channel=store; Chrome Web Store manages Store extension updates.");
     return 2;
   }
+  if (args.extensionId) {
+    try {
+      assertExtensionId(args.extensionId, "--extension-id");
+    } catch (error) {
+      console.error(error instanceof Error ? error.message : String(error));
+      return 2;
+    }
+  }
   if (!args.dryRun) {
     const runtime = await ensureRuntimeDir(layout.runtimeDir);
     if (!runtime.ok) {
@@ -385,12 +393,17 @@ async function runUpdateExtension(args: ParsedArgs): Promise<number> {
       runtimeDir: layout.runtimeDir,
       extensionCurrentDir: layout.extensionCurrentDir,
       nativeHostInstallRoot: layout.nativeHostInstallRoot,
+      extensionChannel: channel,
     });
   }
   const report = await updateExtension({
     layout,
     dryRun: args.dryRun,
     noWait: args.noWait,
+    verifyTarget: {
+      channel,
+      ...(args.extensionId ? { extensionId: args.extensionId } : {}),
+    },
     ...(args.extensionPath ? { sourceDir: args.extensionPath } : {}),
   });
   if (args.json) {
