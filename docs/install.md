@@ -87,7 +87,7 @@ The future update path should make that decision explicitly: compare the local
 `obu --version` / payload metadata with the latest release version, download and
 install only when the release is newer, and otherwise keep the existing local
 install and reconnect or repair it with `obu bootstrap`, `obu setup`, or
-`obu doctor`.
+`obu verify --repair`.
 
 For a Chrome Web Store-installed extension, use the Store channel so native-host
 manifests allow the Store extension id instead of the unpacked-dev id:
@@ -106,18 +106,24 @@ requires the manifest `allowed_origins` entry to match the installed extension:
 `chrome-extension://<store-extension-id>/`.
 
 If the CLI and MCP server are installed but browser automation is still
-unavailable, check both layers:
+unavailable, verify the selected agent/browser pair. Replace `<agent-id>` with
+the canonical OBU adapter id for the agent whose MCP config should be checked,
+such as `codex-cli` for Codex, `claude-code` for Claude Code, `gemini-cli`,
+`cursor`, or `vscode`; the full supported list is in
+[Agent Configuration](#agent-configuration). If this came from the popup **Copy
+for agent** handoff, use the current agent by default unless the user asks to
+configure another client.
 
 ```bash
-~/.obu/bin/obu doctor browser --channel=store --extension-id=<store-extension-id>
-~/.obu/bin/obu doctor browser --repair --channel=store --extension-id=<store-extension-id>
+~/.obu/bin/obu verify --agent=<agent-id> --browser=chrome --channel=store --extension-id=<store-extension-id>
+~/.obu/bin/obu verify --repair --agent=<agent-id> --browser=chrome --channel=store --extension-id=<store-extension-id>
 ```
 
 After repair, open the open-browser-use extension popup and click **Resume** if
 the browser is not connected yet. Repair can update native-host manifests and
 runtime descriptor permissions, but Chrome publishes the active WebExtension
 runtime descriptor only after the extension connects to the native host. Rerun
-doctor with the same channel/id after opening the popup.
+verify with the same agent/browser/channel/id after opening the popup.
 
 Manual GitHub Release installs can still pin a specific asset and checksum:
 
@@ -164,7 +170,7 @@ After installing an `obu` shim:
 eval "$("$HOME/.obu/bin/obu" shellenv zsh)"
 obu bootstrap --yes --all --agents=auto
 obu setup --yes --agents=codex-cli,claude-code --write-instructions
-obu doctor
+obu verify --agent=codex-cli --browser=chrome
 ```
 
 `--write-instructions` is opt-in. It appends the primary-browser instruction to
@@ -187,22 +193,24 @@ returns `manual_action_required`, load or reload:
 from `chrome://extensions`, then rerun:
 
 ```bash
-obu doctor
+obu verify --agent=<agent-id> --browser=chrome
 ```
 
 For Chrome Web Store installs, do not run `obu update-extension`; Chrome Web
-Store owns extension updates. Use:
+Store owns extension updates. Verify and repair the selected Store target with:
 
 ```bash
-obu doctor browser --channel=store --extension-id=<store-extension-id>
-obu doctor browser --repair --channel=store --extension-id=<store-extension-id>
+obu verify --agent=<agent-id> --browser=chrome --channel=store --extension-id=<store-extension-id>
+obu verify --repair --agent=<agent-id> --browser=chrome --channel=store --extension-id=<store-extension-id>
 ```
 
 If `browser_status` in an MCP client reports that the SDK is available but
 `backends` is empty, MCP is configured but the browser backend is not connected.
-Run the Store-channel doctor command with the exact extension id, repair if
-needed, then open the extension popup and click **Resume** so Chrome reconnects
-the native host.
+Run `obu verify` for that same MCP client with the exact Store extension id,
+repair if needed, then open the extension popup and click **Resume** so Chrome
+reconnects the native host. Keep the same `--agent`, `--browser`, `--channel`,
+and `--extension-id` values between repair and the final verify rerun. Use
+`obu doctor browser` only when you need lower-level browser diagnostics.
 
 ## Agent Configuration
 

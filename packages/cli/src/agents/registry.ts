@@ -52,12 +52,29 @@ const AGENT_IDS: AgentId[] = [
   "continue",
 ];
 
+const AGENT_ALIASES: Record<string, AgentId> = {
+  codex: "codex-cli",
+  claude: "claude-code",
+  "claude-cli": "claude-code",
+  gemini: "gemini-cli",
+};
+
 export function isAgentId(value: string): value is AgentId {
   return (AGENT_IDS as string[]).includes(value);
 }
 
+export function normalizeAgentId(value: string): AgentId | undefined {
+  const normalized = value.toLowerCase();
+  if (isAgentId(normalized)) return normalized;
+  return AGENT_ALIASES[normalized];
+}
+
 export function supportedAgentIds(): AgentId[] {
   return [...AGENT_IDS];
+}
+
+export function supportedAgentAliasHelp(): string {
+  return "Aliases: codex=codex-cli, claude=claude-code, gemini=gemini-cli.";
 }
 
 export function renderAgentMcpConfig(agent: AgentId, server: McpServerInvocation): AgentMcpConfig {
@@ -71,13 +88,13 @@ export function renderAgentMcpConfig(agent: AgentId, server: McpServerInvocation
     case "vscode":
       return shellConfig(agent, server, "code", ["--add-mcp", JSON.stringify(server)]);
     case "cursor":
-      return shellConfig(agent, server, "cursor", ["--add-mcp", JSON.stringify(server)]);
+      return jsonConfig(agent, server, { mcpServers: { [server.name]: jsonServerConfig(server) } });
     case "cline":
-      return jsonConfig(agent, server, { mcpServers: { [server.name]: server } });
+      return jsonConfig(agent, server, { mcpServers: { [server.name]: jsonServerConfig(server) } });
     case "windsurf":
-      return jsonConfig(agent, server, { mcpServers: { [server.name]: server } });
+      return jsonConfig(agent, server, { mcpServers: { [server.name]: jsonServerConfig(server) } });
     case "claude-desktop":
-      return jsonConfig(agent, server, { mcpServers: { [server.name]: server } });
+      return jsonConfig(agent, server, { mcpServers: { [server.name]: jsonServerConfig(server) } });
     case "zed":
       return jsonConfig(agent, server, { context_servers: { [server.name]: { command: server.command, args: server.args } } });
     case "continue":
@@ -109,6 +126,10 @@ function jsonConfig(agent: AgentId, server: McpServerInvocation, config: Record<
     server,
     config,
   };
+}
+
+function jsonServerConfig(server: McpServerInvocation): { command: string; args: string[] } {
+  return { command: server.command, args: server.args };
 }
 
 function shellQuote(value: string): string {

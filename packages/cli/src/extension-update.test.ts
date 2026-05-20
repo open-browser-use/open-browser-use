@@ -41,6 +41,41 @@ test("updateExtension dry-run reports actions without writing", async (t) => {
   await assert.rejects(readFile(path.join(layout.extensionCurrentDir, "manifest.json"), "utf8"));
 });
 
+test("updateExtension verify action uses the requested target instead of stale user config", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-extension-update-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sourceDir = await extensionSource(root, "0.3.1");
+  const staleStoreId = "ponmlkjihgfedcbaponmlkjihgfedcba";
+  const currentExtensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const layout: RuntimeLayout = {
+    ...fakeLayout(root),
+    userConfig: {
+      schemaVersion: 1,
+      runtimeDir: path.join(root, "runtime"),
+      extensionCurrentDir: path.join(root, ".obu", "extension", "current"),
+      nativeHostInstallRoot: path.join(root, ".obu", "native-host"),
+      extensionChannel: "store",
+      storeExtensionId: staleStoreId,
+    },
+  };
+
+  const result = await updateExtension({
+    layout,
+    sourceDir,
+    noWait: true,
+    verifyTarget: {
+      channel: "unpacked-dev",
+      extensionId: currentExtensionId,
+    },
+  });
+
+  const values = result.nextActions.map((action) => action.value).join("\n");
+  assert.match(values, /--channel=unpacked-dev/);
+  assert.match(values, new RegExp(`--extension-id=${currentExtensionId}`));
+  assert.doesNotMatch(values, /--channel=store/);
+  assert.doesNotMatch(values, new RegExp(staleStoreId));
+});
+
 test("updateExtension ignores malformed runtime descriptor JSON", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "obu-extension-update-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -86,7 +121,9 @@ test("updateExtension reports complete when a runtime descriptor probes successf
   const result = await updateExtension({ layout, sourceDir });
 
   assert.equal(result.result, "complete");
-  assert.equal(result.nextActions[0]?.value, "obu doctor browser");
+  assert.equal(result.nextActions[0]?.kind, "manual");
+  assert.match(result.nextActions[0]?.value ?? "", /obu verify --agent=<agent-id>/);
+  assert.doesNotMatch(result.nextActions[0]?.value ?? "", /doctor browser/);
 });
 
 async function extensionSource(root: string, version: string): Promise<string> {

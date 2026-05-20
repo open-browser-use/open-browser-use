@@ -51,14 +51,15 @@ describe("selectBackend", () => {
   });
 
   it("includes backend discovery diagnostics when no backend matches", () => {
-    expect(() =>
+    const fail = () =>
       selectBackend([], "chrome", [
         {
           source: "/tmp/obu/webextension/future.json",
           reason: "unsupported schema_version 999",
         },
-      ]),
-    ).toThrow(/Ignored backend descriptors: .*future\.json: unsupported schema_version 999/);
+      ]);
+    expect(fail).toThrow(/Run obu verify for readiness/);
+    expect(fail).toThrow(/Ignored backend descriptors: .*future\.json: unsupported schema_version 999/);
   });
 });
 

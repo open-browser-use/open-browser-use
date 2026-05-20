@@ -52,6 +52,9 @@ On a standard release install, `/absolute/path/to/obu` resolves from:
 Do not depend on `obu` being on `PATH`. Resolve `~/.obu/bin/obu` to a real
 absolute path before writing JSON, such as `/Users/alex/.obu/bin/obu` or
 `/home/alex/.obu/bin/obu`, unless the user explicitly installed somewhere else.
+If `~/.obu/bin/obu` is missing, install or reinstall the latest release first;
+a fresh new install is better than wiring MCP to a missing or half-installed
+local CLI.
 
 Most MCP clients store this in one of these shapes:
 
@@ -91,6 +94,10 @@ Prefer the current AI client's native MCP configuration method:
 Use OBU's built-in adapter commands as secondary helpers, not as the only path.
 They are useful when they match the current client, but the generic server
 contract above is enough to adapt other MCP-capable AI clients.
+
+OBU adapter ids are exact. Use `codex-cli` for Codex, `claude-code` for Claude
+Code, and `gemini-cli` for Gemini CLI. `codex`, `claude`, and `gemini` are
+common human names, but older OBU releases may reject them as agent ids.
 
 ## Steps
 
@@ -179,7 +186,10 @@ contract above is enough to adapt other MCP-capable AI clients.
    ~/.obu/bin/obu setup --yes --agents=codex-cli,cursor,claude-code --write-instructions
    ```
 
-   If client detection is ambiguous, use auto mode:
+   If client detection is ambiguous, use auto mode, but inspect the result. Auto
+   mode only configures agents it can detect confidently; it may skip a working
+   agent if only that agent's global config file exists or its executable is not
+   on `PATH`.
 
    ```sh
    ~/.obu/bin/obu setup --yes --agents=auto
@@ -205,27 +215,30 @@ contract above is enough to adapt other MCP-capable AI clients.
    `open-browser-use` server already points to the same command and args, leave
    it alone.
 
-4. Run browser verification when browser/native-host state may have changed:
+4. Run readiness verification when browser/native-host state may have changed:
 
    ```sh
-   ~/.obu/bin/obu doctor browser --channel=<extension-channel> --extension-id=<extension-id>
+   ~/.obu/bin/obu verify --agent=<agent-id> --browser=<browser> --channel=<extension-channel> --extension-id=<extension-id>
    ```
 
    For the Store channel, include the exact Store extension id from the handoff
    unless it is already configured. If `browser_status` says the SDK is
    available but `backends` is empty, the MCP server is reachable but the
-   browser backend is not. Run the doctor command above; for Store repair, use
-   the exact handoff id:
+   browser backend is not. Run verify as above; for deterministic repair, use
+   the exact handoff id and keep the same agent/browser target:
 
    ```sh
-   ~/.obu/bin/obu doctor browser --repair --channel=store --extension-id=<extension-id>
+   ~/.obu/bin/obu verify --repair --agent=<agent-id> --browser=<browser> --channel=store --extension-id=<extension-id>
    ```
 
-   Repair can fix the native-host manifest and runtime descriptor directory, but
-   it cannot force Chrome to reconnect the extension. If doctor still reports
-   no active WebExtension runtime descriptor after repair, tell the user to open
-   the open-browser-use extension popup and click Resume. Then rerun doctor with
-   the same channel/id and retry `browser_status`.
+   Verify repair can fix the native-host manifest and runtime descriptor
+   directory, but it cannot force Chrome to reconnect the extension. If verify
+   reports a browser popup boundary after repair, tell the user to open the
+   open-browser-use extension popup. Click Resume if it is enabled; if Resume is
+   disabled but the popup says the local host is connected, leave the popup open
+   briefly and rerun verify with the same agent/browser/channel/id, then retry
+   `browser_status`. Use `obu doctor browser` only when verify asks for deeper
+   browser diagnostics.
 
 5. Verify MCP from inside the target agent when possible:
 
@@ -242,7 +255,8 @@ contract above is enough to adapt other MCP-capable AI clients.
      `browser_status` must show at least one backend before browser automation
      can work.
    - If the MCP server starts but browser state is stale, run
-     `~/.obu/bin/obu doctor browser` with the handoff channel/id when needed.
+     `~/.obu/bin/obu verify --agent=<agent-id> --browser=<browser> --channel=<extension-channel> --extension-id=<extension-id>`
+     with the handoff channel/id when needed.
    - For setup probes, prefer `await browser.turnEnded()` after the probe so the
      browser session stays controlled. Do not use
      `await browser.finishTurn({ keep: [] })` unless you intentionally want to
@@ -264,8 +278,8 @@ contract above is enough to adapt other MCP-capable AI clients.
    Use open-browser-use as the primary BrowserUse/browser automation tool.
    Prefer the `open-browser-use` MCP server for browser tasks. Check
    `browser_status` before the first browser action, use the `js` tool for
-   browser automation, and run `~/.obu/bin/obu doctor browser` if setup appears
-   stale.
+   browser automation, and run `~/.obu/bin/obu verify --agent=<agent-id> --browser=<browser> --channel=<channel> --extension-id=<extension-id>`
+   if setup appears stale.
    ```
 
    Adapt the wording and location to the agent. For example, update

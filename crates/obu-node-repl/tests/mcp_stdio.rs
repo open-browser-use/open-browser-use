@@ -181,11 +181,13 @@ async fn mcp_stdio_lists_tools_and_executes_js() {
     assert!(status["result"]["structuredContent"]["sdk_bootstrap"].is_string());
     assert!(status["result"]["structuredContent"]["backends"].is_array());
     let structured = &status["result"]["structuredContent"];
-    let doctor_hint = structured["doctor_hint"].as_str().unwrap();
+    let verify_hint = structured["verify_hint"].as_str().unwrap();
+    assert_eq!(structured["doctor_hint"], structured["verify_hint"]);
     if structured["backends"].as_array().unwrap().is_empty() {
-        assert!(doctor_hint.contains("exact extension channel/id"));
+        assert!(verify_hint.contains("obu verify --repair"));
+        assert!(verify_hint.contains("exact extension channel/id"));
     } else {
-        assert_eq!(doctor_hint, "obu doctor browser");
+        assert!(verify_hint.contains("obu verify"));
     }
 
     send(

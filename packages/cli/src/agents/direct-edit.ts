@@ -216,7 +216,7 @@ function directEditPatch(agent: DirectEditAgentId, server: McpServerInvocation):
   }
   return {
     path: ["mcpServers", server.name],
-    value: server,
+    value: { command: server.command, args: server.args },
   };
 }
 

@@ -87,11 +87,14 @@ async function installNativeHost(input: {
   extensionId: string;
   dryRun: boolean;
 }): Promise<InstallHostAction> {
-  const wrapperDir = path.join(input.layout.nativeHostInstallRoot, HOST_NAME, input.browser);
-  const wrapperPath = path.join(wrapperDir, "obu-host-wrapper");
+  const wrapperPath = nativeHostWrapperPath({
+    nativeHostInstallRoot: input.layout.nativeHostInstallRoot,
+    browser: input.browser,
+  });
+  const wrapperDir = path.dirname(wrapperPath);
   const nativeManifestDir = nativeMessagingHostDir(input.browser, input.platform, input.homeDir);
   const nativeManifestPath = path.join(nativeManifestDir, `${HOST_NAME}.json`);
-  const wrapper = nativeHostWrapper({
+  const wrapper = nativeHostWrapperContent({
     hostBin: input.layout.hostBin,
     browser: input.browser,
     runtimeDir: input.layout.runtimeDir,
@@ -129,7 +132,11 @@ async function installNativeHost(input: {
   };
 }
 
-function nativeHostWrapper(input: { hostBin: string; browser: BrowserKind; runtimeDir: string }): string {
+export function nativeHostWrapperPath(input: { nativeHostInstallRoot: string; browser: BrowserKind }): string {
+  return path.join(input.nativeHostInstallRoot, HOST_NAME, input.browser, "obu-host-wrapper");
+}
+
+export function nativeHostWrapperContent(input: { hostBin: string; browser: BrowserKind; runtimeDir: string }): string {
   return [
     "#!/bin/sh",
     "set -eu",

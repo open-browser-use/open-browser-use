@@ -126,7 +126,7 @@ static JS_OUTPUT_SCHEMA: LazyLock<Arc<rmcp::model::JsonObject>> = LazyLock::new(
 static BROWSER_STATUS_OUTPUT_SCHEMA: LazyLock<Arc<rmcp::model::JsonObject>> = LazyLock::new(|| {
     Arc::new(schema_object(json!({
         "type": "object",
-        "required": ["sdk_bootstrap", "backends", "diagnostics", "runtime_dir", "doctor_hint"],
+        "required": ["sdk_bootstrap", "backends", "diagnostics", "runtime_dir", "verify_hint", "doctor_hint"],
         "properties": {
             "sdk_bootstrap": {
                 "type": "string",
@@ -142,6 +142,9 @@ static BROWSER_STATUS_OUTPUT_SCHEMA: LazyLock<Arc<rmcp::model::JsonObject>> = La
                 "type": "array"
             },
             "runtime_dir": {
+                "type": "string"
+            },
+            "verify_hint": {
                 "type": "string"
             },
             "doctor_hint": {

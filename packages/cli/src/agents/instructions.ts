@@ -29,7 +29,7 @@ export const PRIMARY_BROWSER_INSTRUCTION = [
   PRIMARY_INSTRUCTION_NEEDLE,
   "Prefer the `open-browser-use` MCP server for browser tasks. Check `browser_status`",
   "before the first browser action, use the `js` tool for browser automation, and",
-  "run `~/.obu/bin/obu doctor browser` if setup appears stale.",
+  "run `~/.obu/bin/obu verify --agent=<agent-id> --browser=<browser> --channel=<channel> --extension-id=<extension-id>` if setup appears stale.",
 ].join("\n");
 
 export async function configureAgentInstructions(options: AgentInstructionOptions): Promise<AgentInstructionStep> {

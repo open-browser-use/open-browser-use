@@ -222,10 +222,10 @@ impl JsRuntimeManager {
         let inventory = self.backend_inventory();
         self.sync_backend_inventory_to_kernel(&inventory).await?;
         let (sdk_bootstrap, sdk_bootstrap_detail) = self.sdk_bootstrap_status();
-        let doctor_hint = if inventory.backends.is_empty() {
-            "No browser backend discovered. Run `obu doctor browser --repair` with the exact extension channel/id from the popup handoff, then open the extension popup and click Resume if no runtime descriptor is active."
+        let verify_hint = if inventory.backends.is_empty() {
+            "No browser backend discovered. Run `obu verify --repair --agent=<agent-id> --browser=<browser> --channel=<extension-channel> --extension-id=<extension-id>` with the exact extension channel/id from the popup handoff, then open the extension popup and click Resume if no runtime descriptor is active."
         } else {
-            "obu doctor browser"
+            "obu verify --agent=<agent-id> --browser=<browser> --channel=<extension-channel> --extension-id=<extension-id>"
         };
         Ok(json!({
             "sdk_bootstrap": sdk_bootstrap,
@@ -233,7 +233,8 @@ impl JsRuntimeManager {
             "backends": inventory.backends,
             "diagnostics": inventory.diagnostics,
             "runtime_dir": runtime_dir().to_string_lossy(),
-            "doctor_hint": doctor_hint,
+            "verify_hint": verify_hint,
+            "doctor_hint": verify_hint,
         }))
     }
 
