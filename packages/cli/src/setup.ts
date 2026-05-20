@@ -166,16 +166,33 @@ export async function setupOpenBrowserUse(options: SetupOptions): Promise<SetupJ
     }
   }
 
-  nextActions.push({
-    kind: "command",
-    value: formatSetupCommand(options, doctorCommandArgs(options)),
-  });
+  nextActions.push(...verificationActions(options, agents));
   return finalize(options, steps, dedupeActions(nextActions));
 }
 
-function doctorCommandArgs(options: SetupOptions): string[] {
-  if (options.extensionChannel !== "store") return ["doctor"];
-  return ["doctor", "browser", "--channel=store", `--extension-id=${options.extensionId}`];
+function verificationActions(options: SetupOptions, agents: AgentId[]): SetupJson["nextActions"] {
+  if (agents.length === 0) {
+    return options.browsers.map((browser) => ({
+      kind: "manual" as const,
+      value: `Choose the agent id to verify, then run ${formatSetupCommand(options, verifyCommandArgs(options, browser, "<agent-id>"))}.`,
+    }));
+  }
+  return agents.flatMap((agent) =>
+    options.browsers.map((browser) => ({
+      kind: "command" as const,
+      value: formatSetupCommand(options, verifyCommandArgs(options, browser, agent)),
+    }))
+  );
+}
+
+function verifyCommandArgs(options: SetupOptions, browser: BrowserKind, agent: AgentId | "<agent-id>"): string[] {
+  return [
+    "verify",
+    `--agent=${agent}`,
+    `--browser=${browser}`,
+    `--channel=${options.extensionChannel}`,
+    `--extension-id=${options.extensionId}`,
+  ];
 }
 
 function formatSetupCommand(options: SetupOptions, args: string[]): string {

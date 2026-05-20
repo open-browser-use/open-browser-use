@@ -41,6 +41,10 @@ test("setupOpenBrowserUse composes runtime, native host, extension update, and m
   assert.match(await readFile(path.join(root, ".codex", "config.toml"), "utf8"), /\[mcp_servers\.open-browser-use\]/);
   assert.equal(await readFile(path.join(layout.extensionCurrentDir, "marker.txt"), "utf8"), "0.6.0");
   assert.equal(result.nextActions.some((action) => action.value === "obu mcp-config --agent=codex-cli --print"), false);
+  assert.ok(result.nextActions.some((action) =>
+    action.kind === "command" &&
+    action.value === `${layout.openBrowserUseCommand} verify --agent=codex-cli --browser=chrome --channel=unpacked-dev --extension-id=${extensionIdFromManifestKey(EXTENSION_KEY)}`
+  ));
 });
 
 test("setupOpenBrowserUse can complete deterministic setup when extension and agents are skipped", async (t) => {
@@ -102,8 +106,10 @@ test("setupOpenBrowserUse skips extension staging for Store channel", async (t) 
   await assert.rejects(readFile(path.join(layout.extensionCurrentDir, "marker.txt"), "utf8"));
   const nativeHostStep = result.steps.find((step) => step.id === "native-host-chrome");
   assert.equal(nativeHostStep?.details?.extensionId, storeExtensionId);
+  assert.equal(result.nextActions.some((action) => action.value.includes("doctor")), false);
   assert.ok(result.nextActions.some((action) =>
-    action.value === `${layout.openBrowserUseCommand} doctor browser --channel=store --extension-id=${storeExtensionId}`
+    action.kind === "manual" &&
+    action.value.includes(`${layout.openBrowserUseCommand} verify '--agent=<agent-id>' --browser=chrome --channel=store --extension-id=${storeExtensionId}`)
   ));
 });
 
