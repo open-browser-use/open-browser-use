@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { access, chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdtemp, readFile, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
@@ -18,10 +18,6 @@ try {
   const installDir = path.join(temp, "install");
   const home = path.join(temp, "home");
   const runtimeDir = path.join(temp, "runtime");
-  const fakeBin = path.join(temp, "fake-bin");
-  const codexLog = path.join(temp, "codex.log");
-  await mkdir(fakeBin, { recursive: true });
-  await fakeCodex(fakeBin, codexLog);
   run("sh", [
     path.join(artifactRoot, manifest.installer),
     "--artifact",
@@ -85,13 +81,16 @@ try {
     "--json",
   ], {
     HOME: home,
-    PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ""}`,
+    PATH: systemPath(),
     OBU_RUNTIME_DIR: runtimeDir,
   });
   const agentReport = JSON.parse(agentSetup.stdout);
   assert.equal(agentReport.result, "complete");
   assertStep(agentReport, "agent-codex-cli", "applied");
-  assert.match(await readFile(codexLog, "utf8"), new RegExp(`mcp add open-browser-use -- ${escapeRegExp(obu)} mcp stdio`));
+  const codexConfig = await readFile(path.join(home, ".codex", "config.toml"), "utf8");
+  assert.match(codexConfig, /\[mcp_servers\.open-browser-use\]/);
+  assert.match(codexConfig, new RegExp(`command = "${escapeRegExp(obu)}"`));
+  assert.match(codexConfig, /args = \["mcp", "stdio"\]/);
 
   console.log("setup local spine smoke passed");
 } finally {
@@ -114,16 +113,6 @@ function run(command, args, env = {}, options = {}) {
   return result;
 }
 
-async function fakeCodex(bin, logPath) {
-  await writeFile(path.join(bin, "codex"), `#!/bin/sh
-if [ "$1 $2" = "mcp list" ]; then
-  exit 0
-fi
-echo "$@" > ${shellQuote(logPath)}
-`, "utf8");
-  await chmod(path.join(bin, "codex"), 0o755);
-}
-
 function currentTargetTriple() {
   if (process.platform === "darwin") return process.arch === "arm64" ? "darwin-arm64" : "darwin-x64";
   if (process.platform === "linux") {
@@ -134,8 +123,8 @@ function currentTargetTriple() {
   return `${process.platform}-${process.arch}`;
 }
 
-function shellQuote(value) {
-  return `'${value.replaceAll("'", "'\\''")}'`;
+function systemPath() {
+  return process.platform === "win32" ? process.env.PATH ?? "" : "/usr/bin:/bin:/usr/sbin:/sbin";
 }
 
 function escapeRegExp(value) {
