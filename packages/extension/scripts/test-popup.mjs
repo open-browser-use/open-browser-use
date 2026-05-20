@@ -61,6 +61,8 @@ function assertAgentHandoff(elements, channel = "unpacked-dev") {
   assert.match(handoff, /~\/\.claude\/CLAUDE\.md/);
   assert.match(handoff, /Codex \(OBU id: codex-cli\), Cursor, or Claude Code \(OBU id: claude-code\)/);
   assert.match(handoff, /~\/\.obu\/bin\/obu exists/);
+  assert.match(handoff, /run obu verify/);
+  assert.doesNotMatch(handoff, /rerun doctor/);
   assert.doesNotMatch(handoff, /Terminal command/i);
   assert.doesNotMatch(handoff, /curl -fsSL/);
   assert.doesNotMatch(handoff, /obu bootstrap/);

@@ -503,7 +503,7 @@ function agentHandoffForChannel(channel: string, runtimeExtensionId: string | un
     "Make open-browser-use the primary BrowserUse/browser automation tool for this agent.",
     "Configure the current agent, and any other supported agent the user requests, such as Codex (OBU id: codex-cli), Cursor, or Claude Code (OBU id: claude-code).",
     "Update the project's core AGENTS.md, AGENT.md, CLAUDE.md, or the agent's global instruction file such as ~/.codex/AGENTS.md or ~/.claude/CLAUDE.md when one exists; otherwise show the instruction snippet.",
-    "After setup or repair, verify browser/native-host state. If doctor reports resume_required, open this popup; click Resume if enabled, otherwise wait for Connected and rerun doctor.",
+    "After setup or repair, run obu verify with the exact extension channel and id. If verify reports a browser popup boundary, open this popup; click Resume if enabled, otherwise wait for Connected and rerun verify.",
   ].join("\n");
 }
 
