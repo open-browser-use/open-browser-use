@@ -110,16 +110,22 @@ class OverlayCoordinator {
   private activeTakeovers = new Map<number, ActiveTakeover>();
   private contentScriptPreparations = new Map<number, Promise<boolean>>();
 
-  async activate(tabId: number, sessionParams: SessionParams): Promise<void> {
+  async activate(
+    tabId: number,
+    sessionParams: SessionParams,
+    savedCursor?: CursorTarget,
+    options: { rehydrateCursor?: boolean } = {},
+  ): Promise<void> {
     const previous = this.activeTakeovers.get(tabId);
     const state: ActiveTakeover = {
       sessionId: sessionParams.session_id,
       turnId: sessionParams.turn_id,
       lockInputs: true,
-      lastCursor: previous?.lastCursor,
+      lastCursor: previous?.lastCursor ?? savedCursor,
     };
     this.activeTakeovers.set(tabId, state);
     await this.sendTakeoverState(tabId, state);
+    if (state.lastCursor && options.rehydrateCursor !== false) await this.sendSavedCursor(tabId, state);
   }
 
   async reassert(tabId: number): Promise<void> {
@@ -146,6 +152,25 @@ class OverlayCoordinator {
     return [...this.activeTakeovers.keys()];
   }
 
+  async syncForeground(): Promise<void> {
+    for (const tabId of this.activeTabIds()) {
+      if (await this.isTabVisible(tabId)) {
+        await this.reassert(tabId);
+      } else {
+        await this.sendContentMessage(tabId, { type: "OBU_CURSOR_HIDE" }, { prepare: false });
+      }
+    }
+  }
+
+  async replaceTabId(removedTabId: number, addedTabId: number): Promise<void> {
+    const state = this.activeTakeovers.get(removedTabId);
+    this.activeTakeovers.delete(removedTabId);
+    this.rejectWaitersForTab(removedTabId);
+    if (!state) return;
+    this.activeTakeovers.set(addedTabId, state);
+    await this.reassert(addedTabId);
+  }
+
   hasPendingActivity(): boolean {
     return this.cursorArrivalWaiters.size > 0 || this.contentScriptPreparations.size > 0;
   }
@@ -161,10 +186,22 @@ class OverlayCoordinator {
     });
   }
 
+  private async sendSavedCursor(tabId: number, state: ActiveTakeover): Promise<void> {
+    if (!state.lastCursor) return;
+    await this.sendContentMessage(tabId, {
+      type: "OBU_CURSOR_MOVE",
+      x: state.lastCursor.x,
+      y: state.lastCursor.y,
+      sequence: state.lastCursor.sequence,
+      sessionId: state.sessionId,
+      turnId: state.turnId,
+    });
+  }
+
   async moveMouse(tabId: number, sessionParams: SessionParams, x: number, y: number): Promise<unknown> {
     const visible = await this.isTabVisible(tabId);
     if (!visible) return { visible: false };
-    await this.activate(tabId, sessionParams);
+    await this.activate(tabId, sessionParams, undefined, { rehydrateCursor: false });
 
     const sequence = this.nextCursorSequence++;
     const arrival = this.waitForArrival(tabId, sequence, sessionParams);
@@ -426,7 +463,7 @@ class TabGroupManager {
       return;
     }
     session.groupId = await this.ensureSessionGroup(sessionId, windowId, row.tabId, row.origin, session.label);
-    await this.setManagedTabStatus(row.tabId, "handoff");
+    await this.setManagedTabStatus(row.tabId, row.status);
   }
 
   async renameSession(sessionId: string, label?: string): Promise<void> {
@@ -502,6 +539,30 @@ class TabGroupManager {
   async removeManagedTab(tabId: number): Promise<void> {
     await this.ensureLoaded();
     if (this.removeTabFromManagedGroups(tabId)) await this.persist();
+  }
+
+  async replaceManagedTab(removedTabId: number, addedTabId: number): Promise<void> {
+    await this.ensureLoaded();
+    let targetGroup: ManagedTabGroup | undefined;
+    let managedTab: ManagedTab | undefined;
+    for (const group of this.state.groups) {
+      const row = group.tabs[String(removedTabId)];
+      if (!row) continue;
+      delete group.tabs[String(removedTabId)];
+      group.tabs[String(addedTabId)] = row;
+      group.updatedAt = Date.now();
+      targetGroup = group;
+      managedTab = row;
+      break;
+    }
+    if (!targetGroup || !managedTab) return;
+    try {
+      await groupTab(addedTabId, targetGroup.groupId);
+    } catch {
+      // Replacement tabs may disappear before Chrome finishes promotion; keep
+      // durable session state authoritative and let cleanup reconcile later.
+    }
+    await this.persist();
   }
 
   async reconcileGroupId(groupId: number): Promise<void> {
@@ -728,6 +789,26 @@ chrome.runtime.onUpdateAvailable?.addListener((details) => {
 
 chrome.tabs.onRemoved.addListener((tabId) => {
   void handleTabRemoved(tabId);
+});
+
+chrome.tabs.onActivated?.addListener((activeInfo) => {
+  void handleForegroundTabChanged(activeInfo.tabId, "tab_activated");
+});
+
+chrome.tabs.onAttached?.addListener((tabId) => {
+  void handleForegroundTabChanged(tabId, "tab_attached");
+});
+
+chrome.tabs.onDetached?.addListener((tabId) => {
+  void handleForegroundTabChanged(tabId, "tab_detached");
+});
+
+chrome.tabs.onReplaced?.addListener((addedTabId, removedTabId) => {
+  void handleTabReplaced(addedTabId, removedTabId);
+});
+
+chrome.windows.onFocusChanged?.addListener((windowId) => {
+  void handleWindowFocusChanged(windowId);
 });
 
 chrome.tabGroups.onCreated?.addListener((group) => {
@@ -1172,6 +1253,10 @@ async function dispatchHostRequest(method: string, params: unknown): Promise<unk
       return { tab: toTabDto(await createSessionTab(requireSessionParams(params), params)) };
     case "getTabs":
       return await getSessionTabs(requireSessionParams(params));
+    case "getCurrentTab":
+      return { tab: await getCurrentSessionTab(requireSessionParams(params)) };
+    case "getSelectedTab":
+      return { tab: await getSelectedTab(requireSessionParams(params)) };
     case "getUserTabs":
       return { tabs: await getUserTabs(requireSessionParams(params)) };
     case "claimUserTab": {
@@ -1186,6 +1271,11 @@ async function dispatchHostRequest(method: string, params: unknown): Promise<unk
     case "turnEnded":
       await markTurnEnded(requireSessionParams(params));
       return {};
+    case "yieldControl":
+      await yieldControl(requireSessionParams(params));
+      return {};
+    case "resumeControl":
+      return { tab: await resumeControl(requireSessionParams(params)) };
     case "getUserHistory":
       return { items: await getUserHistory(params) };
     case "moveMouse":
@@ -1205,13 +1295,17 @@ async function dispatchHostRequest(method: string, params: unknown): Promise<unk
 
 async function createSessionTab(sessionParams: SessionParams, params: unknown): Promise<ChromeTab> {
   const url = isRecord(params) && typeof params.url === "string" ? params.url : "about:blank";
-  const tab = await chrome.tabs.create({ url, active: true });
-  const tabId = requireCreatedTabId(tab);
   const session = sessionFor(sessionParams.session_id);
   session.currentTurnId = sessionParams.turn_id;
+  ensureSessionAcceptsAction(session, "createTab");
+  const tab = await chrome.tabs.create({ url, active: true });
+  const tabId = requireCreatedTabId(tab);
+  session.activeTabId = tabId;
+  delete session.controlState;
   session.tabs.set(tabId, { tabId, origin: "agent", status: "active" });
   await addTabToSessionGroup(sessionParams.session_id, session, tabId, "agent");
   await overlayCoordinator.activate(tabId, sessionParams);
+  await persistSessionState();
   appendDebugLog("info", "tab.created", { sessionId: sessionParams.session_id, tabId });
   return tab;
 }
@@ -1222,9 +1316,16 @@ async function getSessionTabs(sessionParams: SessionParams): Promise<SessionTabs
   const rows: TabDto[] = [];
   const deliverableTabs: TabDto[] = [];
   let changed = false;
+  const logicalActiveTabId = await resolveSessionActiveTabId(session);
+  session.activeTabId = logicalActiveTabId;
   for (const tabId of session.tabs.keys()) {
     try {
-      rows.push(toTabDto(await chrome.tabs.get(tabId), session.tabs.get(tabId)));
+      rows.push(toTabDto(await chrome.tabs.get(tabId), session.tabs.get(tabId), {
+        owned: true,
+        claimRequired: false,
+        commandable: session.tabs.get(tabId)?.status === "active" && session.controlState !== "human_takeover",
+        logicalActive: tabId === logicalActiveTabId,
+      }));
     } catch {
       session.tabs.delete(tabId);
       await tabGroupManager.removeManagedTab(tabId);
@@ -1245,6 +1346,89 @@ async function getSessionTabs(sessionParams: SessionParams): Promise<SessionTabs
   return { tabs: rows, deliverableTabs };
 }
 
+async function getCurrentSessionTab(sessionParams: SessionParams): Promise<TabDto | null> {
+  const session = sessionFor(sessionParams.session_id);
+  session.currentTurnId = sessionParams.turn_id;
+  const tabId = await resolveSessionActiveTabId(session);
+  if (tabId === undefined) return null;
+  const row = session.tabs.get(tabId);
+  if (!row || row.status !== "active") return null;
+  session.activeTabId = tabId;
+  await persistSessionState();
+  return toTabDto(await chrome.tabs.get(tabId), row, {
+    owned: true,
+    claimRequired: false,
+    commandable: session.controlState !== "human_takeover",
+    logicalActive: true,
+  });
+}
+
+async function getSelectedTab(sessionParams: SessionParams): Promise<TabDto | null> {
+  const session = sessionFor(sessionParams.session_id);
+  session.currentTurnId = sessionParams.turn_id;
+  const tab = await selectedChromeTab();
+  if (!tab || !Number.isInteger(tab.id)) return null;
+  const tabId = tab.id!;
+  const row = session.tabs.get(tabId);
+  if (row && row.status === "active") {
+    session.activeTabId = tabId;
+    await persistSessionState();
+    return toTabDto(tab, row, {
+      owned: true,
+      claimRequired: false,
+      commandable: session.controlState !== "human_takeover",
+      logicalActive: true,
+    });
+  }
+  if (!isClaimableUserTab(tab) || ownedByAnotherSession(sessionParams.session_id, tabId)) {
+    return null;
+  }
+  return toTabDto(tab, { tabId, origin: "user", status: "active" }, {
+    owned: false,
+    claimRequired: true,
+    commandable: false,
+    logicalActive: false,
+  });
+}
+
+async function selectedChromeTab(): Promise<ChromeTab | undefined> {
+  const focused = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (focused[0]) return focused[0];
+  const active = await chrome.tabs.query({ active: true });
+  return active[0];
+}
+
+async function resolveSessionActiveTabId(session: BrowserSession): Promise<number | undefined> {
+  const activeRow = session.activeTabId !== undefined ? session.tabs.get(session.activeTabId) : undefined;
+  if (session.activeTabId !== undefined && activeRow?.status === "active") {
+    try {
+      await chrome.tabs.get(session.activeTabId);
+      return session.activeTabId;
+    } catch {
+      session.tabs.delete(session.activeTabId);
+      session.activeTabId = undefined;
+    }
+  } else if (session.activeTabId !== undefined) {
+    session.activeTabId = undefined;
+  }
+
+  const candidates: Array<{ tabId: number; active: boolean }> = [];
+  for (const [tabId, row] of session.tabs) {
+    if (row.status !== "active") continue;
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      candidates.push({ tabId, active: tab.active === true });
+    } catch {
+      session.tabs.delete(tabId);
+    }
+  }
+  candidates.sort((left, right) => {
+    if (left.active !== right.active) return left.active ? -1 : 1;
+    return left.tabId - right.tabId;
+  });
+  return candidates[0]?.tabId;
+}
+
 async function getUserTabs(sessionParams: SessionParams): Promise<TabDto[]> {
   const session = sessionFor(sessionParams.session_id);
   session.currentTurnId = sessionParams.turn_id;
@@ -1252,7 +1436,12 @@ async function getUserTabs(sessionParams: SessionParams): Promise<TabDto[]> {
   return tabs
     .filter((tab) => Number.isInteger(tab.id) && isClaimableUserTab(tab))
     .filter((tab) => !ownedByAnotherSession(sessionParams.session_id, tab.id!))
-    .map((tab) => toTabDto(tab, { tabId: tab.id!, origin: "user", status: "active" }));
+    .map((tab) => toTabDto(tab, { tabId: tab.id!, origin: "user", status: "active" }, {
+      owned: false,
+      claimRequired: true,
+      commandable: false,
+      logicalActive: false,
+    }));
 }
 
 async function claimUserTab(sessionParams: SessionParams, params: unknown): Promise<ChromeTab> {
@@ -1265,10 +1454,12 @@ async function claimUserTab(sessionParams: SessionParams, params: unknown): Prom
   const session = sessionFor(sessionParams.session_id);
   session.currentTurnId = sessionParams.turn_id;
   removeFinalizedTabFromAllSessions(tabId);
+  session.activeTabId = tabId;
+  delete session.controlState;
   session.tabs.set(tabId, { tabId, origin: "user", status: "active" });
   await addTabToSessionGroup(sessionParams.session_id, session, tabId, "user");
   for (const managedSession of sessions.values()) syncSessionGroupMirrors(managedSession);
-  await overlayCoordinator.activate(tabId, sessionParams);
+  await overlayCoordinator.activate(tabId, sessionParams, session.tabs.get(tabId)?.lastCursor);
   await persistSessionState();
   appendDebugLog("info", "tab.claimed", { sessionId: sessionParams.session_id, tabId });
   return tab;
@@ -1336,6 +1527,7 @@ async function finalizeTabs(sessionParams: SessionParams, params: unknown): Prom
     }
   }
   syncSessionGroupMirrors(session);
+  session.activeTabId = await resolveSessionActiveTabId(session);
   await persistSessionState();
   appendDebugLog("info", "tabs.finalized", {
     sessionId: sessionParams.session_id,
@@ -1363,6 +1555,35 @@ async function markTurnEnded(sessionParams: SessionParams): Promise<void> {
   session.currentTurnId = sessionParams.turn_id;
 }
 
+async function yieldControl(sessionParams: SessionParams): Promise<void> {
+  const session = sessionFor(sessionParams.session_id);
+  session.currentTurnId = sessionParams.turn_id;
+  session.controlState = "human_takeover";
+  await hideSessionTakeover(session);
+  await persistSessionState();
+  appendDebugLog("info", "control.yield", { sessionId: sessionParams.session_id });
+}
+
+async function resumeControl(sessionParams: SessionParams): Promise<TabDto | null> {
+  const session = sessionFor(sessionParams.session_id);
+  session.currentTurnId = sessionParams.turn_id;
+  const tabId = await resolveSessionActiveTabId(session);
+  if (tabId === undefined) return null;
+  const row = session.tabs.get(tabId);
+  if (!row || row.status !== "active") return null;
+  session.activeTabId = tabId;
+  delete session.controlState;
+  await overlayCoordinator.activate(tabId, sessionParams, row.lastCursor);
+  await persistSessionState();
+  appendDebugLog("info", "control.resume_session", { sessionId: sessionParams.session_id, tabId });
+  return toTabDto(await chrome.tabs.get(tabId), row, {
+    owned: true,
+    claimRequired: false,
+    commandable: true,
+    logicalActive: true,
+  });
+}
+
 async function getUserHistory(params: unknown): Promise<HistoryItemDto[]> {
   const query = isRecord(params) && typeof params.query === "string" ? params.query : "";
   const maxResults = clampNumber(isRecord(params) ? params.limit : undefined, 50, 1, 500);
@@ -1384,7 +1605,7 @@ async function getUserHistory(params: unknown): Promise<HistoryItemDto[]> {
 async function executeCdp(params: unknown): Promise<unknown> {
   const tabId = requireTabId(params);
   const session = requireSession(params);
-  requireSessionTab(params);
+  const row = requireSessionTab(params);
   await ensureDebuggerAttached(session, tabId);
   if (!isRecord(params) || typeof params.method !== "string") {
     throw new Error("executeCdp requires method");
@@ -1394,7 +1615,7 @@ async function executeCdp(params: unknown): Promise<unknown> {
   const sessionParams = requireSessionParams(params);
   const suppressAgentOverlayForCapture = params.suppressAgentOverlayForCapture === true && method === "Page.captureScreenshot";
   appendDebugLog("debug", "cdp.execute", { method, tabId, timeoutMs });
-  await overlayCoordinator.activate(tabId, sessionParams);
+  await overlayCoordinator.activate(tabId, sessionParams, row.lastCursor);
   const inputBypass = inputBypassFromCdp(params);
   if (inputBypass) {
     await overlayCoordinator.allowCdpInput(tabId, sessionParams, inputBypass);
@@ -1417,16 +1638,24 @@ async function executeCdp(params: unknown): Promise<unknown> {
       await overlayCoordinator.sendCursorEvent(tabId, sessionParams, { ...cursorEvent, kind: "click" });
     }
   }
+  if (typeof cursorEvent?.x === "number" && typeof cursorEvent.y === "number") {
+    row.lastCursor = { x: cursorEvent.x, y: cursorEvent.y };
+    await persistSessionState();
+  }
   return result;
 }
 
 async function moveMouse(params: unknown): Promise<unknown> {
   const tabId = requireTabId(params);
   const sessionParams = requireSessionParams(params);
-  requireSessionTab(params);
+  const row = requireSessionTab(params);
   const x = requiredNumber(params, "x");
   const y = requiredNumber(params, "y");
   const result = await overlayCoordinator.moveMouse(tabId, sessionParams, x, y);
+  if (isRecord(result) && result.visible === true) {
+    row.lastCursor = { x, y, sequence: typeof result.sequence === "number" ? result.sequence : undefined };
+    await persistSessionState();
+  }
   appendDebugLog("debug", "cursor.move", { tabId, result });
   return result;
 }
@@ -1530,11 +1759,22 @@ function requireSession(params: unknown): BrowserSession {
 
 function requireSessionTab(params: unknown): SessionTab {
   const tabId = requireTabId(params);
-  const session = requireSession(params);
+  const sessionParams = requireSessionParams(params);
+  const session = sessionFor(sessionParams.session_id);
+  session.currentTurnId = sessionParams.turn_id;
+  ensureSessionAcceptsAction(session, "tab command");
   const row = session.tabs.get(tabId);
   if (!row) throw new Error(`tab ${tabId} is not owned by this open-browser-use session`);
   if (row.status !== "active") throw new Error(`tab ${tabId} is ${row.status}, not actively controlled`);
+  session.activeTabId = tabId;
+  void persistSessionState().catch(() => undefined);
   return row;
+}
+
+function ensureSessionAcceptsAction(session: BrowserSession, operation: string): void {
+  if (session.controlState === "human_takeover") {
+    throw new Error(`${operation} rejected because browser control is yielded to the human; call resumeControl first`);
+  }
 }
 
 function requireTabId(params: unknown): number {
@@ -1565,7 +1805,7 @@ function sessionFor(sessionId: string): BrowserSession {
   return session;
 }
 
-function toTabDto(tab: ChromeTab, row?: SessionTab): TabDto {
+function toTabDto(tab: ChromeTab, row?: SessionTab, state: Partial<TabDto> = {}): TabDto {
   if (!Number.isInteger(tab.id)) throw new Error("tab did not include an id");
   return {
     tabId: tab.id!,
@@ -1577,6 +1817,10 @@ function toTabDto(tab: ChromeTab, row?: SessionTab): TabDto {
     pinned: tab.pinned,
     origin: row?.origin ?? "agent",
     status: row?.status ?? "active",
+    owned: row !== undefined,
+    claimRequired: row === undefined,
+    commandable: row?.status === "active",
+    ...state,
   };
 }
 
@@ -1808,6 +2052,63 @@ async function handleTabRemoved(tabId: number): Promise<void> {
   if (changed) await persistSessionState();
   appendDebugLog("info", "tab.removed", { tabId });
   void maybeApplyPendingExtensionUpdate("tab_removed");
+}
+
+async function handleTabReplaced(addedTabId: number, removedTabId: number): Promise<void> {
+  let changed = false;
+  for (const session of sessions.values()) {
+    const activeRow = session.tabs.get(removedTabId);
+    if (activeRow) {
+      session.tabs.delete(removedTabId);
+      session.tabs.set(addedTabId, { ...activeRow, tabId: addedTabId });
+      if (session.activeTabId === removedTabId) session.activeTabId = addedTabId;
+      changed = true;
+    }
+    const finalizedRow = session.finalizedTabs.get(removedTabId);
+    if (finalizedRow) {
+      session.finalizedTabs.delete(removedTabId);
+      session.finalizedTabs.set(addedTabId, { ...finalizedRow, tabId: addedTabId });
+      changed = true;
+    }
+    if (session.attachedTabIds.delete(removedTabId)) changed = true;
+  }
+  await overlayCoordinator.replaceTabId(removedTabId, addedTabId);
+  await tabGroupManager.replaceManagedTab(removedTabId, addedTabId);
+  for (const session of sessions.values()) syncSessionGroupMirrors(session);
+  if (changed) await persistSessionState();
+  await handleForegroundTabChanged(addedTabId, "tab_replaced");
+  appendDebugLog("info", "tab.replaced", { addedTabId, removedTabId });
+}
+
+async function handleWindowFocusChanged(windowId: number): Promise<void> {
+  if (!Number.isInteger(windowId) || windowId < 0) {
+    await overlayCoordinator.syncForeground();
+    return;
+  }
+  let activeTab: ChromeTab | undefined;
+  try {
+    activeTab = (await chrome.tabs.query({ active: true, windowId }))[0];
+  } catch {
+    activeTab = undefined;
+  }
+  await handleForegroundTabChanged(activeTab?.id, "window_focus_changed");
+}
+
+async function handleForegroundTabChanged(tabId: number | undefined, reason: string): Promise<void> {
+  if (Number.isInteger(tabId)) {
+    const owner = findSessionForTab(tabId!);
+    const row = owner?.session.tabs.get(tabId!);
+    if (owner && row?.status === "active" && owner.session.activeTabId !== tabId) {
+      owner.session.activeTabId = tabId;
+      await persistSessionState();
+      appendDebugLog("debug", "tab.logical_active.foreground", {
+        sessionId: owner.sessionId,
+        tabId,
+        reason,
+      });
+    }
+  }
+  await overlayCoordinator.syncForeground();
 }
 
 function parseFinalizeKeep(params: unknown): Map<number, SessionTab["status"]> {
@@ -2069,12 +2370,19 @@ async function restoreSessionState(): Promise<void> {
       }
       session ??= sessionFor(row.session_id);
       session.label = typeof row.label === "string" ? row.label : undefined;
+      if (row.controlState === "human_takeover") session.controlState = "human_takeover";
+      if (Number.isInteger(row.activeTabId)) session.activeTabId = row.activeTabId as number;
       if (durableTab.status === "handoff") {
+        session.tabs.set(durableTab.tabId, durableTab);
+      } else if (durableTab.status === "active") {
         session.tabs.set(durableTab.tabId, durableTab);
       } else {
         session.finalizedTabs.set(durableTab.tabId, durableTab);
       }
       await tabGroupManager.restoreDurableTab(row.session_id, session, tab, durableTab);
+    }
+    if (session && session.activeTabId !== undefined && !session.tabs.has(session.activeTabId)) {
+      session.activeTabId = await resolveSessionActiveTabId(session);
     }
   }
   if (changed) await persistSessionState();
@@ -2101,6 +2409,8 @@ async function persistSessionState(): Promise<void> {
     sessionRows.push({
       session_id: sessionId,
       label: session.label,
+      activeTabId: session.activeTabId,
+      controlState: session.controlState,
       groupId: session.groupId,
       deliverableGroupId: session.deliverableGroupId,
       tabs,
@@ -2117,16 +2427,19 @@ async function persistSessionState(): Promise<void> {
 function durableSessionTabs(session: BrowserSession): PersistedSessionTab[] {
   const rows: PersistedSessionTab[] = [];
   for (const row of session.tabs.values()) {
-    if (row.status === "handoff" || row.status === "deliverable") {
-      rows.push({ tabId: row.tabId, origin: row.origin, status: row.status });
-    }
+    rows.push({ tabId: row.tabId, origin: row.origin, status: row.status, lastCursor: persistableCursor(row.lastCursor) });
   }
   for (const row of session.finalizedTabs.values()) {
     if (row.status === "handoff" || row.status === "deliverable") {
-      rows.push({ tabId: row.tabId, origin: row.origin, status: row.status });
+      rows.push({ tabId: row.tabId, origin: row.origin, status: row.status, lastCursor: persistableCursor(row.lastCursor) });
     }
   }
   return rows;
+}
+
+function persistableCursor(cursor: CursorTarget | undefined): PersistedCursorTarget | undefined {
+  if (!cursor) return undefined;
+  return { x: cursor.x, y: cursor.y };
 }
 
 function sessionGroupTitle(label: string | undefined): string {
@@ -2246,8 +2559,18 @@ function parseDurableSessionTab(value: unknown): SessionTab | undefined {
   const status = value.status;
   if (typeof tabId !== "number" || !Number.isInteger(tabId)) return undefined;
   if (origin !== "agent" && origin !== "user") return undefined;
-  if (status !== "handoff" && status !== "deliverable") return undefined;
-  return { tabId, origin, status };
+  if (status !== "active" && status !== "handoff" && status !== "deliverable") return undefined;
+  const lastCursor = parsePersistedCursorTarget(value.lastCursor);
+  return { tabId, origin, status, ...(lastCursor ? { lastCursor } : {}) };
+}
+
+function parsePersistedCursorTarget(value: unknown): CursorTarget | undefined {
+  if (!isRecord(value)) return undefined;
+  const x = value.x;
+  const y = value.y;
+  if (typeof x !== "number" || !Number.isFinite(x)) return undefined;
+  if (typeof y !== "number" || !Number.isFinite(y)) return undefined;
+  return { x, y };
 }
 
 function parsePendingExtensionUpdate(value: unknown): PendingExtensionUpdate | undefined {
@@ -2689,6 +3012,8 @@ type PendingDialogAwareClose = {
 
 type BrowserSession = {
   currentTurnId: string;
+  activeTabId?: number;
+  controlState?: "human_takeover";
   tabs: Map<number, SessionTab>;
   finalizedTabs: Map<number, SessionTab>;
   attachedTabIds: Set<number>;
@@ -2705,6 +3030,7 @@ type SessionTab = {
   tabId: number;
   origin: TabOrigin;
   status: TabStatus;
+  lastCursor?: CursorTarget;
 };
 
 type TabDto = {
@@ -2714,9 +3040,13 @@ type TabDto = {
   url?: string;
   title?: string;
   active?: boolean;
+  logicalActive?: boolean;
   pinned?: boolean;
   origin: "agent" | "user";
   status: "active" | "handoff" | "deliverable";
+  owned?: boolean;
+  claimRequired?: boolean;
+  commandable?: boolean;
 };
 
 type SessionTabsResult = {
@@ -2754,6 +3084,8 @@ type PersistedBrowserSessionState = {
 type PersistedBrowserSession = {
   session_id: string;
   label?: string;
+  activeTabId?: number;
+  controlState?: "human_takeover";
   groupId?: number;
   deliverableGroupId?: number;
   tabs: PersistedSessionTab[];
@@ -2762,7 +3094,13 @@ type PersistedBrowserSession = {
 type PersistedSessionTab = {
   tabId: number;
   origin: TabOrigin;
-  status: "handoff" | "deliverable";
+  status: TabStatus;
+  lastCursor?: PersistedCursorTarget;
+};
+
+type PersistedCursorTarget = {
+  x: number;
+  y: number;
 };
 
 type ManagedTab = {

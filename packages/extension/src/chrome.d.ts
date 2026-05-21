@@ -67,9 +67,24 @@ declare const chrome: {
     onRemoved: {
       addListener(listener: (tabId: number, removeInfo?: { windowId?: number; isWindowClosing?: boolean }) => void): void;
     };
+    onActivated?: {
+      addListener(listener: (activeInfo: { tabId: number; windowId: number }) => void): void;
+    };
+    onAttached?: {
+      addListener(listener: (tabId: number, attachInfo?: { newWindowId?: number; newPosition?: number }) => void): void;
+    };
+    onDetached?: {
+      addListener(listener: (tabId: number, detachInfo?: { oldWindowId?: number; oldPosition?: number }) => void): void;
+    };
+    onReplaced?: {
+      addListener(listener: (addedTabId: number, removedTabId: number) => void): void;
+    };
   };
   windows: {
     get(windowId: number): Promise<ChromeWindow>;
+    onFocusChanged?: {
+      addListener(listener: (windowId: number) => void): void;
+    };
   };
   scripting: {
     executeScript(injection: {

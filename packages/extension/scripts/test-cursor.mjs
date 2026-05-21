@@ -106,6 +106,7 @@ globalThis.addEventListener = (...args) => windowEvents.addEventListener(...args
 globalThis.removeEventListener = (...args) => windowEvents.removeEventListener(...args);
 globalThis.innerWidth = 1024;
 globalThis.innerHeight = 768;
+globalThis.visualViewport = { width: 900, height: 700 };
 globalThis.matchMedia = () => ({ matches: true });
 globalThis.requestAnimationFrame = (callback) => {
   const id = timerId++;
@@ -154,6 +155,8 @@ assert.equal(host.style.position, "fixed");
 assert.equal(host.shadowChildren.length, 4);
 assert.equal(host.shadowChildren[0].textContent, "");
 const overlay = host.shadowChildren[1];
+const centeredCursor = host.shadowChildren[3];
+assert.equal(centeredCursor.style.transform, "translate3d(450px, 350px, 0)");
 assert.equal(overlay.style.opacity, "1");
 assert.match(overlay.style.background, /linear-gradient/);
 assert.doesNotMatch(overlay.style.background, /conic-gradient/);

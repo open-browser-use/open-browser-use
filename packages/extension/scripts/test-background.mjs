@@ -53,6 +53,11 @@ const runtimeMessages = new EventTarget();
 const runtimeUpdateAvailable = new EventTarget();
 const alarmEvents = new EventTarget();
 const tabRemovedEvents = new EventTarget();
+const tabActivatedEvents = new EventTarget();
+const tabAttachedEvents = new EventTarget();
+const tabDetachedEvents = new EventTarget();
+const tabReplacedEvents = new EventTarget();
+const windowFocusChangedEvents = new EventTarget();
 const tabGroupCreatedEvents = new EventTarget();
 const tabGroupUpdatedEvents = new EventTarget();
 const debuggerEvents = new EventTarget();
@@ -183,6 +188,12 @@ globalThis.chrome = {
     async query(queryInfo = {}) {
       let rows = [...tabs.values()];
       if (Number.isInteger(queryInfo.groupId)) rows = rows.filter((tab) => tab.groupId === queryInfo.groupId);
+      if (Number.isInteger(queryInfo.windowId)) rows = rows.filter((tab) => tab.windowId === queryInfo.windowId);
+      if (typeof queryInfo.active === "boolean") rows = rows.filter((tab) => tab.active === queryInfo.active);
+      if (queryInfo.lastFocusedWindow === true) {
+        const focusedWindowId = [...windows.values()].find((windowInfo) => windowInfo.focused)?.id;
+        rows = rows.filter((tab) => tab.windowId === focusedWindowId);
+      }
       return rows;
     },
     async group(options) {
@@ -250,6 +261,10 @@ globalThis.chrome = {
       return {};
     },
     onRemoved: tabRemovedEvents,
+    onActivated: tabActivatedEvents,
+    onAttached: tabAttachedEvents,
+    onDetached: tabDetachedEvents,
+    onReplaced: tabReplacedEvents,
   },
   windows: {
     async get(windowId) {
@@ -257,6 +272,7 @@ globalThis.chrome = {
       if (!windowInfo) throw new Error(`unknown window ${windowId}`);
       return windowInfo;
     },
+    onFocusChanged: windowFocusChangedEvents,
   },
   scripting: {
     async executeScript(injection) {
@@ -489,6 +505,36 @@ assert.equal(blankCreated.result.tab.url, "about:blank");
 assert.equal(calls.tabsCreate.at(-1).url, "about:blank");
 let duplicateTabId = blankCreated.result.tab.tabId;
 
+tabs.get(99).active = false;
+tabs.get(100).active = false;
+tabs.get(101).active = false;
+tabs.get(102).active = false;
+tabs.get(1).active = true;
+tabs.get(duplicateTabId).active = false;
+const ownedSelected = await hostRequest(port, "getSelectedTab", {
+  session_id: "session",
+  turn_id: "selected-owned",
+});
+assert.equal(ownedSelected.result.tab.tabId, 1);
+assert.equal(ownedSelected.result.tab.owned, true);
+assert.equal(ownedSelected.result.tab.commandable, true);
+assert.equal(ownedSelected.result.tab.logicalActive, true);
+assert.equal(storage[sessionStateKey]?.sessions?.find((session) => session.session_id === "session")?.activeTabId, 1);
+tabs.get(1).active = false;
+tabs.get(99).active = true;
+const humanSelected = await hostRequest(port, "getSelectedTab", {
+  session_id: "session",
+  turn_id: "selected-human",
+});
+assert.equal(humanSelected.result.tab.tabId, 99);
+assert.equal(humanSelected.result.tab.owned, false);
+assert.equal(humanSelected.result.tab.claimRequired, true);
+assert.equal(humanSelected.result.tab.commandable, false);
+assert.equal(humanSelected.result.tab.logicalActive, false);
+assert.equal(storage[sessionStateKey]?.sessions?.find((session) => session.session_id === "session")?.activeTabId, 1);
+tabs.get(99).active = false;
+tabs.get(1).active = true;
+
 const unsafeTarget = await hostRequest(port, "executeCdp", {
   session_id: "session",
   turn_id: "turn",
@@ -561,6 +607,31 @@ const duplicateCreatedAfterStale = await hostRequest(port, "createTab", {
   url: "https://duplicate-tab.example/",
 });
 duplicateTabId = duplicateCreatedAfterStale.result.tab.tabId;
+
+tabs.get(1).active = false;
+tabs.get(duplicateTabId).active = true;
+const foregroundSyncStart = calls.tabsSendMessage.length;
+tabActivatedEvents.emit({ tabId: duplicateTabId, windowId: 1 });
+await waitFor(() => storage[sessionStateKey]?.sessions?.find((session) => session.session_id === "session")?.activeTabId === duplicateTabId);
+const foregroundCurrent = await hostRequest(port, "getCurrentTab", {
+  session_id: "session",
+  turn_id: "foreground-turn",
+});
+assert.equal(foregroundCurrent.result.tab.tabId, duplicateTabId);
+const foregroundMessages = calls.tabsSendMessage.slice(foregroundSyncStart);
+assert.ok(foregroundMessages.some((call) =>
+  call.tabId === 1 &&
+  call.message.type === "OBU_CURSOR_HIDE"
+));
+assert.ok(foregroundMessages.some((call) =>
+  call.tabId === duplicateTabId &&
+  call.message.type === "OBU_TAKEOVER_STATE" &&
+  call.message.active === true
+));
+tabs.get(1).active = true;
+tabs.get(duplicateTabId).active = false;
+tabActivatedEvents.emit({ tabId: 1, windowId: 1 });
+await waitFor(() => storage[sessionStateKey]?.sessions?.find((session) => session.session_id === "session")?.activeTabId === 1);
 
 const cdp = await hostRequest(port, "executeCdp", {
   session_id: "session",
@@ -687,8 +758,12 @@ assert.ok(calls.tabsSendMessage.some((call) =>
   call.message.type === "OBU_CURSOR_MOVE" &&
   call.message.x === 33 &&
   call.message.y === 44 &&
-  call.message.sequence === moveMouseResult.result.sequence,
+    call.message.sequence === moveMouseResult.result.sequence,
 ));
+assert.deepEqual(
+  sessionStateTabs("session").find((tab) => tab.tabId === 1)?.lastCursor,
+  { x: 33, y: 44 },
+);
 const cursorRehydrateStart = calls.tabsSendMessage.length;
 assert.deepEqual(await runtimeMessage({ type: "OBU_CONTENT_READY" }, { tab: { id: 1 } }), { ok: true });
 const cursorRehydrateMessages = calls.tabsSendMessage.slice(cursorRehydrateStart);
@@ -706,6 +781,83 @@ assert.ok(cursorRehydrateMessages.some((call) =>
   call.message.sequence === moveMouseResult.result.sequence &&
   call.message.sessionId === "session" &&
   call.message.turnId === "turn"
+));
+
+const cursorRestartPortCount = ports.length;
+await import(`${pathToFileURL(path.join(packageRoot, "dist", "background.js")).href}?restart-cursor-state=${Date.now()}`);
+const cursorRestoredPort = await waitFor(() => ports[cursorRestartPortCount]);
+await waitFor(() => cursorRestoredPort.sent.find((message) => message.type === "hello"));
+cursorRestoredPort.emit({ type: "hello_ack", host_version: "0.1.0" });
+await waitFor(() => storage[statusKey]?.state === "connected");
+const serviceWorkerCursorStart = calls.tabsSendMessage.length;
+const restoredCursorCdp = await hostRequest(cursorRestoredPort, "executeCdp", {
+  session_id: "session",
+  turn_id: "restored-cursor-turn",
+  target: { tabId: 1 },
+  method: "Runtime.evaluate",
+});
+assert.deepEqual(restoredCursorCdp.result, { ok: true });
+const serviceWorkerCursorMessages = calls.tabsSendMessage.slice(serviceWorkerCursorStart);
+assert.ok(serviceWorkerCursorMessages.some((call) =>
+  call.tabId === 1 &&
+  call.message.type === "OBU_TAKEOVER_STATE" &&
+  call.message.sessionId === "session" &&
+  call.message.turnId === "restored-cursor-turn"
+));
+assert.ok(serviceWorkerCursorMessages.some((call) =>
+  call.tabId === 1 &&
+  call.message.type === "OBU_CURSOR_MOVE" &&
+  call.message.x === 33 &&
+  call.message.y === 44 &&
+  call.message.sessionId === "session" &&
+  call.message.turnId === "restored-cursor-turn"
+));
+
+const yieldStart = calls.tabsSendMessage.length;
+const yieldedControl = await hostRequest(port, "yieldControl", {
+  session_id: "session",
+  turn_id: "yield-turn",
+});
+assert.deepEqual(yieldedControl.result, {});
+assert.equal(storage[sessionStateKey]?.sessions?.find((session) => session.session_id === "session")?.controlState, "human_takeover");
+assert.ok(calls.tabsSendMessage.slice(yieldStart).some((call) =>
+  call.tabId === 1 &&
+  call.message.type === "OBU_CURSOR_HIDE"
+));
+const yieldedCdp = await hostRequest(port, "executeCdp", {
+  session_id: "session",
+  turn_id: "yield-turn",
+  target: { tabId: 1 },
+  method: "Runtime.evaluate",
+});
+assert.match(yieldedCdp.error.message, /yielded to the human/);
+const yieldedCreate = await hostRequest(port, "createTab", {
+  session_id: "session",
+  turn_id: "yield-turn",
+  url: "https://yielded-create.example/",
+});
+assert.match(yieldedCreate.error.message, /yielded to the human/);
+assert.equal(storage[sessionStateKey]?.sessions?.find((session) => session.session_id === "session")?.controlState, "human_takeover");
+const yieldedCurrent = await hostRequest(port, "getCurrentTab", {
+  session_id: "session",
+  turn_id: "yield-turn",
+});
+assert.equal(yieldedCurrent.result.tab.tabId, 1);
+assert.equal(yieldedCurrent.result.tab.commandable, false);
+const resumeStart = calls.tabsSendMessage.length;
+const resumedControl = await hostRequest(port, "resumeControl", {
+  session_id: "session",
+  turn_id: "resume-turn",
+});
+assert.equal(resumedControl.result.tab.tabId, 1);
+assert.equal(resumedControl.result.tab.commandable, true);
+assert.equal(storage[sessionStateKey]?.sessions?.find((session) => session.session_id === "session")?.controlState, undefined);
+assert.ok(calls.tabsSendMessage.slice(resumeStart).some((call) =>
+  call.tabId === 1 &&
+  call.message.type === "OBU_TAKEOVER_STATE" &&
+  call.message.active === true &&
+  call.message.sessionId === "session" &&
+  call.message.turnId === "resume-turn"
 ));
 
 windows.get(1).state = "minimized";
@@ -1017,6 +1169,17 @@ const removeCreated = await hostRequest(port, "createTab", {
   url: "https://remove.example/",
 });
 const removedTabId = removeCreated.result.tab.tabId;
+await hostRequest(port, "moveMouse", {
+  session_id: "remove-session",
+  turn_id: "turn",
+  tabId: removedTabId,
+  x: 70,
+  y: 80,
+});
+assert.deepEqual(
+  sessionStateTabs("remove-session").find((tab) => tab.tabId === removedTabId)?.lastCursor,
+  { x: 70, y: 80 },
+);
 const removedReassertStart = calls.tabsSendMessage.length;
 tabs.delete(removedTabId);
 tabRemovedEvents.emit(removedTabId, { windowId: 1, isWindowClosing: false });
@@ -1025,11 +1188,79 @@ const removedTabs = await hostRequest(port, "getTabs", {
   turn_id: "turn",
 });
 assert.deepEqual(removedTabs.result.tabs, []);
+assert.deepEqual(sessionStateTabs("remove-session"), []);
 assert.deepEqual(await runtimeMessage({ type: "OBU_CONTENT_READY" }, { tab: { id: removedTabId } }), { ok: true });
 assert.equal(calls.tabsSendMessage.slice(removedReassertStart).some((call) =>
   call.tabId === removedTabId &&
   call.message.type === "OBU_TAKEOVER_STATE"
 ), false);
+
+const replaceCreated = await hostRequest(port, "createTab", {
+  session_id: "replace-session",
+  turn_id: "turn",
+  url: "https://replace.example/",
+});
+const replacedOldTabId = replaceCreated.result.tab.tabId;
+const replacedNewTabId = 200;
+tabs.set(replacedNewTabId, {
+  ...tabs.get(replacedOldTabId),
+  id: replacedNewTabId,
+  url: "https://replace-new.example/",
+  title: "Replaced",
+});
+tabs.delete(replacedOldTabId);
+tabReplacedEvents.emit(replacedNewTabId, replacedOldTabId);
+await waitFor(() => sessionStateTabs("replace-session").some((tab) => tab.tabId === replacedNewTabId));
+assert.equal(sessionStateTabs("replace-session").some((tab) => tab.tabId === replacedOldTabId), false);
+assert.equal(tabGroupStateGroups().some((group) => group.tabs[String(replacedNewTabId)]), true);
+assert.equal(tabGroupStateGroups().some((group) => group.tabs[String(replacedOldTabId)]), false);
+const replacedCurrent = await hostRequest(port, "getCurrentTab", {
+  session_id: "replace-session",
+  turn_id: "after-replace",
+});
+assert.equal(replacedCurrent.result.tab.tabId, replacedNewTabId);
+
+const replaceDeliverableCreated = await hostRequest(port, "createTab", {
+  session_id: "replace-deliverable-session",
+  turn_id: "turn",
+  url: "https://replace-deliverable.example/",
+});
+const replacedDeliverableOldTabId = replaceDeliverableCreated.result.tab.tabId;
+await hostRequest(port, "finalizeTabs", {
+  session_id: "replace-deliverable-session",
+  turn_id: "turn",
+  keep: [{ tabId: replacedDeliverableOldTabId, status: "deliverable" }],
+});
+const replacedDeliverableNewTabId = 201;
+tabs.set(replacedDeliverableNewTabId, {
+  ...tabs.get(replacedDeliverableOldTabId),
+  id: replacedDeliverableNewTabId,
+  url: "https://replace-deliverable-new.example/",
+  title: "Replaced Deliverable",
+});
+tabs.delete(replacedDeliverableOldTabId);
+tabReplacedEvents.emit(replacedDeliverableNewTabId, replacedDeliverableOldTabId);
+await waitFor(() => sessionStateTabs("replace-deliverable-session").some((tab) => tab.tabId === replacedDeliverableNewTabId));
+assert.equal(sessionStateTabs("replace-deliverable-session").some((tab) => tab.tabId === replacedDeliverableOldTabId), false);
+const replacedDeliverableTabs = await hostRequest(port, "getTabs", {
+  session_id: "replace-deliverable-session",
+  turn_id: "after-replace-deliverable",
+});
+assert.deepEqual(
+  replacedDeliverableTabs.result.deliverableTabs.map((tab) => [tab.tabId, tab.status]),
+  [[replacedDeliverableNewTabId, "deliverable"]],
+);
+await hostRequest(port, "claimUserTab", {
+  session_id: "replace-deliverable-session",
+  turn_id: "cleanup-replaced-deliverable",
+  tabId: replacedDeliverableNewTabId,
+});
+await hostRequest(port, "finalizeTabs", {
+  session_id: "replace-deliverable-session",
+  turn_id: "cleanup-replaced-deliverable",
+});
+assert.deepEqual(sessionStateTabs("replace-deliverable-session"), []);
+tabs.get(replacedDeliverableNewTabId).active = false;
 
 const handoffCreated = await hostRequest(port, "createTab", {
   session_id: "keep-session",
@@ -1064,6 +1295,11 @@ assert.deepEqual(calls.tabGroupsUpdate.at(-1).updateProperties, {
   collapsed: false,
 });
 assert.equal(tabGroupStateGroups().find((group) => group.kind === "deliverable")?.title, "Open Browser Use Deliverables");
+const currentAfterFinalize = await hostRequest(port, "getCurrentTab", {
+  session_id: "keep-session",
+  turn_id: "after-finalize",
+});
+assert.equal(currentAfterFinalize.result.tab, null);
 const keptSessionTabs = await hostRequest(port, "getTabs", {
   session_id: "keep-session",
   turn_id: "turn",
@@ -1072,6 +1308,8 @@ assert.deepEqual(
   keptSessionTabs.result.tabs.map((tab) => [tab.tabId, tab.status]),
   [[handoffTabId, "handoff"]],
 );
+assert.equal(keptSessionTabs.result.tabs[0].commandable, false);
+assert.equal(keptSessionTabs.result.tabs[0].logicalActive, false);
 assert.deepEqual(
   keptSessionTabs.result.deliverableTabs.map((tab) => [tab.tabId, tab.status]),
   [[deliverableTabId, "deliverable"]],
@@ -1177,6 +1415,11 @@ const restoredPort = await waitFor(() => ports[restartSessionPortCount]);
 await waitFor(() => restoredPort.sent.find((message) => message.type === "hello"));
 restoredPort.emit({ type: "hello_ack", host_version: "0.1.0" });
 await waitFor(() => storage[statusKey]?.state === "connected");
+const restoredCurrent = await hostRequest(restoredPort, "getCurrentTab", {
+  session_id: "keep-session",
+  turn_id: "restored-turn",
+});
+assert.equal(restoredCurrent.result.tab, null);
 const restoredSessionTabs = await hostRequest(restoredPort, "getTabs", {
   session_id: "keep-session",
   turn_id: "restored-turn",

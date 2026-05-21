@@ -126,8 +126,8 @@ let pulseLayer: HTMLDivElement | null = null;
 let activeTakeover = false;
 let lockInputs = false;
 let lockInstalled = false;
-let currentPoint: Point = { x: 24, y: 24 };
-let targetPoint: Point = { x: 24, y: 24 };
+let currentPoint: Point = initialCursorPoint();
+let targetPoint: Point = { ...currentPoint };
 let lastSessionId: string | undefined;
 let lastTurnId: string | undefined;
 let animationFrame: number | undefined;
@@ -753,6 +753,21 @@ function renderCursor(point: Point, rotation: number, scaleX: number, scaleY: nu
   if (!cursor || !cursorGlyph) return;
   cursor.style.transform = `translate3d(${Math.round(point.x)}px, ${Math.round(point.y)}px, 0)`;
   cursorGlyph.style.transform = `rotate(${rotation.toFixed(2)}deg) scale(${scaleX.toFixed(3)}, ${scaleY.toFixed(3)})`;
+}
+
+function initialCursorPoint(): Point {
+  const targetWindow = windowTarget();
+  const viewport = targetWindow?.visualViewport;
+  const width = typeof viewport?.width === "number" && Number.isFinite(viewport.width)
+    ? viewport.width
+    : targetWindow?.innerWidth || document.documentElement.clientWidth || 1024;
+  const height = typeof viewport?.height === "number" && Number.isFinite(viewport.height)
+    ? viewport.height
+    : targetWindow?.innerHeight || document.documentElement.clientHeight || 768;
+  return {
+    x: Math.round(width * 0.5),
+    y: Math.round(height * 0.5),
+  };
 }
 
 function addPulse(point: Point): void {
