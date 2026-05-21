@@ -448,7 +448,6 @@ class TabGroupManager {
     await this.ensureLoaded();
     const windowKey = String(windowId);
     const previousGroupId = this.state.deliverableGroupsByWindowId[windowKey];
-    await releaseTabFromSessionGroup(tabId);
     const groupId = await groupTab(tabId, previousGroupId);
     if (previousGroupId !== undefined && previousGroupId !== groupId) {
       this.deleteGroupById(previousGroupId);
@@ -1259,7 +1258,6 @@ async function finalizeTabs(sessionParams: SessionParams, params: unknown): Prom
 
   for (const [tabId, row] of [...session.tabs]) {
     const keepStatus = keep.get(tabId);
-    if (keepStatus) row.status = keepStatus;
     if (row.origin === "agent" && !keepStatus) {
       await closeAgentTabWithDialogPolicy(sessionParams.session_id, session, tabId, "finalizeTabs");
       await tabGroupManager.removeManagedTab(tabId);
@@ -1279,23 +1277,34 @@ async function finalizeTabs(sessionParams: SessionParams, params: unknown): Prom
     try {
       if (keepStatus === "deliverable") {
         await cleanupControlledTab(session, tabId);
-        await moveTabToDeliverableGroup(sessionParams.session_id, session, tabId, row.origin);
-        const dto = toTabDto(await chrome.tabs.get(tabId), row);
+        const tab = await chrome.tabs.get(tabId);
+        const groupId = await moveTabToDeliverableGroup(sessionParams.session_id, session, tabId, row.origin);
+        const finalizedRow: SessionTab = { ...row, status: "deliverable" };
+        const dto = toTabDto({ ...tab, groupId }, finalizedRow);
         session.tabs.delete(tabId);
-        session.finalizedTabs.set(tabId, { ...row });
+        session.finalizedTabs.set(tabId, finalizedRow);
         keptTabs.push(dto);
         deliverableTabs.push(dto);
       } else {
         if (keepStatus === "handoff") {
           await cleanupControlledTab(session, tabId);
+          const tab = await chrome.tabs.get(tabId);
           await tabGroupManager.setManagedTabStatus(tabId, "handoff");
+          const handoffRow: SessionTab = { ...row, status: "handoff" };
+          row.status = "handoff";
+          keptTabs.push(toTabDto(tab, handoffRow));
+        } else {
+          keptTabs.push(toTabDto(await chrome.tabs.get(tabId), row));
         }
-        keptTabs.push(toTabDto(await chrome.tabs.get(tabId), row));
       }
-    } catch {
+    } catch (error) {
+      if (!isTabGoneError(error)) {
+        throw finalizeTabTransitionError(tabId, keepStatus, error);
+      }
       session.tabs.delete(tabId);
       session.attachedTabIds.delete(tabId);
       await tabGroupManager.removeManagedTab(tabId);
+      closedTabIds.push(tabId);
     }
   }
   syncSessionGroupMirrors(session);
@@ -1555,8 +1564,9 @@ async function moveTabToDeliverableGroup(
   session: BrowserSession,
   tabId: number,
   origin: TabOrigin,
-): Promise<void> {
+): Promise<number> {
   session.deliverableGroupId = await tabGroupManager.moveTabToDeliverableGroup(sessionId, tabId, origin);
+  return session.deliverableGroupId;
 }
 
 async function groupTab(tabId: number, groupId: number | undefined): Promise<number> {
@@ -1657,6 +1667,17 @@ async function tabExists(tabId: number): Promise<boolean> {
 
 function isTabGoneError(error: unknown): boolean {
   return /No tab|Cannot find|closed|does not exist|unknown tab/i.test(errorMessage(error));
+}
+
+function finalizeTabTransitionError(
+  tabId: number,
+  keepStatus: SessionTab["status"] | undefined,
+  error: unknown,
+): Error {
+  const statusLabel = keepStatus ?? "active";
+  return new Error(
+    `finalizeTabs failed_to_finalize tab ${tabId} as ${statusLabel}; ownership is unchanged: ${errorMessage(error)}`,
+  );
 }
 
 async function hideSessionTakeover(session: BrowserSession): Promise<void> {

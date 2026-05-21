@@ -1039,6 +1039,77 @@ assert.deepEqual(
 );
 const statusWithDeliverable = await popupMessage({ type: "GET_NATIVE_HOST_STATUS" });
 assert.equal(statusWithDeliverable.deliverableTabs, 1);
+const handoffFailureCreated = await hostRequest(port, "createTab", {
+  session_id: "keep-failure-session",
+  turn_id: "turn",
+  url: "https://handoff-failure.example/",
+});
+const handoffFailureTabId = handoffFailureCreated.result.tab.tabId;
+const originalTabsGet = chrome.tabs.get;
+let failHandoffGet = true;
+chrome.tabs.get = async (tabId) => {
+  if (tabId === handoffFailureTabId && failHandoffGet) throw new Error("synthetic metadata failure");
+  return originalTabsGet.call(chrome.tabs, tabId);
+};
+const failedHandoffFinalize = await hostRequest(port, "finalizeTabs", {
+  session_id: "keep-failure-session",
+  turn_id: "turn",
+  keep: [{ tabId: handoffFailureTabId, status: "handoff" }],
+});
+failHandoffGet = false;
+chrome.tabs.get = originalTabsGet;
+assert.match(failedHandoffFinalize.error.message, /failed_to_finalize/);
+assert.match(failedHandoffFinalize.error.message, /ownership is unchanged/);
+const handoffFailureTabs = await hostRequest(port, "getTabs", {
+  session_id: "keep-failure-session",
+  turn_id: "after-failed-handoff",
+});
+assert.deepEqual(
+  handoffFailureTabs.result.tabs.map((tab) => [tab.tabId, tab.status]),
+  [[handoffFailureTabId, "active"]],
+);
+assert.deepEqual(handoffFailureTabs.result.deliverableTabs, []);
+assert.equal(tabGroupStateGroups().find((group) => group.tabs[String(handoffFailureTabId)])?.tabs[String(handoffFailureTabId)].status, "active");
+const handoffFailureCdp = await hostRequest(port, "executeCdp", {
+  session_id: "keep-failure-session",
+  turn_id: "after-failed-handoff",
+  target: { tabId: handoffFailureTabId },
+  method: "Runtime.evaluate",
+});
+assert.equal(handoffFailureCdp.result.ok, true);
+
+const deliverableFailureCreated = await hostRequest(port, "createTab", {
+  session_id: "deliverable-failure-session",
+  turn_id: "turn",
+  url: "https://deliverable-failure.example/",
+});
+const deliverableFailureTabId = deliverableFailureCreated.result.tab.tabId;
+const deliverableFailureGroupId = tabs.get(deliverableFailureTabId).groupId;
+const originalTabsGroup = chrome.tabs.group;
+chrome.tabs.group = async (options) => {
+  if ([].concat(options.tabIds).includes(deliverableFailureTabId)) throw new Error("synthetic group failure");
+  return originalTabsGroup.call(chrome.tabs, options);
+};
+const failedDeliverableFinalize = await hostRequest(port, "finalizeTabs", {
+  session_id: "deliverable-failure-session",
+  turn_id: "turn",
+  keep: [{ tabId: deliverableFailureTabId, status: "deliverable" }],
+});
+chrome.tabs.group = originalTabsGroup;
+assert.match(failedDeliverableFinalize.error.message, /failed_to_finalize/);
+assert.match(failedDeliverableFinalize.error.message, /ownership is unchanged/);
+const deliverableFailureTabs = await hostRequest(port, "getTabs", {
+  session_id: "deliverable-failure-session",
+  turn_id: "after-failed-deliverable",
+});
+assert.deepEqual(
+  deliverableFailureTabs.result.tabs.map((tab) => [tab.tabId, tab.status]),
+  [[deliverableFailureTabId, "active"]],
+);
+assert.deepEqual(deliverableFailureTabs.result.deliverableTabs, []);
+assert.equal(tabs.has(deliverableFailureTabId), true);
+assert.equal(tabs.get(deliverableFailureTabId).groupId, deliverableFailureGroupId);
+
 const deliverableCdp = await hostRequest(port, "executeCdp", {
   session_id: "keep-session",
   turn_id: "turn",
