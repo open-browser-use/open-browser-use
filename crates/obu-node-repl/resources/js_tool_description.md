@@ -9,11 +9,21 @@ by respawning the child and refreshes runtime browser descriptors before the
 new child starts.
 
 When `@open-browser-use/sdk` is installed in a trusted module directory, the kernel
-automatically installs the global `agent`. Use `agent.browsers.get("cdp")` or
-`agent.browsers.get("chrome")` to drive a browser through the Playwright-shaped
-open-browser-use SDK. This is the browser automation surface: do not ask for separate
-`click`, `type`, `screenshot`, or `scroll` tools. Write JavaScript with
-`agent`, `tab`, `locator`, and `tab.cua` instead.
+automatically installs the global `agent`. Use `agent.browsers.get("chrome")`
+to drive the user's Chrome through the WebExtension-backed, Playwright-shaped
+open-browser-use SDK. This preserves cookies, tab groups, visible state, and
+human takeover; it fails fast instead of silently falling back to CDP. Use
+`agent.browsers.get("cdp")` only as an explicit lower-fidelity escape hatch when
+Chrome profile continuity is not required. This is the browser automation surface:
+do not ask for separate `click`, `type`, `screenshot`, or `scroll` tools. Write
+JavaScript with `agent`, `tab`, `locator`, and `tab.cua` instead.
+The native pipe is injected only into trusted imported SDK modules through
+`import.meta.__obuNativePipe`; the main `js` cell, `globalThis`, and capability
+tokens are not exposed. `browser_status` reports whether the SDK was trusted by
+path, by hash, or by explicit local `trust_all` mode. OBU keeps browser policy
+local: SDK guards and host policy enforce navigation, upload, download, history,
+raw CDP, and current-origin checks before backend side effects. There is no
+remote site-status phone-home in the browser action path.
 `agent.browsers.get(...)` is async. For browser tasks, keep persistent handles on
 `globalThis` so later cells continue the same visible task instead of opening a
 new tab:
@@ -53,15 +63,22 @@ Fast browser work rules:
 - Prefer `browser.tabs.current()` for same-task continuation after thinking. Use
   `browser.tabs.selected()` only as browser-visible discovery; if it returns a
   user tab reference, claim/resume it explicitly before issuing actions.
+- If `browser.viewport` or `browser.visibility` exists, use those capability
+  objects for deliberate viewport/window changes instead of raw CDP or guessing
+  whether the backend supports the operation.
 - If the human needs to take over the visible page, call
   `await browser.yieldControl()` instead of `finishTurn(...)`. Resume with
   `globalThis.tab = await browser.resumeControl()` before issuing actions.
-- Use `tab.snapshotText()` or targeted locators for page state. Reuse the last
-  snapshot until navigation, a modal/dropdown, timeout, strict-match failure, or
-  parse failure means the UI changed.
+- Use `tab.domSnapshot()`, `tab.snapshotText()`, or targeted locators for page
+  state. Reuse the last snapshot until navigation, a modal/dropdown, timeout,
+  strict-match failure, or parse failure means the UI changed.
+- Use `tab.dom_cua.text()` when you need the DOM-CUA visible-node list in a
+  compact LLM-readable form while still keeping node ids valid for DOM-CUA
+  click/type calls from the current snapshot.
 - Avoid broad browser-boundary loops such as `all()` followed by many
-  `getAttribute()` or `innerText()` calls. Use one constrained locator or one
-  page-side `tab.evaluate(...)` for bulk extraction.
+  uncached `getAttribute()` or `innerText()` calls. Use `locator.all()` for
+  batched collection reads, one constrained locator, or one page-side
+  `tab.evaluate(...)` for bulk extraction.
 - Arm `waitForEvent("download")` or `waitForEvent("filechooser")` before the
   click that triggers it, then consume the returned handle.
 - Run `browser_status` before the first browser action when readiness is
@@ -78,6 +95,21 @@ Fast browser work rules:
 - Native `alert` and `beforeunload` dialogs on controlled tabs are auto-accepted.
   Native `confirm` and `prompt` dialogs are dismissed and fail the operation with
   `ObuError.code === -1203` and `error.data.code === "dialog_requires_decision"`.
+
+Safety confirmation taxonomy:
+- Handoff-required: payment submission, account deletion, irreversible purchase,
+  permission grants, or actions that expose private account data. Use
+  `browser.yieldControl()` and let the human complete the step.
+- Action-time confirmation: downloads, uploads, file chooser selection, browser
+  history reads, raw CDP, and cross-site navigation when local policy requires a
+  decision. Ask immediately before the action and surface stable `ObuError`
+  product codes if blocked.
+- Preapproval-acceptable: repetitive same-site navigation, filtering, sorting,
+  pagination, and form edits that the user has already requested for the active
+  task. Keep the same tab state and continue without repeated confirmations.
+- No-confirmation: reading visible page content, DOM snapshots, locator counts,
+  screenshots for inspection, cursor movement, and waits that do not mutate page
+  or browser state.
 
 ## Arguments
 
@@ -111,9 +143,10 @@ The MCP text `content` is only a short status summary. Read
 
 - `display(value)` — show progress. Strings and JSON-compatible values stream
   live via MCP `notifications/progress` when the client provides a progress
-  token, and are also returned in `displays`. Image payloads shaped as
-  `{ __obuImage: true, mime_type, data }` are not streamed, and the final result
-  stores them as MCP resource links instead of inline base64.
+  token, and are also returned in `displays`. SDK `Image` values from
+  `tab.screenshot()` or `locator.screenshot()` are converted to image artifacts;
+  raw image payloads shaped as `{ __obuImage: true, mime_type, data }` are also
+  stored as MCP resource links instead of inline base64.
 - `nodeRepl.cwd` — current working directory.
 - `nodeRepl.homeDir` — user home directory, when available.
 - `nodeRepl.tmpDir` — scratch directory.
@@ -138,15 +171,17 @@ The MCP text `content` is only a short status summary. Read
 Keep `stdout`, final expression values, and `display()` payloads small. The MCP
 server caps large text/JSON fields and spills image-like base64 payloads to
 resources, but concise summaries are still the best path. Prefer
-`tab.snapshotText()`, `tab.evaluate(...)`, and `tab.screenshotForModel(...)`
-over raw CDP evaluation or raw screenshot returns. Text/JSON `display()` frames
-can stream as progress, but they are also included in the final result.
+`tab.domSnapshot()`, `tab.snapshotText()`, `tab.evaluate(...)`,
+`display(await tab.screenshot(...))`, and `tab.screenshotForModel(...)` over raw
+CDP evaluation or raw screenshot returns.
+Text/JSON `display()` frames can stream as progress, but they are also included
+in the final result.
 
 ## Examples
 
 ```js
 if (!globalThis.browser) {
-  globalThis.browser = await agent.browsers.get("cdp");
+  globalThis.browser = await agent.browsers.get("chrome");
 }
 await browser.name("Docs check");
 if (typeof tab === "undefined") {

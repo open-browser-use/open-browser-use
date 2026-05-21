@@ -10,8 +10,8 @@ expression: excerpt
 - Do not brute-force undocumented search URLs, query parameter variants, search
 - Once there is one authoritative page signal, such as a success modal, cart line
 - Keep a `Tab` handle and use `await tab.goto(url)` for same-task or same-site
-- Reuse the last `tab.snapshotText()` result until navigation, a modal/dropdown,
-- Avoid broad browser-boundary loops such as `all()` followed by many
+- Reuse the last `tab.domSnapshot()` or `tab.snapshotText()` result until
+- Avoid broad browser-boundary loops such as `all()` followed by many uncached
 - Arm `waitForEvent("download")` or `waitForEvent("filechooser")` before the
 - Use `browser.turnEnded()` to mark a turn boundary while keeping active tabs
 controlled. `browser.finishTurn(...)` first finalizes tabs and should be used

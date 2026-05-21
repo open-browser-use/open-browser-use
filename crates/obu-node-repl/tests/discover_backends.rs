@@ -99,6 +99,55 @@ async fn browser_status_reports_available_sdk_without_backend_as_popup_boundary(
 }
 
 #[tokio::test]
+async fn browser_status_reports_sdk_trusted_by_path() {
+    let sdk_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("sdk-good");
+    let mut options = ManagerOptions::for_tests();
+    options.module_dirs.push(sdk_dir.clone());
+    options.trusted_code_paths.push(sdk_dir);
+    let manager = JsRuntimeManager::new(options).await.unwrap();
+
+    let status = manager.browser_status().await.unwrap();
+
+    assert_eq!(status["sdk_bootstrap"], json!("available"));
+    assert_eq!(
+        status["sdk_bootstrap_detail"]["trusted_by"],
+        json!({
+            "trust_all": false,
+            "path": true,
+            "hash": false,
+        })
+    );
+}
+
+#[tokio::test]
+async fn browser_status_reports_sdk_trusted_by_hash() {
+    let sdk_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("sdk-good");
+    let sdk = obu_node_repl::sdk_discovery::discover_at(&sdk_dir).unwrap();
+    let mut options = ManagerOptions::for_tests();
+    options.module_dirs.push(sdk_dir);
+    options.trusted_module_sha256s.push(sdk.hash);
+    let manager = JsRuntimeManager::new(options).await.unwrap();
+
+    let status = manager.browser_status().await.unwrap();
+
+    assert_eq!(status["sdk_bootstrap"], json!("available"));
+    assert_eq!(
+        status["sdk_bootstrap_detail"]["trusted_by"],
+        json!({
+            "trust_all": false,
+            "path": false,
+            "hash": true,
+        })
+    );
+}
+
+#[tokio::test]
 async fn js_result_preserves_structured_error_detail_for_mcp_output() {
     let manager = JsRuntimeManager::new(ManagerOptions::for_tests())
         .await

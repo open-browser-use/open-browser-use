@@ -16,7 +16,7 @@ fn agent_browser_mcp_usage_fast_work_rules() {
         "Do not brute-force undocumented search URLs",
         "Once there is one authoritative page signal",
         "Keep a `Tab` handle and use `await tab.goto(url)`",
-        "Reuse the last `tab.snapshotText()` result",
+        "Reuse the last `tab.domSnapshot()` or `tab.snapshotText()` result",
         "Avoid broad browser-boundary loops",
         "Arm `waitForEvent(\"download\")` or `waitForEvent(\"filechooser\")` before the",
         "Use `browser.turnEnded()` to mark a turn boundary",
