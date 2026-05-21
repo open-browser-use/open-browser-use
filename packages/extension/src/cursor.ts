@@ -331,9 +331,6 @@ function ensureCursor(): void {
   updateCaptureSuppression();
   const shadow = host.attachShadow({ mode: "closed" });
 
-  const style = document.createElement("style");
-  style.textContent = takeoverStyleSheet();
-
   overlay = document.createElement("canvas");
   overlay.style.position = "fixed";
   overlay.style.inset = "0";
@@ -366,22 +363,18 @@ function ensureCursor(): void {
   cursorGlyph = document.createElement("div");
   cursorGlyph.style.width = `${CURSOR_SIZE_PX}px`;
   cursorGlyph.style.height = `${CURSOR_SIZE_PX}px`;
-  cursorGlyph.style.background = cursorSvgDataUrl();
+  cursorGlyph.style.background = CURSOR_SVG_DATA_URL;
   cursorGlyph.style.backgroundSize = `${CURSOR_SIZE_PX}px ${CURSOR_SIZE_PX}px`;
   cursorGlyph.style.backgroundRepeat = "no-repeat";
   cursorGlyph.style.transformOrigin = `${CURSOR_TIP_ORIGIN_PX}px ${CURSOR_TIP_ORIGIN_PX}px`;
   cursorGlyph.style.willChange = "transform";
   cursor.append(cursorGlyph);
 
-  shadow.append(style, overlay, pulseLayer, cursor);
+  shadow.append(overlay, pulseLayer, cursor);
   document.documentElement.append(host);
   updateOverlay();
   updateInputLock();
   renderCursor(currentPoint, RESTING_ROTATION_DEG, 1, 1);
-}
-
-function takeoverStyleSheet(): string {
-  return "";
 }
 
 function updateOverlay(): void {
@@ -851,7 +844,7 @@ function quadraticTangent(start: Point, control: Point, end: Point, t: number): 
   };
 }
 
-function cursorSvgDataUrl(): string {
+const CURSOR_SVG_DATA_URL = (() => {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
     <g fill="#ffc400" stroke="#f2a900" stroke-width=".6" stroke-linejoin="round">
       <path d="M8.7 7.1 10.4 1.4c.2-.8 1.3-.8 1.6 0l2 5.6 3.1-2.1c.7-.5 1.5.3 1.1 1l-2.1 4.7a10.3 10.3 0 0 0-6.7-.1L6.5 6.3c-.4-.7.4-1.5 1.1-1l1.1 1.8Z"/>
@@ -864,7 +857,7 @@ function cursorSvgDataUrl(): string {
     <path d="M9.6 10.8 12.3 27 17.1 20l6.2 7.8" fill="none" stroke="#dfe7ef" stroke-width=".9" stroke-linecap="round" stroke-linejoin="round" opacity=".72"/>
   </svg>`;
   return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
-}
+})();
 
 function dist(a: Point, b: Point): number {
   return Math.hypot(b.x - a.x, b.y - a.y);

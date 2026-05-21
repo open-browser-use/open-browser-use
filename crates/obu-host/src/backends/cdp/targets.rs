@@ -59,6 +59,13 @@ pub async fn list_tabs(backend: &CdpBackend) -> Result<Value> {
         .and_then(Value::as_array)
         .ok_or_else(|| HostError::Protocol("Target.getTargets missing targetInfos".into()))?;
 
+    let existing_by_target: HashMap<String, TabRecord> = backend
+        .registry()
+        .list()?
+        .into_iter()
+        .map(|record| (record.target_id.clone(), record))
+        .collect();
+
     let mut out = Vec::new();
     for target in targets {
         if target.get("type").and_then(Value::as_str) != Some("page") {
@@ -81,7 +88,14 @@ pub async fn list_tabs(backend: &CdpBackend) -> Result<Value> {
             .get("attached")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let record = upsert_target_record(backend, target_id, &url, &title, attached)?;
+        let record = upsert_target_record(
+            backend,
+            existing_by_target.get(target_id).cloned(),
+            target_id,
+            &url,
+            &title,
+            attached,
+        )?;
         out.push(tab_record_to_value(&record));
     }
     Ok(Value::Array(out))
@@ -252,18 +266,13 @@ pub async fn finalize_tabs(
 
 fn upsert_target_record(
     backend: &CdpBackend,
+    existing: Option<TabRecord>,
     target_id: &str,
     url: &str,
     title: &str,
     attached: bool,
 ) -> Result<TabRecord> {
-    if let Some(record) = backend
-        .registry()
-        .list()?
-        .into_iter()
-        .find(|record| record.target_id == target_id)
-    {
-        let mut record = record;
+    if let Some(mut record) = existing {
         record.url = url.to_string();
         record.title = title.to_string();
         record.attached = attached;

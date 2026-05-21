@@ -1341,8 +1341,10 @@ async function getSessionTabs(sessionParams: SessionParams): Promise<SessionTabs
       changed = true;
     }
   }
-  if (changed) syncSessionGroupMirrors(session);
-  if (changed) await persistSessionState();
+  if (changed) {
+    syncSessionGroupMirrors(session);
+    await persistSessionState();
+  }
   return { tabs: rows, deliverableTabs };
 }
 
@@ -2372,12 +2374,10 @@ async function restoreSessionState(): Promise<void> {
       session.label = typeof row.label === "string" ? row.label : undefined;
       if (row.controlState === "human_takeover") session.controlState = "human_takeover";
       if (Number.isInteger(row.activeTabId)) session.activeTabId = row.activeTabId as number;
-      if (durableTab.status === "handoff") {
-        session.tabs.set(durableTab.tabId, durableTab);
-      } else if (durableTab.status === "active") {
-        session.tabs.set(durableTab.tabId, durableTab);
-      } else {
+      if (durableTab.status === "deliverable") {
         session.finalizedTabs.set(durableTab.tabId, durableTab);
+      } else {
+        session.tabs.set(durableTab.tabId, durableTab);
       }
       await tabGroupManager.restoreDurableTab(row.session_id, session, tab, durableTab);
     }

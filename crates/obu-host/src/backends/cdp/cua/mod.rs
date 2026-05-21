@@ -167,7 +167,7 @@ async fn type_text(backend: &CdpBackend, params: Value) -> Result<Value> {
     let tab_id = required_str(&params, "tab_id")?;
     let session_id = require_session(backend, tab_id)?;
     let text = required_str(&params, "text")?;
-    send_dialog_sensitive_command(
+    crate::backends::cdp::dialogs::send_command_with_dialog_policy(
         backend,
         tab_id,
         &session_id,
@@ -271,7 +271,7 @@ struct CdpKeyEventSink<'a> {
 #[async_trait::async_trait]
 impl KeyEventSink for CdpKeyEventSink<'_> {
     async fn dispatch_key_event(&self, event: Value) -> Result<()> {
-        send_dialog_sensitive_command(
+        crate::backends::cdp::dialogs::send_command_with_dialog_policy(
             self.backend,
             self.tab_id,
             self.session_id,
@@ -279,6 +279,7 @@ impl KeyEventSink for CdpKeyEventSink<'_> {
             event,
         )
         .await
+        .map(|_| ())
     }
 }
 
@@ -288,7 +289,7 @@ async fn dispatch_mouse(
     session_id: &str,
     event: MouseEvent<'_>,
 ) -> Result<()> {
-    send_dialog_sensitive_command(
+    crate::backends::cdp::dialogs::send_command_with_dialog_policy(
         backend,
         tab_id,
         session_id,
@@ -296,26 +297,7 @@ async fn dispatch_mouse(
         event.to_cdp_params(),
     )
     .await
-}
-
-async fn send_dialog_sensitive_command(
-    backend: &CdpBackend,
-    tab_id: &str,
-    session_id: &str,
-    method: &str,
-    params: Value,
-) -> Result<()> {
-    let operation = async {
-        backend
-            .transport()
-            .send_command(method, params, Some(session_id))
-            .await
-            .map(|_| ())
-            .map_err(HostError::from)
-    };
-    let context =
-        crate::backends::cdp::dialogs::context_for_tab(backend, tab_id, session_id, method);
-    crate::backends::cdp::dialogs::run_with_dialog_policy(backend, context, operation).await
+    .map(|_| ())
 }
 
 fn required_str<'a>(params: &'a Value, key: &str) -> Result<&'a str> {

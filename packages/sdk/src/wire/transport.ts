@@ -24,6 +24,8 @@ const parsedOvershoot = Number(env?.OBU_DEFENSIVE_TIMEOUT_MS_OVERSHOOT);
 const DEFENSIVE_OVERSHOOT_MS = Number.isFinite(parsedOvershoot) && parsedOvershoot >= 0
   ? parsedOvershoot
   : 5_000;
+const TEXT_ENCODER = new TextEncoder();
+const TEXT_DECODER = new TextDecoder();
 
 export class Transport {
   #closed = false;
@@ -80,7 +82,7 @@ export class Transport {
       });
     });
 
-    const bytes = new TextEncoder().encode(JSON.stringify(payload));
+    const bytes = TEXT_ENCODER.encode(JSON.stringify(payload));
     try {
       // Pending is registered before write; an in-process transport may answer synchronously.
       this.connection.write(this.#encoder.encode(bytes));
@@ -117,7 +119,7 @@ export class Transport {
     for (const frame of frames) {
       let message: RpcResponse;
       try {
-        message = JSON.parse(new TextDecoder().decode(frame)) as RpcResponse;
+        message = JSON.parse(TEXT_DECODER.decode(frame)) as RpcResponse;
       } catch {
         continue;
       }

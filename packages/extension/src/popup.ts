@@ -367,15 +367,10 @@ function renderSetup(status: HostStatus, advice: NativeHostAdvice, wasConnected:
 function applyPromptExpansion(): void {
   agentHandoff!.hidden = !setupPromptExpanded;
   setDataAttribute(setupPanel, "data-prompt-expanded", setupPromptExpanded ? "true" : "false");
-  setElementAttribute(promptToggleButton, "aria-expanded", setupPromptExpanded ? "true" : "false");
+  setDataAttribute(promptToggleButton, "aria-expanded", setupPromptExpanded ? "true" : "false");
 }
 
 function setDataAttribute(element: HTMLElement | null, name: string, value: string): void {
-  const target = element as (HTMLElement & { setAttribute?: (name: string, value: string) => void }) | null;
-  target?.setAttribute?.(name, value);
-}
-
-function setElementAttribute(element: HTMLElement | null, name: string, value: string): void {
   const target = element as (HTMLElement & { setAttribute?: (name: string, value: string) => void }) | null;
   target?.setAttribute?.(name, value);
 }
