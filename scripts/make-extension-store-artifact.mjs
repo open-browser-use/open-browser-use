@@ -133,12 +133,16 @@ function assertStoreContents(files) {
     "icons/icon-32.png",
     "icons/icon-48.png",
     "manifest.json",
+    "native_host_bridge.js",
     "options.css",
     "options.html",
     "options.js",
+    "overlay_coordinator.js",
     "popup.css",
     "popup.html",
     "popup.js",
+    "session_store.js",
+    "tab_group_manager.js",
   ].sort();
   const expectedLocaleFiles = expectedLocales.map((locale) => `_locales/${locale}/messages.json`).sort();
   const actual = [...files].sort();

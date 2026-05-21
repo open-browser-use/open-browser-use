@@ -283,7 +283,7 @@ globalThis.chrome = {
       }
       if (typeof injection.func === "function") {
         const message = injection.args?.[1];
-        calls.tabsSendMessage.push({ tabId: injection.target.tabId, message });
+        calls.tabsSendMessage.push({ tabId: injection.target.tabId, target: injection.target, message });
         if (message?.type === "OBU_CAPTURE_SUPPRESSION" && message.active && failNextCaptureSuppression) {
           failNextCaptureSuppression = false;
           return [{ result: false }];
@@ -472,6 +472,7 @@ assert.deepEqual(calls.tabGroupsUpdate.at(-1).updateProperties, {
 assert.equal(tabGroupStateGroups().find((group) => group.sessionId === "session")?.title, "Open Browser Use");
 assert.ok(calls.tabsSendMessage.some((call) =>
   call.tabId === 1 &&
+  call.target?.allFrames === true &&
   call.message.type === "OBU_TAKEOVER_STATE" &&
   call.message.active === true &&
   call.message.lockInputs === true &&
@@ -755,6 +756,9 @@ assert.equal(moveMouseResult.result.arrived, true);
 assert.equal(typeof moveMouseResult.result.sequence, "number");
 assert.ok(calls.tabsSendMessage.some((call) =>
   call.tabId === 1 &&
+  Array.isArray(call.target?.frameIds) &&
+  call.target.frameIds.length === 1 &&
+  call.target.frameIds[0] === 0 &&
   call.message.type === "OBU_CURSOR_MOVE" &&
   call.message.x === 33 &&
   call.message.y === 44 &&
