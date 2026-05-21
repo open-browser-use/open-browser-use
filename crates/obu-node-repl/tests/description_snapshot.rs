@@ -10,6 +10,11 @@ fn agent_browser_mcp_usage_fast_work_rules() {
     let required = [
         "Call `browser_status` before the first `js` cell",
         "Call `browser.name(\"short task label\")` early",
+        "Reuse `globalThis.browser` and `globalThis.tab`",
+        "`browser.tabs.current()` for continuation after thinking",
+        "Do not reacquire tabs in every cell",
+        "Do not brute-force undocumented search URLs",
+        "Once there is one authoritative page signal",
         "Keep a `Tab` handle and use `await tab.goto(url)`",
         "Reuse the last `tab.snapshotText()` result",
         "Avoid broad browser-boundary loops",

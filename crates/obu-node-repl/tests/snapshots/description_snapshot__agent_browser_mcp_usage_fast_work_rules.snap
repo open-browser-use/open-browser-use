@@ -1,10 +1,14 @@
 ---
 source: crates/obu-node-repl/tests/description_snapshot.rs
-assertion_line: 30
 expression: excerpt
 ---
 1. Call `browser_status` before the first `js` cell when setup readiness is
 2. Call `browser.name("short task label")` early for real browser tasks so Chrome
+3. Reuse `globalThis.browser` and `globalThis.tab`; prefer
+`browser.tabs.current()` for continuation after thinking. Use
+- Do not reacquire tabs in every cell. Initialize `globalThis.browser` and
+- Do not brute-force undocumented search URLs, query parameter variants, search
+- Once there is one authoritative page signal, such as a success modal, cart line
 - Keep a `Tab` handle and use `await tab.goto(url)` for same-task or same-site
 - Reuse the last `tab.snapshotText()` result until navigation, a modal/dropdown,
 - Avoid broad browser-boundary loops such as `all()` followed by many

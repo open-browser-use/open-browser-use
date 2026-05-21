@@ -14,13 +14,27 @@ automatically installs the global `agent`. Use `agent.browsers.get("cdp")` or
 open-browser-use SDK. This is the browser automation surface: do not ask for separate
 `click`, `type`, `screenshot`, or `scroll` tools. Write JavaScript with
 `agent`, `tab`, `locator`, and `tab.cua` instead.
-`agent.browsers.get(...)` is async, so always write
-`const browser = await agent.browsers.get("chrome")`. `browser.tabs.create()`
-accepts either a URL string or `{ url }`; with no URL it creates `about:blank`.
-Keep the returned `Tab` handle and use `await tab.goto(url)` for repeated
-same-task or same-site navigation instead of creating a new tab for every URL.
-One browser session can hold multiple `Tab` handles; keep them in variables and
-move data explicitly between tabs.
+`agent.browsers.get(...)` is async. For browser tasks, keep persistent handles on
+`globalThis` so later cells continue the same visible task instead of opening a
+new tab:
+
+```js
+if (!globalThis.browser) {
+  globalThis.browser = await agent.browsers.get("chrome");
+}
+await browser.name("short task label");
+if (typeof tab === "undefined") {
+  globalThis.tab =
+    (await browser.tabs.current()) ?? (await browser.tabs.create("about:blank"));
+}
+```
+
+`browser.tabs.create()` accepts either a URL string or `{ url }`; with no URL it
+creates `about:blank`. Keep the returned `Tab` handle and use
+`await tab.goto(url)` for repeated same-task or same-site navigation instead of
+creating a new tab for every URL. One browser session can hold multiple `Tab`
+handles; keep them in intentionally named variables and move data explicitly
+between tabs.
 For setup verification, browser readiness probes, and repeated work in the same
 browser session, use `browser.turnEnded()` so active tabs remain controlled.
 Use `browser.finishTurn({ keep: [] })` only when cleanup is intentional; it
@@ -36,6 +50,12 @@ Fast browser work rules:
 - Reuse the same `browser` and `tab` handles. Use `tab.goto(...)` for same-task
   navigation and create new tabs only when the task genuinely needs multiple
   pages.
+- Prefer `browser.tabs.current()` for same-task continuation after thinking. Use
+  `browser.tabs.selected()` only as browser-visible discovery; if it returns a
+  user tab reference, claim/resume it explicitly before issuing actions.
+- If the human needs to take over the visible page, call
+  `await browser.yieldControl()` instead of `finishTurn(...)`. Resume with
+  `globalThis.tab = await browser.resumeControl()` before issuing actions.
 - Use `tab.snapshotText()` or targeted locators for page state. Reuse the last
   snapshot until navigation, a modal/dropdown, timeout, strict-match failure, or
   parse failure means the UI changed.
@@ -47,6 +67,14 @@ Fast browser work rules:
 - Run `browser_status` before the first browser action when readiness is
   uncertain. Do not repeat setup diagnostics after an available backend is proven
   unless a browser call fails.
+- Do not brute-force undocumented search URLs, query parameter grids, search
+  engine query rewrites, or candidate URL arrays unless the user explicitly asks
+  for exhaustive coverage. If one candidate fails, try at most one new approach,
+  then switch to visible page navigation or report the best current result.
+- Once a page exposes one authoritative signal, such as a success toast, cart
+  line item, selected option, checked state, modal content, or URL parameter,
+  treat it as the answer unless another signal directly contradicts it. Do not
+  keep re-verifying the same fact through alternate surfaces.
 - Native `alert` and `beforeunload` dialogs on controlled tabs are auto-accepted.
   Native `confirm` and `prompt` dialogs are dismissed and fail the operation with
   `ObuError.code === -1203` and `error.data.code === "dialog_requires_decision"`.
@@ -117,8 +145,14 @@ can stream as progress, but they are also included in the final result.
 ## Examples
 
 ```js
-const browser = await agent.browsers.get("cdp");
-const tab = await browser.tabs.create("https://example.com");
+if (!globalThis.browser) {
+  globalThis.browser = await agent.browsers.get("cdp");
+}
+await browser.name("Docs check");
+if (typeof tab === "undefined") {
+  globalThis.tab =
+    (await browser.tabs.current()) ?? (await browser.tabs.create("https://example.com"));
+}
 await tab.attach();
 await tab.goto("https://example.com/docs");
 await tab.locator("h1").click();
@@ -127,8 +161,14 @@ await browser.turnEnded();
 ```
 
 ```js
-const browser = await agent.browsers.get("chrome");
-const tab = await browser.tabs.create("data:text/html,<button>Save</button>");
+if (!globalThis.browser) {
+  globalThis.browser = await agent.browsers.get("chrome");
+}
+await browser.name("Save button");
+if (typeof tab === "undefined") {
+  globalThis.tab =
+    (await browser.tabs.current()) ?? (await browser.tabs.create("data:text/html,<button>Save</button>"));
+}
 await tab.attach();
 await tab.getByRole("button", { name: "Save" }).click();
 await browser.turnEnded();
