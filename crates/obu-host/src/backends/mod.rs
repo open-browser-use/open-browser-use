@@ -211,6 +211,16 @@ pub trait BrowserBackend: Send + Sync {
         self.list_tabs().await
     }
 
+    /// Return the session-owned logical current tab, if any.
+    async fn current_tab_with_context(&self, _ctx: &BackendRequestContext) -> Result<Value> {
+        Ok(Value::Null)
+    }
+
+    /// Return the browser-visible selected tab, if safely representable.
+    async fn selected_tab_with_context(&self, ctx: &BackendRequestContext) -> Result<Value> {
+        self.current_tab_with_context(ctx).await
+    }
+
     /// List claimable user-visible tabs.
     async fn list_user_tabs_with_context(&self, ctx: &BackendRequestContext) -> Result<Value> {
         self.list_tabs_with_context(ctx).await
@@ -254,6 +264,24 @@ pub trait BrowserBackend: Send + Sync {
 
     /// Mark the current turn ended.
     async fn turn_ended_with_context(
+        &self,
+        _ctx: &BackendRequestContext,
+        _params: Value,
+    ) -> Result<Value> {
+        Ok(Value::Null)
+    }
+
+    /// Yield active input control to the human while preserving session state.
+    async fn yield_control_with_context(
+        &self,
+        _ctx: &BackendRequestContext,
+        _params: Value,
+    ) -> Result<Value> {
+        Ok(Value::Null)
+    }
+
+    /// Resume active input control for a previously yielded session.
+    async fn resume_control_with_context(
         &self,
         _ctx: &BackendRequestContext,
         _params: Value,

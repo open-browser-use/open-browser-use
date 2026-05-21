@@ -95,6 +95,63 @@ async fn cdp_list_tabs_surfaces_preserved_host_lifecycle_semantics() {
 }
 
 #[tokio::test]
+async fn cdp_current_selected_and_resume_use_only_active_session_tabs() {
+    let (ws_url, _requests) = spawn_fake_cdp().await;
+    let registry = Arc::new(ServiceRegistry::default());
+    let backend = CdpBackend::connect(&ws_url, registry.clone())
+        .await
+        .unwrap();
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+    for (tab_id, status) in [
+        ("active-b", TabStatus::Active),
+        ("active-a", TabStatus::Active),
+        ("handoff", TabStatus::Handoff),
+        ("deliverable", TabStatus::Deliverable),
+    ] {
+        registry
+            .insert(TabRecord {
+                id: TabId::new(tab_id),
+                session_id: Some("session".into()),
+                target_id: format!("target-{tab_id}"),
+                url: format!("https://{tab_id}.example"),
+                title: tab_id.into(),
+                origin: TabOrigin::Agent,
+                status,
+                attached: false,
+                cdp_session_id: None,
+            })
+            .unwrap();
+    }
+
+    registry
+        .set_active_tab("session", "active-b", Some("turn-1"))
+        .unwrap();
+    let current = backend.current_tab_with_context(&ctx).await.unwrap();
+    assert_eq!(current["tab_id"], "active-b");
+    assert_eq!(current["logicalActive"], true);
+    assert_eq!(current["commandable"], true);
+
+    registry
+        .set_active_tab("session", "handoff", Some("turn-2"))
+        .unwrap();
+    let selected = backend.selected_tab_with_context(&ctx).await.unwrap();
+    assert_eq!(selected["tab_id"], "active-a");
+    assert_eq!(selected["status"], "active");
+    assert_eq!(selected["claimRequired"], false);
+
+    let resumed = backend
+        .resume_control_with_context(&ctx, json!({}))
+        .await
+        .unwrap();
+    assert_eq!(resumed["tab_id"], "active-a");
+    assert_eq!(resumed["commandable"], true);
+}
+
+#[tokio::test]
 async fn cdp_finalize_tabs_applies_host_owned_lifecycle_semantics() {
     let (ws_url, _requests) = spawn_fake_cdp().await;
     let registry = Arc::new(ServiceRegistry::default());
@@ -157,6 +214,9 @@ async fn cdp_finalize_tabs_applies_host_owned_lifecycle_semantics() {
             },
         )
         .unwrap();
+    registry
+        .set_active_tab("session", "handoff", Some("turn-before-finalize"))
+        .unwrap();
 
     let finalized = backend
         .finalize_tabs_with_context(
@@ -214,6 +274,20 @@ async fn cdp_finalize_tabs_applies_host_owned_lifecycle_semantics() {
             .describe_missing_download(&DownloadId("download-deliverable".into()))
             .unwrap()
             .contains("detached, closed, or finalized")
+    );
+    assert!(
+        registry
+            .current_tab_for_session("session")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        registry
+            .get_session("session")
+            .unwrap()
+            .unwrap()
+            .active_tab_id
+            .is_none()
     );
 }
 

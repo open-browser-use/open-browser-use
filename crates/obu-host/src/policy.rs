@@ -53,6 +53,7 @@ pub const METHOD_POLICY_CLASSIFICATIONS: &[(&str, MethodPolicyKind)] = &[
     (methods::PING, MethodPolicyKind::AlwaysAllowed),
     (methods::GET_INFO, MethodPolicyKind::AlwaysAllowed),
     (methods::GET_TABS, MethodPolicyKind::AlwaysAllowed),
+    (methods::GET_CURRENT_TAB, MethodPolicyKind::AlwaysAllowed),
     (methods::NAME_SESSION, MethodPolicyKind::AlwaysAllowed),
     (
         methods::PLAYWRIGHT_WAIT_FOR_TIMEOUT,
@@ -64,6 +65,8 @@ pub const METHOD_POLICY_CLASSIFICATIONS: &[(&str, MethodPolicyKind)] = &[
         MethodPolicyKind::InternalLifecycle,
     ),
     (methods::FINALIZE_TABS, MethodPolicyKind::InternalLifecycle),
+    (methods::YIELD_CONTROL, MethodPolicyKind::InternalLifecycle),
+    (methods::RESUME_CONTROL, MethodPolicyKind::InternalLifecycle),
     (methods::ATTACH, MethodPolicyKind::InternalLifecycle),
     (methods::DETACH, MethodPolicyKind::InternalLifecycle),
     (
@@ -79,6 +82,7 @@ pub const METHOD_POLICY_CLASSIFICATIONS: &[(&str, MethodPolicyKind)] = &[
     ),
     (methods::GET_USER_HISTORY, MethodPolicyKind::History),
     (methods::GET_USER_TABS, MethodPolicyKind::History),
+    (methods::GET_SELECTED_TAB, MethodPolicyKind::History),
     (methods::CLAIM_USER_TAB, MethodPolicyKind::History),
     (
         methods::PLAYWRIGHT_LOCATOR_DOWNLOAD_MEDIA,

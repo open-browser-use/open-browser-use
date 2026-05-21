@@ -335,6 +335,18 @@ impl Dispatcher {
                 .list_tabs_with_context(&ctx)
                 .await
                 .map_err(host_err_to_rpc),
+            methods::GET_CURRENT_TAB => self
+                .inner
+                .backend
+                .current_tab_with_context(&ctx)
+                .await
+                .map_err(host_err_to_rpc),
+            methods::GET_SELECTED_TAB => self
+                .inner
+                .backend
+                .selected_tab_with_context(&ctx)
+                .await
+                .map_err(host_err_to_rpc),
             methods::GET_USER_TABS => self
                 .inner
                 .backend
@@ -366,6 +378,18 @@ impl Dispatcher {
                 .inner
                 .backend
                 .turn_ended_with_context(&ctx, req.params)
+                .await
+                .map_err(host_err_to_rpc),
+            methods::YIELD_CONTROL => self
+                .inner
+                .backend
+                .yield_control_with_context(&ctx, req.params)
+                .await
+                .map_err(host_err_to_rpc),
+            methods::RESUME_CONTROL => self
+                .inner
+                .backend
+                .resume_control_with_context(&ctx, req.params)
                 .await
                 .map_err(host_err_to_rpc),
             methods::CLEAR_LIFECYCLE_DIAGNOSTICS => self

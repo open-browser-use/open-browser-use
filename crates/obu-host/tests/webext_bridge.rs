@@ -55,6 +55,61 @@ async fn webext_backend_normalizes_extension_tab_dtos() {
 }
 
 #[tokio::test]
+async fn webext_backend_exposes_current_and_selected_with_ownership_boundary() {
+    let transport = Arc::new(FakeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+
+    backend
+        .create_tab_with_context(&ctx, Some("https://example.com".into()))
+        .await
+        .unwrap();
+    let current = backend.current_tab_with_context(&ctx).await.unwrap();
+    assert_eq!(current["tab_id"], "42");
+    assert_eq!(current["commandable"], true);
+    assert_eq!(current["logicalActive"], true);
+    assert_eq!(
+        backend
+            .registry()
+            .current_tab_for_session("session")
+            .unwrap()
+            .unwrap()
+            .id,
+        TabId::new("42")
+    );
+
+    let selected = backend.selected_tab_with_context(&ctx).await.unwrap();
+    assert_eq!(selected["tab_id"], "7");
+    assert_eq!(selected["commandable"], false);
+    assert_eq!(selected["claimRequired"], true);
+    assert!(
+        backend.registry().get(&TabId::new("7")).unwrap().is_none(),
+        "selected human tab discovery must not create session ownership"
+    );
+
+    backend
+        .yield_control_with_context(&ctx, json!({}))
+        .await
+        .unwrap();
+    let resumed = backend
+        .resume_control_with_context(&ctx, json!({}))
+        .await
+        .unwrap();
+    assert_eq!(resumed["tab_id"], "42");
+    assert_eq!(resumed["commandable"], true);
+
+    let calls = transport.calls.lock().unwrap();
+    assert!(calls.iter().any(|(method, _)| method == "getCurrentTab"));
+    assert!(calls.iter().any(|(method, _)| method == "getSelectedTab"));
+    assert!(calls.iter().any(|(method, _)| method == "yieldControl"));
+    assert!(calls.iter().any(|(method, _)| method == "resumeControl"));
+}
+
+#[tokio::test]
 async fn webext_backend_reconciles_session_tabs_missing_after_get_tabs() {
     let transport = Arc::new(FakeTransport::default());
     let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport);
@@ -2454,8 +2509,39 @@ impl ExtensionTransport for FakeTransport {
             }),
             "getTabs" => json!({
                 "tabs": [
-                    { "tabId": 42, "url": "https://example.com", "title": "Example" }
+                    {
+                        "tabId": 42,
+                        "url": "https://example.com",
+                        "title": "Example",
+                        "active": true,
+                        "windowId": 1,
+                        "groupId": 2,
+                        "pinned": false,
+                        "logicalActive": true
+                    }
                 ]
+            }),
+            "getCurrentTab" => json!({
+                "tab": {
+                    "tabId": 42,
+                    "url": "https://example.com",
+                    "title": "Example",
+                    "origin": "agent",
+                    "status": "active",
+                    "commandable": true,
+                    "logicalActive": true
+                }
+            }),
+            "getSelectedTab" => json!({
+                "tab": {
+                    "tabId": 7,
+                    "url": "https://selected.example",
+                    "title": "Selected",
+                    "origin": "user",
+                    "status": "active",
+                    "commandable": false,
+                    "claimRequired": true
+                }
             }),
             "getUserTabs" => json!({
                 "tabs": [
@@ -2480,6 +2566,18 @@ impl ExtensionTransport for FakeTransport {
                 "deliverableTabs": [
                     { "tabId": 8, "url": "https://deliverable.example", "title": "Deliverable", "status": "deliverable" }
                 ]
+            }),
+            "yieldControl" => json!({}),
+            "resumeControl" => json!({
+                "tab": {
+                    "tabId": 42,
+                    "url": "https://example.com",
+                    "title": "Example",
+                    "origin": "agent",
+                    "status": "active",
+                    "commandable": true,
+                    "logicalActive": true
+                }
             }),
             "executeCdp" => fake_cdp_response(&params),
             _ => Value::Null,

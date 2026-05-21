@@ -10,6 +10,8 @@ pub const GET_INFO: &str = "getInfo";
 
 // Tabs
 pub const GET_TABS: &str = "getTabs";
+pub const GET_CURRENT_TAB: &str = "getCurrentTab";
+pub const GET_SELECTED_TAB: &str = "getSelectedTab";
 pub const CREATE_TAB: &str = "createTab";
 pub const FINALIZE_TABS: &str = "finalizeTabs";
 pub const CLAIM_USER_TAB: &str = "claimUserTab";
@@ -27,6 +29,8 @@ pub const GET_USER_HISTORY: &str = "getUserHistory";
 
 // Lifecycle
 pub const TURN_ENDED: &str = "turnEnded";
+pub const YIELD_CONTROL: &str = "yieldControl";
+pub const RESUME_CONTROL: &str = "resumeControl";
 pub const CLEAR_LIFECYCLE_DIAGNOSTICS: &str = "clearLifecycleDiagnostics";
 pub const EXECUTE_UNHANDLED_COMMAND: &str = "executeUnhandledCommand";
 
@@ -102,6 +106,8 @@ pub const ALL_INBOUND_METHODS: &[&str] = &[
     PING,
     GET_INFO,
     GET_TABS,
+    GET_CURRENT_TAB,
+    GET_SELECTED_TAB,
     CREATE_TAB,
     FINALIZE_TABS,
     CLAIM_USER_TAB,
@@ -113,6 +119,8 @@ pub const ALL_INBOUND_METHODS: &[&str] = &[
     MOVE_MOUSE,
     GET_USER_HISTORY,
     TURN_ENDED,
+    YIELD_CONTROL,
+    RESUME_CONTROL,
     CLEAR_LIFECYCLE_DIAGNOSTICS,
     EXECUTE_UNHANDLED_COMMAND,
     PLAYWRIGHT_LOCATOR_CLICK,

@@ -87,6 +87,25 @@ pub async fn list_tabs(backend: &CdpBackend) -> Result<Value> {
     Ok(Value::Array(out))
 }
 
+/// Return the host-owned logical current tab for a session.
+pub async fn current_tab(backend: &CdpBackend, ctx: &BackendRequestContext) -> Result<Value> {
+    let session_id = require_session_id(ctx, "getCurrentTab")?;
+    backend
+        .registry()
+        .touch_session(session_id, ctx.turn_id.as_deref())?;
+    Ok(backend
+        .registry()
+        .current_tab_for_session(session_id)?
+        .map(|record| tab_record_to_value_with_logical_active(&record, true))
+        .unwrap_or(Value::Null))
+}
+
+/// CDP cannot reliably observe a browser-visible selected tab, so expose only the
+/// session-owned logical current tab through this discovery path.
+pub async fn selected_tab(backend: &CdpBackend, ctx: &BackendRequestContext) -> Result<Value> {
+    current_tab(backend, ctx).await
+}
+
 /// Close a tab and remove host-side state for it.
 pub async fn close_tab(backend: &CdpBackend, tab_id: &str) -> Result<Value> {
     let id = TabId::new(tab_id);
@@ -140,6 +159,9 @@ pub async fn claim_user_tab(
     record.origin = TabOrigin::User;
     record.status = TabStatus::Active;
     backend.registry().insert(record.clone())?;
+    backend
+        .registry()
+        .set_active_tab(session_id, record.id.clone(), ctx.turn_id.as_deref())?;
     Ok(tab_record_to_value(&record))
 }
 
@@ -218,6 +240,7 @@ pub async fn finalize_tabs(
             },
         }
     }
+    let _ = backend.registry().current_tab_for_session(session_id)?;
 
     Ok(json!({
         "closed_tab_ids": closed_tab_ids,
@@ -314,6 +337,10 @@ fn parse_finalize_keep(params: &Value) -> Result<HashMap<String, TabStatus>> {
 }
 
 fn tab_record_to_value(record: &TabRecord) -> Value {
+    tab_record_to_value_with_logical_active(record, false)
+}
+
+fn tab_record_to_value_with_logical_active(record: &TabRecord, logical_active: bool) -> Value {
     json!({
         "id": record.id.0.clone(),
         "tab_id": record.id.0.clone(),
@@ -330,5 +357,9 @@ fn tab_record_to_value(record: &TabRecord) -> Value {
             TabStatus::Deliverable => "deliverable",
         },
         "attached": record.attached,
+        "owned": record.session_id.is_some(),
+        "claimRequired": record.session_id.is_none(),
+        "commandable": record.session_id.is_some() && record.status == TabStatus::Active,
+        "logicalActive": logical_active,
     })
 }

@@ -13,6 +13,18 @@ impl TabId {
     }
 }
 
+impl From<String> for TabId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for TabId {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
 /// Who created or claimed a tab.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]

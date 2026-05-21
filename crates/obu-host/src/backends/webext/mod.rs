@@ -359,6 +359,62 @@ impl BrowserBackend for WebExtensionBackend {
         Ok(normalized)
     }
 
+    async fn current_tab_with_context(&self, ctx: &BackendRequestContext) -> Result<Value> {
+        self.ensure_active()?;
+        Self::require_session_context(ctx, "getCurrentTab")?;
+        record_session_context(self, ctx)?;
+        let response = self
+            .transport("getCurrentTab")?
+            .request(
+                "getCurrentTab",
+                context_payload(ctx, Value::Object(Map::new())),
+            )
+            .await?;
+        let Some(normalized) = normalize_optional_tab_response(response)? else {
+            return Ok(Value::Null);
+        };
+        if let Some(tab_id) = normalized.get("tab_id").and_then(Value::as_str) {
+            record_webext_tab(self, ctx, &normalized, TabOrigin::Agent, TabStatus::Active)?;
+            self.registry().set_active_tab(
+                ctx.session_id.as_deref().unwrap_or_default(),
+                tab_id,
+                ctx.turn_id.as_deref(),
+            )?;
+        }
+        Ok(normalized)
+    }
+
+    async fn selected_tab_with_context(&self, ctx: &BackendRequestContext) -> Result<Value> {
+        self.ensure_active()?;
+        Self::require_session_context(ctx, "getSelectedTab")?;
+        record_session_context(self, ctx)?;
+        let response = self
+            .transport("getSelectedTab")?
+            .request(
+                "getSelectedTab",
+                context_payload(ctx, Value::Object(Map::new())),
+            )
+            .await?;
+        let Some(normalized) = normalize_optional_tab_response(response)? else {
+            return Ok(Value::Null);
+        };
+        if normalized
+            .get("commandable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            record_webext_tab(self, ctx, &normalized, TabOrigin::Agent, TabStatus::Active)?;
+            if let Some(tab_id) = normalized.get("tab_id").and_then(Value::as_str) {
+                self.registry().set_active_tab(
+                    ctx.session_id.as_deref().unwrap_or_default(),
+                    tab_id,
+                    ctx.turn_id.as_deref(),
+                )?;
+            }
+        }
+        Ok(normalized)
+    }
+
     async fn list_user_tabs_with_context(&self, ctx: &BackendRequestContext) -> Result<Value> {
         self.ensure_active()?;
         Self::require_session_context(ctx, "getUserTabs")?;
@@ -413,6 +469,11 @@ impl BrowserBackend for WebExtensionBackend {
             object.insert("status".into(), Value::String("active".into()));
         }
         record_webext_tab(self, ctx, &normalized, TabOrigin::User, TabStatus::Active)?;
+        self.registry().set_active_tab(
+            ctx.session_id.as_deref().unwrap_or_default(),
+            normalized_tab_id.as_str(),
+            ctx.turn_id.as_deref(),
+        )?;
         Ok(normalized)
     }
 
@@ -527,6 +588,46 @@ impl BrowserBackend for WebExtensionBackend {
         Ok(Value::Null)
     }
 
+    async fn yield_control_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value> {
+        self.ensure_active()?;
+        Self::require_session_context(ctx, "yieldControl")?;
+        record_session_context(self, ctx)?;
+        self.transport("yieldControl")?
+            .request("yieldControl", context_payload(ctx, params))
+            .await?;
+        Ok(Value::Null)
+    }
+
+    async fn resume_control_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value> {
+        self.ensure_active()?;
+        Self::require_session_context(ctx, "resumeControl")?;
+        record_session_context(self, ctx)?;
+        let response = self
+            .transport("resumeControl")?
+            .request("resumeControl", context_payload(ctx, params))
+            .await?;
+        let Some(normalized) = normalize_optional_tab_response(response)? else {
+            return Ok(Value::Null);
+        };
+        if let Some(tab_id) = normalized.get("tab_id").and_then(Value::as_str) {
+            record_webext_tab(self, ctx, &normalized, TabOrigin::Agent, TabStatus::Active)?;
+            self.registry().set_active_tab(
+                ctx.session_id.as_deref().unwrap_or_default(),
+                tab_id,
+                ctx.turn_id.as_deref(),
+            )?;
+        }
+        Ok(normalized)
+    }
+
     async fn cua_command_with_context(
         &self,
         ctx: &BackendRequestContext,
@@ -537,6 +638,7 @@ impl BrowserBackend for WebExtensionBackend {
         Self::require_session_context(ctx, method)?;
         ensure_active_tab_param_if_recorded(self, &params)?;
         record_session_context(self, ctx)?;
+        remember_active_tab_param(self, ctx, &params)?;
         run_cua_command(self, ctx, method, params).await
     }
 
@@ -550,6 +652,7 @@ impl BrowserBackend for WebExtensionBackend {
         Self::require_session_context(ctx, method)?;
         ensure_active_tab_param_if_recorded(self, &params)?;
         record_session_context(self, ctx)?;
+        remember_active_tab_param(self, ctx, &params)?;
         run_playwright_command(self, ctx, method, params).await
     }
 
@@ -563,6 +666,7 @@ impl BrowserBackend for WebExtensionBackend {
         Self::require_session_context(ctx, method)?;
         ensure_active_tab_param_if_recorded(self, &params)?;
         record_session_context(self, ctx)?;
+        remember_active_tab_param(self, ctx, &params)?;
         run_tab_command(self, ctx, method, params).await
     }
 }
@@ -575,6 +679,30 @@ fn record_session_context(
         ctx.session_id.as_deref().unwrap_or_default(),
         ctx.turn_id.as_deref(),
     )
+}
+
+fn remember_active_tab_param(
+    backend: &WebExtensionBackend,
+    ctx: &BackendRequestContext,
+    params: &Value,
+) -> Result<()> {
+    if let Some(tab_id) = params
+        .get("tab_id")
+        .or_else(|| params.get("tabId"))
+        .and_then(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| value.as_i64().map(|value| value.to_string()))
+        })
+    {
+        backend.registry().set_active_tab(
+            ctx.session_id.as_deref().unwrap_or_default(),
+            tab_id,
+            ctx.turn_id.as_deref(),
+        )?;
+    }
+    Ok(())
 }
 
 async fn execute_cdp_raw_with_context(
@@ -614,6 +742,11 @@ async fn execute_cdp_with_context_options(
     let normalized_tab_id = parsed_tab_id.to_string();
     ensure_active_tab_if_recorded(backend, &normalized_tab_id)?;
     record_session_context(backend, ctx)?;
+    backend.registry().set_active_tab(
+        ctx.session_id.as_deref().unwrap_or_default(),
+        normalized_tab_id.as_str(),
+        ctx.turn_id.as_deref(),
+    )?;
     if crate::backends::cdp::dialogs::method_can_open_dialog(method) {
         execute_cdp_with_dialog_policy(
             backend,
@@ -2422,6 +2555,14 @@ fn normalize_tab_response(response: Value) -> Result<Value> {
     normalize_tab(tab)
 }
 
+fn normalize_optional_tab_response(response: Value) -> Result<Option<Value>> {
+    let tab = response.get("tab").cloned().unwrap_or(response);
+    if tab.is_null() {
+        return Ok(None);
+    }
+    normalize_tab(tab).map(Some)
+}
+
 fn normalize_tabs_response(response: Value) -> Result<Value> {
     let tabs = response
         .get("tabs")
@@ -2458,7 +2599,52 @@ fn normalize_tab(tab: Value) -> Result<Value> {
     if let Some(status) = tab.get("status").and_then(Value::as_str) {
         object.insert("status".into(), Value::String(status.to_string()));
     }
+    copy_bool_field(&tab, &mut object, "active", "active");
+    copy_bool_field(&tab, &mut object, "pinned", "pinned");
+    copy_bool_field(&tab, &mut object, "owned", "owned");
+    copy_bool_field(&tab, &mut object, "claimRequired", "claimRequired");
+    copy_bool_field(&tab, &mut object, "commandable", "commandable");
+    copy_bool_field(&tab, &mut object, "logicalActive", "logicalActive");
+    copy_number_field(&tab, &mut object, "windowId", "windowId");
+    copy_number_field(&tab, &mut object, "groupId", "groupId");
+    copy_number_field(&tab, &mut object, "lastAccessed", "lastAccessed");
+    copy_number_field(&tab, &mut object, "lastUsedAt", "lastUsedAt");
+    copy_string_field(&tab, &mut object, "tabGroupTitle", "tabGroupTitle");
+    copy_string_field(&tab, &mut object, "tabGroup", "tabGroup");
     Ok(Value::Object(object))
+}
+
+fn copy_bool_field(
+    source: &Value,
+    target: &mut Map<String, Value>,
+    source_key: &str,
+    target_key: &str,
+) {
+    if let Some(value) = source.get(source_key).and_then(Value::as_bool) {
+        target.insert(target_key.into(), Value::Bool(value));
+    }
+}
+
+fn copy_number_field(
+    source: &Value,
+    target: &mut Map<String, Value>,
+    source_key: &str,
+    target_key: &str,
+) {
+    if let Some(value) = source.get(source_key).and_then(Value::as_i64) {
+        target.insert(target_key.into(), Value::Number(value.into()));
+    }
+}
+
+fn copy_string_field(
+    source: &Value,
+    target: &mut Map<String, Value>,
+    source_key: &str,
+    target_key: &str,
+) {
+    if let Some(value) = source.get(source_key).and_then(Value::as_str) {
+        target.insert(target_key.into(), Value::String(value.to_string()));
+    }
 }
 
 fn record_webext_tab(

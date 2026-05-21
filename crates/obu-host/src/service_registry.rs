@@ -17,6 +17,8 @@ pub struct BrowserSessionRecord {
     pub session_id: String,
     /// Current or most recently observed turn id.
     pub current_turn_id: Option<String>,
+    /// Session-owned logical active tab id.
+    pub active_tab_id: Option<TabId>,
     /// Human-visible session label, when set.
     pub label: Option<String>,
     /// First time this host observed the session.
@@ -203,6 +205,19 @@ impl ServiceRegistry {
         clear_tab_handles_locked(&mut guard, id, &reason);
         let record = guard.tabs.remove(id);
         if let Some(record) = record.as_ref() {
+            if let Some(session_id) = record.session_id.as_deref()
+                && guard
+                    .sessions
+                    .get(session_id)
+                    .and_then(|session| session.active_tab_id.as_ref())
+                    == Some(id)
+            {
+                let next_active_tab_id = choose_active_tab_locked(&guard, session_id);
+                if let Some(session) = guard.sessions.get_mut(session_id) {
+                    session.active_tab_id = next_active_tab_id;
+                    session.updated_at = SystemTime::now();
+                }
+            }
             record_stale_tab_locked(&mut guard, record.clone(), reason);
         }
         Ok(record)
@@ -265,6 +280,53 @@ impl ServiceRegistry {
         session.label = label;
         session.updated_at = SystemTime::now();
         Ok(())
+    }
+
+    /// Set the session-owned logical active tab.
+    pub fn set_active_tab(
+        &self,
+        session_id: &str,
+        tab_id: impl Into<TabId>,
+        turn_id: Option<&str>,
+    ) -> Result<()> {
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
+        let now = SystemTime::now();
+        let session = touch_session_locked(&mut guard, session_id, turn_id);
+        session.active_tab_id = Some(tab_id.into());
+        session.updated_at = now;
+        Ok(())
+    }
+
+    /// Return the session-owned logical active tab when it is still valid.
+    pub fn current_tab_for_session(&self, session_id: &str) -> Result<Option<TabRecord>> {
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
+        if let Some(active_tab_id) = guard
+            .sessions
+            .get(session_id)
+            .and_then(|session| session.active_tab_id.as_ref())
+            && let Some(record) = guard.tabs.get(active_tab_id)
+            && record.session_id.as_deref() == Some(session_id)
+            && record.status == TabStatus::Active
+        {
+            return Ok(Some(record.clone()));
+        }
+        let fallback_id = choose_active_tab_locked(&guard, session_id);
+        if let Some(session) = guard.sessions.get_mut(session_id)
+            && session.active_tab_id != fallback_id
+        {
+            session.active_tab_id = fallback_id.clone();
+            session.updated_at = SystemTime::now();
+        }
+        let Some(fallback_id) = fallback_id else {
+            return Ok(None);
+        };
+        Ok(guard.tabs.get(&fallback_id).cloned())
     }
 
     /// Mark a session as stale for diagnostics.
@@ -347,6 +409,11 @@ impl ServiceRegistry {
             clear_tab_handles_locked(&mut guard, id, &reason);
             guard.tabs.remove(id);
             record_stale_tab_locked(&mut guard, record.clone(), reason.clone());
+        }
+        let next_active_tab_id = choose_active_tab_locked(&guard, session_id);
+        if let Some(session) = guard.sessions.get_mut(session_id) {
+            session.active_tab_id = next_active_tab_id;
+            session.updated_at = SystemTime::now();
         }
         Ok(stale.into_iter().map(|(_, record)| record).collect())
     }
@@ -650,6 +717,19 @@ fn lifecycle_counts_locked(inner: &Inner) -> RegistryLifecycleCounts {
     }
 }
 
+fn choose_active_tab_locked(inner: &Inner, session_id: &str) -> Option<TabId> {
+    let mut candidates = inner
+        .tabs
+        .values()
+        .filter(|record| {
+            record.session_id.as_deref() == Some(session_id) && record.status == TabStatus::Active
+        })
+        .map(|record| record.id.clone())
+        .collect::<Vec<_>>();
+    candidates.sort_by(|left, right| left.0.cmp(&right.0));
+    candidates.into_iter().next()
+}
+
 fn touch_session_locked<'a>(
     inner: &'a mut Inner,
     session_id: &str,
@@ -662,6 +742,7 @@ fn touch_session_locked<'a>(
         .or_insert_with(|| BrowserSessionRecord {
             session_id: session_id.to_string(),
             current_turn_id: None,
+            active_tab_id: None,
             label: None,
             created_at: now,
             updated_at: now,
