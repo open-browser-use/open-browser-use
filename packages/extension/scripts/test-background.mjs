@@ -66,6 +66,7 @@ const pageCloseDialogs = new Map();
 let connectNativeError;
 let postMessageError;
 let suppressNextCursorArrival = false;
+let failNextCaptureSuppression = false;
 const calls = {
   alarmsClear: [],
   alarmsCreate: [],
@@ -267,6 +268,10 @@ globalThis.chrome = {
       if (typeof injection.func === "function") {
         const message = injection.args?.[1];
         calls.tabsSendMessage.push({ tabId: injection.target.tabId, message });
+        if (message?.type === "OBU_CAPTURE_SUPPRESSION" && message.active && failNextCaptureSuppression) {
+          failNextCaptureSuppression = false;
+          return [{ result: false }];
+        }
         if (message?.type === "OBU_CURSOR_MOVE") {
           if (suppressNextCursorArrival) {
             suppressNextCursorArrival = false;
@@ -588,6 +593,18 @@ assert.equal(captureSuppressionMessages.length, 2);
 assert.equal(captureSuppressionMessages[0].active, true);
 assert.equal(captureSuppressionMessages[1].active, false);
 assert.equal(captureSuppressionMessages[1].token, captureSuppressionMessages[0].token);
+const debuggerCommandsBeforeFailedScreenshot = calls.debuggerSendCommand.length;
+failNextCaptureSuppression = true;
+const failedScreenshotCdp = await hostRequest(port, "executeCdp", {
+  session_id: "session",
+  turn_id: "turn",
+  target: { tabId: 1 },
+  method: "Page.captureScreenshot",
+  commandParams: { format: "png" },
+  suppressAgentOverlayForCapture: true,
+});
+assert.match(failedScreenshotCdp.error.message, /could not suppress the open-browser-use overlay/);
+assert.equal(calls.debuggerSendCommand.length, debuggerCommandsBeforeFailedScreenshot);
 const attachCountBeforeManualDetach = calls.debuggerAttach.length;
 
 debuggerDetaches.emit({ tabId: 1 });

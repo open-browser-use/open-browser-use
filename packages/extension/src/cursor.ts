@@ -84,6 +84,7 @@ const RESTING_ROTATION_DEG = -44;
 const ARRIVAL_TIMEOUT_MS = 650;
 const INPUT_BYPASS_DEFAULT_MS = 450;
 const INPUT_BYPASS_MAX_MS = 1_000;
+const CAPTURE_SUPPRESSION_TTL_MS = 60_000;
 const CURSOR_SIZE_PX = 42;
 const CURSOR_TIP_ORIGIN_PX = 4;
 const CLICK_PULSE_SIZE_PX = 36;
@@ -147,7 +148,7 @@ let waterLastDraw = 0;
 let waterNextRippleAt = 0;
 const waterRipples: WaterRipple[] = [];
 const inputBypassUntilByFamily = new Map<InputBypassEventFamily, number>();
-const captureSuppressionTokens = new Set<string>();
+const captureSuppressionTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 const installState = globalThis as typeof globalThis & Record<string, unknown>;
 Object.defineProperty(installState, HANDLER_KEY, {
@@ -178,7 +179,7 @@ function handleCursorMessage(message: unknown, sendResponse?: (response?: unknow
   }
   if (message.type === "OBU_CAPTURE_SUPPRESSION") {
     setCaptureSuppression(message);
-    sendResponse?.({ ok: true, suppressed: captureSuppressionTokens.size > 0 });
+    sendResponse?.({ ok: true, suppressed: captureSuppressionTimers.size > 0 });
     return;
   }
   if (message.type === "OBU_CURSOR_HIDE") {
@@ -301,6 +302,7 @@ function hideCursor(): void {
   activeTakeover = false;
   lockInputs = false;
   inputBypassUntilByFamily.clear();
+  clearCaptureSuppressions();
   updateInputLock();
   host?.remove();
   host = null;
@@ -391,22 +393,41 @@ function updateOverlay(): void {
 
 function setCaptureSuppression(message: CaptureSuppressionMessage): void {
   if (message.active) {
-    captureSuppressionTokens.add(message.token);
+    clearCaptureSuppressionToken(message.token);
+    const timer = setTimeout(() => {
+      captureSuppressionTimers.delete(message.token);
+      updateCaptureSuppression();
+    }, CAPTURE_SUPPRESSION_TTL_MS);
+    captureSuppressionTimers.set(message.token, timer);
   } else {
-    captureSuppressionTokens.delete(message.token);
+    clearCaptureSuppressionToken(message.token);
   }
   updateCaptureSuppression();
 }
 
 function updateCaptureSuppression(): void {
   if (!host) return;
-  const suppressed = captureSuppressionTokens.size > 0;
+  const suppressed = captureSuppressionTimers.size > 0;
   host.style.visibility = suppressed ? "hidden" : "";
   if (suppressed) {
     host.setAttribute("data-obu-capture-suppressed", "true");
   } else {
     host.removeAttribute("data-obu-capture-suppressed");
   }
+}
+
+function clearCaptureSuppressionToken(token: string): void {
+  const timer = captureSuppressionTimers.get(token);
+  if (timer !== undefined) clearTimeout(timer);
+  captureSuppressionTimers.delete(token);
+}
+
+function clearCaptureSuppressions(): void {
+  for (const timer of captureSuppressionTimers.values()) {
+    clearTimeout(timer);
+  }
+  captureSuppressionTimers.clear();
+  updateCaptureSuppression();
 }
 
 function scheduleWaterFrame(): void {

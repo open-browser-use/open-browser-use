@@ -178,6 +178,23 @@ responses = runtimeMessages.emit({ type: "OBU_CAPTURE_SUPPRESSION", active: fals
 assert.deepEqual(responses, [{ ok: true, suppressed: false }]);
 assert.equal(host.style.visibility, "");
 assert.equal(host.getAttribute("data-obu-capture-suppressed"), null);
+responses = runtimeMessages.emit({ type: "OBU_CAPTURE_SUPPRESSION", active: true, token: "stale-shot" });
+assert.deepEqual(responses, [{ ok: true, suppressed: true }]);
+assert.equal(host.style.visibility, "hidden");
+responses = runtimeMessages.emit({ type: "OBU_CURSOR_HIDE" });
+assert.deepEqual(responses, [{ ok: true }]);
+assert.equal(documentElement.children.length, 0);
+responses = runtimeMessages.emit({
+  type: "OBU_TAKEOVER_STATE",
+  active: true,
+  lockInputs: true,
+  sessionId: "session",
+  turnId: "turn",
+});
+assert.deepEqual(responses, [{ ok: true, active: true, lockInputs: true }]);
+host = documentElement.children[0];
+assert.equal(host.style.visibility, "");
+assert.equal(host.getAttribute("data-obu-capture-suppressed"), null);
 
 const blocked = fakeDomEvent();
 documentEvents.emitDom("click", blocked);

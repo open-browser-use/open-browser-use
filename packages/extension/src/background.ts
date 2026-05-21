@@ -215,16 +215,17 @@ class OverlayCoordinator {
       active: true,
       token,
     });
+    if (!suppressed) {
+      throw new Error("Page.captureScreenshot could not suppress the open-browser-use overlay");
+    }
     try {
       return await operation();
     } finally {
-      if (suppressed) {
-        await this.sendContentMessage(tabId, {
-          type: "OBU_CAPTURE_SUPPRESSION",
-          active: false,
-          token,
-        });
-      }
+      await this.sendContentMessage(tabId, {
+        type: "OBU_CAPTURE_SUPPRESSION",
+        active: false,
+        token,
+      });
     }
   }
 
