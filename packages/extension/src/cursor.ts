@@ -464,9 +464,9 @@ function updateWaterRipples(now: number, width: number, height: number): void {
 }
 
 function createWaterRipple(startedAt: number, width: number, height: number): WaterRipple {
-  const wide = width > height;
+  const xBounds = waterRippleXBounds(width > height);
   return {
-    xRatio: randomBetween(wide ? -0.05 : -0.15, wide ? 1.05 : 1.15),
+    xRatio: randomBetween(xBounds.min, xBounds.max),
     yRatio: randomBetween(-0.08, 1.08),
     startedAt,
     duration: randomBetween(2_300, 4_600),
@@ -481,6 +481,11 @@ function createWaterRipple(startedAt: number, width: number, height: number): Wa
     driftY: randomBetween(-0.03, 0.03),
     driftSpeed: randomBetween(0.18, 0.42),
   };
+}
+
+function waterRippleXBounds(wide: boolean): { min: number; max: number } {
+  if (wide) return { min: -0.05, max: 1.05 };
+  return { min: -0.15, max: 1.15 };
 }
 
 function drawWaterContours(ctx: CanvasRenderingContext2D, now: number, width: number, height: number): void {
@@ -555,11 +560,34 @@ function waterContourPoints(
   const y = row * WATER_GRID_PX;
   const size = WATER_GRID_PX;
   const points: Point[] = [];
-  if (crossesLevel(topLeft, topRight, level)) points.push({ x: x + interpolateLevel(topLeft, topRight, level) * size, y });
-  if (crossesLevel(topRight, bottomRight, level)) points.push({ x: x + size, y: y + interpolateLevel(topRight, bottomRight, level) * size });
-  if (crossesLevel(bottomLeft, bottomRight, level)) points.push({ x: x + interpolateLevel(bottomLeft, bottomRight, level) * size, y: y + size });
-  if (crossesLevel(topLeft, bottomLeft, level)) points.push({ x, y: y + interpolateLevel(topLeft, bottomLeft, level) * size });
+  pushWaterContourPoint(points, topLeft, topRight, level, (offset) => ({
+    x: x + offset * size,
+    y,
+  }));
+  pushWaterContourPoint(points, topRight, bottomRight, level, (offset) => ({
+    x: x + size,
+    y: y + offset * size,
+  }));
+  pushWaterContourPoint(points, bottomLeft, bottomRight, level, (offset) => ({
+    x: x + offset * size,
+    y: y + size,
+  }));
+  pushWaterContourPoint(points, topLeft, bottomLeft, level, (offset) => ({
+    x,
+    y: y + offset * size,
+  }));
   return points;
+}
+
+function pushWaterContourPoint(
+  points: Point[],
+  start: number,
+  end: number,
+  level: number,
+  pointAt: (offset: number) => Point,
+): void {
+  if (!crossesLevel(start, end, level)) return;
+  points.push(pointAt(interpolateLevel(start, end, level)));
 }
 
 function crossesLevel(a: number, b: number, level: number): boolean {
