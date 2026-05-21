@@ -25,3 +25,44 @@ impl TrustGate for CompositeOrTrust {
         self.0.iter().any(|gate| gate.is_trusted(source, path))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    struct FixedTrust(bool);
+
+    impl TrustGate for FixedTrust {
+        fn is_trusted(&self, _source: &[u8], _path: &Path) -> bool {
+            self.0
+        }
+    }
+
+    #[test]
+    fn composite_trusts_when_any_gate_trusts() {
+        let gate = CompositeOrTrust(vec![
+            Arc::new(FixedTrust(false)),
+            Arc::new(FixedTrust(true)),
+            Arc::new(FixedTrust(false)),
+        ]);
+
+        assert!(gate.is_trusted(b"source", Path::new("/tmp/module.mjs")));
+    }
+
+    #[test]
+    fn composite_rejects_when_no_gate_trusts() {
+        let gate = CompositeOrTrust(vec![
+            Arc::new(FixedTrust(false)),
+            Arc::new(FixedTrust(false)),
+        ]);
+
+        assert!(!gate.is_trusted(b"source", Path::new("/tmp/module.mjs")));
+    }
+
+    #[test]
+    fn composite_rejects_empty_gate_list() {
+        let gate = CompositeOrTrust(Vec::new());
+
+        assert!(!gate.is_trusted(b"source", Path::new("/tmp/module.mjs")));
+    }
+}
