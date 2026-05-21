@@ -82,6 +82,31 @@
   "resumeButton": {
     "message": "फिर शुरू करें"
   },
+  "cleanupButton": {
+    "message": "ब्राउज़र टैब साफ करें"
+  },
+  "cleanupResult": {
+    "message": "$closed$ बंद, $released$ रिलीज़, $kept$ डिलिवरेबल रखे गए.",
+    "placeholders": {
+      "closed": {
+        "content": "$1"
+      },
+      "released": {
+        "content": "$2"
+      },
+      "kept": {
+        "content": "$3"
+      }
+    }
+  },
+  "cleanupFailed": {
+    "message": "सफाई विफल: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
   "debugLogsLabel": {
     "message": "डीबग लॉग"
   },

@@ -82,6 +82,31 @@
   "resumeButton": {
     "message": "Riprendi"
   },
+  "cleanupButton": {
+    "message": "Pulisci le schede del browser"
+  },
+  "cleanupResult": {
+    "message": "$closed$ chiuse, $released$ rilasciate, $kept$ consegnabili mantenuti.",
+    "placeholders": {
+      "closed": {
+        "content": "$1"
+      },
+      "released": {
+        "content": "$2"
+      },
+      "kept": {
+        "content": "$3"
+      }
+    }
+  },
+  "cleanupFailed": {
+    "message": "Pulizia non riuscita: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
   "debugLogsLabel": {
     "message": "Log di debug"
   },

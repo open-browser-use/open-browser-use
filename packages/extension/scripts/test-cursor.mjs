@@ -43,15 +43,25 @@ class EventTarget {
 class FakeElement {
   style = {};
   dataset = {};
+  attributes = new Map();
   children = [];
   parent = null;
   shadowChildren = [];
+  id = "";
 
   append(...children) {
     for (const child of children) {
       child.parent = this;
       this.children.push(child);
     }
+  }
+
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+  }
+
+  getAttribute(name) {
+    return this.attributes.get(name) ?? null;
   }
 
   attachShadow() {
@@ -133,17 +143,23 @@ let responses = runtimeMessages.emit({
 assert.deepEqual(responses, [{ ok: true, active: true, lockInputs: true }]);
 assert.equal(documentElement.children.length, 1);
 let host = documentElement.children[0];
+assert.equal(host.id, "obu-agent-overlay-root");
+assert.equal(host.getAttribute("aria-hidden"), "true");
+assert.equal(host.getAttribute("data-obu-overlay-root"), "true");
 assert.equal(host.style.position, "fixed");
 assert.equal(host.shadowChildren.length, 4);
-assert.match(host.shadowChildren[0].textContent, /obu-takeover-particles/);
+assert.equal(host.shadowChildren[0].textContent, "");
 const overlay = host.shadowChildren[1];
 assert.equal(overlay.style.opacity, "1");
-assert.match(overlay.style.background, /radial-gradient/);
 assert.match(overlay.style.background, /linear-gradient/);
+assert.doesNotMatch(overlay.style.background, /conic-gradient/);
+assert.doesNotMatch(overlay.style.background, /polygon/);
+assert.equal(overlay.style.mixBlendMode, "screen");
 assert.equal(overlay.style.backdropFilter, undefined);
 assert.equal(overlay.style.webkitBackdropFilter, undefined);
 assert.equal(overlay.style.pointerEvents, "none");
-assert.equal(overlay.style.animation, "none");
+assert.equal(overlay.style.imageRendering, undefined);
+assert.equal(overlay.style.animation, undefined);
 
 const blocked = fakeDomEvent();
 documentEvents.emitDom("click", blocked);

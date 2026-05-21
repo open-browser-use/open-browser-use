@@ -82,6 +82,31 @@
   "resumeButton": {
     "message": "Hervatten"
   },
+  "cleanupButton": {
+    "message": "Browsertabbladen opruimen"
+  },
+  "cleanupResult": {
+    "message": "$closed$ gesloten, $released$ vrijgegeven, $kept$ opleveringen behouden.",
+    "placeholders": {
+      "closed": {
+        "content": "$1"
+      },
+      "released": {
+        "content": "$2"
+      },
+      "kept": {
+        "content": "$3"
+      }
+    }
+  },
+  "cleanupFailed": {
+    "message": "Opruimen mislukt: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
   "debugLogsLabel": {
     "message": "Debuglogboeken"
   },

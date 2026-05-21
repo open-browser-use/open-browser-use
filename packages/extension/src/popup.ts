@@ -14,6 +14,11 @@ type HostStatus = {
   deliverableTabs?: number;
   retryDelayMs?: number;
   nextRetryAt?: number;
+  pendingExtensionUpdate?: {
+    version?: string;
+    pendingSince: number;
+    state: "waiting_for_idle";
+  };
 };
 
 type HostDiagnosis =
@@ -45,15 +50,24 @@ type DebugLogStatus = {
   maxEntries?: number;
 };
 
+type CleanupBrowserTabsResult = {
+  closedTabs: number;
+  releasedTabs: number;
+  keptDeliverables: number;
+};
+
 const dot = document.querySelector<HTMLSpanElement>("#status-dot");
 const shell = document.querySelector<HTMLElement>("#shell");
 const statusPanel = document.querySelector<HTMLElement>("#status-panel");
 const statusText = document.querySelector<HTMLParagraphElement>("#status-text");
 const detailText = document.querySelector<HTMLParagraphElement>("#detail-text");
+const cleanupButton = document.querySelector<HTMLButtonElement>("#cleanup-button");
+const cleanupResult = document.querySelector<HTMLParagraphElement>("#cleanup-result");
 const setupPanel = document.querySelector<HTMLElement>("#setup-panel");
 const setupLabel = document.querySelector<HTMLParagraphElement>("#setup-label");
 const setupText = document.querySelector<HTMLParagraphElement>("#setup-text");
 const agentHandoff = document.querySelector<HTMLElement>("#agent-handoff");
+const promptToggleButton = document.querySelector<HTMLButtonElement>("#prompt-toggle-button");
 const copyAgentButton = document.querySelector<HTMLButtonElement>("#copy-agent-button");
 const setupCopyText = document.querySelector<HTMLParagraphElement>("#setup-copy-text");
 const versionText = document.querySelector<HTMLSpanElement>("#version-text");
@@ -68,6 +82,7 @@ const clearDebugButton = document.querySelector<HTMLButtonElement>("#clear-debug
 let currentStatus: HostStatus | undefined;
 let currentDebug: DebugLogStatus = { enabled: false, entries: [] };
 let setupCopyResetTimer: ReturnType<typeof setTimeout> | undefined;
+let setupPromptExpanded = true;
 
 void start();
 
@@ -90,6 +105,10 @@ resumeButton!.addEventListener("click", () => {
   void sendControlMessage("RESUME_BROWSER_CONTROL", resumeButton!);
 });
 
+cleanupButton?.addEventListener("click", () => {
+  void cleanUpBrowserTabs();
+});
+
 settingsButton?.addEventListener("click", () => {
   void openSettings();
 });
@@ -98,11 +117,18 @@ copyAgentButton!.addEventListener("click", () => {
   void copyAgentHandoff();
 });
 
+promptToggleButton?.addEventListener("click", () => {
+  setupPromptExpanded = !setupPromptExpanded;
+  applyPromptExpansion();
+});
+
 agentHandoff!.addEventListener("click", () => {
+  if (agentHandoff!.hidden) return;
   void copyAgentHandoff();
 });
 
 agentHandoff!.addEventListener("keydown", (event) => {
+  if (agentHandoff!.hidden) return;
   if (event.key !== "Enter" && event.key !== " ") return;
   event.preventDefault();
   void copyAgentHandoff();
@@ -184,6 +210,28 @@ async function sendControlMessage(type: "STOP_BROWSER_CONTROL" | "RESUME_BROWSER
     render({ state: "error", message: errorMessage(error) });
   } finally {
     await refreshStatus();
+  }
+}
+
+async function cleanUpBrowserTabs(): Promise<void> {
+  cleanupButton!.disabled = true;
+  cleanupResult!.textContent = "";
+  try {
+    const result = await chrome.runtime.sendMessage({ type: "CLEAN_UP_BROWSER_TABS" });
+    if (isCleanupBrowserTabsResult(result)) {
+      cleanupResult!.textContent = msg("cleanupResult", [
+        String(result.closedTabs),
+        String(result.releasedTabs),
+        String(result.keptDeliverables),
+      ]);
+    } else {
+      cleanupResult!.textContent = msg("nativeHostStatusUnavailable");
+    }
+    await refreshStatus();
+  } catch (error) {
+    cleanupResult!.textContent = msg("cleanupFailed", [errorMessage(error)]);
+  } finally {
+    cleanupButton!.disabled = false;
   }
 }
 
@@ -272,6 +320,7 @@ function clearSetupCopyResetTimer(): void {
 }
 
 function render(status: HostStatus): void {
+  const wasConnected = currentStatus?.state === "connected";
   currentStatus = status;
   const advice = nativeHostAdvice(status);
   setDataAttribute(shell, "data-state", status.state);
@@ -279,12 +328,12 @@ function render(status: HostStatus): void {
   dot!.className = `dot ${statusClass(status.state)}`;
   statusText!.textContent = statusLabel(status);
   detailText!.textContent = statusDetail(status, advice);
-  renderSetup(advice);
+  renderSetup(status, advice, wasConnected);
   stopButton!.disabled = status.state !== "connected";
   resumeButton!.disabled = !canResume(status);
 }
 
-function renderSetup(advice: NativeHostAdvice): void {
+function renderSetup(status: HostStatus, advice: NativeHostAdvice, wasConnected: boolean): void {
   const text = advice.showSetup
     ? advice.setupText ?? ""
     : msg("agentSetupDefaultText");
@@ -299,6 +348,14 @@ function renderSetup(advice: NativeHostAdvice): void {
   setupLabel!.textContent = label;
   setupText!.textContent = text;
   agentHandoff!.textContent = handoff;
+  if (status.state === "connected" && !wasConnected) {
+    setupPromptExpanded = false;
+  } else if (status.state !== "connected" && wasConnected) {
+    setupPromptExpanded = true;
+  } else if (changed && status.state !== "connected") {
+    setupPromptExpanded = true;
+  }
+  applyPromptExpansion();
   if (changed) {
     clearSetupCopyResetTimer();
     copyAgentButton!.textContent = agentCopyButtonLabel();
@@ -307,7 +364,18 @@ function renderSetup(advice: NativeHostAdvice): void {
   }
 }
 
+function applyPromptExpansion(): void {
+  agentHandoff!.hidden = !setupPromptExpanded;
+  setDataAttribute(setupPanel, "data-prompt-expanded", setupPromptExpanded ? "true" : "false");
+  setElementAttribute(promptToggleButton, "aria-expanded", setupPromptExpanded ? "true" : "false");
+}
+
 function setDataAttribute(element: HTMLElement | null, name: string, value: string): void {
+  const target = element as (HTMLElement & { setAttribute?: (name: string, value: string) => void }) | null;
+  target?.setAttribute?.(name, value);
+}
+
+function setElementAttribute(element: HTMLElement | null, name: string, value: string): void {
   const target = element as (HTMLElement & { setAttribute?: (name: string, value: string) => void }) | null;
   target?.setAttribute?.(name, value);
 }
@@ -390,7 +458,8 @@ function statusDetail(status: HostStatus, advice: NativeHostAdvice): string {
   const retry = retryLabel(status);
   const repair = advice.detail;
   const deliverables = deliverableRecoveryLabel(status);
-  const parts = [visibleStatusMessage(status), retry, repair, deliverables].filter(
+  const pendingUpdate = pendingExtensionUpdateLabel(status);
+  const parts = [visibleStatusMessage(status), retry, repair, deliverables, pendingUpdate].filter(
     (part): part is string => Boolean(part),
   );
   if (parts.length > 0) return joinSentences(parts);
@@ -410,6 +479,14 @@ function deliverableRecoveryLabel(status: HostStatus): string {
     count,
     [String(count)],
   );
+}
+
+function pendingExtensionUpdateLabel(status: HostStatus): string {
+  const update = status.pendingExtensionUpdate;
+  if (!update) return "";
+  return update.version
+    ? msg("pendingExtensionUpdateVersion", [update.version], `Extension update ${update.version} will apply after browser control is idle.`)
+    : msg("pendingExtensionUpdate", undefined, "Extension update will apply after browser control is idle.");
 }
 
 function nativeHostAdvice(status: HostStatus): NativeHostAdvice {
@@ -620,6 +697,16 @@ function isDebugLogStatus(value: unknown): value is DebugLogStatus {
     typeof value === "object" &&
     typeof (value as { enabled?: unknown }).enabled === "boolean" &&
     Array.isArray((value as { entries?: unknown }).entries)
+  );
+}
+
+function isCleanupBrowserTabsResult(value: unknown): value is CleanupBrowserTabsResult {
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    typeof (value as { closedTabs?: unknown }).closedTabs === "number" &&
+    typeof (value as { releasedTabs?: unknown }).releasedTabs === "number" &&
+    typeof (value as { keptDeliverables?: unknown }).keptDeliverables === "number"
   );
 }
 

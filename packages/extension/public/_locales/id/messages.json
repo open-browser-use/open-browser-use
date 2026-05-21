@@ -82,6 +82,31 @@
   "resumeButton": {
     "message": "Lanjutkan"
   },
+  "cleanupButton": {
+    "message": "Bersihkan tab browser"
+  },
+  "cleanupResult": {
+    "message": "$closed$ ditutup, $released$ dilepas, $kept$ hasil disimpan.",
+    "placeholders": {
+      "closed": {
+        "content": "$1"
+      },
+      "released": {
+        "content": "$2"
+      },
+      "kept": {
+        "content": "$3"
+      }
+    }
+  },
+  "cleanupFailed": {
+    "message": "Pembersihan gagal: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
   "debugLogsLabel": {
     "message": "Log debug"
   },

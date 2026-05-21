@@ -82,6 +82,31 @@
   "resumeButton": {
     "message": "Reanudar"
   },
+  "cleanupButton": {
+    "message": "Limpiar pestañas del navegador"
+  },
+  "cleanupResult": {
+    "message": "$closed$ cerradas, $released$ liberadas, $kept$ entregables conservados.",
+    "placeholders": {
+      "closed": {
+        "content": "$1"
+      },
+      "released": {
+        "content": "$2"
+      },
+      "kept": {
+        "content": "$3"
+      }
+    }
+  },
+  "cleanupFailed": {
+    "message": "No se pudo limpiar: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
   "debugLogsLabel": {
     "message": "Registros de depuración"
   },

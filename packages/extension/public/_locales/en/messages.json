@@ -65,22 +65,47 @@
     "message": "Setup"
   },
   "agentSetupLabel": {
-    "message": "Agent setup"
+    "message": "Pair another Agent"
   },
   "agentHandoffTitle": {
-    "message": "Agent handoff"
+    "message": "Setup prompt"
   },
   "copyForAgent": {
-    "message": "Copy for Agent"
+    "message": "Copy prompt"
   },
   "copyAgentSetupHandoff": {
-    "message": "Copy Agent setup handoff"
+    "message": "Copy setup prompt"
   },
   "stopButton": {
     "message": "I'll take over"
   },
   "resumeButton": {
     "message": "Resume"
+  },
+  "cleanupButton": {
+    "message": "Clean up browser tabs"
+  },
+  "cleanupResult": {
+    "message": "Closed $closed$, released $released$, kept $kept$ deliverables.",
+    "placeholders": {
+      "closed": {
+        "content": "$1"
+      },
+      "released": {
+        "content": "$2"
+      },
+      "kept": {
+        "content": "$3"
+      }
+    }
+  },
+  "cleanupFailed": {
+    "message": "Cleanup failed: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
   },
   "debugLogsLabel": {
     "message": "Debug logs"
@@ -118,10 +143,10 @@
     "message": "Cleared"
   },
   "copyAgentUnavailable": {
-    "message": "Agent setup handoff unavailable"
+    "message": "Setup prompt unavailable"
   },
   "copyAgentSuccess": {
-    "message": "Copied. Paste into your Agent. Return here and click Resume when setup finishes."
+    "message": "Copied. Paste it into the Agent you want to connect. Return here and click Resume when setup finishes."
   },
   "copying": {
     "message": "Copying"
@@ -136,7 +161,7 @@
     "message": "Copy unavailable. Check clipboard permission, then try again."
   },
   "agentSetupDefaultText": {
-    "message": "Connect another Agent with this handoff. Copy it into the Agent, then keep this popup open while it pairs."
+    "message": "Paste it into the Agent you want to connect. Keep this popup open until pairing finishes."
   },
   "statusConnected": {
     "message": "Connected"

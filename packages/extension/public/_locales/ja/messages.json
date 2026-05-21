@@ -82,6 +82,31 @@
   "resumeButton": {
     "message": "再開"
   },
+  "cleanupButton": {
+    "message": "ブラウザータブを整理"
+  },
+  "cleanupResult": {
+    "message": "$closed$ 件を閉じ、$released$ 件を解放し、$kept$ 件の成果物を保持しました。",
+    "placeholders": {
+      "closed": {
+        "content": "$1"
+      },
+      "released": {
+        "content": "$2"
+      },
+      "kept": {
+        "content": "$3"
+      }
+    }
+  },
+  "cleanupFailed": {
+    "message": "整理に失敗しました: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
   "debugLogsLabel": {
     "message": "デバッグログ"
   },

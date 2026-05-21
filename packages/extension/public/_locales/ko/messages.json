@@ -82,6 +82,31 @@
   "resumeButton": {
     "message": "재개"
   },
+  "cleanupButton": {
+    "message": "브라우저 탭 정리"
+  },
+  "cleanupResult": {
+    "message": "$closed$개 닫음, $released$개 해제, $kept$개 전달 항목 유지.",
+    "placeholders": {
+      "closed": {
+        "content": "$1"
+      },
+      "released": {
+        "content": "$2"
+      },
+      "kept": {
+        "content": "$3"
+      }
+    }
+  },
+  "cleanupFailed": {
+    "message": "정리 실패: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
   "debugLogsLabel": {
     "message": "디버그 로그"
   },

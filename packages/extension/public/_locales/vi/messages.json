@@ -82,6 +82,31 @@
   "resumeButton": {
     "message": "Tiếp tục"
   },
+  "cleanupButton": {
+    "message": "Dọn dẹp thẻ trình duyệt"
+  },
+  "cleanupResult": {
+    "message": "Đã đóng $closed$, đã thả $released$, giữ $kept$ bàn giao.",
+    "placeholders": {
+      "closed": {
+        "content": "$1"
+      },
+      "released": {
+        "content": "$2"
+      },
+      "kept": {
+        "content": "$3"
+      }
+    }
+  },
+  "cleanupFailed": {
+    "message": "Dọn dẹp thất bại: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
   "debugLogsLabel": {
     "message": "Nhật ký gỡ lỗi"
   },
