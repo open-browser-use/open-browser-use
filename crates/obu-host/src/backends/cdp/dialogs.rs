@@ -1,7 +1,6 @@
 //! CDP native-dialog policy integration.
 
 use serde_json::{Value, json};
-use tokio::sync::broadcast;
 
 use super::{CdpBackend, transport::CdpEvent};
 use crate::error::{HostError, Result};
@@ -81,95 +80,32 @@ where
         .await
         .map_err(HostError::from)?;
 
-    let mut events = backend.transport().subscribe_events();
-    tokio::pin!(operation);
-    loop {
-        tokio::select! {
-            result = &mut operation => return result,
-            event = events.recv() => {
-                let event = event.map_err(|error| {
-                    HostError::Protocol(format!("CDP event bus closed: {error}"))
-                })?;
-                if !dialog_event_matches(&event, cdp_session_id) {
-                    continue;
-                }
-                let Some(dialog) = dialogs::parse_javascript_dialog(&event.params) else {
-                    continue;
-                };
-                let handle = |params: Value| async {
-                    backend
-                        .transport()
-                        .send_command("Page.handleJavaScriptDialog", params, Some(cdp_session_id))
-                        .await
-                        .map(|_| ())
-                        .map_err(HostError::from)
-                };
-                dialogs::handle_open_dialog(
-                    &context,
-                    &dialog,
-                    Some(backend.dialog_traces()),
-                    handle,
-                )
-                .await?;
+    let events = backend.transport().subscribe_events();
+    dialogs::run_broadcast_dialog_policy_loop(
+        &context,
+        Some(backend.dialog_traces()),
+        operation,
+        events,
+        "CDP",
+        |event| {
+            if !dialog_event_matches(&event, cdp_session_id) {
+                return None;
             }
-        }
-    }
+            dialogs::parse_javascript_dialog(&event.params).map(dialogs::DialogPolicyEvent::Open)
+        },
+        |params| async {
+            backend
+                .transport()
+                .send_command("Page.handleJavaScriptDialog", params, Some(cdp_session_id))
+                .await
+                .map(|_| ())
+                .map_err(HostError::from)
+        },
+    )
+    .await
 }
 
 fn dialog_event_matches(event: &CdpEvent, cdp_session_id: &str) -> bool {
     event.method == "Page.javascriptDialogOpening"
         && (event.session_id.as_deref() == Some(cdp_session_id) || event.session_id.is_none())
-}
-
-/// Wait for a matching non-dialog CDP event while applying native-dialog policy.
-pub(crate) async fn wait_for_event_with_dialog_policy<R, F>(
-    mut events: broadcast::Receiver<CdpEvent>,
-    backend: &CdpBackend,
-    context: DialogContext,
-    timeout_ms: u64,
-    timeout_message: String,
-    mut match_event: F,
-) -> Result<R>
-where
-    F: FnMut(&CdpEvent) -> Option<R>,
-{
-    let Some(cdp_session_id) = context.cdp_session_id.as_deref() else {
-        return Err(HostError::Protocol(
-            "dialog-aware CDP event wait requires cdp_session_id".into(),
-        ));
-    };
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(timeout_ms);
-    loop {
-        let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
-        if remaining.is_zero() {
-            return Err(HostError::Timeout(timeout_message));
-        }
-        let event = tokio::time::timeout(remaining, events.recv())
-            .await
-            .map_err(|_| HostError::Timeout(timeout_message.clone()))?
-            .map_err(|error| HostError::Protocol(format!("CDP event bus closed: {error}")))?;
-        if dialog_event_matches(&event, cdp_session_id) {
-            if let Some(dialog) = dialogs::parse_javascript_dialog(&event.params) {
-                let handle = |params: Value| async {
-                    backend
-                        .transport()
-                        .send_command("Page.handleJavaScriptDialog", params, Some(cdp_session_id))
-                        .await
-                        .map(|_| ())
-                        .map_err(HostError::from)
-                };
-                dialogs::handle_open_dialog(
-                    &context,
-                    &dialog,
-                    Some(backend.dialog_traces()),
-                    handle,
-                )
-                .await?;
-            }
-            continue;
-        }
-        if let Some(result) = match_event(&event) {
-            return Ok(result);
-        }
-    }
 }

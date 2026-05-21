@@ -11,7 +11,7 @@ pub use spawn::{SpawnOptions, SpawnedKernel};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 
 use crate::native_pipe::{
@@ -20,7 +20,7 @@ use crate::native_pipe::{
 };
 use anyhow::{Context, Result, anyhow};
 use obu_wire::runtime_dir::{resolve_runtime_dir, validate_owner_only_dir};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -217,7 +217,7 @@ impl JsRuntimeManager {
     /// Read-only browser-use readiness status for MCP clients.
     pub async fn browser_status(&self) -> Result<Value> {
         if self.options.dynamic_backend_discovery {
-            self.refresh_backend_inventory();
+            self.refresh_backend_inventory().await?;
         }
         let inventory = self.backend_inventory();
         self.sync_backend_inventory_to_kernel(&inventory).await?;
@@ -575,7 +575,7 @@ impl JsRuntimeManager {
         *self.state.lock().await = KernelState::Restarting;
         self.kill_kernel().await;
         *self.registry.lock().await = ExecRegistry::default();
-        self.refresh_backend_inventory();
+        self.refresh_backend_inventory().await?;
         *self.state.lock().await = KernelState::Idle;
         self.boot_locked().await
     }
@@ -696,11 +696,15 @@ impl JsRuntimeManager {
         }
     }
 
-    fn refresh_backend_inventory(&self) {
+    async fn refresh_backend_inventory(&self) -> Result<()> {
         if !self.options.dynamic_backend_discovery {
-            return;
+            return Ok(());
         }
-        *self.backend_state.lock().expect("backend inventory lock") = discover_backend_inventory();
+        let inventory = tokio::task::spawn_blocking(discover_backend_inventory)
+            .await
+            .context("refresh browser backend inventory task failed")?;
+        *self.backend_state.lock().expect("backend inventory lock") = inventory;
+        Ok(())
     }
 }
 
@@ -960,54 +964,68 @@ fn browser_status_product_error(
     inventory: &BackendInventory,
 ) -> Option<Value> {
     if sdk_bootstrap != "available" {
-        return Some(product_error(
-            "setup_missing",
-            "Setup is incomplete",
-            "The SDK bootstrap is missing or untrusted in this MCP runtime.",
-            "run_verify",
-            "Run verify with the exact handoff target, using --repair when verify says repair is available.",
-            Some(VERIFY_REPAIR_HINT),
-        ));
+        return Some(product_error("setup_missing"));
     }
     if inventory.backends.is_empty() && !inventory.diagnostics.is_empty() {
-        return Some(product_error(
-            "stale_descriptor",
-            "Runtime descriptor is stale",
-            "Runtime descriptors were present but none produced a usable live backend.",
-            "run_repair",
-            "Run browser doctor repair or reopen the popup so the extension publishes a fresh descriptor.",
-            Some(DOCTOR_BROWSER_REPAIR_HINT),
-        ));
+        return Some(product_error("stale_descriptor"));
     }
     if inventory.backends.is_empty() {
-        return Some(product_error(
-            "browser_popup_boundary",
-            "Browser popup action required",
-            "No active WebExtension descriptor exists yet.",
-            "open_popup",
-            OPEN_POPUP_HINT,
-            Some(VERIFY_HINT),
-        ));
+        return Some(product_error("browser_popup_boundary"));
     }
     None
 }
 
-fn product_error(
-    code: &str,
-    title: &str,
-    summary: &str,
-    next_action_kind: &str,
-    next_action_summary: &str,
-    command: Option<&str>,
-) -> Value {
+#[derive(Deserialize)]
+struct ProductErrorSchema {
+    #[serde(rename = "schemaVersion")]
+    schema_version: u32,
+    errors: Vec<ProductErrorSchemaEntry>,
+}
+
+#[derive(Deserialize)]
+struct ProductErrorSchemaEntry {
+    code: String,
+    title: String,
+    summary: String,
+    #[serde(rename = "nextAction")]
+    next_action: ProductErrorSchemaNextAction,
+}
+
+#[derive(Deserialize)]
+struct ProductErrorSchemaNextAction {
+    kind: String,
+    summary: String,
+    command: Option<String>,
+}
+
+fn product_error_entry(code: &str) -> &'static ProductErrorSchemaEntry {
+    static PRODUCT_ERROR_ENTRIES: OnceLock<Vec<ProductErrorSchemaEntry>> = OnceLock::new();
+    PRODUCT_ERROR_ENTRIES
+        .get_or_init(|| {
+            let schema: ProductErrorSchema =
+                serde_json::from_str(include_str!("../../../../product-errors.json"))
+                    .expect("product-errors.json parses");
+            assert_eq!(
+                schema.schema_version, 1,
+                "product-errors.json schema version"
+            );
+            schema.errors
+        })
+        .iter()
+        .find(|entry| entry.code == code)
+        .unwrap_or_else(|| panic!("missing product error schema entry {code}"))
+}
+
+fn product_error(code: &str) -> Value {
+    let entry = product_error_entry(code);
     json!({
-        "code": code,
-        "title": title,
-        "summary": summary,
+        "code": entry.code,
+        "title": entry.title,
+        "summary": entry.summary,
         "next_action": {
-            "kind": next_action_kind,
-            "summary": next_action_summary,
-            "command": command,
+            "kind": entry.next_action.kind,
+            "summary": entry.next_action.summary,
+            "command": entry.next_action.command,
         }
     })
 }
@@ -1282,38 +1300,28 @@ fn validate_descriptor_socket(raw: &str) -> Result<PathBuf> {
 
 #[cfg(unix)]
 fn current_uid() -> Result<u32> {
-    let output = std::process::Command::new("id")
-        .arg("-u")
-        .output()
-        .context("run id -u")?;
-    if !output.status.success() {
-        return Err(anyhow!("id -u failed with status {}", output.status));
-    }
-    let raw = std::str::from_utf8(&output.stdout)
-        .context("parse id -u output as utf-8")?
-        .trim();
-    raw.parse::<u32>().context("parse id -u output")
+    static CURRENT_UID: OnceLock<u32> = OnceLock::new();
+    Ok(*CURRENT_UID.get_or_init(|| rustix::process::getuid().as_raw()))
 }
 
 #[cfg(unix)]
 fn descriptor_process_alive(value: &Value) -> bool {
+    use rustix::process::{Pid, test_kill_process};
+
     let Some(pid) = value.get("pid").and_then(Value::as_u64) else {
         return false;
     };
     if pid == 0 || pid > i32::MAX as u64 {
         return false;
     }
-    let Ok(output) = std::process::Command::new("kill")
-        .arg("-0")
-        .arg(pid.to_string())
-        .output()
-    else {
+    let Some(pid) = Pid::from_raw(pid as i32) else {
         return false;
     };
-    output.status.success()
-        || std::str::from_utf8(&output.stderr)
-            .map(|stderr| stderr.contains("Operation not permitted"))
-            .unwrap_or(false)
+    match test_kill_process(pid) {
+        Ok(()) => true,
+        Err(rustix::io::Errno::PERM) => true,
+        Err(_) => false,
+    }
 }
 
 #[cfg(not(unix))]
@@ -1498,7 +1506,8 @@ fn seed_sdk_trust(
 
 #[cfg(test)]
 mod tests {
-    use super::constant_time_eq;
+    use super::{constant_time_eq, current_uid, descriptor_process_alive, product_error};
+    use serde_json::json;
 
     #[test]
     fn native_pipe_token_compare_requires_exact_match() {
@@ -1506,5 +1515,29 @@ mod tests {
         assert!(!constant_time_eq(b"token", b"tokem"));
         assert!(!constant_time_eq(b"token", b"token-extra"));
         assert!(!constant_time_eq(b"token", b""));
+    }
+
+    #[test]
+    fn browser_status_product_error_uses_repo_schema() {
+        let error = product_error("browser_popup_boundary");
+        assert_eq!(error["title"], "Browser popup action required");
+        assert_eq!(error["next_action"]["kind"], "open_popup");
+        assert_eq!(
+            error["next_action"]["summary"],
+            "Open the open-browser-use extension popup, click Resume if enabled, then rerun verify."
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_helpers_use_process_syscalls_without_shelling_out() {
+        assert_eq!(current_uid().unwrap(), rustix::process::getuid().as_raw(),);
+        assert!(descriptor_process_alive(
+            &json!({ "pid": std::process::id() })
+        ));
+        assert!(!descriptor_process_alive(&json!({ "pid": 0 })));
+        assert!(!descriptor_process_alive(
+            &json!({ "pid": (i32::MAX as u64) + 1 })
+        ));
     }
 }

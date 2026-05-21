@@ -44,6 +44,7 @@ which = "8"
 uuid = { version = "1", features = ["v4", "serde"] }
 dirs = "5"
 libc = "0.2"
+rustix = { version = "1.1", features = ["process"] }
 
 # test deps
 insta = { version = "1", features = ["json"] }

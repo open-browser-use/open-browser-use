@@ -35,6 +35,9 @@ uuid = { workspace = true }
 dirs = { workspace = true }
 tempfile = { workspace = true }
 
+[target.'cfg(unix)'.dependencies]
+rustix = { workspace = true }
+
 [dev-dependencies]
 insta = { workspace = true }
 assert_cmd = { workspace = true }

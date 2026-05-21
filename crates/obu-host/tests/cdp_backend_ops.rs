@@ -882,9 +882,7 @@ async fn cua_click_dispatches_raw_cdp_mouse_events() {
             "Emulation.setFocusEmulationEnabled",
             "Page.enable",
             "Input.dispatchMouseEvent",
-            "Page.enable",
             "Input.dispatchMouseEvent",
-            "Page.enable",
             "Input.dispatchMouseEvent",
         ],
     )
@@ -927,11 +925,8 @@ async fn cua_click_waits_for_navigation_when_requested() {
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
             "Page.enable",
-            "Page.enable",
             "Input.dispatchMouseEvent",
-            "Page.enable",
             "Input.dispatchMouseEvent",
-            "Page.enable",
             "Input.dispatchMouseEvent",
             "Page.enable",
             "Runtime.evaluate",
@@ -1071,6 +1066,90 @@ async fn cua_commands_validate_payloads_and_dispatch_expected_input_events() {
     assert_eq!(moved["params"]["type"], "mouseMoved");
     assert_eq!(moved["params"]["x"], 99.0);
     assert_eq!(moved["params"]["y"], 100.0);
+}
+
+#[tokio::test]
+async fn cdp_cua_input_sequences_enable_page_once_per_command() {
+    let (ws_url, mut requests) = spawn_fake_cdp().await;
+    let backend = CdpBackend::connect(&ws_url, Arc::new(ServiceRegistry::default()))
+        .await
+        .unwrap();
+    let created = backend
+        .create_tab(Some("about:blank".into()))
+        .await
+        .unwrap();
+    let tab_id = created["id"].as_str().unwrap().to_string();
+    backend.attach(&tab_id).await.unwrap();
+
+    assert_observed_methods(
+        &mut requests,
+        &[
+            "Browser.setDownloadBehavior",
+            "Target.createTarget",
+            "Target.attachToTarget",
+            "Emulation.setFocusEmulationEnabled",
+        ],
+    )
+    .await;
+
+    backend
+        .cua_command(
+            methods::CUA_KEYPRESS,
+            json!({ "tab_id": tab_id, "key": "x" }),
+        )
+        .await
+        .unwrap();
+    assert_observed_methods(
+        &mut requests,
+        &[
+            "Page.enable",
+            "Input.dispatchKeyEvent",
+            "Input.dispatchKeyEvent",
+        ],
+    )
+    .await;
+
+    backend
+        .cua_command(
+            methods::CUA_SCROLL,
+            json!({ "tab_id": tab_id, "x": 10, "y": 20, "deltaX": 3, "deltaY": -4 }),
+        )
+        .await
+        .unwrap();
+    assert_observed_methods(
+        &mut requests,
+        &[
+            "Page.enable",
+            "Input.dispatchMouseEvent",
+            "Input.synthesizeScrollGesture",
+        ],
+    )
+    .await;
+
+    backend
+        .cua_command(
+            methods::CUA_DRAG,
+            json!({
+                "tab_id": tab_id,
+                "from": { "x": 0, "y": 1 },
+                "to": { "x": 10, "y": 11 },
+                "steps": 2
+            }),
+        )
+        .await
+        .unwrap();
+    assert_observed_methods(
+        &mut requests,
+        &[
+            "Page.enable",
+            "Input.dispatchMouseEvent",
+            "Input.dispatchMouseEvent",
+            "Input.dispatchMouseEvent",
+            "Input.dispatchMouseEvent",
+            "Input.dispatchMouseEvent",
+        ],
+    )
+    .await;
 }
 
 #[tokio::test]
@@ -1234,9 +1313,7 @@ async fn playwright_click_routes_through_injected_runtime_and_cua() {
             "Runtime.evaluate",
             "Page.enable",
             "Input.dispatchMouseEvent",
-            "Page.enable",
             "Input.dispatchMouseEvent",
-            "Page.enable",
             "Input.dispatchMouseEvent",
         ],
     )
@@ -1395,11 +1472,8 @@ async fn playwright_locator_click_forwards_navigation_wait_to_cua() {
             "Page.enable",
             "Runtime.evaluate",
             "Page.enable",
-            "Page.enable",
             "Input.dispatchMouseEvent",
-            "Page.enable",
             "Input.dispatchMouseEvent",
-            "Page.enable",
             "Input.dispatchMouseEvent",
             "Page.enable",
             "Runtime.evaluate",

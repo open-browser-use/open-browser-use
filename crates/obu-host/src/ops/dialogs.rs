@@ -1,9 +1,11 @@
 //! Native browser dialog policy helpers.
 
 use std::collections::VecDeque;
+use std::future::Future;
 use std::sync::{Arc, Mutex};
 
 use serde_json::{Value, json};
+use tokio::sync::broadcast;
 
 use crate::error::{DialogRequiresDecision, HostError, Result};
 
@@ -65,6 +67,18 @@ pub(crate) enum DialogAction {
     Accept,
     /// Dismiss and fail the initiating operation with structured data.
     DismissRequiresDecision,
+}
+
+/// Dialog event normalized across CDP transports.
+#[derive(Clone, Debug)]
+pub(crate) enum DialogPolicyEvent {
+    /// A dialog opened and still needs host-side policy handling.
+    Open(JavaScriptDialog),
+    /// The extension already applied the same policy action before forwarding.
+    HandledByExternalPolicy {
+        dialog: JavaScriptDialog,
+        action: DialogAction,
+    },
 }
 
 impl DialogAction {
@@ -157,6 +171,57 @@ where
         return Err(decision_required_error(context, dialog, action));
     }
     Ok(())
+}
+
+/// Run an operation while consuming a transport-specific dialog event stream.
+pub(crate) async fn run_broadcast_dialog_policy_loop<T, F, E, Match, Handle, HandleFut>(
+    context: &DialogContext,
+    traces: Option<&DialogTraceStore>,
+    operation: F,
+    mut events: broadcast::Receiver<E>,
+    event_bus_name: &str,
+    mut match_event: Match,
+    mut handle: Handle,
+) -> Result<T>
+where
+    F: Future<Output = Result<T>>,
+    E: Clone,
+    Match: FnMut(E) -> Option<DialogPolicyEvent>,
+    Handle: FnMut(Value) -> HandleFut,
+    HandleFut: Future<Output = Result<()>>,
+{
+    tokio::pin!(operation);
+    loop {
+        tokio::select! {
+            result = &mut operation => return result,
+            event = events.recv() => {
+                let event = event.map_err(|error| {
+                    HostError::Protocol(format!("{event_bus_name} event bus closed: {error}"))
+                })?;
+                let Some(event) = match_event(event) else {
+                    continue;
+                };
+                match event {
+                    DialogPolicyEvent::Open(dialog) => {
+                        handle_open_dialog(context, &dialog, traces, &mut handle).await?;
+                    }
+                    DialogPolicyEvent::HandledByExternalPolicy { dialog, action } => {
+                        if let Some(traces) = traces {
+                            traces.record(
+                                context,
+                                &dialog,
+                                action,
+                                if action.requires_decision() { "failed" } else { "continued" },
+                            );
+                        }
+                        if action.requires_decision() {
+                            return Err(decision_required_error(context, &dialog, action));
+                        }
+                    }
+                }
+            }
+        }
+    }
 }
 
 fn dialog_error_data(
@@ -286,5 +351,93 @@ mod tests {
         assert_eq!(recent[19]["message"], "message-24");
         assert_eq!(recent[19]["code"], "dialog_handled");
         assert_eq!(recent[19]["outcome"], "continued");
+    }
+
+    #[tokio::test]
+    async fn dialog_policy_loop_handles_open_events_until_operation_completes() {
+        let context = DialogContext {
+            tab_id: "tab-1".into(),
+            operation: Some("Runtime.evaluate".into()),
+            ..DialogContext::default()
+        };
+        let store = DialogTraceStore::default();
+        let (done_tx, done_rx) = tokio::sync::oneshot::channel();
+        let mut done_tx = Some(done_tx);
+        let (event_tx, events) = broadcast::channel(4);
+        event_tx
+            .send(DialogPolicyEvent::Open(JavaScriptDialog {
+                dialog_type: "alert".into(),
+                message: "done".into(),
+            }))
+            .unwrap();
+
+        let result = run_broadcast_dialog_policy_loop(
+            &context,
+            Some(&store),
+            async {
+                done_rx.await.unwrap();
+                Ok("ok")
+            },
+            events,
+            "test",
+            Some,
+            |params| {
+                let tx = done_tx.take();
+                std::future::ready({
+                    assert_eq!(params, json!({ "accept": true }));
+                    tx.unwrap().send(()).unwrap();
+                    Ok(())
+                })
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result, "ok");
+        let recent = store.diagnostics()["recent"].as_array().unwrap().clone();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0]["code"], "dialog_handled");
+        assert_eq!(recent[0]["outcome"], "continued");
+    }
+
+    #[tokio::test]
+    async fn dialog_policy_loop_honors_external_decision_events() {
+        let context = DialogContext {
+            tab_id: "tab-1".into(),
+            operation: Some("Runtime.evaluate".into()),
+            ..DialogContext::default()
+        };
+        let store = DialogTraceStore::default();
+        let (event_tx, events) = broadcast::channel(4);
+        event_tx
+            .send(DialogPolicyEvent::HandledByExternalPolicy {
+                dialog: JavaScriptDialog {
+                    dialog_type: "confirm".into(),
+                    message: "choose".into(),
+                },
+                action: DialogAction::DismissRequiresDecision,
+            })
+            .unwrap();
+
+        let error = run_broadcast_dialog_policy_loop(
+            &context,
+            Some(&store),
+            async {
+                std::future::pending::<()>().await;
+                Ok(())
+            },
+            events,
+            "test",
+            Some,
+            |_params| std::future::ready(Ok(())),
+        )
+        .await
+        .unwrap_err();
+
+        assert!(matches!(error, HostError::DialogRequiresDecision(_)));
+        let recent = store.diagnostics()["recent"].as_array().unwrap().clone();
+        assert_eq!(recent.len(), 1);
+        assert_eq!(recent[0]["code"], "dialog_requires_decision");
+        assert_eq!(recent[0]["outcome"], "failed");
     }
 }

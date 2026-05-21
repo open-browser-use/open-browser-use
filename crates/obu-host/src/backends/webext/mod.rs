@@ -796,7 +796,7 @@ async fn execute_cdp_with_dialog_policy(
     params: Value,
     options: ExecuteCdpOptions,
 ) -> Result<Value> {
-    let mut events = backend.subscribe_notifications();
+    let events = backend.subscribe_notifications();
     execute_cdp_raw_with_context(backend, ctx, parsed_tab_id, "Page.enable", json!({})).await?;
     let context = crate::ops::dialogs::DialogContext {
         tab_id: tab_id.to_string(),
@@ -807,54 +807,39 @@ async fn execute_cdp_with_dialog_policy(
     };
     let operation =
         execute_cdp_raw_with_options(backend, ctx, parsed_tab_id, method, params, options);
-    tokio::pin!(operation);
-    loop {
-        tokio::select! {
-            result = &mut operation => return result,
-            event = events.recv() => {
-                let event = event.map_err(|error| {
-                    HostError::Protocol(format!("extension event bus closed: {error}"))
-                })?;
-                let Some(dialog) = matching_webext_dialog_event(&event, ctx, parsed_tab_id) else {
-                    continue;
-                };
-                if let Some(action) = extension_handled_dialog_action(&event, &dialog) {
-                    backend.dialog_traces().record(
-                        &context,
-                        &dialog,
+    crate::ops::dialogs::run_broadcast_dialog_policy_loop(
+        &context,
+        Some(backend.dialog_traces()),
+        operation,
+        events,
+        "extension",
+        |event| {
+            let Some(dialog) = matching_webext_dialog_event(&event, ctx, parsed_tab_id) else {
+                return None;
+            };
+            if let Some(action) = extension_handled_dialog_action(&event, &dialog) {
+                return Some(
+                    crate::ops::dialogs::DialogPolicyEvent::HandledByExternalPolicy {
+                        dialog,
                         action,
-                        if action.requires_decision() { "failed" } else { "continued" },
-                    );
-                    if action.requires_decision() {
-                        return Err(crate::ops::dialogs::decision_required_error(
-                            &context,
-                            &dialog,
-                            action,
-                        ));
-                    }
-                    continue;
-                }
-                let handle = |params: Value| async {
-                    execute_cdp_raw_with_context(
-                        backend,
-                        ctx,
-                        parsed_tab_id,
-                        "Page.handleJavaScriptDialog",
-                        params,
-                    )
-                    .await
-                    .map(|_| ())
-                };
-                crate::ops::dialogs::handle_open_dialog(
-                    &context,
-                    &dialog,
-                    Some(backend.dialog_traces()),
-                    handle,
-                )
-                .await?;
+                    },
+                );
             }
-        }
-    }
+            Some(crate::ops::dialogs::DialogPolicyEvent::Open(dialog))
+        },
+        |params| async {
+            execute_cdp_raw_with_context(
+                backend,
+                ctx,
+                parsed_tab_id,
+                "Page.handleJavaScriptDialog",
+                params,
+            )
+            .await
+            .map(|_| ())
+        },
+    )
+    .await
 }
 
 fn matching_webext_dialog_event(
