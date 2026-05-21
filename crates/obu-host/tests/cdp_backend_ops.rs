@@ -54,6 +54,7 @@ async fn targets_attach_and_execute_cdp_work_against_fake_browser() {
             "Target.getTargets",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Page.enable",
             "Runtime.evaluate",
         ],
     )
@@ -440,11 +441,17 @@ async fn tab_commands_navigate_and_export_content_against_fake_browser() {
             "Emulation.setFocusEmulationEnabled",
             "Page.enable",
             "Page.navigate",
+            "Page.enable",
             "Runtime.evaluate",
+            "Page.enable",
             "Runtime.evaluate",
+            "Page.enable",
             "Runtime.evaluate",
+            "Page.enable",
             "Runtime.evaluate",
+            "Page.enable",
             "Runtime.evaluate",
+            "Page.enable",
             "Runtime.evaluate",
             "Page.captureScreenshot",
             "Page.printToPDF",
@@ -681,6 +688,26 @@ async fn cdp_goto_dismisses_confirm_dialog_with_structured_error() {
 }
 
 #[tokio::test]
+async fn cdp_runtime_evaluate_accepts_alert_dialog() {
+    assert_runtime_evaluate_dialog_accepted("alert").await;
+}
+
+#[tokio::test]
+async fn cdp_runtime_evaluate_accepts_beforeunload_dialog() {
+    assert_runtime_evaluate_dialog_accepted("beforeunload").await;
+}
+
+#[tokio::test]
+async fn cdp_runtime_evaluate_dismisses_confirm_dialog_with_structured_error() {
+    assert_runtime_evaluate_dialog_requires_decision("confirm").await;
+}
+
+#[tokio::test]
+async fn cdp_runtime_evaluate_dismisses_prompt_dialog_with_structured_error() {
+    assert_runtime_evaluate_dialog_requires_decision("prompt").await;
+}
+
+#[tokio::test]
 async fn cdp_close_accepts_beforeunload_dialog() {
     let (ws_url, mut requests) = spawn_fake_cdp_with_dialog("Page.close", "beforeunload").await;
     let registry = Arc::new(ServiceRegistry::default());
@@ -832,6 +859,7 @@ async fn cua_click_waits_for_navigation_when_requested() {
             "Input.dispatchMouseEvent",
             "Page.enable",
             "Input.dispatchMouseEvent",
+            "Page.enable",
             "Runtime.evaluate",
         ],
     )
@@ -1126,7 +1154,9 @@ async fn playwright_click_routes_through_injected_runtime_and_cua() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Page.enable",
             "Runtime.evaluate",
+            "Page.enable",
             "Runtime.evaluate",
             "Page.enable",
             "Input.dispatchMouseEvent",
@@ -1175,6 +1205,11 @@ async fn playwright_fill_uses_shared_text_input_fallback() {
         .unwrap();
 
     let _injection_probe = requests.recv().await.unwrap();
+    assert_eq!(_injection_probe["method"], "Page.enable");
+    let _injection_probe = requests.recv().await.unwrap();
+    assert_eq!(_injection_probe["method"], "Runtime.evaluate");
+    let _fill_policy = requests.recv().await.unwrap();
+    assert_eq!(_fill_policy["method"], "Page.enable");
     let fill_eval = requests.recv().await.unwrap();
     assert_eq!(fill_eval["method"], "Runtime.evaluate");
     assert!(
@@ -1223,7 +1258,12 @@ async fn playwright_press_uses_shared_focus_runtime_before_keyboard_events() {
         .await
         .unwrap();
 
+    let _injection_policy = requests.recv().await.unwrap();
+    assert_eq!(_injection_policy["method"], "Page.enable");
     let _injection_probe = requests.recv().await.unwrap();
+    assert_eq!(_injection_probe["method"], "Runtime.evaluate");
+    let _focus_policy = requests.recv().await.unwrap();
+    assert_eq!(_focus_policy["method"], "Page.enable");
     let focus_eval = requests.recv().await.unwrap();
     assert_eq!(focus_eval["method"], "Runtime.evaluate");
     let expression = focus_eval["params"]["expression"].as_str().unwrap();
@@ -1276,7 +1316,9 @@ async fn playwright_locator_click_forwards_navigation_wait_to_cua() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Page.enable",
             "Runtime.evaluate",
+            "Page.enable",
             "Runtime.evaluate",
             "Page.enable",
             "Page.enable",
@@ -1285,6 +1327,7 @@ async fn playwright_locator_click_forwards_navigation_wait_to_cua() {
             "Input.dispatchMouseEvent",
             "Page.enable",
             "Input.dispatchMouseEvent",
+            "Page.enable",
             "Runtime.evaluate",
         ],
     )
@@ -1579,6 +1622,77 @@ async fn spawn_fake_cdp_with_dialog(
         None,
     )
     .await
+}
+
+async fn assert_runtime_evaluate_dialog_requires_decision(dialog_type: &'static str) {
+    let (ws_url, mut requests) = spawn_fake_cdp_with_dialog("Runtime.evaluate", dialog_type).await;
+    let backend = CdpBackend::connect(&ws_url, Arc::new(ServiceRegistry::default()))
+        .await
+        .unwrap();
+    let created = backend
+        .create_tab_with_context(
+            &BackendRequestContext {
+                session_id: Some("session".into()),
+                turn_id: Some("turn".into()),
+                client_timeout_ms: None,
+            },
+            Some("about:blank".into()),
+        )
+        .await
+        .unwrap();
+    let tab_id = created["id"].as_str().unwrap().to_string();
+    backend.attach(&tab_id).await.unwrap();
+
+    let error = backend
+        .execute_cdp(
+            &tab_id,
+            "Runtime.evaluate",
+            json!({ "expression": "1+1", "returnByValue": true }),
+        )
+        .await
+        .unwrap_err();
+    let HostError::DialogRequiresDecision(dialog) = error else {
+        panic!("expected dialog_requires_decision error");
+    };
+    assert_eq!(dialog.data["code"], "dialog_requires_decision");
+    assert_eq!(dialog.data["session_id"], "session");
+    assert_eq!(dialog.data["operation"], "Runtime.evaluate");
+    assert_eq!(dialog.data["dialog_type"], dialog_type);
+    assert_eq!(dialog.data["default_action"], "dismiss");
+    let handle = recv_until_method(&mut requests, "Page.handleJavaScriptDialog").await;
+    assert_eq!(handle["params"]["accept"], false);
+}
+
+async fn assert_runtime_evaluate_dialog_accepted(dialog_type: &'static str) {
+    let (ws_url, mut requests) = spawn_fake_cdp_with_dialog("Runtime.evaluate", dialog_type).await;
+    let backend = CdpBackend::connect(&ws_url, Arc::new(ServiceRegistry::default()))
+        .await
+        .unwrap();
+    let created = backend
+        .create_tab_with_context(
+            &BackendRequestContext {
+                session_id: Some("session".into()),
+                turn_id: Some("turn".into()),
+                client_timeout_ms: None,
+            },
+            Some("about:blank".into()),
+        )
+        .await
+        .unwrap();
+    let tab_id = created["id"].as_str().unwrap().to_string();
+    backend.attach(&tab_id).await.unwrap();
+
+    let evaluated = backend
+        .execute_cdp(
+            &tab_id,
+            "Runtime.evaluate",
+            json!({ "expression": "1+1", "returnByValue": true }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(evaluated["result"]["value"], 2);
+    let handle = recv_until_method(&mut requests, "Page.handleJavaScriptDialog").await;
+    assert_eq!(handle["params"]["accept"], true);
 }
 
 async fn spawn_fake_cdp_with_sessionless_dialog(

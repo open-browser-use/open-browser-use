@@ -16,10 +16,34 @@ pub(crate) fn method_can_open_dialog(method: &str) -> bool {
             | "Page.reload"
             | "Page.navigateToHistoryEntry"
             | "Page.close"
+            | "Runtime.evaluate"
             | "Input.dispatchMouseEvent"
             | "Input.dispatchKeyEvent"
             | "Input.insertText"
     )
+}
+
+/// Execute a CDP command, applying native-dialog handling for dialog-sensitive capabilities.
+pub(crate) async fn send_command_with_dialog_policy(
+    backend: &CdpBackend,
+    tab_id: &str,
+    cdp_session_id: &str,
+    method: &str,
+    params: Value,
+) -> Result<Value> {
+    let operation = async {
+        backend
+            .transport()
+            .send_command(method, params, Some(cdp_session_id))
+            .await
+            .map_err(HostError::from)
+    };
+    if method_can_open_dialog(method) {
+        let context = context_for_tab(backend, tab_id, cdp_session_id, method);
+        run_with_dialog_policy(backend, context, operation).await
+    } else {
+        operation.await
+    }
 }
 
 /// Build native-dialog context from host tab registry state.

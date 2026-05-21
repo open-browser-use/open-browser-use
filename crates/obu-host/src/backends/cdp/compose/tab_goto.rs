@@ -4,7 +4,7 @@ use async_trait::async_trait;
 use serde_json::Value;
 
 use crate::backends::cdp::{CdpBackend, attach::require_session};
-use crate::error::{HostError, Result};
+use crate::error::Result;
 use crate::ops::tab_navigation::{self, TabNavigationBackend};
 use crate::tab_state::TabId;
 
@@ -16,25 +16,14 @@ struct CdpTabNavigation<'a> {
 impl TabNavigationBackend for CdpTabNavigation<'_> {
     async fn execute_cdp(&self, tab_id: &str, method: &str, params: Value) -> Result<Value> {
         let session_id = require_session(self.backend, tab_id)?;
-        let operation = async {
-            self.backend
-                .transport()
-                .send_command(method, params, Some(&session_id))
-                .await
-                .map_err(HostError::from)
-        };
-        if crate::backends::cdp::dialogs::method_can_open_dialog(method) {
-            let context = crate::backends::cdp::dialogs::context_for_tab(
-                self.backend,
-                tab_id,
-                &session_id,
-                method,
-            );
-            crate::backends::cdp::dialogs::run_with_dialog_policy(self.backend, context, operation)
-                .await
-        } else {
-            operation.await
-        }
+        crate::backends::cdp::dialogs::send_command_with_dialog_policy(
+            self.backend,
+            tab_id,
+            &session_id,
+            method,
+            params,
+        )
+        .await
     }
 
     async fn refresh_tab_metadata(&self, tab_id: &str) -> Result<()> {

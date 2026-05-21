@@ -54,19 +54,19 @@ impl PlaywrightRuntimeBackend for CdpBackend {
         expression: String,
     ) -> Result<Value> {
         let session_id = require_session(self, tab_id)?;
-        self.transport()
-            .send_command(
-                "Runtime.evaluate",
-                json!({
-                    "expression": expression,
-                    "returnByValue": true,
-                    "awaitPromise": true,
-                    "userGesture": true,
-                }),
-                Some(&session_id),
-            )
-            .await
-            .map_err(HostError::from)
+        crate::backends::cdp::dialogs::send_command_with_dialog_policy(
+            self,
+            tab_id,
+            &session_id,
+            "Runtime.evaluate",
+            json!({
+                "expression": expression,
+                "returnByValue": true,
+                "awaitPromise": true,
+                "userGesture": true,
+            }),
+        )
+        .await
     }
 }
 
