@@ -42,14 +42,27 @@ for (const script of [
   "stage:npm",
   "smoke:cargo-dist",
   "smoke:curl-install",
+  "smoke:install-refresh-safety",
+  "smoke:mcp-client-compat",
   "smoke:npm-pack",
   "smoke:npm-wrapper",
   "smoke:package-static",
   "smoke:setup-local-spine",
+  "test:oracles",
+  "smoke:cdp-dirty-form-live",
+  "smoke:webext-dirty-form-live",
   "make:extension-store-artifact",
 ]) {
   assert.equal(typeof rootPackage.scripts?.[script], "string", `missing package script ${script}`);
 }
+assert.match(
+  rootPackage.scripts["smoke:cdp-dirty-form-live"],
+  /OBU_CDP_E2E_TEST_FILTER=cdp_dirty_form_beforeunload_does_not_block_navigation_close_or_finish_turn/,
+);
+assert.match(
+  rootPackage.scripts["smoke:webext-dirty-form-live"],
+  /OBU_WEBEXT_E2E_TEST_FILTER=webextension_dirty_form_beforeunload_survives_reattach_and_finish_turn/,
+);
 
 const cliPackage = await json("packages/cli/package.json");
 assert.equal(cliPackage.private, true, "workspace @open-browser-use/cli package must stay private");
@@ -79,6 +92,15 @@ assertNoWindows([distWorkspace]);
 const makeCurlArtifact = await text("scripts/make-curl-artifact.mjs");
 assert.match(makeCurlArtifact, /releaseArtifactPrefix\s*=\s*"open-browser-use"/);
 assert.match(makeCurlArtifact, /manifest\.tsv/);
+assert.match(await text("scripts/assemble-payload.mjs"), /migrationHooks/);
+assert.match(await text("scripts/assemble-payload.mjs"), /nativeHostManifest/);
+assert.match(await text("scripts/install.sh"), /install-migrations\.d/);
+assert.match(await text("scripts/install.sh"), /OBU_PAYLOAD_RETENTION/);
+assert.match(await text("scripts/validate-oracles.mjs"), /browser-contracts\.oracle\.json/);
+const oracleCorpus = await text("tests/oracles/browser-contracts.oracle.json");
+assert.match(oracleCorpus, /open-browser-use\.product-contracts\/v1/);
+assert.match(oracleCorpus, /smoke:cdp-dirty-form-live/);
+assert.match(oracleCorpus, /smoke:webext-dirty-form-live/);
 const makeStoreArtifact = await text("scripts/make-extension-store-artifact.mjs");
 assert.match(makeStoreArtifact, /store-extension-id/);
 assert.match(makeStoreArtifact, /manifestKeyPolicy/);
@@ -92,6 +114,8 @@ const workflow = await text(".github/workflows/p4-packaging-ci.yml");
 for (const target of p4Targets) assert.match(workflow, new RegExp(`target: ${escapeRegExp(target)}\\b`));
 for (const target of cargoTargets) assert.match(workflow, new RegExp(`rust_target: ${escapeRegExp(target)}\\b`));
 assert.match(workflow, /p4-target-payloads:/);
+assert.match(workflow, /smoke:mcp-client-compat/);
+assert.match(workflow, /install-refresh-safety-smoke\.mjs/);
 assert.match(workflow, /setup-local-spine-smoke\.mjs/);
 assert.match(workflow, /actions\/upload-artifact@v4/);
 assert.match(workflow, /open-browser-use-\$\{\{ matrix\.target \}\}-curl/);
@@ -102,6 +126,27 @@ assert.match(setupWebext, /"--agents=codex-cli"/);
 assert.match(setupWebext, /fakeCodex/);
 assert.doesNotMatch(setupWebext, /"--skip-agents"/);
 
+const p3Webext = await text("scripts/p3-webext-e2e.sh");
+assert.match(p3Webext, /OBU_WEBEXT_E2E_TEST_FILTER/);
+assert.match(p3Webext, /CARGO_TEST_ARGS/);
+const p2Cdp = await text("scripts/p2-e2e.sh");
+assert.match(p2Cdp, /OBU_CDP_E2E_TEST_FILTER/);
+assert.match(p2Cdp, /ensure-chrome-for-testing\.sh/);
+
+const setupLocalSpine = await text("scripts/setup-local-spine-smoke.mjs");
+assert.match(setupLocalSpine, /"--write-instructions"/);
+assert.match(setupLocalSpine, /verifyReport\.result,\s*"ready"/);
+assert.match(setupLocalSpine, /Object\.hasOwn\(verifyReport,\s*"nextActions"\)/);
+assert.match(setupLocalSpine, /mcpRuntime\.cli\.backendCount,\s*1/);
+assert.match(setupLocalSpine, /path\.join\(temp,\s*"chrome\.sock"\)/);
+
+const mcpStdio = await text("crates/obu-node-repl/tests/mcp_stdio.rs");
+assert.match(mcpStdio, /codex-cli/);
+assert.match(mcpStdio, /claude-code/);
+assert.match(mcpStdio, /cursor/);
+assert.match(mcpStdio, /resources\/read/);
+assert.match(mcpStdio, /notifications\/progress/);
+
 const releaseChecklist = await text("docs/release-checklist.md");
 assert.match(releaseChecklist, /Current stance: preview/);
 assert.match(releaseChecklist, /Public npm scope\/package access .* is not verified here/);
@@ -109,6 +154,8 @@ assert.match(releaseChecklist, /GitHub Release assets, not a dedicated\s+website
 assert.match(releaseChecklist, /open-browser-use/);
 assert.match(releaseChecklist, /p4-target-payloads/);
 assert.match(releaseChecklist, /manifest\.tsv/);
+assert.match(releaseChecklist, /install-migrations\.d/);
+assert.match(releaseChecklist, /OBU_PAYLOAD_RETENTION/);
 assert.match(releaseChecklist, /npm publish order/i);
 assert.match(releaseChecklist, /## Rollback/);
 assert.match(releaseChecklist, /last known-good/i);
@@ -116,6 +163,10 @@ assert.match(releaseChecklist, /doctor --strict.*warnings.*failures/is);
 assert.match(releaseChecklist, /Chrome Web Store Gate/);
 assert.match(releaseChecklist, /storeExtensionId/);
 assert.match(releaseChecklist, /make-extension-store-artifact\.mjs/);
+assert.match(releaseChecklist, /smoke:mcp-client-compat/);
+assert.match(releaseChecklist, /smoke:cdp-dirty-form-live/);
+assert.match(releaseChecklist, /smoke:webext-dirty-form-live/);
+assert.match(releaseChecklist, /real Codex CLI,\s+Claude Code,\s+and Cursor clients/is);
 
 const reviewPack = await text("docs/chrome-web-store-review-pack.md");
 assert.match(reviewPack, /Permission Justifications/);

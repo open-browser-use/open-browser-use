@@ -9,6 +9,7 @@ TARGET="${OBU_TARGET:-}"
 SELECTED_TARGET="$TARGET"
 NO_MODIFY_PATH=0
 UNMANAGED="${OBU_UNMANAGED_INSTALL:-0}"
+PAYLOAD_RETENTION="${OBU_PAYLOAD_RETENTION:-5}"
 VERBOSE=0
 
 log_verbose() {
@@ -33,6 +34,142 @@ artifact_name() {
   base="${base%.tar.gz}"
   base="${base%.tgz}"
   printf '%s\n' "$base"
+}
+
+validate_payload_dir() {
+  dir="$1"
+  if [ ! -x "$dir/node/bin/node" ]; then
+    echo "payload validation failed: node/bin/node is missing or not executable" >&2
+    return 1
+  fi
+  if [ ! -x "$dir/bin/obu-host" ]; then
+    echo "payload validation failed: bin/obu-host is missing or not executable" >&2
+    return 1
+  fi
+  if [ ! -f "$dir/cli/dist/index.js" ]; then
+    echo "payload validation failed: cli/dist/index.js is missing" >&2
+    return 1
+  fi
+  if [ ! -f "$dir/metadata.json" ]; then
+    echo "payload validation failed: metadata.json is missing" >&2
+    return 1
+  fi
+  return 0
+}
+
+validate_payload_retention() {
+  value="$1"
+  case "$value" in
+    ''|*[!0123456789]*)
+      echo "install failed: OBU_PAYLOAD_RETENTION must be a non-negative integer" >&2
+      return 2
+      ;;
+  esac
+  return 0
+}
+
+prune_old_payloads() {
+  payloads_dir="$1"
+  active_payload="$2"
+  rollback_payload="$3"
+  keep_count="$4"
+
+  validate_payload_retention "$keep_count" || return $?
+
+  normalized_keep="$(printf '%s\n' "$keep_count" | sed 's/^0*//')"
+  if [ -z "$normalized_keep" ]; then
+    return 0
+  fi
+  if [ ! -d "$payloads_dir" ]; then
+    return 0
+  fi
+
+  active_name="${active_payload##*/}"
+  rollback_name="${rollback_payload##*/}"
+  payload_names="$(ls -1t "$payloads_dir" 2>/dev/null || true)"
+  kept_count=0
+  old_ifs="$IFS"
+  IFS='
+'
+  for payload_name in $payload_names; do
+    case "$payload_name" in
+      ''|.*|current)
+        continue
+        ;;
+    esac
+
+    payload_path="$payloads_dir/$payload_name"
+    if [ ! -d "$payload_path" ] || [ -L "$payload_path" ]; then
+      continue
+    fi
+
+    protected=0
+    if [ "$payload_name" = "$active_name" ]; then
+      protected=1
+    elif [ -n "$rollback_name" ] && [ "$payload_name" = "$rollback_name" ]; then
+      protected=1
+    fi
+
+    kept_count=$((kept_count + 1))
+    if [ "$kept_count" -le "$normalized_keep" ] || [ "$protected" -eq 1 ]; then
+      log_verbose "prune: keeping payload $payload_name"
+      continue
+    fi
+
+    log_verbose "prune: removing old payload $payload_name"
+    if ! rm -rf "$payload_path"; then
+      echo "warning: could not remove old payload $payload_path" >&2
+    fi
+  done
+  IFS="$old_ifs"
+}
+
+replace_symlink_path() {
+  source="$1"
+  dest="$2"
+  if mv -fh "$source" "$dest" 2>/dev/null; then
+    return 0
+  fi
+  if mv -fT "$source" "$dest" 2>/dev/null; then
+    return 0
+  fi
+  rm -f "$dest" && mv -f "$source" "$dest"
+}
+
+run_payload_migrations() {
+  payload_dir="$1"
+  migration_dir="$payload_dir/install-migrations.d"
+  [ -d "$migration_dir" ] || return 0
+
+  for migration in "$migration_dir"/*; do
+    [ -f "$migration" ] || continue
+    migration_name="$(basename "$migration")"
+    case "$migration_name" in
+      [0-9][0-9][0-9]-*.sh)
+        migration_slug="${migration_name#???-}"
+        migration_slug="${migration_slug%.sh}"
+        case "$migration_slug" in
+          ""|*[!abcdefghijklmnopqrstuvwxyz0123456789-]*)
+            echo "payload migration has invalid name: $migration_name" >&2
+            return 1
+            ;;
+        esac
+        ;;
+      *)
+        echo "payload migration has invalid name: $migration_name" >&2
+        return 1
+        ;;
+    esac
+    if [ ! -x "$migration" ]; then
+      echo "payload migration is not executable: $migration_name" >&2
+      return 1
+    fi
+    log_verbose "migration: $migration_name"
+    OBU_INSTALL_DIR="$INSTALL_DIR" \
+      OBU_PAYLOAD_DIR="$payload_dir" \
+      OBU_PREVIOUS_PAYLOAD="${PREVIOUS_CURRENT:-}" \
+      "$migration"
+  done
 }
 
 download_to() {
@@ -342,6 +479,7 @@ Environment:
   OBU_RELEASE_BASE_URL   Release asset base URL with manifest.tsv or manifest.json
   OBU_TARGET             Override target triple from release manifest
   OBU_UNMANAGED_INSTALL Skip shellenv PATH integration instructions
+  OBU_PAYLOAD_RETENTION  Number of recent payloads to keep after activation; 0 disables pruning
 USAGE
       exit 0
       ;;
@@ -352,6 +490,8 @@ USAGE
   esac
   shift
 done
+
+validate_payload_retention "$PAYLOAD_RETENTION" || exit $?
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/obu-install.XXXXXX")"
 PAYLOAD_STAGE_DIR=""
@@ -402,11 +542,16 @@ PAYLOAD_NAME="$(artifact_name "$ARTIFACT_FILE")"
 PAYLOAD_DIR="$INSTALL_DIR/payloads/$PAYLOAD_NAME"
 PAYLOAD_STAGE_DIR="$(mktemp -d "$INSTALL_DIR/payloads/.${PAYLOAD_NAME}.tmp.XXXXXX")"
 PAYLOAD_BACKUP_DIR="$INSTALL_DIR/payloads/.${PAYLOAD_NAME}.previous.$$"
+PREVIOUS_CURRENT="$(readlink "$INSTALL_DIR/payloads/current" 2>/dev/null || true)"
 rm -rf "$PAYLOAD_BACKUP_DIR"
 log_verbose "extract: $ARTIFACT_FILE -> $PAYLOAD_DIR"
 if ! tar -xzf "$ARTIFACT_FILE" -C "$PAYLOAD_STAGE_DIR"; then
   echo "extract failed: could not unpack $ARTIFACT_FILE" >&2
   echo "Check that the artifact is a valid open-browser-use .tar.gz file." >&2
+  exit 1
+fi
+if ! validate_payload_dir "$PAYLOAD_STAGE_DIR"; then
+  echo "install failed: staged payload is not a valid open-browser-use release." >&2
   exit 1
 fi
 if [ -e "$PAYLOAD_DIR" ] || [ -L "$PAYLOAD_DIR" ]; then
@@ -423,20 +568,51 @@ if ! mv "$PAYLOAD_STAGE_DIR" "$PAYLOAD_DIR"; then
   exit 1
 fi
 PAYLOAD_STAGE_DIR=""
-PREVIOUS_CURRENT="$(readlink "$INSTALL_DIR/payloads/current" 2>/dev/null || true)"
-rm -f "$INSTALL_DIR/payloads/current"
-if ! ln -s "$PAYLOAD_NAME" "$INSTALL_DIR/payloads/current"; then
-  echo "install failed: could not update current payload symlink" >&2
+if ! run_payload_migrations "$PAYLOAD_DIR"; then
+  echo "install failed: payload migration failed" >&2
   rm -rf "$PAYLOAD_DIR"
   if [ -e "$PAYLOAD_BACKUP_DIR" ] || [ -L "$PAYLOAD_BACKUP_DIR" ]; then
     mv "$PAYLOAD_BACKUP_DIR" "$PAYLOAD_DIR" 2>/dev/null || true
   fi
-  if [ -n "$PREVIOUS_CURRENT" ]; then
-    ln -s "$PREVIOUS_CURRENT" "$INSTALL_DIR/payloads/current" 2>/dev/null || true
+  exit 1
+fi
+CURRENT_LINK="$INSTALL_DIR/payloads/current"
+CURRENT_STAGE_LINK="$INSTALL_DIR/payloads/.current.tmp.$$"
+rm -f "$CURRENT_STAGE_LINK"
+if [ -e "$CURRENT_LINK" ] && [ ! -L "$CURRENT_LINK" ]; then
+  echo "install failed: current payload path is not a symlink: $CURRENT_LINK" >&2
+  rm -rf "$PAYLOAD_DIR"
+  if [ -e "$PAYLOAD_BACKUP_DIR" ] || [ -L "$PAYLOAD_BACKUP_DIR" ]; then
+    mv "$PAYLOAD_BACKUP_DIR" "$PAYLOAD_DIR" 2>/dev/null || true
+  fi
+  exit 1
+fi
+if ! ln -s "$PAYLOAD_NAME" "$CURRENT_STAGE_LINK"; then
+  echo "install failed: could not update current payload symlink" >&2
+  rm -f "$CURRENT_STAGE_LINK"
+  rm -rf "$PAYLOAD_DIR"
+  if [ -e "$PAYLOAD_BACKUP_DIR" ] || [ -L "$PAYLOAD_BACKUP_DIR" ]; then
+    mv "$PAYLOAD_BACKUP_DIR" "$PAYLOAD_DIR" 2>/dev/null || true
+  fi
+  if [ -n "$PREVIOUS_CURRENT" ] && [ ! -L "$CURRENT_LINK" ]; then
+    ln -s "$PREVIOUS_CURRENT" "$CURRENT_LINK" 2>/dev/null || true
+  fi
+  exit 1
+fi
+if ! replace_symlink_path "$CURRENT_STAGE_LINK" "$CURRENT_LINK"; then
+  echo "install failed: could not update current payload symlink" >&2
+  rm -f "$CURRENT_STAGE_LINK"
+  rm -rf "$PAYLOAD_DIR"
+  if [ -e "$PAYLOAD_BACKUP_DIR" ] || [ -L "$PAYLOAD_BACKUP_DIR" ]; then
+    mv "$PAYLOAD_BACKUP_DIR" "$PAYLOAD_DIR" 2>/dev/null || true
+  fi
+  if [ -n "$PREVIOUS_CURRENT" ] && [ ! -L "$CURRENT_LINK" ]; then
+    ln -s "$PREVIOUS_CURRENT" "$CURRENT_LINK" 2>/dev/null || true
   fi
   exit 1
 fi
 rm -rf "$PAYLOAD_BACKUP_DIR"
+prune_old_payloads "$INSTALL_DIR/payloads" "$PAYLOAD_NAME" "$PREVIOUS_CURRENT" "$PAYLOAD_RETENTION" || exit $?
 
 cat > "$INSTALL_DIR/bin/obu" <<'SHIM'
 #!/bin/sh

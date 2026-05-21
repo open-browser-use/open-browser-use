@@ -30,9 +30,10 @@ const extension = await stageExtension(outDir);
 await cp(path.join(root, "LICENSE"), path.join(outDir, "LICENSE"));
 await cp(path.join(root, "LICENSE-THIRD-PARTY.md"), path.join(outDir, "LICENSE-THIRD-PARTY.md"));
 
+const payloadVersion = await packageVersion(path.join(root, "packages", "cli", "package.json"));
 const metadata = {
   schemaVersion: 1,
-  packageVersion: await packageVersion(path.join(root, "packages", "cli", "package.json")),
+  packageVersion: payloadVersion,
   targetTriple: payloadTarget,
   nodeVersion: nodeInfo.version,
   nodeSource: nodeInfo.source,
@@ -50,6 +51,30 @@ const metadata = {
   extensionZip: path.relative(outDir, extension.zipPath),
   extensionZipSha256: await hashFile(extension.zipPath),
   cliRuntimeDependencies: ["jsonc-parser"],
+  release: {
+    schemaVersion: 1,
+    payloadVersion,
+    targetTriple: payloadTarget,
+    extensionChannel: args.storeExtensionId ? "store" : "unpacked-dev",
+    extensionId: args.storeExtensionId ?? extension.id,
+    nativeHostManifest: {
+      hostName: "dev.obu.host",
+      type: "stdio",
+      wrapperRelativePath: "native-host/dev.obu.host/<browser>/obu-host-wrapper",
+      allowedOriginTemplate: "chrome-extension://<extension-id>/",
+    },
+    migrationHooks: {
+      installerDirectory: "install-migrations.d",
+      namePattern: "^[0-9]{3}-[a-z0-9-]+\\.sh$",
+      environment: ["OBU_INSTALL_DIR", "OBU_PAYLOAD_DIR", "OBU_PREVIOUS_PAYLOAD"],
+    },
+    payloadRetention: {
+      owner: "installer",
+      env: "OBU_PAYLOAD_RETENTION",
+      defaultKeep: 5,
+      preserves: ["active", "rollback"],
+    },
+  },
 };
 await writeJson(path.join(outDir, "metadata.json"), metadata);
 

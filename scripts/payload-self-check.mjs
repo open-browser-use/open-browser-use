@@ -15,11 +15,29 @@ assert.match(metadata.nodeVersion, /^\d+\.\d+\.\d+/);
 assert.match(metadata.sdkHash, /^sha256:[0-9a-f]{64}$/);
 assert.equal(metadata.extensionChannel, "unpacked-dev");
 assert.match(metadata.extensionId, /^[a-p]{32}$/);
+assert.equal(metadata.release?.schemaVersion, 1);
+assert.equal(metadata.release?.payloadVersion, metadata.packageVersion);
+assert.equal(metadata.release?.targetTriple, metadata.targetTriple);
+assert.match(metadata.release?.extensionId, /^[a-p]{32}$/);
+assert.match(metadata.release?.nativeHostManifest?.hostName, /^dev\.obu\.host$/);
+assert.equal(metadata.release?.nativeHostManifest?.type, "stdio");
+assert.equal(metadata.release?.nativeHostManifest?.allowedOriginTemplate, "chrome-extension://<extension-id>/");
+assert.equal(metadata.release?.migrationHooks?.installerDirectory, "install-migrations.d");
+assert.equal(metadata.release?.migrationHooks?.namePattern, "^[0-9]{3}-[a-z0-9-]+\\.sh$");
+assert.ok(Array.isArray(metadata.release?.migrationHooks?.environment));
+assert.equal(metadata.release?.payloadRetention?.owner, "installer");
+assert.equal(metadata.release?.payloadRetention?.env, "OBU_PAYLOAD_RETENTION");
+assert.deepEqual(metadata.release?.payloadRetention?.preserves, ["active", "rollback"]);
 if (metadata.storeExtensionId !== undefined) {
   assert.match(metadata.storeExtensionId, /^[a-p]{32}$/);
   assert.equal(metadata.storeManifestKeyPolicy, "omitted-for-store-upload");
   assert.equal(metadata.sourceManifestKeyId, metadata.extensionId);
   assert.equal(typeof metadata.sourceManifestPublicKey, "string");
+  assert.equal(metadata.release?.extensionChannel, "store");
+  assert.equal(metadata.release?.extensionId, metadata.storeExtensionId);
+} else {
+  assert.equal(metadata.release?.extensionChannel, "unpacked-dev");
+  assert.equal(metadata.release?.extensionId, metadata.extensionId);
 }
 assert.match(metadata.extensionZipSha256, /^sha256:[0-9a-f]{64}$/);
 
