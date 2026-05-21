@@ -34,11 +34,73 @@ export type BrowserFinalizeTab = {
   status?: "active" | BrowserFinalizeStatus;
 };
 
+export type BrowserFinalizeDesiredStatus = "close" | "release" | "handoff" | "deliverable";
+
+export type BrowserFinalizeTabOutcome =
+  | "closed"
+  | "released"
+  | "kept_handoff"
+  | "kept_deliverable"
+  | "tab_gone"
+  | "failed"
+  | "not_attempted";
+
+export type BrowserFinalizeTabAction = {
+  tabId?: number;
+  tab_id?: string;
+  origin?: "agent" | "user";
+  desiredStatus?: BrowserFinalizeDesiredStatus;
+  desired_status?: BrowserFinalizeDesiredStatus;
+  outcome: BrowserFinalizeTabOutcome;
+  errorCode?: string;
+  error_code?: string;
+  errorMessage?: string;
+  error_message?: string;
+};
+
+export type BrowserFinalizeTabFailure = {
+  tabId?: number;
+  tab_id?: string;
+  desiredStatus?: BrowserFinalizeDesiredStatus;
+  desired_status?: BrowserFinalizeDesiredStatus;
+  outcome: Extract<BrowserFinalizeTabOutcome, "failed" | "not_attempted">;
+  errorCode?: string;
+  error_code?: string;
+  errorMessage?: string;
+  error_message?: string;
+};
+
+export type BrowserFinalizeFinalTabs = {
+  handoff?: BrowserFinalizeTab[];
+  deliverable?: BrowserFinalizeTab[];
+  activeTabId?: number | null;
+  active_tab_id?: string | null;
+};
+
 export type BrowserFinalizeTabsResult = {
+  status?: "ok" | "partial" | "fatal";
+  actions?: BrowserFinalizeTabAction[];
   closed_tab_ids?: string[];
+  closedTabIds?: number[];
   released_tab_ids?: string[];
+  releasedTabIds?: number[];
   kept_tabs?: BrowserFinalizeTab[];
+  keptTabs?: BrowserFinalizeTab[];
   deliverable_tabs?: BrowserFinalizeTab[];
+  deliverableTabs?: BrowserFinalizeTab[];
+  finalTabs?: BrowserFinalizeFinalTabs | null;
+  final_tabs?: BrowserFinalizeFinalTabs | null;
+  failures?: BrowserFinalizeTabFailure[];
+  diagnostics?: {
+    reconciledFromChrome?: boolean;
+    reconciled_from_chrome?: boolean;
+    reconciliationSource?: string;
+    reconciliation_source?: string;
+  };
+  errorCode?: string;
+  error_code?: string;
+  errorMessage?: string;
+  error_message?: string;
 };
 
 export type BrowserFinishTurnOptions = BrowserFinalizeTabsOptions & {
@@ -50,9 +112,29 @@ export type BrowserReadySummary = {
   name: string;
   backend: DiscoveredBackend;
   capabilities: Record<string, unknown>;
+  profileMetadata: BrowserProfileMetadata;
   supportedMethods: readonly string[];
   unsupportedMethods: readonly string[];
   diagnostics: Record<string, unknown>;
+};
+
+export type BrowserProfileMetadata = {
+  profileIdHash?: string;
+  profileIsLastUsed?: boolean;
+  profileOrdering?: number;
+  profileRuntimeBinding?: "webextension" | "cdp" | "unknown";
+  diagnostics?: {
+    profilePathRedacted?: string;
+  };
+};
+
+export type BrowserCapabilityName = "viewport" | "visibility" | string;
+
+export type BrowserCapabilityEntry = {
+  name: BrowserCapabilityName;
+  raw: unknown;
+  supported: boolean;
+  instance?: BrowserViewport | BrowserVisibility;
 };
 
 export type BrowserDeliverable = {
@@ -77,10 +159,43 @@ export type BrowserClearLifecycleDiagnosticsResult = {
   };
 };
 
+export type BrowserViewportSetOptions = {
+  width: number;
+  height: number;
+  deviceScaleFactor?: number;
+  mobile?: boolean;
+  timeout?: number;
+};
+
+export type BrowserViewportResult = {
+  width?: number;
+  height?: number;
+  deviceScaleFactor?: number;
+  mobile?: boolean;
+  tabId?: number;
+  tab_id?: string;
+  reset?: boolean;
+};
+
+export type BrowserVisibilitySetOptions = {
+  visible: boolean;
+  focused?: boolean;
+  timeout?: number;
+};
+
+export type BrowserVisibilityResult = {
+  visible: boolean;
+  focused?: boolean;
+  windowId?: number;
+  window_id?: number;
+  state?: string;
+};
+
 type BrowserControlTabWire = TabWire;
 
 export class Browser {
   readonly metadata: Record<string, unknown>;
+  readonly profileMetadata: BrowserProfileMetadata;
   readonly diagnostics: Record<string, unknown>;
   readonly lifecycleDiagnostics: Record<string, unknown>;
   readonly capabilities: Record<string, unknown>;
@@ -89,6 +204,9 @@ export class Browser {
   readonly guards: Guards;
   readonly tabs: BrowserTabs;
   readonly user: BrowserUser;
+  readonly capabilityRegistry: BrowserCapabilityRegistry;
+  readonly viewport?: BrowserViewport;
+  readonly visibility?: BrowserVisibility;
 
   constructor(
     private readonly transport: Transport,
@@ -97,6 +215,7 @@ export class Browser {
     guards = new Guards(),
   ) {
     this.metadata = info.metadata ?? {};
+    this.profileMetadata = profileMetadataFrom(this.metadata);
     this.diagnostics = recordOrEmpty(this.metadata.diagnostics);
     this.lifecycleDiagnostics = recordOrEmpty(this.diagnostics.lifecycle);
     this.capabilities = info.capabilities ?? {};
@@ -105,6 +224,15 @@ export class Browser {
     this.guards = guards;
     this.tabs = new BrowserTabs(transport, guards);
     this.user = new BrowserUser(transport, guards, (method) => this.supports(method), info.type);
+    this.capabilityRegistry = new BrowserCapabilityRegistry(this.capabilities);
+    if (capabilityAdvertised(this.capabilities, "viewport") && this.supports(M.BROWSER_VIEWPORT_SET)) {
+      this.viewport = new BrowserViewport(transport);
+      this.capabilityRegistry.register("viewport", this.viewport);
+    }
+    if (capabilityAdvertised(this.capabilities, "visibility") && this.supports(M.BROWSER_VISIBILITY_GET)) {
+      this.visibility = new BrowserVisibility(transport);
+      this.capabilityRegistry.register("visibility", this.visibility);
+    }
   }
 
   supports(method: string): boolean {
@@ -176,6 +304,7 @@ export class Browser {
       name: info.name,
       backend: this.backend,
       capabilities,
+      profileMetadata: profileMetadataFrom(recordOrEmpty(metadata)),
       supportedMethods: stringList(capabilities.supported_methods),
       unsupportedMethods: stringList(capabilities.unsupported_methods),
       diagnostics,
@@ -214,6 +343,104 @@ export class Browser {
   }
 }
 
+export class BrowserCapabilityRegistry {
+  private readonly instances = new Map<string, BrowserViewport | BrowserVisibility>();
+
+  constructor(readonly raw: Record<string, unknown>) {}
+
+  register(name: string, instance: BrowserViewport | BrowserVisibility): void {
+    this.instances.set(name, instance);
+  }
+
+  list(): BrowserCapabilityEntry[] {
+    return Object.keys(this.raw)
+      .filter((name) => !["supported_methods", "unsupported_methods", "backend"].includes(name))
+      .sort()
+      .map((name) => {
+        const entry: BrowserCapabilityEntry = {
+          name,
+          raw: this.raw[name],
+          supported: capabilityAdvertised(this.raw, name),
+        };
+        const instance = this.instances.get(name);
+        return instance ? { ...entry, instance } : entry;
+      });
+  }
+
+  has(name: string): boolean {
+    return capabilityAdvertised(this.raw, name);
+  }
+
+  get(name: "viewport"): BrowserViewport;
+  get(name: "visibility"): BrowserVisibility;
+  get(name: string): BrowserCapabilityEntry;
+  get(name: string): BrowserCapabilityEntry | BrowserViewport | BrowserVisibility {
+    const instance = this.instances.get(name);
+    if (instance) return instance;
+    if (Object.prototype.hasOwnProperty.call(this.raw, name)) {
+      return { name, raw: this.raw[name], supported: capabilityAdvertised(this.raw, name) };
+    }
+    throw new Error(`unsupported browser capability: ${name}`);
+  }
+}
+
+export class BrowserViewport {
+  constructor(private readonly transport: Transport) {}
+
+  async set(opts: BrowserViewportSetOptions): Promise<BrowserViewportResult> {
+    assertIntegerInRange(opts.width, "width", 1, 16_384);
+    assertIntegerInRange(opts.height, "height", 1, 16_384);
+    if (opts.deviceScaleFactor !== undefined) {
+      assertNumberInRange(opts.deviceScaleFactor, "deviceScaleFactor", 0.1, 8);
+    }
+    return await this.transport.sendRequest<BrowserViewportResult>(
+      M.BROWSER_VIEWPORT_SET,
+      withSessionMeta({
+        width: opts.width,
+        height: opts.height,
+        ...(opts.deviceScaleFactor !== undefined ? { deviceScaleFactor: opts.deviceScaleFactor } : {}),
+        ...(opts.mobile !== undefined ? { mobile: opts.mobile } : {}),
+      }),
+      opts.timeout,
+    );
+  }
+
+  async reset(opts: { timeout?: number } = {}): Promise<BrowserViewportResult> {
+    return await this.transport.sendRequest<BrowserViewportResult>(
+      M.BROWSER_VIEWPORT_RESET,
+      withSessionMeta({}),
+      opts.timeout,
+    );
+  }
+}
+
+export class BrowserVisibility {
+  constructor(private readonly transport: Transport) {}
+
+  async set(opts: BrowserVisibilitySetOptions): Promise<BrowserVisibilityResult> {
+    if (typeof opts.visible !== "boolean") throw new Error("visible must be a boolean");
+    if (opts.focused !== undefined && typeof opts.focused !== "boolean") {
+      throw new Error("focused must be a boolean");
+    }
+    return await this.transport.sendRequest<BrowserVisibilityResult>(
+      M.BROWSER_VISIBILITY_SET,
+      withSessionMeta({
+        visible: opts.visible,
+        ...(opts.focused !== undefined ? { focused: opts.focused } : {}),
+      }),
+      opts.timeout,
+    );
+  }
+
+  async get(opts: { timeout?: number } = {}): Promise<BrowserVisibilityResult> {
+    return await this.transport.sendRequest<BrowserVisibilityResult>(
+      M.BROWSER_VISIBILITY_GET,
+      withSessionMeta({}),
+      opts.timeout,
+    );
+  }
+}
+
 function normalizeFinalizeTabId(row: BrowserFinalizeKeep): string {
   const value = row.tab ?? row.tab_id ?? row.tabId ?? row.id;
   if (typeof value === "string" || typeof value === "number") return String(value);
@@ -229,6 +456,45 @@ function recordOrEmpty(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+function profileMetadataFrom(metadata: Record<string, unknown>): BrowserProfileMetadata {
+  const diagnostics = recordOrEmpty(metadata.diagnostics);
+  const profile: BrowserProfileMetadata = {};
+  if (typeof metadata.profileIdHash === "string") profile.profileIdHash = metadata.profileIdHash;
+  if (typeof metadata.profileIsLastUsed === "boolean") profile.profileIsLastUsed = metadata.profileIsLastUsed;
+  if (typeof metadata.profileOrdering === "number" && Number.isFinite(metadata.profileOrdering)) {
+    profile.profileOrdering = metadata.profileOrdering;
+  }
+  if (
+    metadata.profileRuntimeBinding === "webextension" ||
+    metadata.profileRuntimeBinding === "cdp" ||
+    metadata.profileRuntimeBinding === "unknown"
+  ) {
+    profile.profileRuntimeBinding = metadata.profileRuntimeBinding;
+  }
+  if (typeof diagnostics.profilePathRedacted === "string") {
+    profile.diagnostics = { profilePathRedacted: diagnostics.profilePathRedacted };
+  }
+  return profile;
+}
+
+function capabilityAdvertised(capabilities: Record<string, unknown>, key: string): boolean {
+  const value = capabilities[key];
+  if (value === true) return true;
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function assertIntegerInRange(value: number, key: string, min: number, max: number): void {
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`${key} must be an integer between ${min} and ${max}`);
+  }
+}
+
+function assertNumberInRange(value: number, key: string, min: number, max: number): void {
+  if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max) {
+    throw new Error(`${key} must be a number between ${min} and ${max}`);
+  }
 }
 
 function unwrapBrowserControlTab(

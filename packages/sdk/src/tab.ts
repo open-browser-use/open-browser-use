@@ -2,6 +2,7 @@ import { Download } from "./download.js";
 import { FileChooser } from "./file-chooser.js";
 import { FrameLocator } from "./frame-locator.js";
 import { Guards } from "./guards.js";
+import { Image } from "./image.js";
 import { Locator } from "./locator.js";
 import { TabClipboard } from "./tab-clipboard.js";
 import { TabContent } from "./tab-content.js";
@@ -97,6 +98,12 @@ export type TabSnapshotTextResult = {
   buttons: string[];
   links: Array<{ text: string; href: string }>;
   forms: Array<{ label: string; type: string; name: string; placeholder: string }>;
+};
+
+export type DomSnapshotResult = {
+  domSnapshot: string;
+  source: "playwright_dom_snapshot";
+  metadata?: Record<string, unknown>;
 };
 
 export class Tab {
@@ -232,17 +239,17 @@ export class Tab {
     return await this.transport.sendRequest<string>(M.TAB_TITLE, withSessionMeta({ tab_id: this.id }), opts.timeout);
   }
 
-  async screenshot(opts: ScreenshotOptions = {}): Promise<{ data_base64: string; mime_type: string }> {
+  async screenshot(opts: ScreenshotOptions = {}): Promise<Image> {
     await this.#ensureTabCommandAllowed(M.TAB_SCREENSHOT, {}, opts.timeout);
     const row = await this.transport.sendRequest<{ data?: string; data_base64?: string; mime_type?: string }>(
       M.TAB_SCREENSHOT,
       withSessionMeta({ tab_id: this.id, ...screenshotParams(opts) }),
       opts.timeout,
     );
-    return {
+    return Image.from({
       data_base64: row.data_base64 ?? row.data ?? "",
       mime_type: row.mime_type ?? "image/png",
-    };
+    });
   }
 
   async screenshotForModel(opts: ScreenshotForModelOptions = {}): Promise<ScreenshotForModelResult> {
@@ -328,6 +335,20 @@ export class Tab {
     return result as TabSnapshotTextResult;
   }
 
+  async domSnapshot(opts: { timeout?: number } = {}): Promise<DomSnapshotResult> {
+    await this.#ensureTabCommandAllowed(M.PLAYWRIGHT_DOM_SNAPSHOT, {}, opts.timeout);
+    const row = await this.transport.sendRequest<{ domSnapshot?: string; source?: string; metadata?: Record<string, unknown> }>(
+      M.PLAYWRIGHT_DOM_SNAPSHOT,
+      withSessionMeta({ tab_id: this.id }),
+      opts.timeout,
+    );
+    return {
+      domSnapshot: typeof row.domSnapshot === "string" ? row.domSnapshot : "",
+      source: "playwright_dom_snapshot",
+      ...(row.metadata !== undefined ? { metadata: row.metadata } : {}),
+    };
+  }
+
   async waitForTimeout(ms: number): Promise<void> {
     await this.transport.sendRequest(M.PLAYWRIGHT_WAIT_FOR_TIMEOUT, withSessionMeta({ tab_id: this.id, timeout_ms: ms }), ms + 1000);
   }
@@ -411,7 +432,7 @@ function estimatedBase64Bytes(data: string): number {
   return Math.max(0, Math.floor((data.length * 3) / 4) - padding);
 }
 
-async function emitMcpImage(shot: { data_base64: string; mime_type: string }): Promise<boolean> {
+async function emitMcpImage(shot: Image): Promise<boolean> {
   const nodeRepl = (globalThis as {
     nodeRepl?: { emitImage?: (image: string) => Promise<void> | void };
   }).nodeRepl;

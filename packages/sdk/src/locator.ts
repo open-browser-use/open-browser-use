@@ -1,5 +1,6 @@
 import { FrameLocator } from "./frame-locator.js";
 import { Guards } from "./guards.js";
+import { Image } from "./image.js";
 import { withSessionMeta } from "./session-meta.js";
 import type { LoadState } from "./tab.js";
 import type { BoundingBox } from "./types.js";
@@ -22,6 +23,14 @@ type LocatorClickOptions = {
 type LocatorDblClickOptions = {
   timeout?: number;
   waitForNavigation?: LocatorNavigationWaitOptions;
+};
+
+type LocatorReadAllRow = {
+  attributes?: Record<string, string>;
+  inner_text?: string;
+  innerText?: string;
+  text_content?: string | null;
+  textContent?: string | null;
 };
 
 function escapeRegexForSelector(value: RegExp): string {
@@ -72,6 +81,15 @@ export class Locator {
   nth(index: number): Locator {
     if (typeof index !== "number") throw new Error("locator.nth requires a numeric index");
     return this.locator(`nth=${index}`);
+  }
+
+  async all(opts: { timeout?: number } = {}): Promise<Locator[]> {
+    const count = await this.count();
+    const cache = new LocatorReadAllCache(this.transport, this.guards, this.tabId, this.selector);
+    return Array.from({ length: count }, (_, index) => {
+      const selector = this.selector ? `${this.selector} >> nth=${index}` : `nth=${index}`;
+      return new CachedLocator(this.transport, this.guards, this.tabId, selector, index, cache, opts.timeout);
+    });
   }
 
   and(other: Locator): Locator {
@@ -217,7 +235,7 @@ export class Locator {
     await this.setChecked(false, opts);
   }
 
-  async screenshot(opts: { timeout?: number } = {}): Promise<{ data_base64: string; mime_type: string }> {
+  async screenshot(opts: { timeout?: number } = {}): Promise<Image> {
     const box = await this.boundingBox();
     if (!box) throw new Error(`locator.screenshot failed: no bounding box for ${this.selector}`);
     const params = {
@@ -239,7 +257,7 @@ export class Locator {
       withSessionMeta(params),
       opts.timeout ?? DEFAULT_TIMEOUT_MS,
     );
-    return { data_base64: row.data, mime_type: "image/png" };
+    return Image.from({ data_base64: row.data, mime_type: "image/png" });
   }
 
   async #send(method: string, params: Record<string, unknown>, timeoutMs?: number, requestTimeoutMs?: number): Promise<unknown> {
@@ -262,6 +280,73 @@ export class Locator {
   #assertCompatible(other: Locator, label: string): void {
     if (!(other instanceof Locator)) throw new Error(`${label} requires a Locator`);
     if (other.tabId !== this.tabId) throw new Error("Locators must belong to the same tab");
+  }
+}
+
+class CachedLocator extends Locator {
+  constructor(
+    transport: Transport,
+    guards: Guards,
+    tabId: string,
+    selector: string,
+    private readonly index: number,
+    private readonly cache: LocatorReadAllCache,
+    private readonly readTimeout?: number,
+  ) {
+    super(transport, guards, tabId, selector);
+  }
+
+  override async textContent(): Promise<string | null> {
+    const row = await this.cache.row(this.index, this.readTimeout);
+    return row.text_content ?? row.textContent ?? null;
+  }
+
+  override async innerText(): Promise<string> {
+    const row = await this.cache.row(this.index, this.readTimeout);
+    return row.inner_text ?? row.innerText ?? "";
+  }
+
+  override async getAttribute(name: string): Promise<string | null> {
+    const row = await this.cache.row(this.index, this.readTimeout);
+    return row.attributes?.[name] ?? null;
+  }
+}
+
+class LocatorReadAllCache {
+  private rowsPromise: Promise<LocatorReadAllRow[]> | undefined;
+
+  constructor(
+    private readonly transport: Transport,
+    private readonly guards: Guards,
+    private readonly tabId: string,
+    private readonly selector: string,
+  ) {}
+
+  async row(index: number, timeoutMs?: number): Promise<LocatorReadAllRow> {
+    const rows = await this.rows(timeoutMs);
+    return rows[index] ?? {};
+  }
+
+  private async rows(timeoutMs?: number): Promise<LocatorReadAllRow[]> {
+    if (!this.rowsPromise) {
+      const timeout = timeoutMs ?? DEFAULT_TIMEOUT_MS;
+      const command = {
+        command: M.PLAYWRIGHT_LOCATOR_READ_ALL,
+        tab_id: this.tabId,
+        selector: this.selector,
+        timeout_ms: timeout,
+      };
+      const currentUrl = this.guards.needsCurrentUrl(M.PLAYWRIGHT_LOCATOR_READ_ALL)
+        ? await this.transport.sendRequest<string>(M.TAB_URL, withSessionMeta({ tab_id: this.tabId }), timeout)
+        : undefined;
+      await this.guards.ensureCommandAllowed(command, { currentUrl });
+      this.rowsPromise = this.transport.sendRequest<LocatorReadAllRow[]>(
+        M.PLAYWRIGHT_LOCATOR_READ_ALL,
+        withSessionMeta(command),
+        timeout,
+      );
+    }
+    return await this.rowsPromise;
   }
 }
 

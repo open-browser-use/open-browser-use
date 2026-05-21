@@ -16,6 +16,7 @@ export type DomCuaNode = {
 export type DomCuaSnapshot = {
   nodes?: DomCuaNode[];
   root?: DomCuaNode;
+  text?: string;
 };
 
 export class TabDomCua {
@@ -31,7 +32,9 @@ export class TabDomCua {
     this.tabId = guardsOrTabId instanceof Guards ? (tabId ?? "") : guardsOrTabId;
   }
 
-  async get_visible_dom(opts: { timeout?: number } = {}): Promise<DomCuaSnapshot> {
+  async get_visible_dom(opts: { timeout?: number; format?: "json" }): Promise<DomCuaSnapshot>;
+  async get_visible_dom(opts: { timeout?: number; format: "text" }): Promise<string>;
+  async get_visible_dom(opts: { timeout?: number; format?: "json" | "text" } = {}): Promise<DomCuaSnapshot | string> {
     const currentUrl = this.guards.needsCurrentUrl(M.DOM_CUA_GET_VISIBLE_DOM)
       ? await this.transport.sendRequest<string>(M.TAB_URL, withSessionMeta({ tab_id: this.tabId }), opts.timeout)
       : undefined;
@@ -39,11 +42,20 @@ export class TabDomCua {
       { command: M.DOM_CUA_GET_VISIBLE_DOM, tab_id: this.tabId },
       { currentUrl },
     );
-    return await this.transport.sendRequest<DomCuaSnapshot>(
+    const response = await this.transport.sendRequest<DomCuaSnapshot>(
       M.DOM_CUA_GET_VISIBLE_DOM,
-      withSessionMeta({ tab_id: this.tabId }),
+      withSessionMeta({
+        tab_id: this.tabId,
+        ...(opts.format === "text" ? { format: "text" } : {}),
+      }),
       opts.timeout,
     );
+    if (opts.format === "text") return response.text ?? "";
+    return response;
+  }
+
+  async text(opts: { timeout?: number } = {}): Promise<string> {
+    return await this.get_visible_dom({ ...opts, format: "text" });
   }
 
   async click(node_id: string, opts: { timeout?: number } = {}): Promise<void> {

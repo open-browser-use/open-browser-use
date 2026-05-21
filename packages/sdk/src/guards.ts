@@ -34,11 +34,16 @@ export const METHOD_CLASSIFICATION: Record<string, MethodClassification> = Objec
   [M.ATTACH]: "internal-lifecycle",
   [M.DETACH]: "internal-lifecycle",
   [M.EXECUTE_UNHANDLED_COMMAND]: "internal-lifecycle",
+  [M.BROWSER_VIEWPORT_SET]: "internal-lifecycle",
+  [M.BROWSER_VIEWPORT_RESET]: "internal-lifecycle",
+  [M.BROWSER_VISIBILITY_SET]: "internal-lifecycle",
+  [M.BROWSER_VISIBILITY_GET]: "internal-lifecycle",
 
   [M.CREATE_TAB]: "target-url",
   [M.TAB_GOTO]: "target-url",
   [M.TAB_WAIT_FOR_URL]: "target-url",
   [M.PLAYWRIGHT_WAIT_FOR_URL]: "target-url",
+  [M.BROWSER_TABS_CONTENT]: "target-url",
 
   [M.GET_USER_HISTORY]: "history",
   [M.GET_USER_TABS]: "history",

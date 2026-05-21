@@ -6,16 +6,28 @@ describe("help", () => {
   it("documents the P2 agent, browser, tab, and locator surfaces", () => {
     const help = renderHelp();
     expect(help).toContain("agent.browsers.get");
+    expect(help).toContain("get(\"chrome\") is WebExtension-backed Chrome by default");
+    expect(help).toContain("fails fast instead of falling back to CDP");
+    expect(help).toContain("use get(\"cdp\") or an explicit CDP backend option");
     expect(help).toContain("agent.browsers.diagnostics");
     expect(help).toContain(".lifecycleDiagnostics");
+    expect(help).toContain(".capabilityRegistry.list()/has(name)/get(name)");
+    expect(help).toContain(".profileMetadata");
     expect(help).toContain(".deliverables()");
     expect(help).toContain(".clearLifecycleDiagnostics()");
     expect(help).toContain(".tabs.create");
+    expect(help).toContain(".tabs.content({urls})");
+    expect(help).toContain(".viewport?.set({width,height})");
+    expect(help).toContain(".visibility?.set({visible})");
     expect(help).toContain(".waitForEvent(\"filechooser\"|\"download\")");
     expect(help).toContain(".waitForNavigation()");
+    expect(help).toContain(".domSnapshot()");
+    expect(help).toContain("display(await tab.screenshot())");
+    expect(help).toContain(".dom_cua.text()");
     expect(help).toContain(".cua.click");
     expect(help).toContain(".dev.cdp");
     expect(help).toContain(".getByRole");
+    expect(help).toContain(".all() -> Locator[] with batched collection reads");
     expect(help).toContain("display(value)");
   });
 

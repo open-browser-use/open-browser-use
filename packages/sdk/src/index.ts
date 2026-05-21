@@ -1,7 +1,9 @@
 export { Agent } from "./agent.js";
 export type { AgentOptions } from "./agent.js";
-export { Browser } from "./browser.js";
+export { Browser, BrowserCapabilityRegistry, BrowserViewport, BrowserVisibility } from "./browser.js";
 export type {
+  BrowserCapabilityEntry,
+  BrowserCapabilityName,
   BrowserClearLifecycleDiagnosticsResult,
   BrowserDeliverable,
   BrowserFinalizeKeep,
@@ -10,7 +12,12 @@ export type {
   BrowserFinalizeTabsOptions,
   BrowserFinalizeTabsResult,
   BrowserFinishTurnOptions,
+  BrowserProfileMetadata,
   BrowserReadySummary,
+  BrowserViewportResult,
+  BrowserViewportSetOptions,
+  BrowserVisibilityResult,
+  BrowserVisibilitySetOptions,
 } from "./browser.js";
 export { BrowserTabs } from "./browser_tabs.js";
 export type { CreateTabOptions } from "./browser_tabs.js";
@@ -52,6 +59,8 @@ export { FrameLocator } from "./frame-locator.js";
 export { Guards, ALWAYS_ALLOWED, METHOD_CLASSIFICATION } from "./guards.js";
 export type { GuardContext, GuardHooks, MethodClassification } from "./guards.js";
 export { renderHelp } from "./help.js";
+export { Image } from "./image.js";
+export type { ImageInput } from "./image.js";
 export { Locator } from "./locator.js";
 export { setupObuRuntime } from "./runtime.js";
 export type { ConnectedBackend, SetupObuRuntimeOptions } from "./runtime.js";

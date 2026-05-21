@@ -10,6 +10,26 @@ export type CreateTabOptions = {
   url?: string;
 };
 
+export type BrowserTabsContentOptions = {
+  urls: string[];
+  contentType?: "text" | "html" | "json";
+  timeout?: number;
+};
+
+export type BrowserTabsContentResult = {
+  results: Array<{
+    url: string;
+    finalUrl?: string;
+    status: "ok" | "error";
+    httpStatus?: number;
+    contentType?: string;
+    text?: string;
+    redirects?: string[];
+    errorCode?: string;
+    errorMessage?: string;
+  }>;
+};
+
 export class BrowserTabs {
   constructor(
     private readonly transport: Transport,
@@ -53,6 +73,26 @@ export class BrowserTabs {
     await this.guards.ensureCommandAllowed({ command: M.CREATE_TAB, ...params });
     const row = await this.transport.sendRequest<TabWire>(M.CREATE_TAB, withSessionMeta(params));
     return this.fromWire(row, "createTab response missing tab_id");
+  }
+
+  async content(opts: BrowserTabsContentOptions): Promise<BrowserTabsContentResult> {
+    if (!opts || !Array.isArray(opts.urls)) {
+      throw new TypeError("browser.tabs.content expected { urls: string[] }");
+    }
+    for (const url of opts.urls) {
+      if (typeof url !== "string" || url.length === 0) {
+        throw new TypeError("browser.tabs.content urls must be non-empty strings");
+      }
+      await this.guards.ensureCommandAllowed({ command: M.BROWSER_TABS_CONTENT, url });
+    }
+    const params: Record<string, unknown> = { urls: opts.urls };
+    if (opts.contentType !== undefined) params.contentType = opts.contentType;
+    if (opts.timeout !== undefined) params.timeout = opts.timeout;
+    return await this.transport.sendRequest<BrowserTabsContentResult>(
+      M.BROWSER_TABS_CONTENT,
+      withSessionMeta(params),
+      opts.timeout,
+    );
   }
 
   get(tabId: string): Tab {

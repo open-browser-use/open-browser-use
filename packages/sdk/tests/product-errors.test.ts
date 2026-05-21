@@ -2,7 +2,9 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import {
   ERR_DIALOG_REQUIRES_DECISION,
+  ERR_DISALLOWED,
   ERR_NO_BACKEND,
+  ERR_NOT_IMPLEMENTED,
   ERR_TIMEOUT,
   ERR_TRANSPORT_CLOSED,
   ObuError,
@@ -22,6 +24,8 @@ describe("product error matrix", () => {
   it("maps runtime rpc errors to product errors and preserves data on ObuError", () => {
     expect(productErrorForRpcCode(ERR_NO_BACKEND)?.code).toBe("no_backend");
     expect(productErrorForRpcCode(ERR_DIALOG_REQUIRES_DECISION)?.code).toBe("dialog_requires_decision");
+    expect(productErrorForRpcCode(ERR_DISALLOWED)?.code).toBe("disallowed_command");
+    expect(productErrorForRpcCode(ERR_NOT_IMPLEMENTED)).toBeUndefined();
 
     const data = productErrorData("dialog_requires_decision", {
       tab_id: "42",
