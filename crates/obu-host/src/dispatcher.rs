@@ -557,12 +557,6 @@ impl Dispatcher {
             tab_id: tab_id.as_deref(),
             params: &req.params,
         };
-        if req.method == methods::BROWSER_TABS_CONTENT {
-            for url in params_urls(&req.params)? {
-                self.inner.policy.check_navigation(&url, &policy_ctx)?;
-            }
-            return Ok(());
-        }
         match kind {
             MethodPolicyKind::AlwaysAllowed | MethodPolicyKind::InternalLifecycle => Ok(()),
             MethodPolicyKind::TargetUrl => {
@@ -682,7 +676,6 @@ impl Dispatcher {
 
         let timeout = params
             .get("timeout")
-            .or_else(|| params.get("client_timeout_ms"))
             .and_then(Value::as_u64)
             .map(Duration::from_millis)
             .unwrap_or_else(|| Duration::from_secs(30));
@@ -740,6 +733,16 @@ async fn fetch_one_content_url(
         }
     };
     let mut redirects = Vec::new();
+    if let Err(error) = policy.check_navigation(current.as_str(), policy_ctx) {
+        return json!({
+            "url": original_url,
+            "finalUrl": current.as_str(),
+            "status": "error",
+            "redirects": redirects,
+            "errorCode": "navigation_disallowed",
+            "errorMessage": error.message
+        });
+    }
     for _ in 0..10 {
         let response = match client.get(current.clone()).timeout(timeout).send().await {
             Ok(response) => response,

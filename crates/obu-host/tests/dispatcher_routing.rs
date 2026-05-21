@@ -902,7 +902,8 @@ async fn browser_tabs_content_times_out_one_url_without_losing_other_results() {
             "method": methods::BROWSER_TABS_CONTENT,
             "params": {
                 "urls": [server.url("/slow"), server.url("/one")],
-                "timeout": 10
+                "timeout": 10,
+                "client_timeout_ms": 250
             },
             "id": 1,
         }),
@@ -918,7 +919,7 @@ async fn browser_tabs_content_times_out_one_url_without_losing_other_results() {
 }
 
 #[tokio::test]
-async fn browser_tabs_content_blocks_policy_denied_initial_url_before_fetch() {
+async fn browser_tabs_content_reports_policy_denied_initial_url_per_url_before_fetch() {
     let server = ContentTestServer::spawn().await;
     let backend = Arc::new(RecordingBackend::default());
     let response = one_request(
@@ -938,17 +939,18 @@ async fn browser_tabs_content_blocks_policy_denied_initial_url_before_fetch() {
     )
     .await;
 
-    assert_eq!(response["error"]["code"], -1002);
-    assert_eq!(
-        response["error"]["data"]["command"],
-        methods::BROWSER_TABS_CONTENT
-    );
-    assert_eq!(
-        response["error"]["data"]["url"],
-        "https://blocked.example/content"
-    );
+    assert!(response.get("error").is_none(), "{response:#}");
+    let results = response["result"]["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["status"], "ok");
+    assert_eq!(results[0]["text"], "one");
+    assert_eq!(results[1]["status"], "error");
+    assert_eq!(results[1]["url"], "https://blocked.example/content");
+    assert_eq!(results[1]["errorCode"], "navigation_disallowed");
     assert!(backend.calls.lock().unwrap().is_empty());
-    assert!(server.hits().is_empty());
+    let hits = server.hits();
+    assert_eq!(hits.len(), 1);
+    assert_eq!(hits[0].path, "/one");
 }
 
 #[tokio::test]

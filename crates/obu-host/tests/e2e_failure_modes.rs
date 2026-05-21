@@ -371,7 +371,7 @@ async fn cdp_dirty_form_beforeunload_does_not_block_navigation_close_or_finish_t
             closeTabId,
             closeStillListed: listedAfterClose.some((row) => String(row.id) === closeTabId),
             finalizeTabId,
-            finishTurnClosed: (finalized.closed_tab_ids ?? []).map(String),
+            finishTurnClosed: finalized.closedTabIds.map(String),
             finalizeStillListed: listedAfterFinishTurn.some((row) => String(row.id) === finalizeTabId),
             beforeunloadCount: beforeunload.length,
             beforeunloadOperations: beforeunload.map((row) => row.operation),

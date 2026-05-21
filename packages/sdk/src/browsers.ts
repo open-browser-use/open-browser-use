@@ -71,6 +71,9 @@ export function selectBackend(
   const requiredBackend = opts.requireBackend ?? opts.backend;
 
   if (idOrKind === "cdp") {
+    if (requiredBackend && requiredBackend !== "cdp") {
+      throw noBackend(idOrKind, diagnostics, backends);
+    }
     const cdp = backends.find((backend) => backend.type === "cdp" || backend.name === "cdp");
     if (cdp) return cdp;
     throw noBackend(idOrKind, diagnostics, backends);

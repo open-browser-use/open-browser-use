@@ -619,7 +619,7 @@ async fn end_to_end_webextension_create_click_and_user_surfaces() {
         const listedAfterClaim = await refreshed.tabs.list();
         JSON.stringify({
             tabId: String(tabId),
-            deliverableStatus: finalized.deliverable_tabs?.[0]?.status,
+            deliverableStatus: finalized.deliverableTabs[0]?.status,
             listedAfterFinalize: listedAfterFinalize.some((row) => row.id === tabId),
             deliverableCount: lifecycle.deliverable_tabs ?? -1,
             deliverableSummaryTabId: deliverableSummary?.tab_id,
@@ -737,7 +737,7 @@ async fn webextension_dirty_form_beforeunload_survives_reattach_and_finish_turn(
         const refreshed = await agent.browsers.get("chrome");
         const recentDialogs = refreshed.info.metadata?.diagnostics?.dialogs?.recent ?? [];
         const beforeunload = recentDialogs.filter((row) => row.dialog_type === "beforeunload");
-        const closedTabIds = finalized.closed_tab_ids ?? finalized.closedTabIds ?? [];
+        const closedTabIds = finalized.closedTabIds;
 
         JSON.stringify({
             reattachGotoUrl,

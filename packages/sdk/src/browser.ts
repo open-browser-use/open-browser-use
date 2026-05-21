@@ -46,62 +46,63 @@ export type BrowserFinalizeTabOutcome =
   | "not_attempted";
 
 export type BrowserFinalizeTabAction = {
-  tabId?: number;
-  tab_id?: string;
-  origin?: "agent" | "user";
-  desiredStatus?: BrowserFinalizeDesiredStatus;
-  desired_status?: BrowserFinalizeDesiredStatus;
+  tabId: string;
+  origin: "agent" | "user";
+  desiredStatus: BrowserFinalizeDesiredStatus;
   outcome: BrowserFinalizeTabOutcome;
   errorCode?: string;
-  error_code?: string;
   errorMessage?: string;
-  error_message?: string;
 };
 
 export type BrowserFinalizeTabFailure = {
-  tabId?: number;
-  tab_id?: string;
+  tabId?: string;
   desiredStatus?: BrowserFinalizeDesiredStatus;
-  desired_status?: BrowserFinalizeDesiredStatus;
   outcome: Extract<BrowserFinalizeTabOutcome, "failed" | "not_attempted">;
-  errorCode?: string;
-  error_code?: string;
-  errorMessage?: string;
-  error_message?: string;
+  errorCode: string;
+  errorMessage: string;
 };
 
 export type BrowserFinalizeFinalTabs = {
-  handoff?: BrowserFinalizeTab[];
-  deliverable?: BrowserFinalizeTab[];
-  activeTabId?: number | null;
-  active_tab_id?: string | null;
+  handoff: BrowserFinalizeTab[];
+  deliverable: BrowserFinalizeTab[];
+  activeTabId: string | null;
 };
 
-export type BrowserFinalizeTabsResult = {
-  status?: "ok" | "partial" | "fatal";
-  actions?: BrowserFinalizeTabAction[];
-  closed_tab_ids?: string[];
-  closedTabIds?: number[];
-  released_tab_ids?: string[];
-  releasedTabIds?: number[];
-  kept_tabs?: BrowserFinalizeTab[];
-  keptTabs?: BrowserFinalizeTab[];
-  deliverable_tabs?: BrowserFinalizeTab[];
-  deliverableTabs?: BrowserFinalizeTab[];
-  finalTabs?: BrowserFinalizeFinalTabs | null;
-  final_tabs?: BrowserFinalizeFinalTabs | null;
-  failures?: BrowserFinalizeTabFailure[];
-  diagnostics?: {
-    reconciledFromChrome?: boolean;
-    reconciled_from_chrome?: boolean;
-    reconciliationSource?: string;
-    reconciliation_source?: string;
+export type BrowserFinalizeTabsResult = BrowserFinalizeTabsSuccessResult | BrowserFinalizeTabsFatalResult;
+
+export type BrowserFinalizeTabsSuccessResult = {
+  status: "ok" | "partial";
+  actions: BrowserFinalizeTabAction[];
+  closedTabIds: string[];
+  releasedTabIds: string[];
+  keptTabs: BrowserFinalizeTab[];
+  deliverableTabs: BrowserFinalizeTab[];
+  finalTabs: BrowserFinalizeFinalTabs;
+  failures: BrowserFinalizeTabFailure[];
+  diagnostics: {
+    reconciledFromChrome: true;
+    reconciliationSource: "chrome.tabs";
   };
-  errorCode?: string;
-  error_code?: string;
-  errorMessage?: string;
-  error_message?: string;
 };
+
+export type BrowserFinalizeTabsFatalResult = {
+  status: "fatal";
+  actions: BrowserFinalizeTabAction[];
+  closedTabIds: string[];
+  releasedTabIds: string[];
+  keptTabs: BrowserFinalizeTab[];
+  deliverableTabs: BrowserFinalizeTab[];
+  finalTabs: null;
+  failures: BrowserFinalizeTabFailure[];
+  errorCode: string;
+  errorMessage: string;
+  diagnostics: {
+    reconciledFromChrome: false;
+    reconciliationSource?: "chrome.tabs";
+  };
+};
+
+type BrowserFinalizeTabsWireResult = Record<string, unknown>;
 
 export type BrowserFinishTurnOptions = BrowserFinalizeTabsOptions & {
   turnTimeout?: number;
@@ -266,7 +267,7 @@ export class Browser {
   }
 
   async finalizeTabs(opts: BrowserFinalizeTabsOptions = {}): Promise<BrowserFinalizeTabsResult> {
-    return await this.transport.sendRequest<BrowserFinalizeTabsResult>(
+    const response = await this.transport.sendRequest<BrowserFinalizeTabsWireResult>(
       M.FINALIZE_TABS,
       withSessionMeta({
         keep: (opts.keep ?? []).map((row) => ({
@@ -276,6 +277,7 @@ export class Browser {
       }),
       opts.timeout,
     );
+    return normalizeFinalizeTabsResult(response);
   }
 
   async finalize(opts: BrowserFinalizeTabsOptions = {}): Promise<BrowserFinalizeTabsResult> {
@@ -441,6 +443,110 @@ export class BrowserVisibility {
   }
 }
 
+function normalizeFinalizeTabsResult(row: BrowserFinalizeTabsWireResult): BrowserFinalizeTabsResult {
+  const finalTabsValue = field(row, "finalTabs", "final_tabs");
+  const status = finalTabsValue === null ? "fatal" : finalizeStatus(row.status) ?? "ok";
+  const actions = arrayField(row, "actions").map(normalizeFinalizeAction);
+  const closedTabIds = tabIdListField(row, "closedTabIds", "closed_tab_ids");
+  const releasedTabIds = tabIdListField(row, "releasedTabIds", "released_tab_ids");
+  const keptTabs = tabListField(row, "keptTabs", "kept_tabs");
+  const deliverableTabs = tabListField(row, "deliverableTabs", "deliverable_tabs");
+  const failures = arrayField(row, "failures").map(normalizeFinalizeFailure);
+  if (status === "fatal") {
+    return {
+      status,
+      actions,
+      closedTabIds,
+      releasedTabIds,
+      keptTabs,
+      deliverableTabs,
+      finalTabs: null,
+      failures,
+      errorCode: stringField(row, "errorCode", "error_code") ?? "finalize_failed",
+      errorMessage: stringField(row, "errorMessage", "error_message") ?? "finalizeTabs failed",
+      diagnostics: normalizeFinalizeDiagnostics(row, false),
+    };
+  }
+  return {
+    status,
+    actions,
+    closedTabIds,
+    releasedTabIds,
+    keptTabs,
+    deliverableTabs,
+    finalTabs: normalizeFinalizeFinalTabs(finalTabsValue, keptTabs, deliverableTabs),
+    failures,
+    diagnostics: normalizeFinalizeDiagnostics(row, true),
+  };
+}
+
+function normalizeFinalizeAction(value: unknown): BrowserFinalizeTabAction {
+  const row = requiredRecord(value, "finalizeTabs action");
+  const errorCode = stringField(row, "errorCode", "error_code");
+  const errorMessage = stringField(row, "errorMessage", "error_message");
+  const action: BrowserFinalizeTabAction = {
+    tabId: requiredTabId(field(row, "tabId", "tab_id"), "finalizeTabs action tabId"),
+    origin: finalizeOrigin(row.origin),
+    desiredStatus: requiredFinalizeDesiredStatus(field(row, "desiredStatus", "desired_status")),
+    outcome: requiredFinalizeOutcome(row.outcome),
+  };
+  if (errorCode !== undefined) action.errorCode = errorCode;
+  if (errorMessage !== undefined) action.errorMessage = errorMessage;
+  return action;
+}
+
+function normalizeFinalizeFailure(value: unknown): BrowserFinalizeTabFailure {
+  const row = requiredRecord(value, "finalizeTabs failure");
+  const tabId = tabIdField(field(row, "tabId", "tab_id"));
+  const desiredStatus = finalizeDesiredStatus(field(row, "desiredStatus", "desired_status"));
+  const failure: BrowserFinalizeTabFailure = {
+    outcome: requiredFinalizeFailureOutcome(row.outcome),
+    errorCode: stringField(row, "errorCode", "error_code") ?? "failed_to_finalize",
+    errorMessage: stringField(row, "errorMessage", "error_message") ?? "finalizeTabs transition failed",
+  };
+  if (tabId !== undefined) failure.tabId = tabId;
+  if (desiredStatus !== undefined) failure.desiredStatus = desiredStatus;
+  return failure;
+}
+
+function normalizeFinalizeFinalTabs(
+  value: unknown,
+  keptTabs: BrowserFinalizeTab[],
+  deliverableTabs: BrowserFinalizeTab[],
+): BrowserFinalizeFinalTabs {
+  if (!isRecord(value)) {
+    return { handoff: keptTabs, deliverable: deliverableTabs, activeTabId: null };
+  }
+  return {
+    handoff: tabListField(value, "handoff"),
+    deliverable: tabListField(value, "deliverable"),
+    activeTabId: nullableTabId(field(value, "activeTabId", "active_tab_id")),
+  };
+}
+
+function normalizeFinalizeDiagnostics(
+  row: BrowserFinalizeTabsWireResult,
+  reconciledFromChrome: true,
+): BrowserFinalizeTabsSuccessResult["diagnostics"];
+function normalizeFinalizeDiagnostics(
+  row: BrowserFinalizeTabsWireResult,
+  reconciledFromChrome: false,
+): BrowserFinalizeTabsFatalResult["diagnostics"];
+function normalizeFinalizeDiagnostics(
+  row: BrowserFinalizeTabsWireResult,
+  reconciledFromChrome: boolean,
+): BrowserFinalizeTabsSuccessResult["diagnostics"] | BrowserFinalizeTabsFatalResult["diagnostics"] {
+  if (reconciledFromChrome) {
+    return { reconciledFromChrome: true, reconciliationSource: "chrome.tabs" };
+  }
+  const diagnostics = recordOrEmpty(field(row, "diagnostics"));
+  const source = stringField(diagnostics, "reconciliationSource", "reconciliation_source");
+  return {
+    reconciledFromChrome: false,
+    ...(source === "chrome.tabs" ? { reconciliationSource: source } : {}),
+  };
+}
+
 function normalizeFinalizeTabId(row: BrowserFinalizeKeep): string {
   const value = row.tab ?? row.tab_id ?? row.tabId ?? row.id;
   if (typeof value === "string" || typeof value === "number") return String(value);
@@ -448,14 +554,114 @@ function normalizeFinalizeTabId(row: BrowserFinalizeKeep): string {
   throw new Error("finalizeTabs keep entry missing tab id");
 }
 
+function arrayField(row: Record<string, unknown>, key: string): unknown[] {
+  const value = row[key];
+  return Array.isArray(value) ? value : [];
+}
+
+function tabIdListField(row: Record<string, unknown>, camelKey: string, snakeKey: string): string[] {
+  return arrayFieldFromEither(row, camelKey, snakeKey).map((value) => requiredTabId(value, camelKey));
+}
+
+function tabListField(row: Record<string, unknown>, camelKey: string, snakeKey?: string): BrowserFinalizeTab[] {
+  return arrayFieldFromEither(row, camelKey, snakeKey)
+    .filter(isRecord)
+    .map((tab) => tab as BrowserFinalizeTab);
+}
+
+function arrayFieldFromEither(row: Record<string, unknown>, camelKey: string, snakeKey?: string): unknown[] {
+  const camelValue = row[camelKey];
+  if (Array.isArray(camelValue)) return camelValue;
+  return snakeKey ? arrayField(row, snakeKey) : [];
+}
+
+function field(row: Record<string, unknown>, camelKey: string, snakeKey?: string): unknown {
+  if (Object.prototype.hasOwnProperty.call(row, camelKey)) return row[camelKey];
+  if (snakeKey && Object.prototype.hasOwnProperty.call(row, snakeKey)) return row[snakeKey];
+  return undefined;
+}
+
+function stringField(row: Record<string, unknown>, camelKey: string, snakeKey?: string): string | undefined {
+  const value = field(row, camelKey, snakeKey);
+  return typeof value === "string" ? value : undefined;
+}
+
+function requiredRecord(value: unknown, label: string): Record<string, unknown> {
+  if (isRecord(value)) return value;
+  throw new Error(`${label} must be an object`);
+}
+
+function finalizeStatus(value: unknown): "ok" | "partial" | "fatal" | undefined {
+  return value === "ok" || value === "partial" || value === "fatal" ? value : undefined;
+}
+
+function finalizeOrigin(value: unknown): "agent" | "user" {
+  if (value === "agent" || value === "user") return value;
+  throw new Error("finalizeTabs action origin must be agent or user");
+}
+
+function finalizeDesiredStatus(value: unknown): BrowserFinalizeDesiredStatus | undefined {
+  if (value === "close" || value === "release" || value === "handoff" || value === "deliverable") {
+    return value;
+  }
+  return undefined;
+}
+
+function requiredFinalizeDesiredStatus(value: unknown): BrowserFinalizeDesiredStatus {
+  const status = finalizeDesiredStatus(value);
+  if (status) return status;
+  throw new Error("finalizeTabs action desiredStatus is invalid");
+}
+
+function requiredFinalizeOutcome(value: unknown): BrowserFinalizeTabOutcome {
+  if (
+    value === "closed" ||
+    value === "released" ||
+    value === "kept_handoff" ||
+    value === "kept_deliverable" ||
+    value === "tab_gone" ||
+    value === "failed" ||
+    value === "not_attempted"
+  ) {
+    return value;
+  }
+  throw new Error("finalizeTabs action outcome is invalid");
+}
+
+function requiredFinalizeFailureOutcome(value: unknown): "failed" | "not_attempted" {
+  if (value === "failed" || value === "not_attempted") return value;
+  throw new Error("finalizeTabs failure outcome is invalid");
+}
+
+function nullableTabId(value: unknown): string | null {
+  if (value === null || value === undefined) return null;
+  return requiredTabId(value, "finalizeTabs tab id");
+}
+
+function tabIdField(value: unknown): string | undefined {
+  if (typeof value === "string" && value.length > 0) return value;
+  if (typeof value === "number" && Number.isInteger(value)) return String(value);
+  return undefined;
+}
+
+function requiredTabId(value: unknown, label: string): string {
+  const id = tabIdField(value);
+  if (id !== undefined) return id;
+  throw new Error(`${label} must be a non-empty string or integer`);
+}
+
 function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
 }
 
 function recordOrEmpty(value: unknown): Record<string, unknown> {
-  return value !== null && typeof value === "object" && !Array.isArray(value)
-    ? value as Record<string, unknown>
+  return isRecord(value)
+    ? value
     : {};
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
 function profileMetadataFrom(metadata: Record<string, unknown>): BrowserProfileMetadata {

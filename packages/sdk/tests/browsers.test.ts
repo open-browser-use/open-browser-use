@@ -32,6 +32,16 @@ describe("selectBackend", () => {
     expect(selectBackend([cdp], "cdp")).toBe(cdp);
   });
 
+  it("applies backend assertions before the dedicated CDP shortcut", () => {
+    expect(() => selectBackend([cdp], "cdp", [], { requireBackend: "webextension" })).toThrow(
+      /no backend available for cdp/,
+    );
+    expect(() => selectBackend([cdp], "cdp", [], { backend: "webextension" })).toThrow(
+      /no backend available for cdp/,
+    );
+    expect(selectBackend([cdp], "cdp", [], { backend: "cdp" })).toBe(cdp);
+  });
+
   it("chooses the newest same-family WebExtension descriptor", () => {
     const older = webextension("/tmp/obu/a.sock", "10");
     const newer = webextension("/tmp/obu/b.sock", "20");

@@ -432,7 +432,46 @@ describe("SDK wire-shape contracts", () => {
       {
         method: M.BROWSER_TABS_CONTENT,
         params: { urls: ["https://a.test/", "https://b.test/"], contentType: "html", timeout: 777, ...meta },
-        timeout: 777,
+        timeout: 2554,
+      },
+    ]);
+  });
+
+  it("BrowserTabs.content turns local guard denials into per-URL failures", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    const guards = new Guards({
+      checkNavigation(url) {
+        if (url === "https://b.test/") throw new Error("blocked by test policy");
+      },
+    });
+    const tabs = new BrowserTabs(asTransport(transport), guards);
+
+    try {
+      await expect(tabs.content({
+        urls: ["https://a.test/", "https://b.test/"],
+        timeout: 500,
+        requestTimeout: 5000,
+      })).resolves.toEqual({
+        results: [
+          { url: "https://a.test/", finalUrl: "https://a.test/", status: "ok", text: "A" },
+          {
+            url: "https://b.test/",
+            status: "error",
+            errorCode: "disallowed_command",
+            errorMessage: "Error: blocked by test policy",
+          },
+        ],
+      });
+    } finally {
+      restoreMeta();
+    }
+
+    expect(transport.calls).toEqual([
+      {
+        method: M.BROWSER_TABS_CONTENT,
+        params: { urls: ["https://a.test/"], timeout: 500, ...meta },
+        timeout: 5000,
       },
     ]);
   });
@@ -600,16 +639,17 @@ describe("SDK wire-shape contracts", () => {
       });
 
       expect(result.status).toBe("partial");
-      expect(result.closedTabIds).toEqual([9]);
-      expect(result.deliverableTabs?.[0]?.id).toBe("8");
-      expect(result.finalTabs?.deliverable?.[0]?.id).toBe("8");
-      expect(result.actions?.map((action) => [action.tabId, action.desiredStatus, action.outcome])).toEqual([
-        [7, "handoff", "failed"],
-        [8, "deliverable", "kept_deliverable"],
+      if (result.status === "fatal") throw new Error("expected partial finalize result");
+      expect(result.closedTabIds).toEqual(["9"]);
+      expect(result.deliverableTabs[0]?.id).toBe("8");
+      expect(result.finalTabs.deliverable[0]?.id).toBe("8");
+      expect(result.actions.map((action) => [action.tabId, action.desiredStatus, action.outcome])).toEqual([
+        ["7", "handoff", "failed"],
+        ["8", "deliverable", "kept_deliverable"],
       ]);
       expect(result.failures).toEqual([
         {
-          tabId: 7,
+          tabId: "7",
           desiredStatus: "handoff",
           outcome: "failed",
           errorCode: "failed_to_finalize",
@@ -617,6 +657,138 @@ describe("SDK wire-shape contracts", () => {
         },
       ]);
       expect(result.diagnostics).toEqual({ reconciledFromChrome: true, reconciliationSource: "chrome.tabs" });
+    } finally {
+      restoreMeta();
+    }
+  });
+
+  it("Browser.finalizeTabs normalizes legacy wire aliases to the strict public shape", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    transport.responses.set(M.FINALIZE_TABS, {
+      status: "ok",
+      actions: [
+        {
+          tab_id: "target-7",
+          origin: "agent",
+          desired_status: "handoff",
+          outcome: "kept_handoff",
+        },
+      ],
+      closed_tab_ids: ["closed-target"],
+      released_tab_ids: ["released-target"],
+      kept_tabs: [{ id: "target-7", status: "handoff", url: "https://handoff.test/" }],
+      deliverable_tabs: [],
+      final_tabs: {
+        handoff: [{ id: "target-7", status: "handoff", url: "https://handoff.test/" }],
+        deliverable: [],
+        active_tab_id: "target-7",
+      },
+      failures: [],
+      diagnostics: { reconciled_from_chrome: true, reconciliation_source: "chrome.tabs" },
+    });
+    const browser = new Browser(
+      asTransport(transport),
+      { type: "webextension", name: "chrome", capabilities: {} },
+      { type: "webextension", name: "chrome", socketPath: "/tmp/webext", metadata: {} },
+      new Guards(),
+    );
+
+    try {
+      await expect(browser.finalizeTabs()).resolves.toEqual({
+        status: "ok",
+        actions: [
+          {
+            tabId: "target-7",
+            origin: "agent",
+            desiredStatus: "handoff",
+            outcome: "kept_handoff",
+          },
+        ],
+        closedTabIds: ["closed-target"],
+        releasedTabIds: ["released-target"],
+        keptTabs: [{ id: "target-7", status: "handoff", url: "https://handoff.test/" }],
+        deliverableTabs: [],
+        finalTabs: {
+          handoff: [{ id: "target-7", status: "handoff", url: "https://handoff.test/" }],
+          deliverable: [],
+          activeTabId: "target-7",
+        },
+        failures: [],
+        diagnostics: { reconciledFromChrome: true, reconciliationSource: "chrome.tabs" },
+      });
+    } finally {
+      restoreMeta();
+    }
+  });
+
+  it("Browser.finalizeTabs exposes fatal reconciliation results without success aliases", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    transport.responses.set(M.FINALIZE_TABS, {
+      status: "partial",
+      actions: [
+        {
+          tabId: 42,
+          origin: "agent",
+          desiredStatus: "close",
+          outcome: "failed",
+          errorCode: "close_failed",
+          errorMessage: "could not close tab",
+        },
+      ],
+      closedTabIds: [7],
+      releasedTabIds: [],
+      keptTabs: [],
+      deliverableTabs: [],
+      finalTabs: null,
+      failures: [
+        {
+          outcome: "failed",
+          errorCode: "finalize_reconciliation_failed",
+          errorMessage: "chrome.tabs reconciliation failed",
+        },
+      ],
+      errorCode: "finalize_reconciliation_failed",
+      errorMessage: "chrome.tabs reconciliation failed",
+      diagnostics: { reconciledFromChrome: false, reconciliationSource: "chrome.tabs" },
+    });
+    const browser = new Browser(
+      asTransport(transport),
+      { type: "webextension", name: "chrome", capabilities: {} },
+      { type: "webextension", name: "chrome", socketPath: "/tmp/webext", metadata: {} },
+      new Guards(),
+    );
+
+    try {
+      await expect(browser.finalizeTabs()).resolves.toEqual({
+        status: "fatal",
+        actions: [
+          {
+            tabId: "42",
+            origin: "agent",
+            desiredStatus: "close",
+            outcome: "failed",
+            errorCode: "close_failed",
+            errorMessage: "could not close tab",
+          },
+        ],
+        closedTabIds: ["7"],
+        releasedTabIds: [],
+        keptTabs: [],
+        deliverableTabs: [],
+        finalTabs: null,
+        failures: [
+          {
+            outcome: "failed",
+            errorCode: "finalize_reconciliation_failed",
+            errorMessage: "chrome.tabs reconciliation failed",
+          },
+        ],
+        errorCode: "finalize_reconciliation_failed",
+        errorMessage: "chrome.tabs reconciliation failed",
+        diagnostics: { reconciledFromChrome: false, reconciliationSource: "chrome.tabs" },
+      });
     } finally {
       restoreMeta();
     }
