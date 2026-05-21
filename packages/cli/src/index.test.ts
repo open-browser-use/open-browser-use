@@ -169,6 +169,7 @@ test("verify reports browser popup boundary with one next action", async (t) => 
   assertVerifyOutcome(payload, "needs_browser_popup", "open_popup");
   assert.equal(payload.productError.code, "browser_popup_boundary");
   assert.equal(payload.productError.nextAction.kind, "open_popup");
+  assert.equal(payload.checks.find((check: any) => check.id === "runtime-descriptor-probe")?.productError, "browser_popup_boundary");
   assert.equal(payload.agent.id, "codex-cli");
   assert.equal(payload.agent.runtimeStatus.reason, "verification_target_cli");
   assert.equal(payload.browser.profile.path, profilePath);
@@ -217,6 +218,7 @@ test("verify reports setup_missing for extension install and enable actions befo
   assertVerifyOutcome(missingPayload, "needs_manual_action", "install_extension");
   assert.equal(missingPayload.productError.code, "setup_missing");
   assert.equal(missingPayload.productError.nextAction.kind, "install_extension");
+  assert.equal(missingPayload.checks.find((check: any) => check.id === "browser-extension-installed")?.productError, "setup_missing");
 
   const disabledProfile = path.join(browserProfileRoot("chrome", process.platform, home), "DisabledExtension");
   await writeChromePreferences(disabledProfile, extensionId, 0);
@@ -240,6 +242,64 @@ test("verify reports setup_missing for extension install and enable actions befo
   assertVerifyOutcome(disabledPayload, "needs_manual_action", "enable_extension");
   assert.equal(disabledPayload.productError.code, "setup_missing");
   assert.equal(disabledPayload.productError.nextAction.kind, "enable_extension");
+  assert.equal(disabledPayload.checks.find((check: any) => check.id === "browser-extension-installed")?.productError, "setup_missing");
+});
+
+test("verify product errors come from descriptor product codes instead of message parsing", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  withTestXdgConfigHome(t, home);
+  const extensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const wrongExtensionId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const runtimeDir = path.join(home, "runtime");
+  const hostBin = await writeExecutable(path.join(bin, "obu-host"), "#!/bin/sh\nexit 0\n");
+  await writeCodexMcpConfig(home);
+  await writeNativeHostManifest(home, hostBin, extensionId, runtimeDir);
+  const profilePath = path.join(browserProfileRoot("chrome", process.platform, home), "Default");
+  await writeChromePreferences(profilePath, extensionId, 1);
+  await mkdir(path.join(runtimeDir, "webextension"), { recursive: true, mode: 0o700 });
+  await chmod(runtimeDir, 0o700);
+  await chmod(path.join(runtimeDir, "webextension"), 0o700);
+  const socketPath = path.join(runtimeDir, "webextension", "chrome.sock");
+  await startRuntimeDescriptorServer(t, socketPath);
+  await writeRuntimeDescriptor(path.join(runtimeDir, "webextension", "chrome.json"), {
+    schema_version: 1,
+    type: "webextension",
+    name: "chrome",
+    socketPath,
+    sdk_auth_token: "token",
+    pid: process.pid,
+    metadata: {
+      browser_kind: "chrome",
+      extension_id: wrongExtensionId,
+      profile_path: profilePath,
+    },
+  });
+
+  const result = await runCli([
+    "verify",
+    "--agent=codex-cli",
+    "--browser=chrome",
+    "--channel=store",
+    `--extension-id=${extensionId}`,
+    "--json",
+  ], {
+    HOME: home,
+    OBU_HOST_BIN: hostBin,
+    OBU_RUNTIME_DIR: runtimeDir,
+  });
+
+  assert.equal(result.code, 1);
+  const payload = JSON.parse(result.stdout);
+  assertVerifyOutcome(payload, "needs_browser_popup", "open_popup");
+  assert.equal(payload.productError.code, "extension_id_mismatch");
+  assert.equal(payload.checks.find((check: any) => check.id === "runtime-descriptor-probe")?.productError, "extension_id_mismatch");
+  assert.deepEqual(
+    payload.checks.find((check: any) => check.id === "runtime-descriptor-probe")?.details?.descriptorProductErrors,
+    ["extension_id_mismatch"],
+  );
 });
 
 test("verify repairs stale native-host manifests before popup handoff", async (t) => {
@@ -290,6 +350,7 @@ test("verify repairs stale native-host manifests before popup handoff", async (t
   assert.equal(payload.productError.nextAction.kind, "run_repair");
   assert.equal(nativeHost?.status, "fail");
   assert.equal(nativeHost?.reason, "native_host_manifest_invalid");
+  assert.equal(nativeHost?.productError, "native_host_broken");
   assert.match(nativeHost?.message ?? "", /managed wrapper/);
 
   const repaired = await runCli([...verifyArgs.slice(0, -1), "--repair", "--json"], env);

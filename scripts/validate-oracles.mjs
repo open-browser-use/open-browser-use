@@ -23,11 +23,15 @@ for (const method of oracle.requiredWireMethods) {
   assert.equal(exportedMethodValues.has(method), true, `wire method oracle missing implementation: ${method}`);
 }
 
-const sdkErrors = await text("packages/sdk/src/errors.ts");
-const productErrorCodes = new Set([...sdkErrors.matchAll(/code: "([a-z_]+)"/g)].map((match) => match[1]));
+const productErrors = await json("product-errors.json");
+assert.equal(productErrors.schemaVersion, 1);
+assertArray(productErrors.errors, "productErrors.errors");
+const productErrorCodes = new Set(productErrors.errors.map((entry) => entry.code));
 for (const code of oracle.requiredProductErrors) {
   assert.equal(productErrorCodes.has(code), true, `product error oracle missing implementation: ${code}`);
 }
+
+const sdkErrors = await text("packages/sdk/src/errors.ts");
 for (const constant of oracle.requiredRpcErrorConstants) {
   assert.match(sdkErrors, new RegExp(`export const ${constant}\\b`), `SDK error constant missing: ${constant}`);
 }
