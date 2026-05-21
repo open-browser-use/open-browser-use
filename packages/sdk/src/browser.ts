@@ -2,7 +2,8 @@ import { BrowserTabs } from "./browser_tabs.js";
 import { BrowserUser } from "./browser_user.js";
 import { Guards } from "./guards.js";
 import { withSessionMeta } from "./session-meta.js";
-import { Tab, type TabMetadata } from "./tab.js";
+import { Tab } from "./tab.js";
+import { tabIdFromWire, tabMetadata, type TabWire } from "./tab_wire.js";
 import type { DiscoveredBackend } from "./browsers.js";
 import type { BrowserInfo } from "./types.js";
 import type { Transport } from "./wire/transport.js";
@@ -76,19 +77,7 @@ export type BrowserClearLifecycleDiagnosticsResult = {
   };
 };
 
-type BrowserControlTabWire = {
-  tab_id?: string;
-  id?: string;
-  target_id?: string;
-  url?: string;
-  title?: string;
-  origin?: "agent" | "user";
-  status?: "active" | "handoff" | "deliverable";
-  active?: boolean;
-  logicalActive?: boolean;
-  logical_active?: boolean;
-  commandable?: boolean;
-};
+type BrowserControlTabWire = TabWire;
 
 export class Browser {
   readonly metadata: Record<string, unknown>;
@@ -144,9 +133,8 @@ export class Browser {
     );
     const row = unwrapBrowserControlTab(response);
     if (!row) return undefined;
-    const id = row.tab_id ?? row.id;
-    if (!id) throw new Error("resumeControl response missing tab_id");
-    return new Tab(this.transport, this.guards, id, browserControlTabMetadata(row));
+    const id = tabIdFromWire(row, "resumeControl response missing tab_id");
+    return new Tab(this.transport, this.guards, id, tabMetadata(row));
   }
 
   async finalizeTabs(opts: BrowserFinalizeTabsOptions = {}): Promise<BrowserFinalizeTabsResult> {
@@ -241,20 +229,6 @@ function recordOrEmpty(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
-}
-
-function browserControlTabMetadata(row: BrowserControlTabWire): TabMetadata {
-  const metadata: TabMetadata = {};
-  if (row.target_id !== undefined) metadata.target_id = row.target_id;
-  if (row.url !== undefined) metadata.url = row.url;
-  if (row.title !== undefined) metadata.title = row.title;
-  if (row.origin !== undefined) metadata.origin = row.origin;
-  if (row.status !== undefined) metadata.status = row.status;
-  if (row.active !== undefined) metadata.active = row.active;
-  if (row.logicalActive !== undefined) metadata.logicalActive = row.logicalActive;
-  if (row.logical_active !== undefined) metadata.logicalActive = row.logical_active;
-  if (row.commandable !== undefined) metadata.commandable = row.commandable;
-  return metadata;
 }
 
 function unwrapBrowserControlTab(
