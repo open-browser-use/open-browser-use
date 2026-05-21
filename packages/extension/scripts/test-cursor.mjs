@@ -8,6 +8,10 @@ const builtCursor = await readFile(path.join(packageRoot, "dist", "cursor.js"), 
 assert.doesNotMatch(builtCursor, /\bexport\s*\{\s*\}/);
 assert.match(builtCursor, /(?:^|\n)\(\(\) => \{/);
 assert.doesNotMatch(builtCursor, /__OBU_CURSOR_MESSAGE__/);
+assert.match(builtCursor, /waterValuesBuffer/);
+assert.match(builtCursor, /prepareWaterRippleFrames/);
+assert.doesNotMatch(builtCursor, /const values = new Float32Array/);
+assert.doesNotMatch(builtCursor, /const points = \\[\\]/);
 
 class EventTarget {
   listeners = [];

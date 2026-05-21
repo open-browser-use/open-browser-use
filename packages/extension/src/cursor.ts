@@ -77,6 +77,16 @@ type WaterRipple = {
   driftY: number;
   driftSpeed: number;
 };
+type WaterRippleFrame = {
+  centerX: number;
+  centerY: number;
+  scaleX: number;
+  scaleY: number;
+  decay: number;
+  amplitude: number;
+  wavelength: number;
+  phaseOffset: number;
+};
 type InputBypassEventFamily = "pointer" | "wheel" | "touch" | "keyboard" | "text";
 
 const SHORT_MOVE_THRESHOLD = 196;
@@ -146,7 +156,10 @@ let waterCanvasHeight = 0;
 let waterCanvasDpr = 1;
 let waterLastDraw = 0;
 let waterNextRippleAt = 0;
+let waterValuesBuffer = new Float32Array(0);
 const waterRipples: WaterRipple[] = [];
+const waterRippleFrames: WaterRippleFrame[] = [];
+const waterContourPointBuffer: number[] = [];
 const inputBypassUntilByFamily = new Map<InputBypassEventFamily, number>();
 const captureSuppressionTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
@@ -494,20 +507,20 @@ function updateWaterRipples(now: number, width: number, height: number): void {
 
   if (waterNextRippleAt === 0) {
     for (let index = 0; index < 4; index += 1) {
-      waterRipples.push(createWaterRipple(now - index * 620, width, height));
+      waterRipples.push(createWaterRipple(now - index * 940, width, height));
     }
-    waterNextRippleAt = now + randomBetween(700, 1_200);
+    waterNextRippleAt = now + randomBetween(1_250, 2_050);
   }
 
   if (REDUCED_MOTION) return;
 
   while (now >= waterNextRippleAt && waterRipples.length < WATER_MAX_RIPPLES) {
     waterRipples.push(createWaterRipple(now, width, height));
-    waterNextRippleAt = now + randomBetween(760, 1_400);
+    waterNextRippleAt = now + randomBetween(1_450, 2_600);
   }
 
   if (waterRipples.length >= WATER_MAX_RIPPLES && now >= waterNextRippleAt) {
-    waterNextRippleAt = now + randomBetween(620, 1_050);
+    waterNextRippleAt = now + randomBetween(1_250, 1_900);
   }
 }
 
@@ -517,17 +530,17 @@ function createWaterRipple(startedAt: number, width: number, height: number): Wa
     xRatio: randomBetween(xBounds.min, xBounds.max),
     yRatio: randomBetween(-0.08, 1.08),
     startedAt,
-    duration: randomBetween(3_600, 6_800),
+    duration: randomBetween(5_400, 10_200),
     amplitude: randomBetween(0.52, 0.9),
     wavelength: randomBetween(34, 74),
-    speed: randomBetween(2.4, 4.3),
+    speed: randomBetween(0.95, 1.75),
     phase: randomBetween(0, Math.PI * 2),
     decay: randomBetween(210, 380),
     scaleX: randomBetween(0.78, 1.22),
     scaleY: randomBetween(0.84, 1.28),
     driftX: randomBetween(-0.035, 0.035),
     driftY: randomBetween(-0.03, 0.03),
-    driftSpeed: randomBetween(0.1, 0.24),
+    driftSpeed: randomBetween(0.04, 0.12),
   };
 }
 
@@ -539,11 +552,15 @@ function waterRippleXBounds(wide: boolean): { min: number; max: number } {
 function drawWaterContours(ctx: CanvasRenderingContext2D, now: number, width: number, height: number): void {
   const cols = Math.ceil(width / WATER_GRID_PX);
   const rows = Math.ceil(height / WATER_GRID_PX);
-  const values = new Float32Array((cols + 1) * (rows + 1));
+  const valueCount = (cols + 1) * (rows + 1);
+  if (waterValuesBuffer.length !== valueCount) waterValuesBuffer = new Float32Array(valueCount);
+  const values = waterValuesBuffer;
+  const seconds = now * 0.001;
+  const ripples = prepareWaterRippleFrames(now, seconds, width, height);
 
   for (let row = 0; row <= rows; row += 1) {
     for (let col = 0; col <= cols; col += 1) {
-      values[row * (cols + 1) + col] = waterHeightAt(col * WATER_GRID_PX, row * WATER_GRID_PX, now, width, height);
+      values[row * (cols + 1) + col] = waterHeightAt(col * WATER_GRID_PX, row * WATER_GRID_PX, seconds, ripples);
     }
   }
 
@@ -571,6 +588,7 @@ function drawWaterContourLevel(
   ctx.beginPath();
   ctx.strokeStyle = strokeStyle;
   ctx.lineWidth = lineWidth;
+  ctx.setLineDash(lineWidth > 1 ? [14, 22] : [8, 18]);
 
   for (let row = 0; row < rows; row += 1) {
     for (let col = 0; col < cols; col += 1) {
@@ -579,23 +597,15 @@ function drawWaterContourLevel(
       const topRight = values[valueIndex + 1];
       const bottomLeft = values[valueIndex + cols + 1];
       const bottomRight = values[valueIndex + cols + 2];
-      const points = waterContourPoints(col, row, level, topLeft, topRight, bottomRight, bottomLeft);
-      if (points.length === 2) {
-        ctx.moveTo(points[0].x, points[0].y);
-        ctx.lineTo(points[1].x, points[1].y);
-      } else if (points.length === 4) {
-        ctx.moveTo(points[0].x, points[0].y);
-        ctx.lineTo(points[1].x, points[1].y);
-        ctx.moveTo(points[2].x, points[2].y);
-        ctx.lineTo(points[3].x, points[3].y);
-      }
+      drawWaterContourCell(ctx, col, row, level, topLeft, topRight, bottomRight, bottomLeft);
     }
   }
 
   ctx.stroke();
 }
 
-function waterContourPoints(
+function drawWaterContourCell(
+  ctx: CanvasRenderingContext2D,
   col: number,
   row: number,
   level: number,
@@ -603,39 +613,48 @@ function waterContourPoints(
   topRight: number,
   bottomRight: number,
   bottomLeft: number,
-): Point[] {
+): void {
   const x = col * WATER_GRID_PX;
   const y = row * WATER_GRID_PX;
   const size = WATER_GRID_PX;
-  const points: Point[] = [];
-  pushWaterContourPoint(points, topLeft, topRight, level, (offset) => ({
-    x: x + offset * size,
-    y,
-  }));
-  pushWaterContourPoint(points, topRight, bottomRight, level, (offset) => ({
-    x: x + size,
-    y: y + offset * size,
-  }));
-  pushWaterContourPoint(points, bottomLeft, bottomRight, level, (offset) => ({
-    x: x + offset * size,
-    y: y + size,
-  }));
-  pushWaterContourPoint(points, topLeft, bottomLeft, level, (offset) => ({
-    x,
-    y: y + offset * size,
-  }));
-  return points;
+  const points = waterContourPointBuffer;
+  points.length = 0;
+  pushWaterContourPoint(points, topLeft, topRight, level, x, y, size, 0);
+  pushWaterContourPoint(points, topRight, bottomRight, level, x, y, size, 1);
+  pushWaterContourPoint(points, bottomLeft, bottomRight, level, x, y, size, 2);
+  pushWaterContourPoint(points, topLeft, bottomLeft, level, x, y, size, 3);
+  if (points.length === 4) {
+    ctx.moveTo(points[0], points[1]);
+    ctx.lineTo(points[2], points[3]);
+  } else if (points.length === 8) {
+    ctx.moveTo(points[0], points[1]);
+    ctx.lineTo(points[2], points[3]);
+    ctx.moveTo(points[4], points[5]);
+    ctx.lineTo(points[6], points[7]);
+  }
 }
 
 function pushWaterContourPoint(
-  points: Point[],
+  points: number[],
   start: number,
   end: number,
   level: number,
-  pointAt: (offset: number) => Point,
+  x: number,
+  y: number,
+  size: number,
+  edge: 0 | 1 | 2 | 3,
 ): void {
   if (!crossesLevel(start, end, level)) return;
-  points.push(pointAt(interpolateLevel(start, end, level)));
+  const offset = interpolateLevel(start, end, level);
+  if (edge === 0) {
+    points.push(x + offset * size, y);
+  } else if (edge === 1) {
+    points.push(x + size, y + offset * size);
+  } else if (edge === 2) {
+    points.push(x + offset * size, y + size);
+  } else {
+    points.push(x, y + offset * size);
+  }
 }
 
 function crossesLevel(a: number, b: number, level: number): boolean {
@@ -648,28 +667,40 @@ function interpolateLevel(a: number, b: number, level: number): number {
   return clamp((level - a) / delta, 0, 1);
 }
 
-function waterHeightAt(x: number, y: number, now: number, width: number, height: number): number {
-  const seconds = now * 0.001;
-  let heightValue = 0;
-
+function prepareWaterRippleFrames(now: number, seconds: number, width: number, height: number): WaterRippleFrame[] {
+  waterRippleFrames.length = 0;
   for (const ripple of waterRipples) {
     const progress = clamp((now - ripple.startedAt) / ripple.duration, 0, 1);
     if (progress <= 0 || progress >= 1) continue;
     const envelope = Math.sin(Math.PI * progress) ** 0.85;
-    const centerX = ripple.xRatio * width + Math.sin(seconds * ripple.driftSpeed + ripple.phase) * ripple.driftX * width;
-    const centerY = ripple.yRatio * height + Math.cos(seconds * ripple.driftSpeed + ripple.phase) * ripple.driftY * height;
-    const dx = (x - centerX) * ripple.scaleX;
-    const dy = (y - centerY) * ripple.scaleY;
+    const phase = seconds * ripple.driftSpeed + ripple.phase;
+    waterRippleFrames.push({
+      centerX: ripple.xRatio * width + Math.sin(phase) * ripple.driftX * width,
+      centerY: ripple.yRatio * height + Math.cos(phase) * ripple.driftY * height,
+      scaleX: ripple.scaleX,
+      scaleY: ripple.scaleY,
+      decay: ripple.decay,
+      amplitude: ripple.amplitude * envelope,
+      wavelength: ripple.wavelength,
+      phaseOffset: ripple.phase - seconds * ripple.speed,
+    });
+  }
+  return waterRippleFrames;
+}
+
+function waterHeightAt(x: number, y: number, seconds: number, ripples: WaterRippleFrame[]): number {
+  let heightValue = 0;
+
+  for (const ripple of ripples) {
+    const dx = (x - ripple.centerX) * ripple.scaleX;
+    const dy = (y - ripple.centerY) * ripple.scaleY;
     const distance = Math.hypot(dx, dy);
     const decay = Math.exp(-distance / ripple.decay);
-    heightValue += Math.sin(distance / ripple.wavelength - seconds * ripple.speed + ripple.phase) *
-      ripple.amplitude *
-      envelope *
-      decay;
+    heightValue += Math.sin(distance / ripple.wavelength + ripple.phaseOffset) * ripple.amplitude * decay;
   }
 
-  heightValue += Math.sin(x * 0.008 + y * 0.005 - seconds * 0.7) * 0.08;
-  heightValue += Math.sin(x * -0.004 + y * 0.01 + seconds * 0.45) * 0.06;
+  heightValue += Math.sin(x * 0.008 + y * 0.005 - seconds * 0.28) * 0.08;
+  heightValue += Math.sin(x * -0.004 + y * 0.01 + seconds * 0.18) * 0.06;
   return heightValue;
 }
 
