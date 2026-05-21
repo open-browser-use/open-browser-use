@@ -6,6 +6,7 @@ import { createRequire } from "node:module";
 import { spawnSync } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
+import { payloadRequiredFiles } from "./payload-contract.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const cliRequire = createRequire(path.join(root, "packages", "cli", "package.json"));
@@ -74,6 +75,7 @@ const metadata = {
       defaultKeep: 5,
       preserves: ["active", "rollback"],
     },
+    requiredFiles: payloadRequiredFiles,
   },
 };
 await writeJson(path.join(outDir, "metadata.json"), metadata);

@@ -46,12 +46,67 @@ validate_payload_dir() {
     echo "payload validation failed: bin/obu-host is missing or not executable" >&2
     return 1
   fi
+  if [ ! -x "$dir/bin/obu-node-repl" ]; then
+    echo "payload validation failed: bin/obu-node-repl is missing or not executable" >&2
+    return 1
+  fi
   if [ ! -f "$dir/cli/dist/index.js" ]; then
     echo "payload validation failed: cli/dist/index.js is missing" >&2
     return 1
   fi
+  if [ ! -f "$dir/node_modules/@open-browser-use/sdk/dist/index.mjs" ]; then
+    echo "payload validation failed: node_modules/@open-browser-use/sdk/dist/index.mjs is missing" >&2
+    return 1
+  fi
+  if [ ! -f "$dir/extension/dist/manifest.json" ]; then
+    echo "payload validation failed: extension/dist/manifest.json is missing" >&2
+    return 1
+  fi
   if [ ! -f "$dir/metadata.json" ]; then
     echo "payload validation failed: metadata.json is missing" >&2
+    return 1
+  fi
+  if ! "$dir/node/bin/node" - "$dir" <<'JS'
+const fs = require("fs");
+const path = require("path");
+
+const payloadDir = process.argv[2];
+const metadata = JSON.parse(fs.readFileSync(path.join(payloadDir, "metadata.json"), "utf8"));
+const requiredFiles = metadata?.release?.requiredFiles;
+if (requiredFiles !== undefined) {
+  if (!Array.isArray(requiredFiles)) {
+    console.error("payload validation failed: release.requiredFiles must be an array");
+    process.exit(1);
+  }
+  for (const entry of requiredFiles) {
+    if (!entry || typeof entry.path !== "string" || entry.path.length === 0 || path.isAbsolute(entry.path) || entry.path.split(/[\\/]+/).includes("..")) {
+      console.error("payload validation failed: release.requiredFiles contains an invalid path");
+      process.exit(1);
+    }
+    const file = path.join(payloadDir, entry.path);
+    let stat;
+    try {
+      stat = fs.statSync(file);
+    } catch {
+      console.error(`payload validation failed: ${entry.path} is missing`);
+      process.exit(1);
+    }
+    if (!stat.isFile()) {
+      console.error(`payload validation failed: ${entry.path} is not a file`);
+      process.exit(1);
+    }
+    if (entry.executable === true) {
+      try {
+        fs.accessSync(file, fs.constants.X_OK);
+      } catch {
+        console.error(`payload validation failed: ${entry.path} is not executable`);
+        process.exit(1);
+      }
+    }
+  }
+}
+JS
+  then
     return 1
   fi
   return 0

@@ -16,6 +16,7 @@ import os from "node:os";
 import path from "node:path";
 import { spawnSync } from "node:child_process";
 import { fileURLToPath } from "node:url";
+import { payloadRequiredFiles } from "./payload-contract.mjs";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
 const installer = path.join(root, "scripts", "install.sh");
@@ -24,6 +25,13 @@ const temp = await mkdtemp(path.join(os.tmpdir(), "obu-install-refresh-"));
 try {
   await corruptExtractionKeepsOldPayload();
   await invalidPayloadKeepsOldPayload();
+  await missingRuntimeCriticalFileKeepsOldPayload("missing-node", { includeNode: false }, /payload validation failed: node\/bin\/node/);
+  await missingRuntimeCriticalFileKeepsOldPayload("missing-host", { includeHost: false }, /payload validation failed: bin\/obu-host/);
+  await missingRuntimeCriticalFileKeepsOldPayload("missing-cli", { includeCli: false }, /payload validation failed: cli\/dist\/index\.js/);
+  await missingRuntimeCriticalFileKeepsOldPayload("missing-sdk", { includeSdkBundle: false }, /payload validation failed: node_modules\/@open-browser-use\/sdk\/dist\/index\.mjs/);
+  await missingRuntimeCriticalFileKeepsOldPayload("missing-extension", { includeExtensionManifest: false }, /payload validation failed: extension\/dist\/manifest\.json/);
+  await missingNodeReplKeepsOldPayload();
+  await nonExecutableNodeReplKeepsOldPayload();
   await sameNameActivationFailureRestoresOldPayload();
   await currentSymlinkFailureRestoresPreviousSymlink();
   await payloadMigrationHookRunsBeforeCurrentSwitch();
@@ -72,6 +80,56 @@ async function invalidPayloadKeepsOldPayload() {
   assert.match(failed.stderr, /payload validation failed: bin\/obu-host/);
   await assertPayloadMarker(installDir, "open-browser-use-invalid", "old");
   assert.equal(await readlink(currentLink(installDir)), "open-browser-use-invalid");
+}
+
+async function missingRuntimeCriticalFileKeepsOldPayload(caseName, artifactOptions, expectedError) {
+  const dir = await caseDir(caseName);
+  const installDir = path.join(dir, "install");
+  const home = path.join(dir, "home");
+  const payloadName = `open-browser-use-${caseName}`;
+  const artifact = await makeArtifact(dir, payloadName, "old");
+  runInstall({ artifact, installDir, home });
+
+  const invalidArtifact = await makeArtifact(path.join(dir, "invalid"), payloadName, "new", artifactOptions);
+  const failed = runInstall({ artifact: invalidArtifact, installDir, home, allowFailure: true });
+  assert.equal(failed.status, 1);
+  assert.match(failed.stderr, expectedError);
+  await assertPayloadMarker(installDir, payloadName, "old");
+  assert.equal(await readlink(currentLink(installDir)), payloadName);
+}
+
+async function missingNodeReplKeepsOldPayload() {
+  const dir = await caseDir("missing-node-repl");
+  const installDir = path.join(dir, "install");
+  const home = path.join(dir, "home");
+  const artifact = await makeArtifact(dir, "open-browser-use-missing-repl", "old");
+  runInstall({ artifact, installDir, home });
+
+  const invalidArtifact = await makeArtifact(path.join(dir, "invalid"), "open-browser-use-missing-repl", "new", {
+    includeNodeRepl: false,
+  });
+  const failed = runInstall({ artifact: invalidArtifact, installDir, home, allowFailure: true });
+  assert.equal(failed.status, 1);
+  assert.match(failed.stderr, /payload validation failed: bin\/obu-node-repl/);
+  await assertPayloadMarker(installDir, "open-browser-use-missing-repl", "old");
+  assert.equal(await readlink(currentLink(installDir)), "open-browser-use-missing-repl");
+}
+
+async function nonExecutableNodeReplKeepsOldPayload() {
+  const dir = await caseDir("non-executable-node-repl");
+  const installDir = path.join(dir, "install");
+  const home = path.join(dir, "home");
+  const artifact = await makeArtifact(dir, "open-browser-use-non-exec-repl", "old");
+  runInstall({ artifact, installDir, home });
+
+  const invalidArtifact = await makeArtifact(path.join(dir, "invalid"), "open-browser-use-non-exec-repl", "new", {
+    executableNodeRepl: false,
+  });
+  const failed = runInstall({ artifact: invalidArtifact, installDir, home, allowFailure: true });
+  assert.equal(failed.status, 1);
+  assert.match(failed.stderr, /payload validation failed: bin\/obu-node-repl/);
+  await assertPayloadMarker(installDir, "open-browser-use-non-exec-repl", "old");
+  assert.equal(await readlink(currentLink(installDir)), "open-browser-use-non-exec-repl");
 }
 
 async function sameNameActivationFailureRestoresOldPayload() {
@@ -298,16 +356,38 @@ async function makeArtifact(parent, name, marker, options = {}) {
   await mkdir(path.join(source, "bin"), { recursive: true });
   await mkdir(path.join(source, "node", "bin"), { recursive: true });
   await mkdir(path.join(source, "cli", "dist"), { recursive: true });
+  await mkdir(path.join(source, "node_modules", "@open-browser-use", "sdk", "dist"), { recursive: true });
+  await mkdir(path.join(source, "extension", "dist"), { recursive: true });
   await writeFile(path.join(source, "marker.txt"), marker, "utf8");
-  await writeFile(path.join(source, "metadata.json"), JSON.stringify(options.metadata ?? { marker }), "utf8");
-  await writeExecutable(path.join(source, "node", "bin", "node"), "#!/bin/sh\nexit 0\n");
-  await writeExecutable(path.join(source, "bin", "obu-host"), "#!/bin/sh\nexit 0\n");
-  if (options.executableHost === false) await chmod(path.join(source, "bin", "obu-host"), 0o644);
+  await writeFile(
+    path.join(source, "metadata.json"),
+    JSON.stringify(options.metadata ?? { marker, release: { requiredFiles: payloadRequiredFiles } }),
+    "utf8",
+  );
+  if (options.includeNode !== false) {
+    await writeExecutable(path.join(source, "node", "bin", "node"), "#!/bin/sh\nexit 0\n");
+  }
+  if (options.includeHost !== false) {
+    await writeExecutable(path.join(source, "bin", "obu-host"), "#!/bin/sh\nexit 0\n");
+    if (options.executableHost === false) await chmod(path.join(source, "bin", "obu-host"), 0o644);
+  }
+  if (options.includeNodeRepl !== false) {
+    await writeExecutable(path.join(source, "bin", "obu-node-repl"), "#!/bin/sh\nexit 0\n");
+    if (options.executableNodeRepl === false) await chmod(path.join(source, "bin", "obu-node-repl"), 0o644);
+  }
   if (options.migrationScript) {
     await mkdir(path.join(source, "install-migrations.d"), { recursive: true });
     await writeExecutable(path.join(source, "install-migrations.d", options.migrationName ?? "001-native-host-layout.sh"), options.migrationScript);
   }
-  await writeFile(path.join(source, "cli", "dist", "index.js"), "console.log('obu')\n", "utf8");
+  if (options.includeCli !== false) {
+    await writeFile(path.join(source, "cli", "dist", "index.js"), "console.log('obu')\n", "utf8");
+  }
+  if (options.includeSdkBundle !== false) {
+    await writeFile(path.join(source, "node_modules", "@open-browser-use", "sdk", "dist", "index.mjs"), "export {}\n", "utf8");
+  }
+  if (options.includeExtensionManifest !== false) {
+    await writeFile(path.join(source, "extension", "dist", "manifest.json"), "{\"manifest_version\":3}\n", "utf8");
+  }
   await mkdir(artifactDir, { recursive: true });
   run("tar", ["-czf", artifact, "-C", source, "."]);
   return artifact;
