@@ -12,7 +12,6 @@ use crate::ops::cua::{
     CoordinateCommand, KeyEventSink, MouseEvent, MouseEventSink, NavigationWaitOptions,
     NavigationWaiter,
 };
-use crate::ops::event_wait;
 
 /// Dispatch a CUA command.
 pub async fn run(backend: &CdpBackend, method: &str, params: Value) -> Result<Value> {
@@ -35,6 +34,7 @@ async fn click(backend: &CdpBackend, params: Value, click_count: i64) -> Result<
     let session_id = require_session(backend, tab_id)?;
     let sink = CdpMouseEventSink {
         backend,
+        tab_id,
         session_id: &session_id,
     };
     let navigation = CdpNavigationWaiter {
@@ -52,15 +52,20 @@ async fn click(backend: &CdpBackend, params: Value, click_count: i64) -> Result<
 }
 
 async fn wait_for_navigation_event(
-    mut events: broadcast::Receiver<CdpEvent>,
+    events: broadcast::Receiver<CdpEvent>,
+    backend: &CdpBackend,
+    tab_id: &str,
     session_id: &str,
     timeout_ms: u64,
 ) -> Result<()> {
-    event_wait::wait_for_broadcast_event_matching(
-        &mut events,
+    let context =
+        crate::backends::cdp::dialogs::context_for_tab(backend, tab_id, session_id, "cua_click");
+    crate::backends::cdp::dialogs::wait_for_event_with_dialog_policy(
+        events,
+        backend,
+        context,
         timeout_ms,
         format!("navigation event timed out after {timeout_ms}ms"),
-        |error| HostError::Protocol(format!("CDP event bus closed: {error}")),
         |event| {
             if event.session_id.as_deref() == Some(session_id)
                 && is_navigation_event(&event.method, &event.params)
@@ -85,21 +90,30 @@ fn is_navigation_event(method: &str, params: &Value) -> bool {
 }
 
 async fn move_mouse(backend: &CdpBackend, params: Value) -> Result<Value> {
-    let session_id = require_session(backend, cua_ops::command_tab_id(&params)?)?;
+    let tab_id = cua_ops::command_tab_id(&params)?;
+    let session_id = require_session(backend, tab_id)?;
     let sink = CdpMouseEventSink {
         backend,
+        tab_id,
         session_id: &session_id,
     };
     cua_ops::dispatch_move_command(&sink, &params, cua_ops::NumericErrorStyle::Missing).await
 }
 
 async fn scroll(backend: &CdpBackend, params: Value) -> Result<Value> {
-    let session_id = require_session(backend, required_str(&params, "tab_id")?)?;
+    let tab_id = required_str(&params, "tab_id")?;
+    let session_id = require_session(backend, tab_id)?;
     let x = required_f64(&params, "x")?;
     let y = required_f64(&params, "y")?;
     let delta_x = cua_ops::scroll_delta(&params, "deltaX", "delta_x");
     let delta_y = cua_ops::scroll_delta(&params, "deltaY", "delta_y");
-    dispatch_mouse(backend, &session_id, cua_ops::mouse_move_event(x, y)).await?;
+    dispatch_mouse(
+        backend,
+        tab_id,
+        &session_id,
+        cua_ops::mouse_move_event(x, y),
+    )
+    .await?;
     if dispatch_scroll_gesture(backend, &session_id, x, y, delta_x, delta_y)
         .await
         .is_err()
@@ -150,34 +164,38 @@ async fn dispatch_mouse_wheel(
 }
 
 async fn type_text(backend: &CdpBackend, params: Value) -> Result<Value> {
-    let session_id = require_session(backend, required_str(&params, "tab_id")?)?;
+    let tab_id = required_str(&params, "tab_id")?;
+    let session_id = require_session(backend, tab_id)?;
     let text = required_str(&params, "text")?;
-    backend
-        .transport()
-        .send_command(
-            "Input.insertText",
-            json!({ "text": text }),
-            Some(&session_id),
-        )
-        .await
-        .map_err(HostError::from)?;
+    send_dialog_sensitive_command(
+        backend,
+        tab_id,
+        &session_id,
+        "Input.insertText",
+        json!({ "text": text }),
+    )
+    .await?;
     Ok(Value::Null)
 }
 
 async fn keypress(backend: &CdpBackend, params: Value) -> Result<Value> {
-    let session_id = require_session(backend, cua_ops::command_tab_id(&params)?)?;
+    let tab_id = cua_ops::command_tab_id(&params)?;
+    let session_id = require_session(backend, tab_id)?;
     let sink = CdpKeyEventSink {
         backend,
+        tab_id,
         session_id: &session_id,
     };
     cua_ops::dispatch_keypress_command(&sink, &params).await
 }
 
 async fn drag(backend: &CdpBackend, params: Value) -> Result<Value> {
-    let session_id = require_session(backend, cua_ops::command_tab_id(&params)?)?;
+    let tab_id = cua_ops::command_tab_id(&params)?;
+    let session_id = require_session(backend, tab_id)?;
     let path = cua_ops::interpolated_drag_path(&params, 20)?;
     let sink = CdpMouseEventSink {
         backend,
+        tab_id,
         session_id: &session_id,
     };
     cua_ops::dispatch_drag_path_command(&sink, path.as_slice()).await
@@ -185,13 +203,14 @@ async fn drag(backend: &CdpBackend, params: Value) -> Result<Value> {
 
 struct CdpMouseEventSink<'a> {
     backend: &'a CdpBackend,
+    tab_id: &'a str,
     session_id: &'a str,
 }
 
 #[async_trait::async_trait]
 impl MouseEventSink for CdpMouseEventSink<'_> {
     async fn dispatch_mouse_event(&self, event: MouseEvent<'_>) -> Result<()> {
-        dispatch_mouse(self.backend, self.session_id, event).await
+        dispatch_mouse(self.backend, self.tab_id, self.session_id, event).await
     }
 }
 
@@ -224,7 +243,14 @@ impl NavigationWaiter for CdpNavigationWaiter<'_> {
         wait: &NavigationWaitOptions,
         events: Self::Token,
     ) -> Result<()> {
-        wait_for_navigation_event(events, self.session_id, wait.timeout_ms).await?;
+        wait_for_navigation_event(
+            events,
+            self.backend,
+            tab_id,
+            self.session_id,
+            wait.timeout_ms,
+        )
+        .await?;
         tab_goto::wait_for_load_state(
             self.backend,
             tab_id,
@@ -238,36 +264,58 @@ impl NavigationWaiter for CdpNavigationWaiter<'_> {
 
 struct CdpKeyEventSink<'a> {
     backend: &'a CdpBackend,
+    tab_id: &'a str,
     session_id: &'a str,
 }
 
 #[async_trait::async_trait]
 impl KeyEventSink for CdpKeyEventSink<'_> {
     async fn dispatch_key_event(&self, event: Value) -> Result<()> {
-        self.backend
-            .transport()
-            .send_command("Input.dispatchKeyEvent", event, Some(self.session_id))
-            .await
-            .map(|_| ())
-            .map_err(HostError::from)
+        send_dialog_sensitive_command(
+            self.backend,
+            self.tab_id,
+            self.session_id,
+            "Input.dispatchKeyEvent",
+            event,
+        )
+        .await
     }
 }
 
 async fn dispatch_mouse(
     backend: &CdpBackend,
+    tab_id: &str,
     session_id: &str,
     event: MouseEvent<'_>,
 ) -> Result<()> {
-    backend
-        .transport()
-        .send_command(
-            "Input.dispatchMouseEvent",
-            event.to_cdp_params(),
-            Some(session_id),
-        )
-        .await
-        .map_err(HostError::from)?;
-    Ok(())
+    send_dialog_sensitive_command(
+        backend,
+        tab_id,
+        session_id,
+        "Input.dispatchMouseEvent",
+        event.to_cdp_params(),
+    )
+    .await
+}
+
+async fn send_dialog_sensitive_command(
+    backend: &CdpBackend,
+    tab_id: &str,
+    session_id: &str,
+    method: &str,
+    params: Value,
+) -> Result<()> {
+    let operation = async {
+        backend
+            .transport()
+            .send_command(method, params, Some(session_id))
+            .await
+            .map(|_| ())
+            .map_err(HostError::from)
+    };
+    let context =
+        crate::backends::cdp::dialogs::context_for_tab(backend, tab_id, session_id, method);
+    crate::backends::cdp::dialogs::run_with_dialog_policy(backend, context, operation).await
 }
 
 fn required_str<'a>(params: &'a Value, key: &str) -> Result<&'a str> {

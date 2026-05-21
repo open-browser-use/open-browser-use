@@ -6,7 +6,9 @@ const packageRoot = path.dirname(fileURLToPath(new URL("../package.json", import
 const extensionId = "fblnfcjnjklpgnmfnngcihbcgojnpadj";
 const statusKey = "OBU_NATIVE_HOST_STATUS";
 const sessionStateKey = "OBU_BROWSER_SESSION_STATE";
+const tabGroupStateKey = "OBU_TAB_GROUP_STATE";
 const debugLogKey = "OBU_DEBUG_LOG";
+const pendingUpdateKey = "OBU_PENDING_EXTENSION_UPDATE";
 
 class EventTarget {
   listeners = [];
@@ -17,6 +19,11 @@ class EventTarget {
 
   emit(...args) {
     return this.listeners.map((listener) => listener(...args));
+  }
+
+  emitLatest(...args) {
+    const listener = this.listeners.at(-1);
+    return listener ? [listener(...args)] : [];
   }
 }
 
@@ -43,8 +50,11 @@ class FakePort {
 
 const ports = [];
 const runtimeMessages = new EventTarget();
+const runtimeUpdateAvailable = new EventTarget();
 const alarmEvents = new EventTarget();
 const tabRemovedEvents = new EventTarget();
+const tabGroupCreatedEvents = new EventTarget();
+const tabGroupUpdatedEvents = new EventTarget();
 const debuggerEvents = new EventTarget();
 const debuggerDetaches = new EventTarget();
 const downloadCreates = new EventTarget();
@@ -52,6 +62,7 @@ const downloadChanges = new EventTarget();
 const downloads = new Map();
 const storageChanges = new EventTarget();
 const storage = {};
+const pageCloseDialogs = new Map();
 let connectNativeError;
 let postMessageError;
 let suppressNextCursorArrival = false;
@@ -68,15 +79,21 @@ const calls = {
   tabsRemove: [],
   tabsSendMessage: [],
   tabsUngroup: [],
+  runtimeReload: [],
 };
 let nextTabId = 1;
 let nextGroupId = 10;
 const contentScriptTabs = new Set();
 const tabs = new Map([
   [99, { id: 99, windowId: 1, groupId: -1, url: "https://user.example/", title: "User", active: true, pinned: false }],
+  [100, { id: 100, windowId: 1, groupId: -1, url: "https://stop-user.example/", title: "Stop user", active: true, pinned: false }],
+  [101, { id: 101, windowId: 2, groupId: -1, url: "https://other-window.example/", title: "Other window", active: true, pinned: false }],
+  [102, { id: 102, windowId: 2, groupId: -1, url: "https://other-deliverable.example/", title: "Other deliverable", active: true, pinned: false }],
 ]);
+const tabGroups = new Map();
 const windows = new Map([
   [1, { id: 1, focused: true, state: "normal", type: "normal" }],
+  [2, { id: 2, focused: false, state: "normal", type: "normal" }],
 ]);
 
 globalThis.chrome = {
@@ -84,6 +101,9 @@ globalThis.chrome = {
     id: extensionId,
     lastError: undefined,
     getManifest: () => ({ version: "0.1.0" }),
+    reload() {
+      calls.runtimeReload.push({ at: Date.now() });
+    },
     connectNative(name) {
       assert.equal(name, "dev.obu.host");
       if (connectNativeError) throw connectNativeError;
@@ -91,6 +111,7 @@ globalThis.chrome = {
       ports.push(port);
       return port;
     },
+    onUpdateAvailable: runtimeUpdateAvailable,
     onMessage: runtimeMessages,
   },
   i18n: {
@@ -126,6 +147,16 @@ globalThis.chrome = {
         storageChanges.emit(changes, "local");
       },
     },
+    session: {
+      async get(key) {
+        if (typeof key === "string") return { [key]: storage[key] };
+        if (Array.isArray(key)) return Object.fromEntries(key.map((item) => [item, storage[item]]));
+        return { ...storage };
+      },
+      async set(values) {
+        Object.assign(storage, values);
+      },
+    },
     onChanged: storageChanges,
   },
   tabs: {
@@ -148,15 +179,32 @@ globalThis.chrome = {
       if (!tab) throw new Error(`unknown tab ${tabId}`);
       return tab;
     },
-    async query() {
-      return [...tabs.values()];
+    async query(queryInfo = {}) {
+      let rows = [...tabs.values()];
+      if (Number.isInteger(queryInfo.groupId)) rows = rows.filter((tab) => tab.groupId === queryInfo.groupId);
+      return rows;
     },
     async group(options) {
       calls.tabsGroup.push(options);
-      const groupId = options.groupId ?? nextGroupId++;
-      for (const tabId of [].concat(options.tabIds)) {
+      const tabIds = [].concat(options.tabIds);
+      const firstTab = tabs.get(tabIds[0]);
+      if (!firstTab) throw new Error(`unknown tab ${tabIds[0]}`);
+      let groupId = options.groupId;
+      if (groupId === undefined) {
+        groupId = nextGroupId++;
+        tabGroups.set(groupId, { id: groupId, windowId: firstTab.windowId, collapsed: false });
+        tabGroupCreatedEvents.emit({ ...tabGroups.get(groupId) });
+      } else {
+        const group = tabGroups.get(groupId);
+        if (!group) throw new Error(`unknown group ${groupId}`);
+        if (group.windowId !== firstTab.windowId) throw new Error(`group ${groupId} is in another window`);
+      }
+      for (const tabId of tabIds) {
         const tab = tabs.get(tabId);
-        if (tab) tab.groupId = groupId;
+        if (!tab) continue;
+        const previousGroupId = tab.groupId;
+        tab.groupId = groupId;
+        deleteEmptyTabGroup(previousGroupId);
       }
       return groupId;
     },
@@ -164,12 +212,17 @@ globalThis.chrome = {
       calls.tabsUngroup.push(tabIds);
       for (const tabId of [].concat(tabIds)) {
         const tab = tabs.get(tabId);
-        if (tab) tab.groupId = -1;
+        if (!tab) continue;
+        const previousGroupId = tab.groupId;
+        tab.groupId = -1;
+        deleteEmptyTabGroup(previousGroupId);
       }
     },
     async remove(tabId) {
       calls.tabsRemove.push(tabId);
+      const previousGroupId = tabs.get(tabId)?.groupId;
       tabs.delete(tabId);
+      deleteEmptyTabGroup(previousGroupId);
       tabRemovedEvents.emit(tabId, { windowId: 1, isWindowClosing: false });
     },
     async sendMessage(tabId, message) {
@@ -234,9 +287,20 @@ globalThis.chrome = {
     },
   },
   tabGroups: {
-    async update(groupId, updateProperties) {
-      calls.tabGroupsUpdate.push({ groupId, updateProperties });
+    async get(groupId) {
+      const group = tabGroups.get(groupId);
+      if (!group) throw new Error(`unknown group ${groupId}`);
+      return { ...group };
     },
+    async update(groupId, updateProperties) {
+      const group = tabGroups.get(groupId);
+      if (!group) throw new Error(`unknown group ${groupId}`);
+      Object.assign(group, updateProperties);
+      calls.tabGroupsUpdate.push({ groupId, updateProperties });
+      tabGroupUpdatedEvents.emit({ ...group });
+    },
+    onCreated: tabGroupCreatedEvents,
+    onUpdated: tabGroupUpdatedEvents,
   },
   debugger: {
     onEvent: debuggerEvents,
@@ -250,6 +314,18 @@ globalThis.chrome = {
     async sendCommand(target, method, commandParams) {
       calls.debuggerSendCommand.push({ target, method, commandParams });
       if (method === "Runtime.neverResolve") return new Promise(() => {});
+      if (method === "Page.close" && Number.isInteger(target.tabId)) {
+        const dialog = pageCloseDialogs.get(target.tabId);
+        if (dialog) {
+          pageCloseDialogs.delete(target.tabId);
+          setTimeout(() => debuggerEvents.emit({ tabId: target.tabId }, "Page.javascriptDialogOpening", dialog), 0);
+          return new Promise(() => {});
+        }
+        const previousGroupId = tabs.get(target.tabId)?.groupId;
+        tabs.delete(target.tabId);
+        deleteEmptyTabGroup(previousGroupId);
+        tabRemovedEvents.emit(target.tabId, { windowId: 1, isWindowClosing: false });
+      }
       return { ok: true };
     },
   },
@@ -299,6 +375,59 @@ assert.equal(debugStatus.entries.length, 0);
 debugStatus = await popupMessage({ type: "SET_DEBUG_LOG_ENABLED", enabled: false });
 assert.equal(debugStatus.enabled, false);
 
+const idleUpdateReloadStart = calls.runtimeReload.length;
+runtimeUpdateAvailable.emitLatest({ version: "0.2.0" });
+await waitFor(() => calls.runtimeReload.length === idleUpdateReloadStart + 1);
+assert.equal(storage[pendingUpdateKey], null);
+assert.equal(storage[statusKey].pendingExtensionUpdate, undefined);
+
+const updateDeferralCreated = await hostRequest(port, "createTab", {
+  session_id: "update-deferral-session",
+  turn_id: "turn",
+  url: "https://update-deferral.example/",
+});
+const updateDeferralTabId = updateDeferralCreated.result.tab.tabId;
+const activeUpdateReloadStart = calls.runtimeReload.length;
+runtimeUpdateAvailable.emitLatest({ version: "0.3.0" });
+await waitFor(() => storage[statusKey]?.pendingExtensionUpdate?.version === "0.3.0");
+assert.equal(calls.runtimeReload.length, activeUpdateReloadStart);
+assert.equal(storage[pendingUpdateKey]?.version, "0.3.0");
+assert.ok(port.sent.some((message) =>
+  message.method === "onExtensionStatus" &&
+  message.params?.pending_update?.version === "0.3.0"
+));
+const pendingUpdateStatus = await popupMessage({ type: "GET_NATIVE_HOST_STATUS" });
+assert.equal(pendingUpdateStatus.pendingExtensionUpdate.version, "0.3.0");
+const finalizedForUpdate = await hostRequest(port, "finalizeTabs", {
+  session_id: "update-deferral-session",
+  turn_id: "turn",
+  keep: [],
+});
+assert.deepEqual(finalizedForUpdate.result.closedTabIds, [updateDeferralTabId]);
+await waitFor(() => calls.runtimeReload.length === activeUpdateReloadStart + 1);
+assert.equal(storage[pendingUpdateKey], null);
+assert.equal(storage[statusKey].pendingExtensionUpdate, undefined);
+
+storage[pendingUpdateKey] = {
+  state: "waiting_for_idle",
+  version: "0.4.0",
+  pendingSince: Date.now(),
+};
+const restoredUpdateReloadStart = calls.runtimeReload.length;
+const restoredUpdatePortCount = ports.length;
+await import(`${pathToFileURL(path.join(packageRoot, "dist", "background.js")).href}?restart-pending-update=${Date.now()}`);
+const restoredUpdatePort = await waitFor(() => ports[restoredUpdatePortCount]);
+await waitFor(() => restoredUpdatePort.sent.find((message) => message.type === "hello"));
+restoredUpdatePort.emit({ type: "hello_ack", host_version: "0.1.0" });
+await waitFor(() => calls.runtimeReload.length === restoredUpdateReloadStart + 1);
+assert.equal(storage[pendingUpdateKey], null);
+
+nextTabId = updateDeferralTabId;
+contentScriptTabs.delete(updateDeferralTabId);
+for (const [key, value] of Object.entries(calls)) {
+  if (key !== "runtimeReload") value.length = 0;
+}
+
 port = await runNativeHostReconnectAfterConnectedCrash(port);
 
 const missingSession = await hostRequest(port, "createTab", { url: "https://bad.example/" });
@@ -314,6 +443,12 @@ assert.equal(created.result.tab.tabId, 1);
 assert.equal(calls.tabsCreate.length, 1);
 assert.equal(calls.tabsCreate[0].url, "https://example.com/");
 assert.equal(calls.tabsGroup[0].tabIds, 1);
+assert.deepEqual(calls.tabGroupsUpdate.at(-1).updateProperties, {
+  title: "Open Browser Use",
+  color: "blue",
+  collapsed: false,
+});
+assert.equal(tabGroupStateGroups().find((group) => group.sessionId === "session")?.title, "Open Browser Use");
 assert.ok(calls.tabsSendMessage.some((call) =>
   call.tabId === 1 &&
   call.message.type === "OBU_TAKEOVER_STATE" &&
@@ -322,6 +457,14 @@ assert.ok(calls.tabsSendMessage.some((call) =>
   call.message.sessionId === "session" &&
   call.message.turnId === "turn",
 ));
+
+await hostRequest(port, "nameSession", {
+  session_id: "session",
+  turn_id: "turn",
+  label: "  Named   Session  ",
+});
+assert.equal(calls.tabGroupsUpdate.at(-1).updateProperties.title, "Named Session");
+assert.equal(tabGroupStateGroups().find((group) => group.sessionId === "session")?.title, "Named Session");
 const reassertStart = calls.tabsSendMessage.length;
 assert.deepEqual(await runtimeMessage({ type: "OBU_CONTENT_READY" }, { tab: { id: 1 } }), { ok: true });
 assert.ok(calls.tabsSendMessage.slice(reassertStart).some((call) =>
@@ -339,6 +482,7 @@ const blankCreated = await hostRequest(port, "createTab", {
 });
 assert.equal(blankCreated.result.tab.url, "about:blank");
 assert.equal(calls.tabsCreate.at(-1).url, "about:blank");
+let duplicateTabId = blankCreated.result.tab.tabId;
 
 const unsafeTarget = await hostRequest(port, "executeCdp", {
   session_id: "session",
@@ -383,6 +527,11 @@ const hideCountBeforeStaleDisconnect = calls.tabsSendMessage.filter((call) => ca
 staleOldPort.disconnect();
 await waitFor(() => storage[statusKey]?.state === "disconnected");
 await waitFor(() => calls.tabsSendMessage.filter((call) => call.message.type === "OBU_CURSOR_HIDE").length > hideCountBeforeStaleDisconnect);
+await waitFor(() => tabs.get(1)?.groupId === -1 && tabs.get(blankCreated.result.tab.tabId)?.groupId === -1);
+assert.equal(tabs.has(1), true);
+assert.equal(tabs.has(blankCreated.result.tab.tabId), true);
+assert.deepEqual(sessionStateTabs("session"), []);
+assert.equal(tabGroupStateGroups().some((group) => group.sessionId === "session"), false);
 const staleReconnectPortCount = ports.length;
 alarmEvents.emit({ name: "obu.reconnectNativeHost" });
 const staleNewPort = await waitFor(() => ports[staleReconnectPortCount]);
@@ -395,6 +544,18 @@ assert.equal(
   false,
 );
 port = staleNewPort;
+const reclaimedPrimaryAfterStale = await hostRequest(port, "claimUserTab", {
+  session_id: "session",
+  turn_id: "turn",
+  tabId: 1,
+});
+assert.equal(reclaimedPrimaryAfterStale.result.tab.tabId, 1);
+const duplicateCreatedAfterStale = await hostRequest(port, "createTab", {
+  session_id: "session",
+  turn_id: "turn",
+  url: "https://duplicate-tab.example/",
+});
+duplicateTabId = duplicateCreatedAfterStale.result.tab.tabId;
 
 const cdp = await hostRequest(port, "executeCdp", {
   session_id: "session",
@@ -436,6 +597,19 @@ await waitFor(() => reconnectedAfterDetachPort.sent.find((message) => message.ty
 reconnectedAfterDetachPort.emit({ type: "hello_ack", host_version: "0.1.0" });
 await waitFor(() => storage[statusKey]?.state === "connected");
 port = reconnectedAfterDetachPort;
+await waitFor(() => tabs.get(1)?.groupId === -1 && tabs.get(duplicateTabId)?.groupId === -1);
+const reclaimedPrimaryAfterDetach = await hostRequest(port, "claimUserTab", {
+  session_id: "session",
+  turn_id: "turn",
+  tabId: 1,
+});
+assert.equal(reclaimedPrimaryAfterDetach.result.tab.tabId, 1);
+const reclaimedDuplicateAfterDetach = await hostRequest(port, "claimUserTab", {
+  session_id: "session",
+  turn_id: "turn",
+  tabId: duplicateTabId,
+});
+assert.equal(reclaimedDuplicateAfterDetach.result.tab.tabId, duplicateTabId);
 const cdpAfterNativeDisconnect = await hostRequest(port, "executeCdp", {
   session_id: "session",
   turn_id: "turn",
@@ -475,6 +649,24 @@ assert.ok(calls.tabsSendMessage.some((call) =>
   call.message.x === 33 &&
   call.message.y === 44 &&
   call.message.sequence === moveMouseResult.result.sequence,
+));
+const cursorRehydrateStart = calls.tabsSendMessage.length;
+assert.deepEqual(await runtimeMessage({ type: "OBU_CONTENT_READY" }, { tab: { id: 1 } }), { ok: true });
+const cursorRehydrateMessages = calls.tabsSendMessage.slice(cursorRehydrateStart);
+assert.ok(cursorRehydrateMessages.some((call) =>
+  call.tabId === 1 &&
+  call.message.type === "OBU_TAKEOVER_STATE" &&
+  call.message.sessionId === "session" &&
+  call.message.turnId === "turn"
+));
+assert.ok(cursorRehydrateMessages.some((call) =>
+  call.tabId === 1 &&
+  call.message.type === "OBU_CURSOR_MOVE" &&
+  call.message.x === 33 &&
+  call.message.y === 44 &&
+  call.message.sequence === moveMouseResult.result.sequence &&
+  call.message.sessionId === "session" &&
+  call.message.turnId === "turn"
 ));
 
 windows.get(1).state = "minimized";
@@ -634,6 +826,26 @@ const cdpEvent = await waitFor(() =>
 assert.equal(cdpEvent.params.session_id, "session");
 assert.equal(cdpEvent.params.source.tabId, 1);
 
+const dialogEventStart = port.sent.length;
+const dialogHandleStart = calls.debuggerSendCommand.length;
+debuggerEvents.emit({ tabId: 1 }, "Page.javascriptDialogOpening", {
+  type: "beforeunload",
+  message: "Leave site?",
+});
+const dialogEvent = await waitFor(() =>
+  port.sent
+    .slice(dialogEventStart)
+    .find((message) => message.method === "onCDPEvent" && message.params?.method === "Page.javascriptDialogOpening"),
+);
+assert.equal(dialogEvent.params.session_id, "session");
+assert.equal(dialogEvent.params.source.tabId, 1);
+assert.deepEqual(dialogEvent.params.handledByExtension, { defaultAction: "accept", accept: true });
+await waitFor(() =>
+  calls.debuggerSendCommand
+    .slice(dialogHandleStart)
+    .find((call) => call.method === "Page.handleJavaScriptDialog" && call.commandParams?.accept === true),
+);
+
 downloads.set(5, {
   id: 5,
   url: "https://example.com/file.txt",
@@ -662,35 +874,38 @@ const downloadComplete = await waitFor(() =>
 );
 assert.equal(downloadComplete.params.filename, "/tmp/file.txt");
 
-await hostRequest(port, "executeCdp", {
+const blankCdpForDuplicate = await hostRequest(port, "executeCdp", {
   session_id: "session",
   turn_id: "turn",
-  target: { tabId: blankCreated.result.tab.tabId },
+  target: { tabId: duplicateTabId },
   method: "Runtime.evaluate",
 });
+assert.deepEqual(blankCdpForDuplicate.result, { ok: true });
 const duplicateDownloadStart = port.sent.length;
 debuggerEvents.emit({ tabId: 1 }, "Page.downloadWillBegin", {
   url: "https://example.com/duplicate.txt",
   guid: "guid-duplicate-1",
+  suggestedFilename: "duplicate-a.txt",
 });
-debuggerEvents.emit({ tabId: blankCreated.result.tab.tabId }, "Page.downloadWillBegin", {
+debuggerEvents.emit({ tabId: duplicateTabId }, "Page.downloadWillBegin", {
   url: "https://example.com/duplicate.txt",
   guid: "guid-duplicate-2",
+  suggestedFilename: "duplicate-b.txt",
 });
 downloads.set(6, {
   id: 6,
   url: "https://example.com/duplicate.txt",
-  filename: "duplicate.txt",
+  filename: "/tmp/duplicate-b.txt",
   state: "in_progress",
 });
-downloadCreates.emit({ id: 6, url: "https://example.com/duplicate.txt", filename: "duplicate.txt" });
+downloadCreates.emit({ id: 6, url: "https://example.com/duplicate.txt", filename: "/tmp/duplicate-b.txt" });
 downloads.set(7, {
   id: 7,
   url: "https://example.com/duplicate.txt",
-  filename: "duplicate (1).txt",
+  filename: "/tmp/duplicate-a.txt",
   state: "in_progress",
 });
-downloadCreates.emit({ id: 7, url: "https://example.com/duplicate.txt", filename: "duplicate (1).txt" });
+downloadCreates.emit({ id: 7, url: "https://example.com/duplicate.txt", filename: "/tmp/duplicate-a.txt" });
 const duplicateStarted = await waitFor(() => {
   const rows = port.sent
     .slice(duplicateDownloadStart)
@@ -698,9 +913,9 @@ const duplicateStarted = await waitFor(() => {
   return rows.length >= 2 ? rows : undefined;
 });
 assert.equal(duplicateStarted[0].params.id, "6");
-assert.equal(duplicateStarted[0].params.source.tabId, 1);
+assert.equal(duplicateStarted[0].params.source.tabId, duplicateTabId);
 assert.equal(duplicateStarted[1].params.id, "7");
-assert.equal(duplicateStarted[1].params.source.tabId, blankCreated.result.tab.tabId);
+assert.equal(duplicateStarted[1].params.source.tabId, 1);
 
 const releaseCreated = await hostRequest(port, "createTab", {
   session_id: "release-session",
@@ -724,13 +939,38 @@ assert.deepEqual(released.result.releasedTabIds, [99]);
 assert.equal(tabs.has(releaseAgentTabId), false);
 assert.equal(tabs.has(99), true);
 assert.equal(tabs.get(99).groupId, -1);
-assert.deepEqual(calls.tabsRemove.at(-1), releaseAgentTabId);
+assert.ok(calls.debuggerSendCommand.some((call) =>
+  call.target.tabId === releaseAgentTabId &&
+  call.method === "Page.close"
+));
+assert.equal(calls.tabsRemove.includes(releaseAgentTabId), false);
 assert.deepEqual(calls.tabsUngroup.at(-1), 99);
 const releaseTabs = await hostRequest(port, "getTabs", {
   session_id: "release-session",
   turn_id: "turn",
 });
 assert.deepEqual(releaseTabs.result.tabs, []);
+
+const dialogCloseCreated = await hostRequest(port, "createTab", {
+  session_id: "dialog-close-session",
+  turn_id: "turn",
+  url: "https://dialog-close.example/",
+});
+const dialogCloseTabId = dialogCloseCreated.result.tab.tabId;
+pageCloseDialogs.set(dialogCloseTabId, { type: "confirm", message: "Discard changes?" });
+const dialogClose = await hostRequest(port, "finalizeTabs", {
+  session_id: "dialog-close-session",
+  turn_id: "turn",
+  keep: [],
+});
+assert.match(dialogClose.error.message, /dialog_requires_decision/);
+assert.equal(tabs.has(dialogCloseTabId), true);
+assert.equal(calls.tabsRemove.includes(dialogCloseTabId), false);
+const dialogCloseTabs = await hostRequest(port, "getTabs", {
+  session_id: "dialog-close-session",
+  turn_id: "turn",
+});
+assert.equal(dialogCloseTabs.result.tabs[0].tabId, dialogCloseTabId);
 
 const removeCreated = await hostRequest(port, "createTab", {
   session_id: "remove-session",
@@ -779,6 +1019,12 @@ assert.equal(kept.result.keptTabs.length, 2);
 assert.equal(kept.result.deliverableTabs[0].tabId, deliverableTabId);
 assert.equal(tabs.get(handoffTabId).groupId, activeGroupId);
 assert.notEqual(tabs.get(deliverableTabId).groupId, activeGroupId);
+assert.deepEqual(calls.tabGroupsUpdate.at(-1).updateProperties, {
+  title: "Open Browser Use Deliverables",
+  color: "green",
+  collapsed: false,
+});
+assert.equal(tabGroupStateGroups().find((group) => group.kind === "deliverable")?.title, "Open Browser Use Deliverables");
 const keptSessionTabs = await hostRequest(port, "getTabs", {
   session_id: "keep-session",
   turn_id: "turn",
@@ -889,6 +1135,115 @@ assert.deepEqual(
 );
 assert.deepEqual(prunedSessionTabs.result.deliverableTabs, []);
 
+const handoffGroupId = tabs.get(handoffTabId).groupId;
+tabGroups.get(handoffGroupId).title = "";
+tabGroups.get(handoffGroupId).collapsed = true;
+storage[tabGroupStateKey].groups.push({
+  groupId: 99999,
+  kind: "session",
+  windowId: 1,
+  sessionId: "missing-group-session",
+  title: "Open Browser Use",
+  color: "blue",
+  tabs: {},
+  createdAt: Date.now(),
+  updatedAt: Date.now(),
+});
+await import(`${pathToFileURL(path.join(packageRoot, "dist", "background.js")).href}?restart-tab-group-cleanup=${Date.now()}`);
+await waitFor(() => !tabGroupStateGroups().some((group) => group.groupId === 99999));
+await waitFor(() => calls.tabGroupsUpdate.some((call) =>
+  call.groupId === handoffGroupId &&
+  call.updateProperties.title === "Open Browser Use" &&
+  call.updateProperties.collapsed === false
+));
+
+const staleActiveTabId = 103;
+tabs.set(staleActiveTabId, {
+  id: staleActiveTabId,
+  windowId: 1,
+  groupId: -1,
+  url: "https://stale-active.example/",
+  title: "Stale active",
+  active: true,
+  pinned: false,
+});
+const staleActiveGroupId = await chrome.tabs.group({ tabIds: staleActiveTabId });
+storage[tabGroupStateKey].groups.push({
+  groupId: staleActiveGroupId,
+  kind: "session",
+  windowId: 1,
+  sessionId: "stale-active-session",
+  title: "Open Browser Use",
+  color: "blue",
+  tabs: {
+    [String(staleActiveTabId)]: { origin: "agent", status: "active" },
+  },
+  createdAt: Date.now(),
+  updatedAt: Date.now(),
+});
+storage[tabGroupStateKey].sessionGroupsBySessionIdAndWindowId["stale-active-session"] = {
+  "1": staleActiveGroupId,
+};
+await import(`${pathToFileURL(path.join(packageRoot, "dist", "background.js")).href}?restart-stale-active-tab-group=${Date.now()}`);
+await waitFor(() => tabs.get(staleActiveTabId)?.groupId === -1);
+await waitFor(() => !tabGroupStateGroups().some((group) => group.groupId === staleActiveGroupId));
+assert.equal(tabs.has(staleActiveTabId), true);
+assert.equal(storage[tabGroupStateKey].sessionGroupsBySessionIdAndWindowId["stale-active-session"], undefined);
+
+await hostRequest(port, "claimUserTab", {
+  session_id: "multi-window-session",
+  turn_id: "turn",
+  tabId: 99,
+});
+await hostRequest(port, "claimUserTab", {
+  session_id: "multi-window-session",
+  turn_id: "turn",
+  tabId: 101,
+});
+const multiWindowGroupOne = tabs.get(99).groupId;
+const multiWindowGroupTwo = tabs.get(101).groupId;
+assert.notEqual(multiWindowGroupOne, -1);
+assert.notEqual(multiWindowGroupTwo, -1);
+assert.notEqual(multiWindowGroupOne, multiWindowGroupTwo);
+assert.deepEqual(
+  Object.keys(storage[tabGroupStateKey].sessionGroupsBySessionIdAndWindowId["multi-window-session"]).sort(),
+  ["1", "2"],
+);
+await hostRequest(port, "finalizeTabs", {
+  session_id: "multi-window-session",
+  turn_id: "turn",
+  keep: [],
+});
+assert.equal(tabs.get(99).groupId, -1);
+assert.equal(tabs.get(101).groupId, -1);
+assert.equal(storage[tabGroupStateKey].sessionGroupsBySessionIdAndWindowId["multi-window-session"], undefined);
+
+await hostRequest(port, "claimUserTab", {
+  session_id: "window-deliverable-session",
+  turn_id: "turn",
+  tabId: 102,
+});
+await hostRequest(port, "finalizeTabs", {
+  session_id: "window-deliverable-session",
+  turn_id: "turn",
+  keep: [{ tabId: 102, status: "deliverable" }],
+});
+assert.notEqual(tabs.get(102).groupId, -1);
+assert.notEqual(tabs.get(102).groupId, tabs.get(handoffTabId).groupId);
+assert.equal(storage[tabGroupStateKey].deliverableGroupsByWindowId["2"], tabs.get(102).groupId);
+
+const stopCleanupCreated = await hostRequest(port, "createTab", {
+  session_id: "stop-cleanup-session",
+  turn_id: "turn",
+  url: "https://stop-cleanup.example/",
+});
+const stopCleanupAgentTabId = stopCleanupCreated.result.tab.tabId;
+await hostRequest(port, "claimUserTab", {
+  session_id: "stop-cleanup-session",
+  turn_id: "turn",
+  tabId: 100,
+});
+assert.notEqual(tabs.get(100).groupId, -1);
 const stopPromise = popupMessage({ type: "STOP_BROWSER_CONTROL" });
 const stopRequest = await waitFor(() => port.sent.find((message) => message.method === "stopBrowserControl"));
 port.emit({ jsonrpc: "2.0", id: stopRequest.id, result: null });
@@ -897,6 +1252,12 @@ assert.equal(stopped.state, "stopped");
 assert.equal(port.disconnected, true);
 assert.equal(storage[statusKey].state, "stopped");
 assert.equal(calls.debuggerDetach[0].tabId, 1);
+assert.equal(tabs.has(stopCleanupAgentTabId), false);
+assert.equal(tabs.has(100), true);
+assert.equal(tabs.get(100).groupId, -1);
+assert.equal(tabs.has(102), true);
+assert.notEqual(tabs.get(102).groupId, -1);
+assert.deepEqual(sessionStateTabs("stop-cleanup-session"), []);
 
 const resumePortIndex = ports.length;
 const resumePromise = popupMessage({ type: "RESUME_BROWSER_CONTROL" });
@@ -1062,8 +1423,15 @@ earlyDisconnectRecoveryPort.emit({ type: "hello_ack", host_version: "0.1.0" });
 await waitFor(() => storage[statusKey]?.state === "connected");
 
 const originalSetTimeout = globalThis.setTimeout;
-globalThis.setTimeout = (callback, delay, ...args) =>
-  originalSetTimeout(callback, delay === 10_000 || delay === 5_000 ? 1 : delay, ...args);
+let heartbeatIntervalCallback;
+let accelerateHeartbeatTimeout = false;
+globalThis.setTimeout = (callback, delay, ...args) => {
+  if (delay === 10_000) {
+    heartbeatIntervalCallback = () => callback(...args);
+    return originalSetTimeout(() => undefined, 60_000);
+  }
+  return originalSetTimeout(callback, accelerateHeartbeatTimeout && delay === 5_000 ? 1 : delay, ...args);
+};
 const heartbeatPortCount = ports.length;
 storage[statusKey] = { state: "disconnected", updatedAt: Date.now(), retryDelayMs: 1000, nextRetryAt: Date.now() - 1 };
 try {
@@ -1071,9 +1439,26 @@ try {
   const heartbeatPort = await waitFor(() => ports[heartbeatPortCount]);
   await waitFor(() => heartbeatPort.sent.find((message) => message.type === "hello"));
   heartbeatPort.emit({ type: "hello_ack", host_version: "0.1.0" });
+  await waitFor(() => storage[statusKey]?.state === "connected");
+  const heartbeatActiveCreated = await hostRequest(heartbeatPort, "createTab", {
+    session_id: "heartbeat-update-session",
+    turn_id: "turn",
+    url: "https://heartbeat-update.example/",
+  });
+  const heartbeatUpdateReloadStart = calls.runtimeReload.length;
+  runtimeUpdateAvailable.emitLatest({ version: "0.5.0" });
+  await waitFor(() => storage[statusKey]?.pendingExtensionUpdate?.version === "0.5.0");
+  assert.equal(calls.runtimeReload.length, heartbeatUpdateReloadStart);
+  assert.equal(typeof heartbeatIntervalCallback, "function");
+  accelerateHeartbeatTimeout = true;
+  heartbeatIntervalCallback();
   await waitFor(() => storage[statusKey]?.diagnosis === "native_host_heartbeat_timeout");
   assert.equal(storage[statusKey].state, "disconnected");
   assert.match(storage[statusKey].message, /native host heartbeat timed out/i);
+  await waitFor(() => calls.runtimeReload.length === heartbeatUpdateReloadStart + 1);
+  assert.equal(storage[pendingUpdateKey], null);
+  assert.equal(tabs.has(heartbeatActiveCreated.result.tab.tabId), true);
+  assert.equal(tabs.get(heartbeatActiveCreated.result.tab.tabId).groupId, -1);
   assert.equal(calls.alarmsCreate.at(-1).name, "obu.reconnectNativeHost");
 } finally {
   globalThis.setTimeout = originalSetTimeout;
@@ -1198,4 +1583,14 @@ async function waitFor(predicate) {
 
 function sessionStateTabs(sessionId) {
   return storage[sessionStateKey]?.sessions?.find((session) => session.session_id === sessionId)?.tabs ?? [];
+}
+
+function tabGroupStateGroups() {
+  return storage[tabGroupStateKey]?.groups ?? [];
+}
+
+function deleteEmptyTabGroup(groupId) {
+  if (!Number.isInteger(groupId) || groupId < 0) return;
+  if ([...tabs.values()].some((tab) => tab.groupId === groupId)) return;
+  tabGroups.delete(groupId);
 }

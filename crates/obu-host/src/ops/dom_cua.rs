@@ -7,6 +7,8 @@ use serde_json::{Map, Value};
 use crate::backends::BackendRequestContext;
 use crate::error::{HostError, Result};
 
+pub(crate) const OBU_OVERLAY_ROOT_ID: &str = "obu-agent-overlay-root";
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Rect {
     pub x: f64,
@@ -111,6 +113,25 @@ pub(crate) fn attributes_object(node: &Value) -> Value {
     Value::Object(object)
 }
 
+pub(crate) fn is_obu_overlay_node(node: &Value) -> bool {
+    let Some(attributes) = node.get("attributes").and_then(Value::as_array) else {
+        return false;
+    };
+    for pair in attributes.chunks(2) {
+        let Some(key) = pair.first().and_then(Value::as_str) else {
+            continue;
+        };
+        let value = pair.get(1).and_then(Value::as_str).unwrap_or_default();
+        if key == "id" && value == OBU_OVERLAY_ROOT_ID {
+            return true;
+        }
+        if key == "data-obu-overlay-root" {
+            return true;
+        }
+    }
+    false
+}
+
 pub(crate) fn snapshot_node_ids(nodes: &[Value]) -> HashSet<String> {
     nodes
         .iter()
@@ -159,5 +180,18 @@ mod tests {
         assert_eq!(backend_node_id("42").expect("node id"), 42);
         let message = backend_node_id("node-42").unwrap_err().to_string();
         assert!(message.contains("backendNodeId integer: node-42"));
+    }
+
+    #[test]
+    fn is_obu_overlay_node_detects_stable_marker() {
+        assert!(is_obu_overlay_node(&json!({
+            "attributes": ["id", OBU_OVERLAY_ROOT_ID]
+        })));
+        assert!(is_obu_overlay_node(&json!({
+            "attributes": ["data-obu-overlay-root", "true"]
+        })));
+        assert!(!is_obu_overlay_node(&json!({
+            "attributes": ["id", "app"]
+        })));
     }
 }

@@ -523,13 +523,169 @@ async fn end_to_end_webextension_create_click_and_user_surfaces() {
     let _ = mcp.shutdown().await;
 }
 
+#[tokio::test]
+#[ignore = "requires Chromium with the unpacked extension loaded and dev native-host manifest installed"]
+async fn webextension_dirty_form_beforeunload_survives_reattach_and_finish_turn() {
+    let runtime_dir =
+        PathBuf::from(std::env::var("OBU_RUNTIME_DIR").expect("OBU_RUNTIME_DIR must be set"));
+    let descriptor = wait_for_descriptor(&runtime_dir).await;
+    let descriptor_json: Value =
+        serde_json::from_slice(&std::fs::read(&descriptor).unwrap()).unwrap();
+    assert_eq!(descriptor_json["type"], "webextension");
+
+    let (dirty_url, clean_url) = spawn_dirty_form_fixture().await;
+    let sdk = prepare_built_sdk_module_root();
+    let mcp: NodeReplHandle = spawn_node_repl(&NodeReplOpts {
+        envs: vec![
+            (
+                "OBU_RUNTIME_DIR".to_string(),
+                runtime_dir.display().to_string(),
+            ),
+            (
+                "OBU_NODE_REPL_MODULE_DIRS".to_string(),
+                sdk.root.display().to_string(),
+            ),
+            ("OBU_TRUSTED_MODULE_SHA256S".to_string(), sdk.hash.clone()),
+        ],
+    })
+    .await;
+
+    let dirty_url_json = serde_json::to_string(&dirty_url).unwrap();
+    let clean_url_json = serde_json::to_string(&clean_url).unwrap();
+    let script = r##"
+        const dirtyUrl = __DIRTY_URL__;
+        const cleanUrl = __CLEAN_URL__;
+        const browser = await agent.browsers.get("chrome");
+
+        async function makeDirty(tab) {
+            await tab.goto(dirtyUrl, { timeout: 10_000 });
+            await tab.waitForLoadState("load", { timeout: 10_000 });
+            await tab.locator("#dirty").click({ timeout: 10_000 });
+            await tab.cua.type("changed", { timeout: 10_000 });
+            const probe = await tab.dev.cdp("Runtime.evaluate", {
+                expression: `({
+                    href: location.href,
+                    dirty: window.__dirty === true,
+                    value: document.querySelector("#dirty")?.value ?? ""
+                })`,
+                returnByValue: true
+            });
+            if (!probe.result.value.dirty || probe.result.value.value !== "changed") {
+                throw new Error(`dirty form fixture did not become dirty: ${JSON.stringify(probe.result.value)}`);
+            }
+            return probe.result.value;
+        }
+
+        const tab = await browser.tabs.create();
+        await tab.attach({ timeout: 10_000 });
+        await makeDirty(tab);
+        await tab.detach({ timeout: 10_000 });
+        await tab.attach({ timeout: 10_000 });
+        await tab.goto(cleanUrl, { timeout: 10_000 });
+        await tab.waitForLoadState("load", { timeout: 10_000 });
+        const reattachGotoUrl = await tab.url({ timeout: 10_000 });
+
+        await makeDirty(tab);
+        const finalizeTabId = String(tab.id);
+        const finalized = await browser.finishTurn({
+            keep: [],
+            timeout: 10_000,
+            turnTimeout: 10_000
+        });
+        const listedAfterFinishTurn = await browser.tabs.list();
+        const refreshed = await agent.browsers.get("chrome");
+        const recentDialogs = refreshed.info.metadata?.diagnostics?.dialogs?.recent ?? [];
+        const beforeunload = recentDialogs.filter((row) => row.dialog_type === "beforeunload");
+        const closedTabIds = finalized.closed_tab_ids ?? finalized.closedTabIds ?? [];
+
+        JSON.stringify({
+            reattachGotoUrl,
+            finalizeTabId,
+            finishTurnClosed: closedTabIds.map(String),
+            finishTurnResultKeys: Object.keys(finalized),
+            finalizeStillListed: listedAfterFinishTurn.some((row) => String(row.id) === finalizeTabId),
+            beforeunloadCount: beforeunload.length,
+            beforeunloadOperations: beforeunload.map((row) => row.operation),
+            beforeunloadOutcomes: beforeunload.map((row) => row.outcome),
+            beforeunloadActions: beforeunload.map((row) => row.default_action)
+        })
+    "##
+    .replace("__DIRTY_URL__", &dirty_url_json)
+    .replace("__CLEAN_URL__", &clean_url_json);
+    let raw: Value = mcp
+        .call_tool("js", json!({ "source": script, "timeout_ms": 60_000 }))
+        .await
+        .expect("dirty form reattach dialog policy js tool call");
+    let payload: Value = parse_js_json_result(&raw, "dirty form reattach dialog policy");
+    assert_eq!(
+        payload["reattachGotoUrl"],
+        json!(clean_url),
+        "reattached dirty-form goto must land on the clean page"
+    );
+    assert_eq!(
+        payload["finalizeStillListed"],
+        json!(false),
+        "finishTurn({{ keep: [] }}) must close the omitted dirty-form tab"
+    );
+    let finalize_tab_id = payload["finalizeTabId"].as_str().unwrap();
+    assert!(
+        payload["finishTurnClosed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tab_id| tab_id.as_str() == Some(finalize_tab_id)),
+        "finishTurn result must report the dirty-form tab as closed; got {payload}"
+    );
+    assert!(
+        payload["beforeunloadCount"].as_u64().unwrap_or_default() >= 1,
+        "expected at least the reattach navigation beforeunload diagnostic; headless Chrome may not emit close dialogs; got {payload}"
+    );
+    assert!(
+        payload["beforeunloadOperations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|operation| operation.as_str() == Some("Page.navigate")),
+        "expected the reattach navigation beforeunload diagnostic; got {payload}"
+    );
+    assert!(
+        payload["beforeunloadActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|action| action.as_str() == Some("accept")),
+        "beforeunload dialogs must be accepted by policy; got {payload}"
+    );
+    assert!(
+        payload["beforeunloadOutcomes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|outcome| outcome.as_str() == Some("continued")),
+        "beforeunload dialogs must allow operations to continue; got {payload}"
+    );
+
+    let _ = mcp.shutdown().await;
+}
+
 async fn eval_json(mcp: &NodeReplHandle, label: &str, source: &str) -> Value {
     eprintln!("p3 webextension e2e: {label}");
     let raw: Value = mcp
         .call_tool("js", json!({ "source": source, "timeout_ms": 15_000 }))
         .await
         .unwrap_or_else(|error| panic!("{label} js tool call: {error}"));
-    serde_json::from_str(raw["result"].as_str().expect("js result is a string"))
+    parse_js_json_result(&raw, label)
+}
+
+fn parse_js_json_result(raw: &Value, label: &str) -> Value {
+    let result = raw
+        .get("result")
+        .unwrap_or_else(|| panic!("{label} missing js result; got {raw}"));
+    let value = result.get("value").unwrap_or(result);
+    let result = value
+        .as_str()
+        .unwrap_or_else(|| panic!("{label} expected string js result; got {raw}"));
+    serde_json::from_str(result)
         .unwrap_or_else(|error| panic!("{label} decode payload: {error}; raw={raw}"))
 }
 
@@ -611,6 +767,64 @@ async fn spawn_fixture_server(download_name: String) -> String {
         }
     });
     format!("http://{addr}/")
+}
+
+async fn spawn_dirty_form_fixture() -> (String, String) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            tokio::spawn(async move {
+                let mut buffer = [0u8; 1024];
+                let read = stream.read(&mut buffer).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&buffer[..read]);
+                let path = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("/");
+                let body = if path.starts_with("/clean") {
+                    "<!doctype html><title>clean</title><main id=\"clean\">clean page</main>"
+                        .to_string()
+                } else {
+                    r#"<!doctype html>
+<html>
+  <head><title>dirty-form</title></head>
+  <body>
+    <label for="dirty">Dirty value</label>
+    <input id="dirty" autofocus>
+    <script>
+      window.__dirty = false;
+      const input = document.getElementById("dirty");
+      input.addEventListener("input", () => {
+        window.__dirty = true;
+      });
+      window.addEventListener("beforeunload", (event) => {
+        if (!window.__dirty) return;
+        event.preventDefault();
+        event.returnValue = "";
+      });
+    </script>
+  </body>
+</html>"#
+                        .to_string()
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            });
+        }
+    });
+    (
+        format!("http://{addr}/dirty"),
+        format!("http://{addr}/clean"),
+    )
 }
 
 async fn wait_for_descriptor(runtime: &Path) -> PathBuf {

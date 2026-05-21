@@ -1,4 +1,5 @@
 export { Agent } from "./agent.js";
+export type { AgentOptions } from "./agent.js";
 export { Browser } from "./browser.js";
 export type {
   BrowserClearLifecycleDiagnosticsResult,
@@ -15,7 +16,7 @@ export { BrowserTabs } from "./browser_tabs.js";
 export type { CreateTabOptions } from "./browser_tabs.js";
 export { BrowserUser } from "./browser_user.js";
 export { Browsers } from "./browsers.js";
-export type { DiscoveredBackend, RuntimeConnector } from "./browsers.js";
+export type { BrowserGetOptions, DiscoveredBackend, RuntimeConnector } from "./browsers.js";
 export { display } from "./display.js";
 export { Download } from "./download.js";
 export {
@@ -23,6 +24,7 @@ export {
   ERR_CAPABILITY_TOKEN,
   ERR_CDP_FAILURE,
   ERR_CMD_DISALLOWED,
+  ERR_DIALOG_REQUIRES_DECISION,
   ERR_DISALLOWED,
   ERR_IO,
   ERR_NO_BACKEND,
@@ -35,6 +37,15 @@ export {
   ERR_TAB_NOT_ATTACHED,
   ERR_TIMEOUT,
   ERR_TRANSPORT_CLOSED,
+  PRODUCT_ERROR_MATRIX,
+  productErrorByCode,
+  productErrorData,
+  productErrorForRpcCode,
+} from "./errors.js";
+export type {
+  ProductErrorCode,
+  ProductErrorEntry,
+  ProductErrorNextAction,
 } from "./errors.js";
 export { FileChooser } from "./file-chooser.js";
 export { FrameLocator } from "./frame-locator.js";

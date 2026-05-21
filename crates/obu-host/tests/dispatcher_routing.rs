@@ -12,12 +12,15 @@ use tokio_util::codec::Framed;
 use obu_host::{
     backends::{BackendKind, BackendRequestContext, BrowserBackend},
     dispatcher::Dispatcher,
-    error::Result,
+    error::{DialogRequiresDecision, HostError, Result},
     methods,
     policy::{HostPolicy, PolicyContext, disallowed},
     socket::{Listener, unix::UnixSockListener},
 };
-use obu_wire::{ErrorObject, FrameCodec, error::ERR_NOT_IMPLEMENTED};
+use obu_wire::{
+    ErrorObject, FrameCodec,
+    error::{ERR_DIALOG_REQUIRES_DECISION, ERR_NOT_IMPLEMENTED},
+};
 
 #[tokio::test]
 async fn getinfo_then_ping_round_trip() {
@@ -622,6 +625,19 @@ async fn backend_capability_gate_rejects_unsupported_method_before_backend_call(
             .unwrap()
             .contains("backend cdp does not support method tab_clipboard_read_text")
     );
+    assert_eq!(
+        response["error"]["data"]["code"],
+        "unsupported_backend_capability"
+    );
+    assert_eq!(response["error"]["data"]["backend"], "cdp");
+    assert_eq!(
+        response["error"]["data"]["method"],
+        methods::TAB_CLIPBOARD_READ_TEXT
+    );
+    assert_eq!(
+        response["error"]["data"]["missing_capability"],
+        "method:tab_clipboard_read_text"
+    );
     assert!(backend.calls.lock().unwrap().is_empty());
 }
 
@@ -646,7 +662,48 @@ async fn cdp_capability_gate_rejects_profile_history_before_default_empty_result
             .unwrap()
             .contains("backend cdp does not support method getUserHistory")
     );
+    assert_eq!(
+        response["error"]["data"]["code"],
+        "unsupported_backend_capability"
+    );
+    assert_eq!(response["error"]["data"]["backend"], "cdp");
+    assert_eq!(
+        response["error"]["data"]["method"],
+        methods::GET_USER_HISTORY
+    );
+    assert_eq!(
+        response["error"]["data"]["missing_capability"],
+        "method:getUserHistory"
+    );
     assert!(backend.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn dispatcher_preserves_dialog_requires_decision_error_data() {
+    let response = one_request(
+        Dispatcher::new("0.1.0".into(), Arc::new(DialogErrorBackend)),
+        json!({
+            "jsonrpc": "2.0",
+            "method": methods::TAB_GOTO,
+            "params": {
+                "session_id": "session",
+                "turn_id": "turn",
+                "tab_id": "42",
+                "url": "https://example.test/"
+            },
+            "id": 1,
+        }),
+    )
+    .await;
+
+    assert_eq!(response["error"]["code"], ERR_DIALOG_REQUIRES_DECISION);
+    assert_eq!(
+        response["error"]["data"]["code"],
+        "dialog_requires_decision"
+    );
+    assert_eq!(response["error"]["data"]["tab_id"], "42");
+    assert_eq!(response["error"]["data"]["dialog_type"], "confirm");
+    assert_eq!(response["error"]["data"]["default_action"], "dismiss");
 }
 
 #[tokio::test]
@@ -740,6 +797,38 @@ async fn read_json(framed: &mut Framed<UnixStream, FrameCodec>) -> serde_json::V
 struct RecordingBackend {
     kind: BackendKind,
     calls: Mutex<Vec<String>>,
+}
+
+struct DialogErrorBackend;
+
+#[async_trait]
+impl BrowserBackend for DialogErrorBackend {
+    fn kind(&self) -> BackendKind {
+        BackendKind::WebExtension
+    }
+
+    fn id(&self) -> &str {
+        "dialog-error"
+    }
+
+    async fn tab_command_with_context(
+        &self,
+        _ctx: &BackendRequestContext,
+        _method: &str,
+        _params: Value,
+    ) -> Result<Value> {
+        Err(HostError::DialogRequiresDecision(DialogRequiresDecision {
+            message: "dialog_requires_decision: confirm dialog on tab 42 was dismissed".into(),
+            data: json!({
+                "code": "dialog_requires_decision",
+                "tab_id": "42",
+                "session_id": "session",
+                "dialog_type": "confirm",
+                "default_action": "dismiss",
+                "accept": false
+            }),
+        }))
+    }
 }
 
 impl Default for RecordingBackend {

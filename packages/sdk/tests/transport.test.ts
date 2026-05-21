@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { ObuError, ERR_PROTOCOL, ERR_TIMEOUT, ERR_TRANSPORT_CLOSED } from "../src/errors.js";
+import { ObuError, ERR_DIALOG_REQUIRES_DECISION, ERR_PROTOCOL, ERR_TIMEOUT, ERR_TRANSPORT_CLOSED } from "../src/errors.js";
 import { FrameDecoder, FrameEncoder, MAX_FRAME_LEN } from "../src/wire/frames.js";
 import { Transport } from "../src/wire/transport.js";
 import type { NativePipeConnection, NativePipeConnectionEvent } from "../src/wire/pipe.js";
@@ -126,5 +126,39 @@ describe("Transport", () => {
       );
     };
     await expect(transport.sendRequest("getInfo", {}, 100)).rejects.toBeInstanceOf(ObuError);
+  });
+
+  it("preserves structured rpc error data", async () => {
+    const connection = new FakeConnection();
+    const transport = new Transport(connection);
+    const data = {
+      code: "dialog_requires_decision",
+      tab_id: "42",
+      dialog_type: "confirm",
+      default_action: "dismiss",
+      accept: false,
+    };
+    connection.onWrite = (request) => {
+      connection.emit(
+        "data",
+        connection.encoder.encode(
+          new TextEncoder().encode(
+            JSON.stringify({
+              jsonrpc: "2.0",
+              id: request.id,
+              error: {
+                code: ERR_DIALOG_REQUIRES_DECISION,
+                message: "dialog_requires_decision",
+                data,
+              },
+            }),
+          ),
+        ),
+      );
+    };
+    await expect(transport.sendRequest("tab_goto", {}, 100)).rejects.toMatchObject({
+      code: ERR_DIALOG_REQUIRES_DECISION,
+      data,
+    });
   });
 });

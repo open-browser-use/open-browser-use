@@ -438,6 +438,7 @@ async fn tab_commands_navigate_and_export_content_against_fake_browser() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Page.enable",
             "Page.navigate",
             "Runtime.evaluate",
             "Runtime.evaluate",
@@ -447,7 +448,8 @@ async fn tab_commands_navigate_and_export_content_against_fake_browser() {
             "Runtime.evaluate",
             "Page.captureScreenshot",
             "Page.printToPDF",
-            "Target.closeTarget",
+            "Page.enable",
+            "Page.close",
         ],
     )
     .await;
@@ -470,6 +472,283 @@ async fn execute_cdp_requires_attach() {
         .await
         .unwrap_err();
     assert!(matches!(err, HostError::TabNotAttached(_)));
+}
+
+#[tokio::test]
+async fn cdp_goto_accepts_beforeunload_dialog() {
+    let (ws_url, mut requests) = spawn_fake_cdp_with_dialog("Page.navigate", "beforeunload").await;
+    let backend = CdpBackend::connect(&ws_url, Arc::new(ServiceRegistry::default()))
+        .await
+        .unwrap();
+    let created = backend
+        .create_tab_with_context(
+            &BackendRequestContext {
+                session_id: Some("session".into()),
+                turn_id: Some("turn".into()),
+                client_timeout_ms: None,
+            },
+            Some("about:blank".into()),
+        )
+        .await
+        .unwrap();
+    let tab_id = created["id"].as_str().unwrap().to_string();
+    backend.attach(&tab_id).await.unwrap();
+
+    backend
+        .tab_command(
+            methods::TAB_GOTO,
+            json!({ "tab_id": tab_id, "url": "https://example.test/next" }),
+        )
+        .await
+        .unwrap();
+
+    let diagnostics = backend.diagnostics();
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["code"],
+        "dialog_handled"
+    );
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["dialog_type"],
+        "beforeunload"
+    );
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["default_action"],
+        "accept"
+    );
+    assert_eq!(diagnostics["dialogs"]["recent"][0]["outcome"], "continued");
+    let handle = recv_until_method(&mut requests, "Page.handleJavaScriptDialog").await;
+    assert_eq!(handle["params"]["accept"], true);
+}
+
+#[tokio::test]
+async fn cdp_reload_uses_page_reload_dialog_policy_for_beforeunload() {
+    let (ws_url, mut requests) =
+        spawn_fake_cdp_with_sessionless_dialog("Page.reload", "beforeunload").await;
+    let backend = CdpBackend::connect(&ws_url, Arc::new(ServiceRegistry::default()))
+        .await
+        .unwrap();
+    let created = backend
+        .create_tab_with_context(
+            &BackendRequestContext {
+                session_id: Some("session".into()),
+                turn_id: Some("turn".into()),
+                client_timeout_ms: None,
+            },
+            Some("about:blank".into()),
+        )
+        .await
+        .unwrap();
+    let tab_id = created["id"].as_str().unwrap().to_string();
+    backend.attach(&tab_id).await.unwrap();
+
+    backend
+        .tab_command(methods::TAB_RELOAD, json!({ "tab_id": tab_id }))
+        .await
+        .unwrap();
+
+    let diagnostics = backend.diagnostics();
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["code"],
+        "dialog_handled"
+    );
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["dialog_type"],
+        "beforeunload"
+    );
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["default_action"],
+        "accept"
+    );
+    assert_eq!(diagnostics["dialogs"]["recent"][0]["outcome"], "continued");
+    let reload = recv_until_method(&mut requests, "Page.reload").await;
+    assert_eq!(reload["params"], json!({}));
+    let handle = recv_until_method(&mut requests, "Page.handleJavaScriptDialog").await;
+    assert_eq!(handle["params"]["accept"], true);
+}
+
+#[tokio::test]
+async fn cdp_dialog_policy_reenables_page_after_tab_reattach() {
+    let (ws_url, mut requests) = spawn_fake_cdp_with_dialog("Page.navigate", "beforeunload").await;
+    let backend = CdpBackend::connect(&ws_url, Arc::new(ServiceRegistry::default()))
+        .await
+        .unwrap();
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+    let created = backend
+        .create_tab_with_context(&ctx, Some("about:blank".into()))
+        .await
+        .unwrap();
+    let tab_id = created["id"].as_str().unwrap().to_string();
+
+    backend.attach(&tab_id).await.unwrap();
+    backend.detach(&tab_id).await.unwrap();
+    backend.attach(&tab_id).await.unwrap();
+    backend
+        .tab_command(
+            methods::TAB_GOTO,
+            json!({ "tab_id": tab_id, "url": "https://example.test/after-reattach" }),
+        )
+        .await
+        .unwrap();
+
+    let mut methods = Vec::new();
+    let mut handle_request = None;
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while let Some(request) = requests.recv().await {
+            let method = request["method"].as_str().unwrap().to_string();
+            if method == "Page.handleJavaScriptDialog" {
+                handle_request = Some(request);
+                break;
+            }
+            methods.push(method);
+        }
+    })
+    .await
+    .expect("timed out waiting for dialog handling after reattach");
+
+    assert_eq!(
+        methods,
+        vec![
+            "Browser.setDownloadBehavior",
+            "Target.createTarget",
+            "Target.attachToTarget",
+            "Emulation.setFocusEmulationEnabled",
+            "Target.detachFromTarget",
+            "Target.attachToTarget",
+            "Emulation.setFocusEmulationEnabled",
+            "Page.enable",
+            "Page.navigate",
+        ]
+    );
+    assert_eq!(
+        handle_request.expect("expected Page.handleJavaScriptDialog")["params"]["accept"],
+        true
+    );
+}
+
+#[tokio::test]
+async fn cdp_goto_dismisses_confirm_dialog_with_structured_error() {
+    let (ws_url, mut requests) = spawn_fake_cdp_with_dialog("Page.navigate", "confirm").await;
+    let backend = CdpBackend::connect(&ws_url, Arc::new(ServiceRegistry::default()))
+        .await
+        .unwrap();
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+    let created = backend
+        .create_tab_with_context(&ctx, Some("about:blank".into()))
+        .await
+        .unwrap();
+    let tab_id = created["id"].as_str().unwrap().to_string();
+    backend.attach(&tab_id).await.unwrap();
+
+    let error = backend
+        .tab_command(
+            methods::TAB_GOTO,
+            json!({ "tab_id": tab_id, "url": "https://example.test/next" }),
+        )
+        .await
+        .unwrap_err();
+    let HostError::DialogRequiresDecision(dialog) = error else {
+        panic!("expected dialog_requires_decision error");
+    };
+    assert_eq!(dialog.data["code"], "dialog_requires_decision");
+    assert_eq!(dialog.data["session_id"], "session");
+    assert_eq!(dialog.data["dialog_type"], "confirm");
+    assert_eq!(dialog.data["default_action"], "dismiss");
+
+    let diagnostics = backend.diagnostics();
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["code"],
+        "dialog_requires_decision"
+    );
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["dialog_type"],
+        "confirm"
+    );
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["default_action"],
+        "dismiss"
+    );
+    assert_eq!(diagnostics["dialogs"]["recent"][0]["outcome"], "failed");
+    let handle = recv_until_method(&mut requests, "Page.handleJavaScriptDialog").await;
+    assert_eq!(handle["params"]["accept"], false);
+}
+
+#[tokio::test]
+async fn cdp_close_accepts_beforeunload_dialog() {
+    let (ws_url, mut requests) = spawn_fake_cdp_with_dialog("Page.close", "beforeunload").await;
+    let registry = Arc::new(ServiceRegistry::default());
+    let backend = CdpBackend::connect(&ws_url, registry.clone())
+        .await
+        .unwrap();
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+    let created = backend
+        .create_tab_with_context(&ctx, Some("about:blank".into()))
+        .await
+        .unwrap();
+    let tab_id = created["id"].as_str().unwrap().to_string();
+    backend.attach(&tab_id).await.unwrap();
+
+    backend
+        .tab_command(methods::TAB_CLOSE, json!({ "tab_id": tab_id }))
+        .await
+        .unwrap();
+
+    assert!(registry.get(&TabId::new(&tab_id)).unwrap().is_none());
+    let handle = recv_until_method(&mut requests, "Page.handleJavaScriptDialog").await;
+    assert_eq!(handle["params"]["accept"], true);
+}
+
+#[tokio::test]
+async fn cdp_finalize_accepts_beforeunload_dialog_for_omitted_agent_tab() {
+    let (ws_url, mut requests) = spawn_fake_cdp_with_dialog("Page.close", "beforeunload").await;
+    let registry = Arc::new(ServiceRegistry::default());
+    let backend = CdpBackend::connect(&ws_url, registry.clone())
+        .await
+        .unwrap();
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+    let created = backend
+        .create_tab_with_context(&ctx, Some("about:blank".into()))
+        .await
+        .unwrap();
+    let tab_id = created["id"].as_str().unwrap().to_string();
+    backend.attach(&tab_id).await.unwrap();
+
+    let finalized = backend
+        .finalize_tabs_with_context(&ctx, json!({ "keep": [] }))
+        .await
+        .unwrap();
+
+    assert_eq!(finalized["closed_tab_ids"], json!([tab_id]));
+    assert!(registry.get(&TabId::new(&tab_id)).unwrap().is_none());
+    let diagnostics = backend.diagnostics();
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["dialog_type"],
+        "beforeunload"
+    );
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["default_action"],
+        "accept"
+    );
+    assert_eq!(diagnostics["dialogs"]["recent"][0]["outcome"], "continued");
+    let close = recv_until_method(&mut requests, "Page.close").await;
+    assert!(close.get("sessionId").is_some());
+    let handle = recv_until_method(&mut requests, "Page.handleJavaScriptDialog").await;
+    assert_eq!(handle["params"]["accept"], true);
 }
 
 #[tokio::test]
@@ -500,8 +779,11 @@ async fn cua_click_dispatches_raw_cdp_mouse_events() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Page.enable",
             "Input.dispatchMouseEvent",
+            "Page.enable",
             "Input.dispatchMouseEvent",
+            "Page.enable",
             "Input.dispatchMouseEvent",
         ],
     )
@@ -544,8 +826,11 @@ async fn cua_click_waits_for_navigation_when_requested() {
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
             "Page.enable",
+            "Page.enable",
             "Input.dispatchMouseEvent",
+            "Page.enable",
             "Input.dispatchMouseEvent",
+            "Page.enable",
             "Input.dispatchMouseEvent",
             "Runtime.evaluate",
         ],
@@ -588,13 +873,13 @@ async fn cua_commands_validate_payloads_and_dispatch_expected_input_events() {
         )
         .await
         .unwrap();
-    let key_down = requests.recv().await.unwrap();
+    let key_down = recv_until_method(&mut requests, "Input.dispatchKeyEvent").await;
     assert_eq!(key_down["method"], "Input.dispatchKeyEvent");
     assert_eq!(key_down["params"]["type"], "keyDown");
     assert_eq!(key_down["params"]["key"], "x");
     assert_eq!(key_down["params"]["text"], "x");
     assert_eq!(key_down["params"]["modifiers"], 15);
-    let key_up = requests.recv().await.unwrap();
+    let key_up = recv_until_method(&mut requests, "Input.dispatchKeyEvent").await;
     assert_eq!(key_up["params"]["type"], "keyUp");
     assert_eq!(key_up["params"]["modifiers"], 15);
 
@@ -610,9 +895,9 @@ async fn cua_commands_validate_payloads_and_dispatch_expected_input_events() {
         .await
         .unwrap();
     let primary_mask = if cfg!(target_os = "macos") { 4 } else { 2 };
-    let primary_down = requests.recv().await.unwrap();
+    let primary_down = recv_until_method(&mut requests, "Input.dispatchKeyEvent").await;
     assert_eq!(primary_down["params"]["modifiers"], primary_mask);
-    let primary_up = requests.recv().await.unwrap();
+    let primary_up = recv_until_method(&mut requests, "Input.dispatchKeyEvent").await;
     assert_eq!(primary_up["params"]["modifiers"], primary_mask);
 
     backend
@@ -622,7 +907,7 @@ async fn cua_commands_validate_payloads_and_dispatch_expected_input_events() {
         )
         .await
         .unwrap();
-    let insert = requests.recv().await.unwrap();
+    let insert = recv_until_method(&mut requests, "Input.insertText").await;
     assert_eq!(insert["method"], "Input.insertText");
     assert_eq!(insert["params"]["text"], "typed");
 
@@ -633,7 +918,7 @@ async fn cua_commands_validate_payloads_and_dispatch_expected_input_events() {
         )
         .await
         .unwrap();
-    let scroll_move = requests.recv().await.unwrap();
+    let scroll_move = recv_until_method(&mut requests, "Input.dispatchMouseEvent").await;
     assert_eq!(scroll_move["method"], "Input.dispatchMouseEvent");
     assert_eq!(scroll_move["params"]["type"], "mouseMoved");
     assert_eq!(scroll_move["params"]["x"], 10.0);
@@ -668,7 +953,7 @@ async fn cua_commands_validate_payloads_and_dispatch_expected_input_events() {
         "mouseReleased",
     ];
     for event_type in drag_types {
-        let event = requests.recv().await.unwrap();
+        let event = recv_until_method(&mut requests, "Input.dispatchMouseEvent").await;
         assert_eq!(event["method"], "Input.dispatchMouseEvent");
         assert_eq!(event["params"]["type"], event_type);
     }
@@ -680,7 +965,7 @@ async fn cua_commands_validate_payloads_and_dispatch_expected_input_events() {
         )
         .await
         .unwrap();
-    let moved = requests.recv().await.unwrap();
+    let moved = recv_until_method(&mut requests, "Input.dispatchMouseEvent").await;
     assert_eq!(moved["params"]["type"], "mouseMoved");
     assert_eq!(moved["params"]["x"], 99.0);
     assert_eq!(moved["params"]["y"], 100.0);
@@ -843,8 +1128,11 @@ async fn playwright_click_routes_through_injected_runtime_and_cua() {
             "Emulation.setFocusEmulationEnabled",
             "Runtime.evaluate",
             "Runtime.evaluate",
+            "Page.enable",
             "Input.dispatchMouseEvent",
+            "Page.enable",
             "Input.dispatchMouseEvent",
+            "Page.enable",
             "Input.dispatchMouseEvent",
         ],
     )
@@ -991,8 +1279,11 @@ async fn playwright_locator_click_forwards_navigation_wait_to_cua() {
             "Runtime.evaluate",
             "Runtime.evaluate",
             "Page.enable",
+            "Page.enable",
             "Input.dispatchMouseEvent",
+            "Page.enable",
             "Input.dispatchMouseEvent",
+            "Page.enable",
             "Input.dispatchMouseEvent",
             "Runtime.evaluate",
         ],
@@ -1108,6 +1399,69 @@ async fn file_chooser_wait_returns_handle_and_set_files_uses_backend_node() {
 }
 
 #[tokio::test]
+async fn cdp_wait_for_download_ignores_unrelated_frame_event() {
+    let (ws_url, _requests) = spawn_fake_cdp_with_download_events(vec![
+        json!({
+            "method": "Browser.downloadWillBegin",
+            "params": {
+                "guid": "unrelated-download",
+                "frameId": "other-frame",
+                "url": "https://other.example/file.txt",
+                "suggestedFilename": "other.txt"
+            }
+        }),
+        json!({
+            "method": "Browser.downloadWillBegin",
+            "params": {
+                "guid": "download-guid",
+                "frameId": "child-frame",
+                "url": "https://example.test/file.txt",
+                "suggestedFilename": "file.txt"
+            }
+        }),
+    ])
+    .await;
+    let registry = Arc::new(ServiceRegistry::default());
+    let backend = CdpBackend::connect(&ws_url, registry.clone())
+        .await
+        .unwrap();
+    let created = backend
+        .create_tab(Some("about:blank".into()))
+        .await
+        .unwrap();
+    let tab_id = created["id"].as_str().unwrap().to_string();
+    backend.attach(&tab_id).await.unwrap();
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+
+    let download = backend
+        .playwright_command_with_context(
+            &ctx,
+            methods::PLAYWRIGHT_WAIT_FOR_DOWNLOAD,
+            json!({ "tab_id": tab_id, "timeout_ms": 1000 }),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(download["download_id"], "download-guid");
+    assert!(
+        registry
+            .get_download(&DownloadId("unrelated-download".into()))
+            .unwrap()
+            .is_none()
+    );
+    let state = registry
+        .get_download(&DownloadId("download-guid".into()))
+        .unwrap()
+        .unwrap();
+    assert_eq!(state.tab_id.0, tab_id);
+    assert_eq!(state.owner_session_id.as_deref(), Some("session"));
+}
+
+#[tokio::test]
 async fn cdp_file_chooser_rejects_wrong_session_without_consuming() {
     let (ws_url, mut requests) = spawn_fake_cdp().await;
     let backend = CdpBackend::connect(&ws_url, Arc::new(ServiceRegistry::default()))
@@ -1199,20 +1553,69 @@ async fn cdp_file_chooser_rejects_wrong_session_without_consuming() {
 }
 
 async fn spawn_fake_cdp() -> (String, mpsc::Receiver<Value>) {
-    spawn_fake_cdp_inner(false, false).await
+    spawn_fake_cdp_inner(false, false, None, None).await
 }
 
 async fn spawn_fake_cdp_with_drag_move_failure() -> (String, mpsc::Receiver<Value>) {
-    spawn_fake_cdp_inner(true, false).await
+    spawn_fake_cdp_inner(true, false, None, None).await
 }
 
 async fn spawn_fake_cdp_with_scroll_gesture_failure() -> (String, mpsc::Receiver<Value>) {
-    spawn_fake_cdp_inner(false, true).await
+    spawn_fake_cdp_inner(false, true, None, None).await
+}
+
+async fn spawn_fake_cdp_with_dialog(
+    method: &'static str,
+    dialog_type: &'static str,
+) -> (String, mpsc::Receiver<Value>) {
+    spawn_fake_cdp_inner(
+        false,
+        false,
+        Some(FakeDialog {
+            method,
+            dialog_type,
+            include_session_id: true,
+        }),
+        None,
+    )
+    .await
+}
+
+async fn spawn_fake_cdp_with_sessionless_dialog(
+    method: &'static str,
+    dialog_type: &'static str,
+) -> (String, mpsc::Receiver<Value>) {
+    spawn_fake_cdp_inner(
+        false,
+        false,
+        Some(FakeDialog {
+            method,
+            dialog_type,
+            include_session_id: false,
+        }),
+        None,
+    )
+    .await
+}
+
+#[derive(Clone, Copy)]
+struct FakeDialog {
+    method: &'static str,
+    dialog_type: &'static str,
+    include_session_id: bool,
+}
+
+async fn spawn_fake_cdp_with_download_events(
+    events: Vec<Value>,
+) -> (String, mpsc::Receiver<Value>) {
+    spawn_fake_cdp_inner(false, false, None, Some(events)).await
 }
 
 async fn spawn_fake_cdp_inner(
     fail_first_drag_move: bool,
     fail_scroll_gesture: bool,
+    dialog: Option<FakeDialog>,
+    download_events: Option<Vec<Value>>,
 ) -> (String, mpsc::Receiver<Value>) {
     let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
@@ -1221,6 +1624,7 @@ async fn spawn_fake_cdp_inner(
         let (stream, _) = listener.accept().await.unwrap();
         let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
         let mut failed_drag_move = false;
+        let mut download_events = download_events;
         while let Some(message) = ws.next().await {
             let message = message.unwrap();
             let text = match message {
@@ -1241,6 +1645,24 @@ async fn spawn_fake_cdp_inner(
                 && params["buttons"] == 1;
             let should_fail_scroll_gesture =
                 fail_scroll_gesture && method == "Input.synthesizeScrollGesture";
+            if let Some(dialog) = dialog
+                && method == dialog.method
+            {
+                let mut event = json!({
+                    "method": "Page.javascriptDialogOpening",
+                    "params": {
+                        "type": dialog.dialog_type,
+                        "message": "Dialog message"
+                    },
+                });
+                if dialog.include_session_id {
+                    event["sessionId"] = request["sessionId"].clone();
+                }
+                ws.send(Message::Text(event.to_string().into()))
+                    .await
+                    .unwrap();
+                tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            }
             let response = if should_fail_drag_move {
                 failed_drag_move = true;
                 json!({
@@ -1259,6 +1681,15 @@ async fn spawn_fake_cdp_inner(
             ws.send(Message::Text(response.to_string().into()))
                 .await
                 .unwrap();
+            if method == "Page.getFrameTree"
+                && let Some(events) = download_events.take()
+            {
+                for event in events {
+                    ws.send(Message::Text(event.to_string().into()))
+                        .await
+                        .unwrap();
+                }
+            }
             if method == "Page.setInterceptFileChooserDialog"
                 && request["params"]["enabled"].as_bool() == Some(true)
             {
@@ -1302,9 +1733,11 @@ fn fake_result(method: &str, params: &Value) -> Value {
         | "Emulation.setFocusEmulationEnabled"
         | "Target.detachFromTarget"
         | "Page.enable"
+        | "Page.handleJavaScriptDialog"
         | "DOM.enable"
         | "Page.setInterceptFileChooserDialog"
         | "DOM.setFileInputFiles"
+        | "Page.close"
         | "Page.reload"
         | "Page.navigateToHistoryEntry"
         | "Input.synthesizeScrollGesture"
@@ -1332,6 +1765,14 @@ fn fake_result(method: &str, params: &Value) -> Value {
                 .unwrap_or_default(),
         ),
         "Page.navigate" => json!({ "frameId": "frame-1" }),
+        "Page.getFrameTree" => json!({
+            "frameTree": {
+                "frame": { "id": "frame-1" },
+                "childFrames": [
+                    { "frame": { "id": "child-frame" } }
+                ]
+            }
+        }),
         "Page.getNavigationHistory" => json!({
             "currentIndex": 0,
             "entries": [{ "id": 1, "url": "about:blank" }, { "id": 2, "url": "https://example.test/" }]
@@ -1422,4 +1863,17 @@ async fn assert_observed_methods(rx: &mut mpsc::Receiver<Value>, methods: &[&str
         let request = rx.recv().await.unwrap();
         assert_eq!(request["method"], *expected, "request = {request}");
     }
+}
+
+async fn recv_until_method(rx: &mut mpsc::Receiver<Value>, method: &str) -> Value {
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        while let Some(request) = rx.recv().await {
+            if request["method"] == method {
+                return request;
+            }
+        }
+        panic!("request channel closed before observing {method}");
+    })
+    .await
+    .unwrap_or_else(|_| panic!("timed out waiting for {method}"))
 }

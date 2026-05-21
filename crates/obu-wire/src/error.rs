@@ -43,6 +43,8 @@ pub const ERR_PAGE_CLOSED: i32 = -1200;
 pub const ERR_CDP_FAILURE: i32 = -1201;
 /// Tab has not been attached.
 pub const ERR_TAB_NOT_ATTACHED: i32 = -1202;
+/// Native browser dialog needs an explicit user/agent decision.
+pub const ERR_DIALOG_REQUIRES_DECISION: i32 = -1203;
 
 /// JSON-RPC 2.0 standard error codes plus an open server-error range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

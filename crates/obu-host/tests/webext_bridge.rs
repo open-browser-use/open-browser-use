@@ -3,6 +3,7 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use tokio::sync::Notify;
 
 use obu_host::{
     backends::{
@@ -292,14 +293,14 @@ async fn webext_backend_normalizes_user_tabs_history_and_finalize() {
         .await
         .unwrap();
     assert_eq!(finalized["closed_tab_ids"][0], "42");
+    assert_eq!(finalized["closed_tab_ids"][1], "8");
     assert_eq!(finalized["released_tab_ids"][0], "9");
     assert_eq!(finalized["kept_tabs"][0]["id"], "7");
-    assert_eq!(finalized["deliverable_tabs"][0]["id"], "8");
+    assert_eq!(finalized["deliverable_tabs"].as_array().unwrap().len(), 0);
     assert!(backend.registry().get(&TabId::new("42")).unwrap().is_none());
     let handoff_record = backend.registry().get(&TabId::new("7")).unwrap().unwrap();
     assert_eq!(handoff_record.status, TabStatus::Handoff);
-    let deliverable_record = backend.registry().get(&TabId::new("8")).unwrap().unwrap();
-    assert_eq!(deliverable_record.status, TabStatus::Deliverable);
+    assert!(backend.registry().get(&TabId::new("8")).unwrap().is_none());
     assert!(
         backend
             .registry()
@@ -312,7 +313,7 @@ async fn webext_backend_normalizes_user_tabs_history_and_finalize() {
             .registry()
             .describe_missing_download(&DownloadId("download-deliverable".into()))
             .unwrap()
-            .contains("detached, closed, or finalized")
+            .contains("closed or released")
     );
 
     let calls = transport.calls.lock().unwrap();
@@ -1153,6 +1154,13 @@ async fn webext_backend_dom_cua_uses_backend_node_ids() {
         .unwrap();
     assert_eq!(dom["nodes"][0]["node_id"], "101");
     assert_eq!(dom["nodes"][0]["tag"], "button");
+    assert!(
+        dom["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|node| node["node_id"] != "102" && node["node_id"] != "103")
+    );
 
     backend
         .cua_command_with_context(
@@ -1393,6 +1401,332 @@ async fn webext_backend_broadcasts_extension_notifications() {
     assert_eq!(event.params["session_id"], "session");
     assert_eq!(event.params["source"]["tabId"], 42);
     assert!(events.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn webext_backend_exposes_extension_status_diagnostics() {
+    let backend = WebExtensionBackend::dev_chrome(json!({}));
+
+    backend.handle_notification(
+        "onExtensionStatus",
+        json!({
+            "pending_update": {
+                "state": "waiting_for_idle",
+                "version": "0.2.0",
+                "pendingSince": 123
+            }
+        }),
+    );
+
+    assert_eq!(
+        backend.diagnostics()["extension"]["pending_update"]["version"],
+        "0.2.0"
+    );
+}
+
+#[tokio::test]
+async fn webext_backend_accepts_alert_dialog_and_continues_operation() {
+    let transport = Arc::new(DialogBlockingTransport::new("Page.navigate"));
+    let backend =
+        Arc::new(WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone()));
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+    backend
+        .create_tab_with_context(&ctx, Some("https://example.com".into()))
+        .await
+        .unwrap();
+
+    let task_backend = backend.clone();
+    let task_ctx = ctx.clone();
+    let task = tokio::spawn(async move {
+        task_backend
+            .tab_command_with_context(
+                &task_ctx,
+                methods::TAB_GOTO,
+                json!({ "tab_id": "42", "url": "https://next.example" }),
+            )
+            .await
+    });
+    transport.wait_until_blocked().await;
+    backend.handle_notification(
+        "onCDPEvent",
+        json!({
+            "session_id": "session",
+            "source": { "tabId": 42 },
+            "method": "Page.javascriptDialogOpening",
+            "params": {
+                "type": "alert",
+                "message": "Saved"
+            }
+        }),
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if transport
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(method, params)| {
+                    method == "executeCdp"
+                        && params["method"] == "Page.handleJavaScriptDialog"
+                        && params["commandParams"]["accept"] == true
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("alert dialog should be accepted before navigation is released");
+    transport.release_blocked();
+
+    task.await.unwrap().unwrap();
+    let diagnostics = backend.diagnostics();
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["code"],
+        "dialog_handled"
+    );
+    assert_eq!(diagnostics["dialogs"]["recent"][0]["dialog_type"], "alert");
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["default_action"],
+        "accept"
+    );
+    assert_eq!(diagnostics["dialogs"]["recent"][0]["outcome"], "continued");
+    let calls = transport.calls.lock().unwrap();
+    assert!(calls.iter().any(|(method, params)| {
+        method == "executeCdp"
+            && params["method"] == "Page.handleJavaScriptDialog"
+            && params["commandParams"]["accept"] == true
+    }));
+}
+
+#[tokio::test]
+async fn webext_backend_records_extension_handled_beforeunload_without_duplicate_handle() {
+    let transport = Arc::new(DialogBlockingTransport::new("Page.navigate"));
+    let backend =
+        Arc::new(WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone()));
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+    backend
+        .create_tab_with_context(&ctx, Some("https://example.com".into()))
+        .await
+        .unwrap();
+
+    let task_backend = backend.clone();
+    let task_ctx = ctx.clone();
+    let task = tokio::spawn(async move {
+        task_backend
+            .tab_command_with_context(
+                &task_ctx,
+                methods::TAB_GOTO,
+                json!({ "tab_id": "42", "url": "https://next.example" }),
+            )
+            .await
+    });
+    transport.wait_until_blocked().await;
+    backend.handle_notification(
+        "onCDPEvent",
+        json!({
+            "session_id": "session",
+            "source": { "tabId": 42 },
+            "method": "Page.javascriptDialogOpening",
+            "params": {
+                "type": "beforeunload",
+                "message": "Leave site?"
+            },
+            "handledByExtension": {
+                "defaultAction": "accept",
+                "accept": true
+            }
+        }),
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    transport.release_blocked();
+
+    task.await.unwrap().unwrap();
+    let diagnostics = backend.diagnostics();
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["code"],
+        "dialog_handled"
+    );
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["dialog_type"],
+        "beforeunload"
+    );
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["default_action"],
+        "accept"
+    );
+    assert_eq!(diagnostics["dialogs"]["recent"][0]["outcome"], "continued");
+    let calls = transport.calls.lock().unwrap();
+    assert!(!calls.iter().any(|(method, params)| {
+        method == "executeCdp" && params["method"] == "Page.handleJavaScriptDialog"
+    }));
+}
+
+#[tokio::test]
+async fn webext_backend_dismisses_confirm_dialog_and_returns_structured_error() {
+    let transport = Arc::new(DialogBlockingTransport::new("Page.navigate"));
+    let backend =
+        Arc::new(WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone()));
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+    backend
+        .create_tab_with_context(&ctx, Some("https://example.com".into()))
+        .await
+        .unwrap();
+
+    let task_backend = backend.clone();
+    let task_ctx = ctx.clone();
+    let task = tokio::spawn(async move {
+        task_backend
+            .tab_command_with_context(
+                &task_ctx,
+                methods::TAB_GOTO,
+                json!({ "tab_id": "42", "url": "https://next.example" }),
+            )
+            .await
+    });
+    transport.wait_until_blocked().await;
+    backend.handle_notification(
+        "onCDPEvent",
+        json!({
+            "session_id": "session",
+            "source": { "tabId": 42 },
+            "method": "Page.javascriptDialogOpening",
+            "params": {
+                "type": "confirm",
+                "message": "Discard changes?"
+            }
+        }),
+    );
+
+    let error = task.await.unwrap().unwrap_err();
+    let HostError::DialogRequiresDecision(dialog) = error else {
+        panic!("expected dialog_requires_decision error");
+    };
+    assert_eq!(dialog.data["code"], "dialog_requires_decision");
+    assert_eq!(dialog.data["tab_id"], "42");
+    assert_eq!(dialog.data["session_id"], "session");
+    assert_eq!(dialog.data["dialog_type"], "confirm");
+    assert_eq!(dialog.data["message"], "Discard changes?");
+    assert_eq!(dialog.data["default_action"], "dismiss");
+    assert_eq!(dialog.data["accept"], false);
+    let diagnostics = backend.diagnostics();
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["code"],
+        "dialog_requires_decision"
+    );
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["dialog_type"],
+        "confirm"
+    );
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["default_action"],
+        "dismiss"
+    );
+    assert_eq!(diagnostics["dialogs"]["recent"][0]["outcome"], "failed");
+    let calls = transport.calls.lock().unwrap();
+    assert!(calls.iter().any(|(method, params)| {
+        method == "executeCdp"
+            && params["method"] == "Page.handleJavaScriptDialog"
+            && params["commandParams"]["accept"] == false
+    }));
+}
+
+#[tokio::test]
+async fn webext_backend_finalize_accepts_beforeunload_dialog_for_omitted_agent_tab() {
+    let transport = Arc::new(DialogBlockingTransport::new("Page.close"));
+    let backend =
+        Arc::new(WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone()));
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+    backend
+        .create_tab_with_context(&ctx, Some("https://example.com".into()))
+        .await
+        .unwrap();
+
+    let task_backend = backend.clone();
+    let task_ctx = ctx.clone();
+    let task = tokio::spawn(async move {
+        task_backend
+            .finalize_tabs_with_context(&task_ctx, json!({ "keep": [] }))
+            .await
+    });
+    transport.wait_until_blocked().await;
+    backend.handle_notification(
+        "onCDPEvent",
+        json!({
+            "session_id": "session",
+            "source": { "tabId": 42 },
+            "method": "Page.javascriptDialogOpening",
+            "params": {
+                "type": "beforeunload",
+                "message": "Leave site?"
+            }
+        }),
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if transport
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(method, params)| {
+                    method == "executeCdp"
+                        && params["method"] == "Page.handleJavaScriptDialog"
+                        && params["commandParams"]["accept"] == true
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("beforeunload dialog should be accepted before finalize close is released");
+    transport.release_blocked();
+
+    let finalized = task.await.unwrap().unwrap();
+    assert_eq!(finalized["closed_tab_ids"], json!(["42"]));
+    assert!(backend.registry().get(&TabId::new("42")).unwrap().is_none());
+    let diagnostics = backend.diagnostics();
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["dialog_type"],
+        "beforeunload"
+    );
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["default_action"],
+        "accept"
+    );
+    assert_eq!(diagnostics["dialogs"]["recent"][0]["outcome"], "continued");
+    let calls = transport.calls.lock().unwrap();
+    assert!(
+        calls
+            .iter()
+            .any(|(method, params)| { method == "executeCdp" && params["method"] == "Page.close" })
+    );
+    assert!(calls.iter().any(|(method, params)| {
+        method == "executeCdp"
+            && params["method"] == "Page.handleJavaScriptDialog"
+            && params["commandParams"]["accept"] == true
+    }));
+    assert!(calls.iter().any(|(method, _)| method == "finalizeTabs"));
 }
 
 #[tokio::test]
@@ -1817,6 +2151,39 @@ struct FakeTransport {
     calls: Mutex<Vec<(String, Value)>>,
 }
 
+struct DialogBlockingTransport {
+    calls: Mutex<Vec<(String, Value)>>,
+    blocked_method: String,
+    has_blocked: Mutex<bool>,
+    blocked: Notify,
+    release: Notify,
+}
+
+impl DialogBlockingTransport {
+    fn new(blocked_method: impl Into<String>) -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            blocked_method: blocked_method.into(),
+            has_blocked: Mutex::new(false),
+            blocked: Notify::new(),
+            release: Notify::new(),
+        }
+    }
+
+    async fn wait_until_blocked(&self) {
+        if *self.has_blocked.lock().unwrap() {
+            return;
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(1), self.blocked.notified())
+            .await
+            .expect("dialog test command should block");
+    }
+
+    fn release_blocked(&self) {
+        self.release.notify_waiters();
+    }
+}
+
 #[derive(Default)]
 struct GetTabsWithDeliverableTransport {
     calls: Mutex<Vec<(String, Value)>>,
@@ -1873,6 +2240,43 @@ impl ExtensionTransport for FakeTransport {
                 ]
             }),
             "executeCdp" => fake_cdp_response(&params),
+            _ => Value::Null,
+        })
+    }
+}
+
+#[async_trait]
+impl ExtensionTransport for DialogBlockingTransport {
+    async fn request(&self, method: &str, params: Value) -> Result<Value> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((method.to_string(), params.clone()));
+        if method == "createTab" {
+            return Ok(json!({
+                "tab": {
+                    "tabId": 42,
+                    "url": params.get("url").cloned().unwrap_or(Value::Null),
+                    "title": "Example"
+                }
+            }));
+        }
+        if method == "executeCdp"
+            && params["method"] == self.blocked_method
+            && !*self.has_blocked.lock().unwrap()
+        {
+            *self.has_blocked.lock().unwrap() = true;
+            self.blocked.notify_waiters();
+            self.release.notified().await;
+        }
+        Ok(match method {
+            "executeCdp" => fake_cdp_response(&params),
+            "finalizeTabs" => json!({
+                "closedTabIds": [],
+                "releasedTabIds": [],
+                "keptTabs": [],
+                "deliverableTabs": []
+            }),
             _ => Value::Null,
         })
     }
@@ -1969,6 +2373,7 @@ fn fake_cdp_response(params: &Value) -> Value {
             };
             json!({ "result": { "value": value } })
         }
+        "Page.enable" | "Page.close" | "Page.handleJavaScriptDialog" => json!({}),
         "Page.captureScreenshot" => json!({ "data": "base64png" }),
         "Page.printToPDF" => json!({ "data": "base64pdf" }),
         "Page.getLayoutMetrics" => json!({
@@ -1984,6 +2389,18 @@ fn fake_cdp_response(params: &Value) -> Value {
                 "nodeName": "HTML",
                 "backendNodeId": 100,
                 "children": [
+                    {
+                        "nodeName": "DIV",
+                        "backendNodeId": 102,
+                        "attributes": ["id", "obu-agent-overlay-root"],
+                        "children": [
+                            {
+                                "nodeName": "BUTTON",
+                                "backendNodeId": 103,
+                                "attributes": ["aria-label", "Overlay"]
+                            }
+                        ]
+                    },
                     {
                         "nodeName": "BUTTON",
                         "backendNodeId": 101,

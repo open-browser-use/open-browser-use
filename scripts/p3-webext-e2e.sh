@@ -4,6 +4,7 @@ set -euo pipefail
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 CHROME_BIN="${OBU_WEBEXT_CHROME_BIN:-${OBU_CHROME_BIN:-}}"
 BROWSER_TARGET="${OBU_WEBEXT_E2E_BROWSER:-}"
+TEST_FILTER="${OBU_WEBEXT_E2E_TEST_FILTER:-}"
 TMP_DIR=""
 CHROME_PID=""
 
@@ -123,6 +124,11 @@ pnpm -C packages/sdk build
 pnpm -C packages/extension build
 cargo build -p obu-host -p obu-node-repl
 
+CARGO_TEST_ARGS=(test -p obu-host --test e2e_node_repl_to_webextension)
+if [[ -n "$TEST_FILTER" ]]; then
+  CARGO_TEST_ARGS+=("$TEST_FILTER")
+fi
+
 TMP_DIR="$(mktemp -d /tmp/obu-p3-webext.XXXXXX)"
 HOME_DIR="$TMP_DIR/home"
 XDG_DIR="$HOME_DIR/.config"
@@ -196,4 +202,4 @@ if ! wait_for_descriptor "$RUNTIME_DIR"; then
 fi
 
 OBU_RUNTIME_DIR="$RUNTIME_DIR" \
-  cargo test -p obu-host --test e2e_node_repl_to_webextension -- --ignored --nocapture
+  cargo "${CARGO_TEST_ARGS[@]}" -- --ignored --nocapture

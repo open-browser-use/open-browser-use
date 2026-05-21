@@ -29,7 +29,7 @@ pub enum TabOrigin {
 pub enum TabStatus {
     /// Controlled by the current browser session.
     Active,
-    /// Kept under active browser control for handoff.
+    /// Parked for handoff outside active browser-control commands.
     Handoff,
     /// Preserved as a stable deliverable outside active browser control.
     Deliverable,

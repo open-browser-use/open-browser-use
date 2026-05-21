@@ -1,5 +1,6 @@
 //! JSON-RPC dispatcher for one authenticated SDK peer.
 
+use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -7,14 +8,17 @@ use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio_util::codec::Framed;
 use tokio_util::sync::CancellationToken;
 
 use obu_wire::{
     ErrorCode, ErrorObject, FrameCodec, Request, Response, RpcMessage,
     envelope::Id,
-    error::{ERR_CDP_FAILURE, ERR_OVERLOADED, ERR_PAGE_CLOSED, ERR_TAB_NOT_ATTACHED},
+    error::{
+        ERR_CDP_FAILURE, ERR_DIALOG_REQUIRES_DECISION, ERR_OVERLOADED, ERR_PAGE_CLOSED,
+        ERR_TAB_NOT_ATTACHED,
+    },
     error::{ERR_IO, ERR_NO_BACKEND, ERR_NOT_IMPLEMENTED, ERR_PEER_AUTH, ERR_PROTOCOL},
 };
 
@@ -39,6 +43,8 @@ struct DispatcherInner {
     host_version: String,
     backend: Arc<dyn BrowserBackend>,
     policy: Arc<dyn HostPolicy>,
+    session_operation_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    tab_operation_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 impl Dispatcher {
@@ -49,6 +55,8 @@ impl Dispatcher {
                 host_version,
                 backend,
                 policy: Arc::new(PermissivePolicy),
+                session_operation_locks: Mutex::new(HashMap::new()),
+                tab_operation_locks: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -64,6 +72,8 @@ impl Dispatcher {
                 host_version,
                 backend,
                 policy,
+                session_operation_locks: Mutex::new(HashMap::new()),
+                tab_operation_locks: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -258,18 +268,29 @@ impl Dispatcher {
     async fn route_request(&self, req: Request) -> Response {
         let ctx = request_context(&req.params);
         if !self.inner.backend.supports_method(&req.method) {
+            let backend = self.inner.backend.kind().as_str();
             return Response::err(
                 req.id,
-                ErrorObject::new(
-                    ErrorCode::Server(ERR_NOT_IMPLEMENTED),
-                    format!(
-                        "backend {} does not support method {}",
-                        self.inner.backend.kind().as_str(),
-                        req.method
-                    ),
-                ),
+                unsupported_backend_capability_error(backend, &req.method),
             );
         }
+        let session_lock = match session_mutation_key(&req.method, &ctx) {
+            Some(session_id) => Some(self.session_operation_lock(&session_id).await),
+            None => None,
+        };
+        let _session_guard = match &session_lock {
+            Some(lock) => Some(lock.lock().await),
+            None => None,
+        };
+        if let Some(tab_id) = tab_mutation_key(&req.method, &req.params) {
+            let lock = self.tab_operation_lock(&tab_id).await;
+            let _guard = lock.lock().await;
+            return self.route_supported_request(req, ctx).await;
+        }
+        self.route_supported_request(req, ctx).await
+    }
+
+    async fn route_supported_request(&self, req: Request, ctx: BackendRequestContext) -> Response {
         if let Err(error) = self.enforce_policy(&ctx, &req).await {
             return Response::err(req.id, error);
         }
@@ -469,6 +490,22 @@ impl Dispatcher {
         }
     }
 
+    async fn tab_operation_lock(&self, tab_id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.inner.tab_operation_locks.lock().await;
+        locks
+            .entry(tab_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    async fn session_operation_lock(&self, session_id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.inner.session_operation_locks.lock().await;
+        locks
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
     async fn enforce_policy(
         &self,
         ctx: &BackendRequestContext,
@@ -628,6 +665,67 @@ fn cdp_tab_id(value: &Value) -> std::result::Result<String, ErrorObject> {
     params_tab_id(value).ok_or_else(|| invalid_params("missing tab_id or target.tabId"))
 }
 
+fn tab_mutation_key(method: &str, params: &Value) -> Option<String> {
+    if !is_tab_mutating_method(method) {
+        return None;
+    }
+    params_tab_id(params)
+}
+
+fn session_mutation_key(method: &str, ctx: &BackendRequestContext) -> Option<String> {
+    if !is_session_mutating_method(method) {
+        return None;
+    }
+    ctx.session_id.clone()
+}
+
+fn is_session_mutating_method(method: &str) -> bool {
+    method == methods::CREATE_TAB
+        || method == methods::FINALIZE_TABS
+        || is_tab_mutating_method(method)
+}
+
+fn is_tab_mutating_method(method: &str) -> bool {
+    matches!(
+        method,
+        methods::ATTACH
+            | methods::DETACH
+            | methods::CLAIM_USER_TAB
+            | methods::EXECUTE_CDP
+            | methods::MOVE_MOUSE
+            | methods::CUA_CLICK
+            | methods::CUA_DBLCLICK
+            | methods::CUA_SCROLL
+            | methods::CUA_TYPE
+            | methods::CUA_KEYPRESS
+            | methods::CUA_DRAG
+            | methods::CUA_MOVE
+            | methods::CUA_DOWNLOAD_MEDIA
+            | methods::DOM_CUA_CLICK
+            | methods::DOM_CUA_DOUBLE_CLICK
+            | methods::DOM_CUA_SCROLL
+            | methods::DOM_CUA_TYPE
+            | methods::DOM_CUA_KEYPRESS
+            | methods::DOM_CUA_DOWNLOAD_MEDIA
+            | methods::PLAYWRIGHT_LOCATOR_CLICK
+            | methods::PLAYWRIGHT_LOCATOR_DBLCLICK
+            | methods::PLAYWRIGHT_LOCATOR_DOWNLOAD_MEDIA
+            | methods::PLAYWRIGHT_LOCATOR_FILL
+            | methods::PLAYWRIGHT_LOCATOR_PRESS
+            | methods::PLAYWRIGHT_LOCATOR_SELECT_OPTION
+            | methods::PLAYWRIGHT_LOCATOR_SET_CHECKED
+            | methods::PLAYWRIGHT_LOCATOR_HOVER
+            | methods::PLAYWRIGHT_FILE_CHOOSER_SET_FILES
+            | methods::TAB_GOTO
+            | methods::TAB_RELOAD
+            | methods::TAB_BACK
+            | methods::TAB_FORWARD
+            | methods::TAB_CLOSE
+            | methods::TAB_CLIPBOARD_WRITE_TEXT
+            | methods::TAB_CLIPBOARD_WRITE
+    )
+}
+
 fn request_context(params: &Value) -> BackendRequestContext {
     BackendRequestContext {
         session_id: params_str(params, "session_id"),
@@ -643,6 +741,19 @@ fn invalid_params(message: &str) -> ErrorObject {
     ErrorObject::new(ErrorCode::InvalidParams, message)
 }
 
+fn unsupported_backend_capability_error(backend: &str, method: &str) -> ErrorObject {
+    ErrorObject::new(
+        ErrorCode::Server(ERR_NOT_IMPLEMENTED),
+        format!("backend {backend} does not support method {method}"),
+    )
+    .with_data(json!({
+        "code": "unsupported_backend_capability",
+        "backend": backend,
+        "method": method,
+        "missing_capability": format!("method:{method}"),
+    }))
+}
+
 fn host_err_to_rpc(error: HostError) -> ErrorObject {
     let code = match &error {
         HostError::Io(_) | HostError::Frame(_) => ErrorCode::Server(ERR_IO),
@@ -652,8 +763,17 @@ fn host_err_to_rpc(error: HostError) -> ErrorObject {
         HostError::Timeout(_) => ErrorCode::Server(obu_wire::error::ERR_TIMEOUT),
         HostError::CdpFailure(_) => ErrorCode::Server(ERR_CDP_FAILURE),
         HostError::TabNotAttached(_) => ErrorCode::Server(ERR_TAB_NOT_ATTACHED),
+        HostError::DialogRequiresDecision(_) => ErrorCode::Server(ERR_DIALOG_REQUIRES_DECISION),
         HostError::NotImplemented(_) => ErrorCode::Server(ERR_NOT_IMPLEMENTED),
         HostError::Protocol(_) => ErrorCode::Server(ERR_PROTOCOL),
     };
-    ErrorObject::new(code, error.to_string())
+    let data = match &error {
+        HostError::DialogRequiresDecision(dialog) => Some(dialog.data.clone()),
+        _ => None,
+    };
+    let error = ErrorObject::new(code, error.to_string());
+    match data {
+        Some(data) => error.with_data(data),
+        None => error,
+    }
 }

@@ -91,16 +91,21 @@ pub async fn list_tabs(backend: &CdpBackend) -> Result<Value> {
 pub async fn close_tab(backend: &CdpBackend, tab_id: &str) -> Result<Value> {
     let id = TabId::new(tab_id);
     let record = crate::backends::cdp::attach::require_active_record(backend, tab_id)?;
+    if !record.attached || record.cdp_session_id.is_none() {
+        crate::backends::cdp::attach::attach(backend, tab_id).await?;
+    }
+    let session_id = crate::backends::cdp::attach::require_session(backend, tab_id)?;
 
-    backend
-        .transport()
-        .send_command(
-            "Target.closeTarget",
-            json!({ "targetId": record.target_id }),
-            None,
-        )
-        .await
-        .map_err(HostError::from)?;
+    let operation = async {
+        backend
+            .transport()
+            .send_command("Page.close", json!({}), Some(&session_id))
+            .await
+            .map_err(HostError::from)
+    };
+    let context =
+        crate::backends::cdp::dialogs::context_for_tab(backend, tab_id, &session_id, "tab_close");
+    crate::backends::cdp::dialogs::run_with_dialog_policy(backend, context, operation).await?;
     backend.registry().clear_playwright_injected(&id)?;
     let _ = backend.registry().remove(&id)?;
     Ok(Value::Null)

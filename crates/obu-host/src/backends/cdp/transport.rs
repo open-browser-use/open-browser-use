@@ -201,11 +201,15 @@ impl CdpTransport {
 
 #[cfg(test)]
 mod tests {
-    use super::PendingRemovalGuard;
+    use super::{CdpTransport, PendingRemovalGuard};
     use crate::backends::scope_client_timeout;
+    use futures_util::{SinkExt, StreamExt};
+    use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Mutex;
     use std::time::Duration;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::Message;
 
     #[test]
     fn pending_guard_removes_entry_on_drop() {
@@ -228,5 +232,50 @@ mod tests {
         .await;
 
         assert_eq!(timeout, Some(Duration::from_secs(60)));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn send_command_honors_scoped_timeout_beyond_default() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let request = ws.next().await.unwrap().unwrap();
+            let request = match request {
+                Message::Text(text) => text.to_string(),
+                Message::Binary(bytes) => String::from_utf8(bytes.to_vec()).unwrap(),
+                other => panic!("unexpected websocket message: {other:?}"),
+            };
+            let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+            tokio::time::sleep(Duration::from_secs(11)).await;
+            ws.send(Message::Text(
+                json!({
+                    "id": request["id"],
+                    "result": { "ok": true }
+                })
+                .to_string()
+                .into(),
+            ))
+            .await
+            .unwrap();
+        });
+
+        let transport = CdpTransport::connect(&format!("ws://{addr}/devtools/browser/fake"))
+            .await
+            .unwrap();
+        let request = tokio::spawn(async move {
+            scope_client_timeout(Some(60_000), async {
+                transport
+                    .send_command("Runtime.evaluate", json!({}), None)
+                    .await
+            })
+            .await
+        });
+
+        tokio::task::yield_now().await;
+        tokio::time::advance(Duration::from_secs(11)).await;
+
+        assert_eq!(request.await.unwrap().unwrap(), json!({ "ok": true }));
     }
 }

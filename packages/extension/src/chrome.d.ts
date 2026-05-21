@@ -14,8 +14,12 @@ declare const chrome: {
     getManifest(): { version: string };
     getURL(path: string): string;
     openOptionsPage?(): Promise<void>;
+    reload(): void;
     connectNative(name: string): NativePort;
     sendMessage(message: unknown): Promise<unknown>;
+    onUpdateAvailable?: {
+      addListener(listener: (details: { version?: string }) => void): void;
+    };
     onMessage: {
       addListener(
         listener: (
@@ -39,6 +43,10 @@ declare const chrome: {
   };
   storage: {
     local: {
+      get<T extends Record<string, unknown>>(keys: string[] | string): Promise<T>;
+      set(items: Record<string, unknown>): Promise<void>;
+    };
+    session?: {
       get<T extends Record<string, unknown>>(keys: string[] | string): Promise<T>;
       set(items: Record<string, unknown>): Promise<void>;
     };
@@ -75,7 +83,17 @@ declare const chrome: {
     }): Promise<Array<{ frameId?: number; result?: unknown }>>;
   };
   tabGroups: {
-    update(groupId: number, updateProperties: { title?: string; color?: string }): Promise<unknown>;
+    get(groupId: number): Promise<ChromeTabGroup>;
+    update(
+      groupId: number,
+      updateProperties: { title?: string; color?: string; collapsed?: boolean },
+    ): Promise<unknown>;
+    onCreated?: {
+      addListener(listener: (group: ChromeTabGroup) => void): void;
+    };
+    onUpdated?: {
+      addListener(listener: (group: ChromeTabGroup) => void): void;
+    };
   };
   history: {
     search(query: {
@@ -124,6 +142,14 @@ type ChromeTab = {
   active?: boolean;
   pinned?: boolean;
   status?: string;
+};
+
+type ChromeTabGroup = {
+  id: number;
+  windowId?: number;
+  title?: string;
+  color?: string;
+  collapsed?: boolean;
 };
 
 type ChromeWindow = {

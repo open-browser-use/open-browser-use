@@ -1,4 +1,4 @@
-import { ObuError, ERR_PROTOCOL, ERR_TIMEOUT, ERR_TRANSPORT_CLOSED } from "../errors.js";
+import { ObuError, ERR_PROTOCOL, ERR_TIMEOUT, ERR_TRANSPORT_CLOSED, productErrorData } from "../errors.js";
 import { FrameDecoder, FrameEncoder } from "./frames.js";
 import type { NativePipeConnection } from "./pipe.js";
 
@@ -44,7 +44,11 @@ export class Transport {
     timeoutMs: number = DEFAULT_TIMEOUT_MS,
   ): Promise<R> {
     if (this.#closed) {
-      throw new ObuError(ERR_TRANSPORT_CLOSED, "transport closed");
+      throw new ObuError(
+        ERR_TRANSPORT_CLOSED,
+        "transport closed",
+        productErrorData("transport_closed", { reason: "request was sent after transport closed" }),
+      );
     }
 
     const id = this.#nextId++;
@@ -62,6 +66,10 @@ export class Transport {
           new ObuError(
             ERR_TIMEOUT,
             `defensive timeout: no response in ${timeoutMs + DEFENSIVE_OVERSHOOT_MS}ms`,
+            productErrorData("timeout", {
+              timeout_ms: timeoutMs,
+              defensive_overshoot_ms: DEFENSIVE_OVERSHOOT_MS,
+            }),
           ),
         );
       }, timeoutMs + DEFENSIVE_OVERSHOOT_MS);
@@ -152,10 +160,15 @@ export class Transport {
     this.#closed = true;
     for (const pending of this.#pending.values()) {
       clearTimeout(pending.timer);
-      pending.reject(new ObuError(code, reason));
+      pending.reject(new ObuError(code, reason, productErrorForClosedTransport(code, reason)));
     }
     this.#pending.clear();
   }
+}
+
+function productErrorForClosedTransport(code: number, reason: string): Record<string, unknown> | undefined {
+  if (code !== ERR_TRANSPORT_CLOSED) return undefined;
+  return productErrorData("transport_closed", { reason });
 }
 
 function toUint8Array(chunk: unknown): Uint8Array | null {

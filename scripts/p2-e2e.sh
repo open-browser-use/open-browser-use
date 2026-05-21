@@ -8,13 +8,14 @@ if [[ -n "${OBU_CDP_URL:-}" && -z "${OBU_E2E_CDP_PORT:-}" && "${OBU_CDP_URL}" =~
 fi
 CDP_URL="${OBU_CDP_URL:-http://127.0.0.1:${PORT}}"
 CHROME_BIN="${OBU_CHROME_BIN:-}"
+TEST_FILTER="${OBU_CDP_E2E_TEST_FILTER:-}"
 CHROME_PID=""
 USER_DATA_DIR=""
 
 cd "$ROOT"
 
 cdp_ready() {
-  curl -fsS "${CDP_URL}/json/version" >/dev/null 2>&1
+  curl --max-time 1 -fsS "${CDP_URL}/json/version" >/dev/null 2>&1
 }
 
 find_chrome() {
@@ -28,7 +29,24 @@ find_chrome() {
     return
   fi
 
-  for candidate in google-chrome chromium chromium-browser; do
+  if [[ -x "/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing" ]]; then
+    printf '%s\n' "/Applications/Google Chrome for Testing.app/Contents/MacOS/Google Chrome for Testing"
+    return
+  fi
+
+  for candidate in google-chrome-for-testing chromium chromium-browser; do
+    if command -v "$candidate" >/dev/null 2>&1; then
+      command -v "$candidate"
+      return
+    fi
+  done
+
+  if [[ "${OBU_E2E_AUTO_INSTALL:-}" == "1" ]]; then
+    "$ROOT/scripts/ensure-chrome-for-testing.sh"
+    return
+  fi
+
+  for candidate in google-chrome chrome; do
     if command -v "$candidate" >/dev/null 2>&1; then
       command -v "$candidate"
       return
@@ -41,6 +59,13 @@ find_chrome() {
 cleanup() {
   if [[ -n "$CHROME_PID" ]]; then
     kill "$CHROME_PID" >/dev/null 2>&1 || true
+    for _ in {1..50}; do
+      if ! kill -0 "$CHROME_PID" >/dev/null 2>&1; then
+        break
+      fi
+      sleep 0.1
+    done
+    kill -9 "$CHROME_PID" >/dev/null 2>&1 || true
     wait "$CHROME_PID" >/dev/null 2>&1 || true
   fi
   if [[ -n "$USER_DATA_DIR" ]]; then
@@ -57,10 +82,12 @@ if ! cdp_ready; then
   USER_DATA_DIR="$(mktemp -d /tmp/obu-chrome.XXXXXX)"
   "$CHROME" \
     --headless=new \
+    --remote-debugging-address=127.0.0.1 \
     --remote-debugging-port="$PORT" \
     --user-data-dir="$USER_DATA_DIR" \
     --no-first-run \
     --no-default-browser-check \
+    --disable-gpu \
     --remote-allow-origins='*' \
     about:blank >/tmp/obu-p2-e2e-chrome.log 2>&1 &
   CHROME_PID="$!"
@@ -81,5 +108,9 @@ fi
 pnpm -C packages/sdk build
 cargo build -p obu-host -p obu-node-repl
 
-OBU_CDP_URL="$CDP_URL" cargo test -p obu-host --test cdp_playwright_locator_click -- --ignored
-OBU_CDP_URL="$CDP_URL" cargo test -p obu-host --test e2e_failure_modes -- --ignored
+if [[ -n "$TEST_FILTER" ]]; then
+  OBU_CDP_URL="$CDP_URL" cargo test -p obu-host --test e2e_failure_modes "$TEST_FILTER" -- --ignored
+else
+  OBU_CDP_URL="$CDP_URL" cargo test -p obu-host --test cdp_playwright_locator_click -- --ignored
+  OBU_CDP_URL="$CDP_URL" cargo test -p obu-host --test e2e_failure_modes -- --ignored
+fi

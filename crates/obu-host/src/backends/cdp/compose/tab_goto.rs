@@ -16,11 +16,25 @@ struct CdpTabNavigation<'a> {
 impl TabNavigationBackend for CdpTabNavigation<'_> {
     async fn execute_cdp(&self, tab_id: &str, method: &str, params: Value) -> Result<Value> {
         let session_id = require_session(self.backend, tab_id)?;
-        self.backend
-            .transport()
-            .send_command(method, params, Some(&session_id))
-            .await
-            .map_err(HostError::from)
+        let operation = async {
+            self.backend
+                .transport()
+                .send_command(method, params, Some(&session_id))
+                .await
+                .map_err(HostError::from)
+        };
+        if crate::backends::cdp::dialogs::method_can_open_dialog(method) {
+            let context = crate::backends::cdp::dialogs::context_for_tab(
+                self.backend,
+                tab_id,
+                &session_id,
+                method,
+            );
+            crate::backends::cdp::dialogs::run_with_dialog_policy(self.backend, context, operation)
+                .await
+        } else {
+            operation.await
+        }
     }
 
     async fn refresh_tab_metadata(&self, tab_id: &str) -> Result<()> {

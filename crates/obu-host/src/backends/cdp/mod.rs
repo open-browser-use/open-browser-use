@@ -7,11 +7,13 @@ use serde_json::{Value, json};
 
 use crate::backends::{BackendKind, BackendRequestContext, BrowserBackend};
 use crate::error::{HostError, Result};
+use crate::ops::dialogs::DialogTraceStore;
 use crate::service_registry::ServiceRegistry;
 
 pub mod attach;
 pub mod compose;
 pub mod cua;
+pub(crate) mod dialogs;
 pub mod discovery;
 pub mod ensure_injected;
 pub mod error;
@@ -25,6 +27,7 @@ pub mod transport;
 pub struct CdpBackend {
     transport: Arc<transport::CdpTransport>,
     registry: Arc<ServiceRegistry>,
+    dialog_traces: DialogTraceStore,
     download_dir: tempfile::TempDir,
 }
 
@@ -53,6 +56,7 @@ impl CdpBackend {
         Ok(Self {
             transport,
             registry,
+            dialog_traces: DialogTraceStore::default(),
             download_dir,
         })
     }
@@ -71,6 +75,11 @@ impl CdpBackend {
     pub fn download_dir(&self) -> &std::path::Path {
         self.download_dir.path()
     }
+
+    /// Recent handled native-dialog traces.
+    pub(crate) fn dialog_traces(&self) -> &DialogTraceStore {
+        &self.dialog_traces
+    }
 }
 
 #[async_trait]
@@ -86,6 +95,7 @@ impl BrowserBackend for CdpBackend {
     fn diagnostics(&self) -> Value {
         json!({
             "lifecycle": registry_lifecycle_metadata(self.registry()),
+            "dialogs": self.dialog_traces().diagnostics(),
         })
     }
 
@@ -100,6 +110,7 @@ impl BrowserBackend for CdpBackend {
             },
             "diagnostics": {
                 "lifecycle": registry_lifecycle_metadata(self.registry()),
+                "dialogs": self.dialog_traces().diagnostics(),
             },
         }))
     }
