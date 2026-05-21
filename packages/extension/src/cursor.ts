@@ -83,7 +83,7 @@ const CLICK_PULSE_SIZE_PX = 36;
 const TAKEOVER_OVERLAY_BACKGROUND =
   "linear-gradient(118deg, rgba(14, 165, 233, 0.1), rgba(37, 99, 235, 0.14) 46%, rgba(6, 182, 212, 0.1))";
 const WATER_GRID_PX = 28;
-const WATER_FRAME_INTERVAL_MS = 42;
+const WATER_FRAME_INTERVAL_MS = 56;
 const WATER_MAX_RIPPLES = 7;
 const WATER_LEVELS = [0.34, 0.52] as const;
 const REDUCED_MOTION = matchMediaSafe("(prefers-reduced-motion: reduce)");
@@ -446,20 +446,20 @@ function updateWaterRipples(now: number, width: number, height: number): void {
 
   if (waterNextRippleAt === 0) {
     for (let index = 0; index < 4; index += 1) {
-      waterRipples.push(createWaterRipple(now - index * 420, width, height));
+      waterRipples.push(createWaterRipple(now - index * 620, width, height));
     }
-    waterNextRippleAt = now + randomBetween(360, 760);
+    waterNextRippleAt = now + randomBetween(700, 1_200);
   }
 
   if (REDUCED_MOTION) return;
 
   while (now >= waterNextRippleAt && waterRipples.length < WATER_MAX_RIPPLES) {
     waterRipples.push(createWaterRipple(now, width, height));
-    waterNextRippleAt = now + randomBetween(420, 920);
+    waterNextRippleAt = now + randomBetween(760, 1_400);
   }
 
   if (waterRipples.length >= WATER_MAX_RIPPLES && now >= waterNextRippleAt) {
-    waterNextRippleAt = now + randomBetween(300, 580);
+    waterNextRippleAt = now + randomBetween(620, 1_050);
   }
 }
 
@@ -469,17 +469,17 @@ function createWaterRipple(startedAt: number, width: number, height: number): Wa
     xRatio: randomBetween(xBounds.min, xBounds.max),
     yRatio: randomBetween(-0.08, 1.08),
     startedAt,
-    duration: randomBetween(2_300, 4_600),
+    duration: randomBetween(3_600, 6_800),
     amplitude: randomBetween(0.52, 0.9),
     wavelength: randomBetween(34, 74),
-    speed: randomBetween(4.2, 7.6),
+    speed: randomBetween(2.4, 4.3),
     phase: randomBetween(0, Math.PI * 2),
     decay: randomBetween(210, 380),
     scaleX: randomBetween(0.78, 1.22),
     scaleY: randomBetween(0.84, 1.28),
     driftX: randomBetween(-0.035, 0.035),
     driftY: randomBetween(-0.03, 0.03),
-    driftSpeed: randomBetween(0.18, 0.42),
+    driftSpeed: randomBetween(0.1, 0.24),
   };
 }
 
