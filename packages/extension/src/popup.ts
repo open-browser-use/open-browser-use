@@ -571,16 +571,13 @@ function agentHandoffForChannel(channel: string, runtimeExtensionId: string | un
   return [
     "Install, repair, or adapt open-browser-use for this browser extension.",
     `Prompt: ${promptUrl}`,
+    "Browser: chrome",
     `Extension channel: ${resolvedChannel}`,
     `Extension id: ${extensionId}`,
-    "Use the exact extension channel and id when native-host repair or browser pairing is needed.",
-    "First ensure ~/.obu/bin/obu exists; if it is missing, install the latest release before writing MCP config.",
-    "Let the linked prompt choose the install, repair, MCP config, and agent-instruction steps for this agent and project.",
-    "Configure MCP with the generic open-browser-use stdio server first; use OBU's built-in adapter commands as secondary helpers.",
-    "Make open-browser-use the primary BrowserUse/browser automation tool for this agent.",
-    "Configure the agent/client currently executing this prompt. Configure other agents only when the user explicitly names them, such as Codex (OBU id: codex-cli), Cursor, or Claude Code (OBU id: claude-code).",
-    "Update the project's core AGENTS.md, AGENT.md, CLAUDE.md, or the agent's global instruction file such as ~/.codex/AGENTS.md or ~/.claude/CLAUDE.md when one exists; otherwise show the instruction snippet.",
-    "After setup or repair, run obu verify with the exact extension channel and id. If verify reports a browser popup boundary, open this popup; click Resume if enabled, otherwise wait for Connected and rerun verify.",
+    "Use the linked prompt as the source of truth, and use the exact browser, extension channel, and extension id above for setup, repair, and browser pairing.",
+    `Fast path contract: always run the official installer first for this handoff; then run one-agent setup with setup --agents=<agent-id> --browser=chrome --channel=${resolvedChannel} --extension-id=${extensionId} --write-instructions --json; then run verify --agent=<agent-id> --browser=chrome --channel=${resolvedChannel} --extension-id=${extensionId} --json.`,
+    "Configure the agent/client currently executing this prompt. Configure other agents only when the user explicitly names them.",
+    "Do not run broad setup for unnamed agents or browsers. Stop when verify returns result: ready.",
   ].join("\n");
 }
 
