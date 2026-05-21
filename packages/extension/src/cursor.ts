@@ -45,13 +45,20 @@ type InputBypassMessage = {
   reason?: string;
 };
 
+type CaptureSuppressionMessage = {
+  type: "OBU_CAPTURE_SUPPRESSION";
+  active: boolean;
+  token: string;
+};
+
 type CursorMessage =
   | CursorMoveMessage
   | CursorHideMessage
   | TakeoverStateMessage
   | CursorEventMessage
   | ContentPingMessage
-  | InputBypassMessage;
+  | InputBypassMessage
+  | CaptureSuppressionMessage;
 
 type Point = { x: number; y: number };
 type WaterRipple = {
@@ -140,6 +147,7 @@ let waterLastDraw = 0;
 let waterNextRippleAt = 0;
 const waterRipples: WaterRipple[] = [];
 const inputBypassUntilByFamily = new Map<InputBypassEventFamily, number>();
+const captureSuppressionTokens = new Set<string>();
 
 const installState = globalThis as typeof globalThis & Record<string, unknown>;
 Object.defineProperty(installState, HANDLER_KEY, {
@@ -166,6 +174,11 @@ function handleCursorMessage(message: unknown, sendResponse?: (response?: unknow
   if (message.type === "OBU_INPUT_BYPASS") {
     allowInputBypass(message);
     sendResponse?.({ ok: true });
+    return;
+  }
+  if (message.type === "OBU_CAPTURE_SUPPRESSION") {
+    setCaptureSuppression(message);
+    sendResponse?.({ ok: true, suppressed: captureSuppressionTokens.size > 0 });
     return;
   }
   if (message.type === "OBU_CURSOR_HIDE") {
@@ -313,6 +326,7 @@ function ensureCursor(): void {
   host.id = OVERLAY_ROOT_ID;
   host.setAttribute("aria-hidden", "true");
   host.setAttribute("data-obu-overlay-root", "true");
+  updateCaptureSuppression();
   const shadow = host.attachShadow({ mode: "closed" });
 
   const style = document.createElement("style");
@@ -373,6 +387,26 @@ function updateOverlay(): void {
   overlay.style.opacity = activeTakeover ? "1" : "0";
   if (activeTakeover) scheduleWaterFrame();
   else clearWaterOverlay();
+}
+
+function setCaptureSuppression(message: CaptureSuppressionMessage): void {
+  if (message.active) {
+    captureSuppressionTokens.add(message.token);
+  } else {
+    captureSuppressionTokens.delete(message.token);
+  }
+  updateCaptureSuppression();
+}
+
+function updateCaptureSuppression(): void {
+  if (!host) return;
+  const suppressed = captureSuppressionTokens.size > 0;
+  host.style.visibility = suppressed ? "hidden" : "";
+  if (suppressed) {
+    host.setAttribute("data-obu-capture-suppressed", "true");
+  } else {
+    host.removeAttribute("data-obu-capture-suppressed");
+  }
 }
 
 function scheduleWaterFrame(): void {
@@ -874,7 +908,8 @@ function isCursorMessage(value: unknown): value is CursorMessage {
     isTakeoverState(value) ||
     isCursorEvent(value) ||
     isContentPing(value) ||
-    isInputBypass(value)
+    isInputBypass(value) ||
+    isCaptureSuppression(value)
   );
 }
 
@@ -914,6 +949,18 @@ function isContentPing(value: unknown): value is ContentPingMessage {
 
 function isInputBypass(value: unknown): value is InputBypassMessage {
   return value !== null && typeof value === "object" && (value as { type?: unknown }).type === "OBU_INPUT_BYPASS";
+}
+
+function isCaptureSuppression(value: unknown): value is CaptureSuppressionMessage {
+  const token = isRecord(value) ? value.token : undefined;
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    (value as { type?: unknown }).type === "OBU_CAPTURE_SUPPRESSION" &&
+    typeof (value as { active?: unknown }).active === "boolean" &&
+    typeof token === "string" &&
+    token.length > 0
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

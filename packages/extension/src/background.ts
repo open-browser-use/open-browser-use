@@ -105,6 +105,7 @@ let pendingExtensionUpdate: PendingExtensionUpdate | undefined;
 
 class OverlayCoordinator {
   private nextCursorSequence = 1;
+  private nextCaptureSuppression = 1;
   private cursorArrivalWaiters = new Map<number, CursorArrivalWaiter>();
   private activeTakeovers = new Map<number, ActiveTakeover>();
   private contentScriptPreparations = new Map<number, Promise<boolean>>();
@@ -205,6 +206,26 @@ class OverlayCoordinator {
       turnId: sessionParams.turn_id,
       reason: bypass.reason,
     });
+  }
+
+  async withCaptureSuppressed<T>(tabId: number, operation: () => Promise<T>): Promise<T> {
+    const token = `capture-${Date.now()}-${this.nextCaptureSuppression++}`;
+    const suppressed = await this.sendContentMessage(tabId, {
+      type: "OBU_CAPTURE_SUPPRESSION",
+      active: true,
+      token,
+    });
+    try {
+      return await operation();
+    } finally {
+      if (suppressed) {
+        await this.sendContentMessage(tabId, {
+          type: "OBU_CAPTURE_SUPPRESSION",
+          active: false,
+          token,
+        });
+      }
+    }
   }
 
   handleCursorArrived(message: unknown): void {
@@ -1370,6 +1391,7 @@ async function executeCdp(params: unknown): Promise<unknown> {
   const method = params.method;
   const timeoutMs = timeoutMsFromParams(params);
   const sessionParams = requireSessionParams(params);
+  const suppressAgentOverlayForCapture = params.suppressAgentOverlayForCapture === true && method === "Page.captureScreenshot";
   appendDebugLog("debug", "cdp.execute", { method, tabId, timeoutMs });
   await overlayCoordinator.activate(tabId, sessionParams);
   const inputBypass = inputBypassFromCdp(params);
@@ -1380,11 +1402,14 @@ async function executeCdp(params: unknown): Promise<unknown> {
   if (cursorEvent?.kind === "press") {
     await overlayCoordinator.sendCursorEvent(tabId, sessionParams, cursorEvent);
   }
-  const result = await withTimeout(
+  const sendCommand = () => withTimeout(
     chrome.debugger.sendCommand({ tabId }, method, params.commandParams),
     timeoutMs,
     `executeCdp ${method} timed out after ${timeoutMs}ms`,
   );
+  const result = suppressAgentOverlayForCapture
+    ? await overlayCoordinator.withCaptureSuppressed(tabId, sendCommand)
+    : await sendCommand();
   if (cursorEvent && cursorEvent.kind !== "press") {
     await overlayCoordinator.sendCursorEvent(tabId, sessionParams, cursorEvent);
     if (cursorEvent.kind === "release" && cursorEvent.clickCount > 0) {

@@ -566,6 +566,28 @@ const cdp = await hostRequest(port, "executeCdp", {
 });
 assert.deepEqual(cdp.result, { ok: true });
 assert.equal(calls.debuggerAttach[0].target.tabId, 1);
+
+const messagesBeforeScreenshot = calls.tabsSendMessage.length;
+const screenshotCdp = await hostRequest(port, "executeCdp", {
+  session_id: "session",
+  turn_id: "turn",
+  target: { tabId: 1 },
+  method: "Page.captureScreenshot",
+  commandParams: { format: "png" },
+  suppressAgentOverlayForCapture: true,
+});
+assert.deepEqual(screenshotCdp.result, { ok: true });
+const screenshotCommand = calls.debuggerSendCommand.at(-1);
+assert.equal(screenshotCommand.method, "Page.captureScreenshot");
+assert.deepEqual(screenshotCommand.commandParams, { format: "png" });
+const captureSuppressionMessages = calls.tabsSendMessage
+  .slice(messagesBeforeScreenshot)
+  .map((call) => call.message)
+  .filter((message) => message?.type === "OBU_CAPTURE_SUPPRESSION");
+assert.equal(captureSuppressionMessages.length, 2);
+assert.equal(captureSuppressionMessages[0].active, true);
+assert.equal(captureSuppressionMessages[1].active, false);
+assert.equal(captureSuppressionMessages[1].token, captureSuppressionMessages[0].token);
 const attachCountBeforeManualDetach = calls.debuggerAttach.length;
 
 debuggerDetaches.emit({ tabId: 1 });

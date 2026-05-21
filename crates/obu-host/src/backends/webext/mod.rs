@@ -283,25 +283,15 @@ impl BrowserBackend for WebExtensionBackend {
         method: &str,
         params: Value,
     ) -> Result<Value> {
-        self.ensure_active()?;
-        Self::require_session_context(ctx, "executeCdp")?;
-        let parsed_tab_id = parse_tab_id(tab_id)?;
-        let normalized_tab_id = parsed_tab_id.to_string();
-        ensure_active_tab_if_recorded(self, &normalized_tab_id)?;
-        record_session_context(self, ctx)?;
-        if crate::backends::cdp::dialogs::method_can_open_dialog(method) {
-            execute_cdp_with_dialog_policy(
-                self,
-                ctx,
-                &normalized_tab_id,
-                parsed_tab_id,
-                method,
-                params,
-            )
-            .await
-        } else {
-            execute_cdp_raw_with_context(self, ctx, parsed_tab_id, method, params).await
-        }
+        execute_cdp_with_context_options(
+            self,
+            ctx,
+            tab_id,
+            method,
+            params,
+            ExecuteCdpOptions::default(),
+        )
+        .await
     }
 
     async fn create_tab_with_context(
@@ -594,19 +584,73 @@ async fn execute_cdp_raw_with_context(
     method: &str,
     params: Value,
 ) -> Result<Value> {
+    execute_cdp_raw_with_options(
+        backend,
+        ctx,
+        parsed_tab_id,
+        method,
+        params,
+        ExecuteCdpOptions::default(),
+    )
+    .await
+}
+
+#[derive(Clone, Copy, Default)]
+struct ExecuteCdpOptions {
+    suppress_agent_overlay_for_capture: bool,
+}
+
+async fn execute_cdp_with_context_options(
+    backend: &WebExtensionBackend,
+    ctx: &BackendRequestContext,
+    tab_id: &str,
+    method: &str,
+    params: Value,
+    options: ExecuteCdpOptions,
+) -> Result<Value> {
+    backend.ensure_active()?;
+    WebExtensionBackend::require_session_context(ctx, "executeCdp")?;
+    let parsed_tab_id = parse_tab_id(tab_id)?;
+    let normalized_tab_id = parsed_tab_id.to_string();
+    ensure_active_tab_if_recorded(backend, &normalized_tab_id)?;
+    record_session_context(backend, ctx)?;
+    if crate::backends::cdp::dialogs::method_can_open_dialog(method) {
+        execute_cdp_with_dialog_policy(
+            backend,
+            ctx,
+            &normalized_tab_id,
+            parsed_tab_id,
+            method,
+            params,
+            options,
+        )
+        .await
+    } else {
+        execute_cdp_raw_with_options(backend, ctx, parsed_tab_id, method, params, options).await
+    }
+}
+
+async fn execute_cdp_raw_with_options(
+    backend: &WebExtensionBackend,
+    ctx: &BackendRequestContext,
+    parsed_tab_id: i64,
+    method: &str,
+    params: Value,
+    options: ExecuteCdpOptions,
+) -> Result<Value> {
+    let mut request = Map::new();
+    request.insert("session_id".into(), json!(ctx.session_id.clone()));
+    request.insert("turn_id".into(), json!(ctx.turn_id.clone()));
+    request.insert("target".into(), json!({ "tabId": parsed_tab_id }));
+    request.insert("method".into(), Value::String(method.to_string()));
+    request.insert("commandParams".into(), params);
+    request.insert("timeoutMs".into(), json!(ctx.client_timeout_ms));
+    if options.suppress_agent_overlay_for_capture {
+        request.insert("suppressAgentOverlayForCapture".into(), Value::Bool(true));
+    }
     backend
         .transport("executeCdp")?
-        .request(
-            "executeCdp",
-            json!({
-                "session_id": ctx.session_id.clone(),
-                "turn_id": ctx.turn_id.clone(),
-                "target": { "tabId": parsed_tab_id },
-                "method": method,
-                "commandParams": params,
-                "timeoutMs": ctx.client_timeout_ms,
-            }),
-        )
+        .request("executeCdp", Value::Object(request))
         .await
 }
 
@@ -617,6 +661,7 @@ async fn execute_cdp_with_dialog_policy(
     parsed_tab_id: i64,
     method: &str,
     params: Value,
+    options: ExecuteCdpOptions,
 ) -> Result<Value> {
     let mut events = backend.subscribe_notifications();
     execute_cdp_raw_with_context(backend, ctx, parsed_tab_id, "Page.enable", json!({})).await?;
@@ -627,7 +672,8 @@ async fn execute_cdp_with_dialog_policy(
         operation_id: None,
         operation: Some(method.to_string()),
     };
-    let operation = execute_cdp_raw_with_context(backend, ctx, parsed_tab_id, method, params);
+    let operation =
+        execute_cdp_raw_with_options(backend, ctx, parsed_tab_id, method, params, options);
     tokio::pin!(operation);
     loop {
         tokio::select! {
@@ -1800,8 +1846,17 @@ impl ContentExportBackend for WebExtensionBackend {
         tab_id: &str,
         cdp_params: Value,
     ) -> Result<Value> {
-        self.execute_cdp_with_context(ctx, tab_id, "Page.captureScreenshot", cdp_params)
-            .await
+        execute_cdp_with_context_options(
+            self,
+            ctx,
+            tab_id,
+            "Page.captureScreenshot",
+            cdp_params,
+            ExecuteCdpOptions {
+                suppress_agent_overlay_for_capture: true,
+            },
+        )
+        .await
     }
 
     async fn print_pdf_cdp(&self, ctx: &BackendRequestContext, tab_id: &str) -> Result<Value> {

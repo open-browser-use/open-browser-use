@@ -64,6 +64,10 @@ class FakeElement {
     return this.attributes.get(name) ?? null;
   }
 
+  removeAttribute(name) {
+    this.attributes.delete(name);
+  }
+
   attachShadow() {
     return {
       append: (...children) => {
@@ -160,6 +164,20 @@ assert.equal(overlay.style.webkitBackdropFilter, undefined);
 assert.equal(overlay.style.pointerEvents, "none");
 assert.equal(overlay.style.imageRendering, undefined);
 assert.equal(overlay.style.animation, undefined);
+
+responses = runtimeMessages.emit({ type: "OBU_CAPTURE_SUPPRESSION", active: true, token: "shot-1" });
+assert.deepEqual(responses, [{ ok: true, suppressed: true }]);
+assert.equal(host.style.visibility, "hidden");
+assert.equal(host.getAttribute("data-obu-capture-suppressed"), "true");
+responses = runtimeMessages.emit({ type: "OBU_CAPTURE_SUPPRESSION", active: true, token: "shot-2" });
+assert.deepEqual(responses, [{ ok: true, suppressed: true }]);
+responses = runtimeMessages.emit({ type: "OBU_CAPTURE_SUPPRESSION", active: false, token: "shot-1" });
+assert.deepEqual(responses, [{ ok: true, suppressed: true }]);
+assert.equal(host.style.visibility, "hidden");
+responses = runtimeMessages.emit({ type: "OBU_CAPTURE_SUPPRESSION", active: false, token: "shot-2" });
+assert.deepEqual(responses, [{ ok: true, suppressed: false }]);
+assert.equal(host.style.visibility, "");
+assert.equal(host.getAttribute("data-obu-capture-suppressed"), null);
 
 const blocked = fakeDomEvent();
 documentEvents.emitDom("click", blocked);

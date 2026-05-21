@@ -112,6 +112,40 @@ async fn webext_backend_reconciles_session_tabs_missing_after_get_tabs() {
 }
 
 #[tokio::test]
+async fn webext_backend_marks_tab_screenshot_as_overlay_suppressed() {
+    let transport = Arc::new(FakeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+
+    backend
+        .create_tab_with_context(&ctx, Some("https://example.com".into()))
+        .await
+        .unwrap();
+    let screenshot = backend
+        .tab_command_with_context(&ctx, methods::TAB_SCREENSHOT, json!({ "tab_id": "42" }))
+        .await
+        .unwrap();
+
+    assert_eq!(screenshot["mime_type"], "image/png");
+    assert_eq!(screenshot["data_base64"], "base64png");
+    let calls = transport.calls.lock().unwrap();
+    let screenshot_call = calls
+        .iter()
+        .find(|(method, params)| {
+            method == "executeCdp" && params["method"] == "Page.captureScreenshot"
+        })
+        .expect("expected Page.captureScreenshot executeCdp call");
+    assert_eq!(
+        screenshot_call.1["suppressAgentOverlayForCapture"],
+        Value::Bool(true)
+    );
+}
+
+#[tokio::test]
 async fn webext_backend_preserves_host_tab_lifecycle_when_get_tabs_omits_state() {
     let transport = Arc::new(FakeTransport::default());
     let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport);
