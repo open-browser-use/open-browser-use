@@ -30,6 +30,18 @@ export type TabMetadata = {
   title?: string;
   origin?: "agent" | "user";
   status?: "active" | "handoff" | "deliverable";
+  active?: boolean;
+  logicalActive?: boolean;
+  windowId?: number;
+  groupId?: number;
+  pinned?: boolean;
+  lastAccessed?: number;
+  lastUsedAt?: number;
+  tabGroupTitle?: string;
+  tabGroup?: string;
+  owned?: boolean;
+  claimRequired?: boolean;
+  commandable?: boolean;
 };
 
 export type ScreenshotOptions = {

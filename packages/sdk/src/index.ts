@@ -14,7 +14,7 @@ export type {
 } from "./browser.js";
 export { BrowserTabs } from "./browser_tabs.js";
 export type { CreateTabOptions } from "./browser_tabs.js";
-export { BrowserUser } from "./browser_user.js";
+export { BrowserUser, UserTabRef } from "./browser_user.js";
 export { Browsers } from "./browsers.js";
 export type { BrowserGetOptions, DiscoveredBackend, RuntimeConnector } from "./browsers.js";
 export { display } from "./display.js";

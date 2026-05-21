@@ -2,7 +2,7 @@ import { BrowserTabs } from "./browser_tabs.js";
 import { BrowserUser } from "./browser_user.js";
 import { Guards } from "./guards.js";
 import { withSessionMeta } from "./session-meta.js";
-import type { Tab } from "./tab.js";
+import { Tab, type TabMetadata } from "./tab.js";
 import type { DiscoveredBackend } from "./browsers.js";
 import type { BrowserInfo } from "./types.js";
 import type { Transport } from "./wire/transport.js";
@@ -76,6 +76,20 @@ export type BrowserClearLifecycleDiagnosticsResult = {
   };
 };
 
+type BrowserControlTabWire = {
+  tab_id?: string;
+  id?: string;
+  target_id?: string;
+  url?: string;
+  title?: string;
+  origin?: "agent" | "user";
+  status?: "active" | "handoff" | "deliverable";
+  active?: boolean;
+  logicalActive?: boolean;
+  logical_active?: boolean;
+  commandable?: boolean;
+};
+
 export class Browser {
   readonly metadata: Record<string, unknown>;
   readonly diagnostics: Record<string, unknown>;
@@ -116,6 +130,23 @@ export class Browser {
 
   async turnEnded(opts: { timeout?: number } = {}): Promise<void> {
     await this.transport.sendRequest(M.TURN_ENDED, withSessionMeta({}), opts.timeout);
+  }
+
+  async yieldControl(opts: { timeout?: number } = {}): Promise<void> {
+    await this.transport.sendRequest(M.YIELD_CONTROL, withSessionMeta({}), opts.timeout);
+  }
+
+  async resumeControl(opts: { timeout?: number } = {}): Promise<Tab | undefined> {
+    const response = await this.transport.sendRequest<{ tab?: BrowserControlTabWire | null } | BrowserControlTabWire | null>(
+      M.RESUME_CONTROL,
+      withSessionMeta({}),
+      opts.timeout,
+    );
+    const row = unwrapBrowserControlTab(response);
+    if (!row) return undefined;
+    const id = row.tab_id ?? row.id;
+    if (!id) throw new Error("resumeControl response missing tab_id");
+    return new Tab(this.transport, this.guards, id, browserControlTabMetadata(row));
   }
 
   async finalizeTabs(opts: BrowserFinalizeTabsOptions = {}): Promise<BrowserFinalizeTabsResult> {
@@ -210,6 +241,30 @@ function recordOrEmpty(value: unknown): Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value)
     ? value as Record<string, unknown>
     : {};
+}
+
+function browserControlTabMetadata(row: BrowserControlTabWire): TabMetadata {
+  const metadata: TabMetadata = {};
+  if (row.target_id !== undefined) metadata.target_id = row.target_id;
+  if (row.url !== undefined) metadata.url = row.url;
+  if (row.title !== undefined) metadata.title = row.title;
+  if (row.origin !== undefined) metadata.origin = row.origin;
+  if (row.status !== undefined) metadata.status = row.status;
+  if (row.active !== undefined) metadata.active = row.active;
+  if (row.logicalActive !== undefined) metadata.logicalActive = row.logicalActive;
+  if (row.logical_active !== undefined) metadata.logicalActive = row.logical_active;
+  if (row.commandable !== undefined) metadata.commandable = row.commandable;
+  return metadata;
+}
+
+function unwrapBrowserControlTab(
+  response: { tab?: BrowserControlTabWire | null } | BrowserControlTabWire | null,
+): BrowserControlTabWire | null | undefined {
+  if (!response) return response;
+  if (Object.prototype.hasOwnProperty.call(response, "tab")) {
+    return (response as { tab?: BrowserControlTabWire | null }).tab;
+  }
+  return response as BrowserControlTabWire;
 }
 
 function deliverableSummaries(info: BrowserInfo): Array<{

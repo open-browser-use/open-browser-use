@@ -9,11 +9,14 @@ Browser:
   .deliverables() -> finalized durable tabs, with .claim()
   .ensureReady() -> compact backend/capability/diagnostic summary
   .tabs.create(urlOrOptions?) -> Tab   accepts "https://..." or {url}; defaults to "about:blank"
+  .tabs.current() -> current session-owned task tab, if any
+  .tabs.selected() -> browser-visible selected tab or UserTabRef when claim/resume is required
   .tabs.list() -> Tab[]
   .tabs.get(id) -> Tab
   keep multiple Tab handles when a workflow needs more than one tab
-  .user.openTabs() / .user.history() / .user.claimTab()
+  .user.discoverTabs() -> UserTabRef[] / .user.history() / .user.claimTab()
   .name(label) / .turnEnded() to mark a turn boundary while keeping active tabs controlled
+  .yieldControl() / .resumeControl() to let a human take over and then resume the same task tab
   .finalizeTabs({keep?}) / .finalize() / .finishTurn({keep?}) to close, release, hand off, or preserve tabs
   .clearLifecycleDiagnostics()
 

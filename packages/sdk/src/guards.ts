@@ -23,9 +23,12 @@ export const METHOD_CLASSIFICATION: Record<string, MethodClassification> = Objec
   [M.PING]: "always-allowed",
   [M.GET_INFO]: "always-allowed",
   [M.GET_TABS]: "always-allowed",
+  [M.GET_CURRENT_TAB]: "always-allowed",
   [M.NAME_SESSION]: "always-allowed",
   [M.PLAYWRIGHT_WAIT_FOR_TIMEOUT]: "always-allowed",
   [M.TURN_ENDED]: "internal-lifecycle",
+  [M.YIELD_CONTROL]: "internal-lifecycle",
+  [M.RESUME_CONTROL]: "internal-lifecycle",
   [M.CLEAR_LIFECYCLE_DIAGNOSTICS]: "internal-lifecycle",
   [M.FINALIZE_TABS]: "internal-lifecycle",
   [M.ATTACH]: "internal-lifecycle",
@@ -39,6 +42,7 @@ export const METHOD_CLASSIFICATION: Record<string, MethodClassification> = Objec
 
   [M.GET_USER_HISTORY]: "history",
   [M.GET_USER_TABS]: "history",
+  [M.GET_SELECTED_TAB]: "history",
   [M.CLAIM_USER_TAB]: "history",
 
   [M.PLAYWRIGHT_LOCATOR_DOWNLOAD_MEDIA]: "download",

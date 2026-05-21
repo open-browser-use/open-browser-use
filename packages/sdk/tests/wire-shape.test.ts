@@ -1,6 +1,7 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { Browser } from "../src/browser.js";
 import { BrowserTabs } from "../src/browser_tabs.js";
+import { UserTabRef } from "../src/browser_user.js";
 import { display } from "../src/display.js";
 import { Download } from "../src/download.js";
 import { FileChooser } from "../src/file-chooser.js";
@@ -26,9 +27,32 @@ class FakeTransport {
         title: "A",
         origin: "agent",
         status: "deliverable",
+        active: true,
+        logicalActive: true,
+        windowId: 3,
+        groupId: 4,
+        pinned: false,
       },
       { id: "tab-b" },
     ]);
+    this.responses.set(M.GET_CURRENT_TAB, {
+      tab_id: "tab-a",
+      url: "https://a.test/",
+      title: "A",
+      origin: "agent",
+      status: "active",
+      commandable: true,
+      logicalActive: true,
+    });
+    this.responses.set(M.GET_SELECTED_TAB, {
+      tab_id: "selected-user",
+      url: "https://selected.test/",
+      title: "Selected",
+      origin: "user",
+      status: "active",
+      commandable: false,
+      claimRequired: true,
+    });
     this.responses.set(M.CREATE_TAB, {
       id: "created-tab",
       url: "https://new.test/",
@@ -200,6 +224,8 @@ describe("SDK wire-shape contracts", () => {
 
     try {
       const listed = await tabs.list();
+      const current = await tabs.current();
+      const selected = await tabs.selected();
       const created = await tabs.create({ url: "https://new.test/" });
       const direct = tabs.get("manual-tab");
 
@@ -210,6 +236,20 @@ describe("SDK wire-shape contracts", () => {
         title: "A",
         origin: "agent",
         status: "deliverable",
+        active: true,
+        logicalActive: true,
+        windowId: 3,
+        groupId: 4,
+        pinned: false,
+      });
+      expect(current?.id).toBe("tab-a");
+      expect(current?.metadata).toMatchObject({ commandable: true, logicalActive: true });
+      expect(selected).toBeInstanceOf(UserTabRef);
+      expect(selected?.id).toBe("selected-user");
+      expect(selected?.metadata).toMatchObject({
+        claimRequired: true,
+        commandable: false,
+        url: "https://selected.test/",
       });
       expect(created.id).toBe("created-tab");
       expect(created.metadata).toMatchObject({
@@ -226,8 +266,52 @@ describe("SDK wire-shape contracts", () => {
 
     expect(transport.calls).toEqual([
       { method: M.GET_TABS, params: { ...meta }, timeout: undefined },
+      { method: M.GET_CURRENT_TAB, params: { ...meta }, timeout: undefined },
+      { method: M.GET_SELECTED_TAB, params: { ...meta }, timeout: undefined },
       { method: M.CREATE_TAB, params: { url: "https://new.test/", ...meta }, timeout: undefined },
     ]);
+  });
+
+  it("BrowserTabs enforces current/selected ownership and malformed response boundaries", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    const tabs = new BrowserTabs(asTransport(transport), new Guards());
+
+    try {
+      transport.responses.set(M.GET_CURRENT_TAB, null);
+      await expect(tabs.current()).resolves.toBeUndefined();
+
+      transport.responses.set(M.GET_SELECTED_TAB, {
+        tab_id: "selected-agent",
+        url: "https://agent.test/",
+        origin: "agent",
+        status: "active",
+        commandable: true,
+        logical_active: true,
+        window_id: 5,
+        claim_required: false,
+      });
+      const commandableSelected = await tabs.selected();
+      expect(commandableSelected).toBeInstanceOf(Tab);
+      expect(commandableSelected?.id).toBe("selected-agent");
+      expect(commandableSelected?.metadata).toMatchObject({
+        commandable: true,
+        logicalActive: true,
+        windowId: 5,
+        claimRequired: false,
+      });
+
+      transport.responses.set(M.GET_SELECTED_TAB, null);
+      await expect(tabs.selected()).resolves.toBeUndefined();
+
+      transport.responses.set(M.GET_CURRENT_TAB, { url: "https://missing-id.test/" });
+      await expect(tabs.current()).rejects.toThrow("getCurrentTab response missing tab_id");
+
+      transport.responses.set(M.GET_SELECTED_TAB, { url: "https://missing-id.test/" });
+      await expect(tabs.selected()).rejects.toThrow("getSelectedTab response missing tab_id");
+    } finally {
+      restoreMeta();
+    }
   });
 
   it("BrowserTabs creates about:blank by default and rejects malformed options", async () => {
@@ -256,6 +340,9 @@ describe("SDK wire-shape contracts", () => {
       cleared: { stale_sessions: 1, stale_tabs: 2, stale_file_choosers: 0, stale_downloads: 0 },
       diagnostics: { lifecycle: { stale_sessions: 0, stale_tabs: 0 } },
     });
+    transport.responses.set(M.RESUME_CONTROL, {
+      tab: { tab_id: "tab-active", url: "https://example.com/", commandable: true },
+    });
     const browser = new Browser(
       asTransport(transport),
       { type: "cdp", name: "cdp", capabilities: {} },
@@ -266,6 +353,10 @@ describe("SDK wire-shape contracts", () => {
     try {
       await browser.name("Research");
       await browser.turnEnded({ timeout: 200 });
+      await browser.yieldControl({ timeout: 199 });
+      const resumed = await browser.resumeControl({ timeout: 198 });
+      expect(resumed?.id).toBe("tab-active");
+      expect(resumed?.metadata.commandable).toBe(true);
       await browser.finalizeTabs({
         keep: [
           { tabId: "tab-handoff", status: "handoff" },
@@ -284,6 +375,8 @@ describe("SDK wire-shape contracts", () => {
     expect(transport.calls).toEqual([
       { method: M.NAME_SESSION, params: { label: "Research", ...meta }, timeout: undefined },
       { method: M.TURN_ENDED, params: { ...meta }, timeout: 200 },
+      { method: M.YIELD_CONTROL, params: { ...meta }, timeout: 199 },
+      { method: M.RESUME_CONTROL, params: { ...meta }, timeout: 198 },
       {
         method: M.FINALIZE_TABS,
         params: {
@@ -296,6 +389,53 @@ describe("SDK wire-shape contracts", () => {
         timeout: 201,
       },
       { method: M.CLEAR_LIFECYCLE_DIAGNOSTICS, params: { ...meta }, timeout: 202 },
+    ]);
+  });
+
+  it("Browser resumeControl accepts wrapped, bare, and empty tab response shapes", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    const browser = new Browser(
+      asTransport(transport),
+      { type: "webextension", name: "chrome", capabilities: {} },
+      { type: "webextension", name: "chrome", socketPath: "/tmp/webext", metadata: {} },
+      new Guards(),
+    );
+
+    try {
+      transport.responses.set(M.RESUME_CONTROL, {
+        tab_id: "bare-active",
+        url: "https://bare.test/",
+        logical_active: true,
+        commandable: true,
+      });
+      const bare = await browser.resumeControl({ timeout: 301 });
+      expect(bare?.id).toBe("bare-active");
+      expect(bare?.metadata).toMatchObject({
+        url: "https://bare.test/",
+        logicalActive: true,
+        commandable: true,
+      });
+
+      transport.responses.set(M.RESUME_CONTROL, { tab: null });
+      await expect(browser.resumeControl({ timeout: 302 })).resolves.toBeUndefined();
+
+      transport.responses.set(M.RESUME_CONTROL, null);
+      await expect(browser.resumeControl({ timeout: 303 })).resolves.toBeUndefined();
+
+      transport.responses.set(M.RESUME_CONTROL, { tab: { url: "https://missing-id.test/" } });
+      await expect(browser.resumeControl({ timeout: 304 })).rejects.toThrow(
+        "resumeControl response missing tab_id",
+      );
+    } finally {
+      restoreMeta();
+    }
+
+    expect(transport.calls).toEqual([
+      { method: M.RESUME_CONTROL, params: { ...meta }, timeout: 301 },
+      { method: M.RESUME_CONTROL, params: { ...meta }, timeout: 302 },
+      { method: M.RESUME_CONTROL, params: { ...meta }, timeout: 303 },
+      { method: M.RESUME_CONTROL, params: { ...meta }, timeout: 304 },
     ]);
   });
 
