@@ -11,6 +11,7 @@ use tokio::io::{AsyncRead, AsyncWrite};
 use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio_util::codec::Framed;
 use tokio_util::sync::CancellationToken;
+use url::Url;
 
 use obu_wire::{
     ErrorCode, ErrorObject, FrameCodec, Request, Response, RpcMessage,
@@ -403,6 +404,16 @@ impl Dispatcher {
                 .get_user_history_with_context(&ctx, req.params)
                 .await
                 .map_err(host_err_to_rpc),
+            methods::BROWSER_TABS_CONTENT => self.fetch_browser_tabs_content(&req.params).await,
+            methods::BROWSER_VIEWPORT_SET
+            | methods::BROWSER_VIEWPORT_RESET
+            | methods::BROWSER_VISIBILITY_SET
+            | methods::BROWSER_VISIBILITY_GET => self
+                .inner
+                .backend
+                .browser_command_with_context(&ctx, &req.method, req.params)
+                .await
+                .map_err(host_err_to_rpc),
             methods::EXECUTE_CDP => {
                 let tab_id = match cdp_tab_id(&req.params) {
                     Ok(tab_id) => tab_id,
@@ -546,6 +557,12 @@ impl Dispatcher {
             tab_id: tab_id.as_deref(),
             params: &req.params,
         };
+        if req.method == methods::BROWSER_TABS_CONTENT {
+            for url in params_urls(&req.params)? {
+                self.inner.policy.check_navigation(&url, &policy_ctx)?;
+            }
+            return Ok(());
+        }
         match kind {
             MethodPolicyKind::AlwaysAllowed | MethodPolicyKind::InternalLifecycle => Ok(()),
             MethodPolicyKind::TargetUrl => {
@@ -627,17 +644,205 @@ impl Dispatcher {
     }
 
     fn get_info(&self) -> Value {
+        let backend_metadata = self.inner.backend.metadata();
+        let mut metadata = json!({
+            "host_version": self.inner.host_version,
+            "backend": backend_metadata,
+            "diagnostics": self.inner.backend.diagnostics(),
+        });
+        expose_public_profile_metadata(&mut metadata);
         json!({
             "type": self.inner.backend.kind().as_str(),
             "name": self.inner.backend.id(),
-            "metadata": {
-                "host_version": self.inner.host_version,
-                "backend": self.inner.backend.metadata(),
-                "diagnostics": self.inner.backend.diagnostics(),
-            },
+            "metadata": metadata,
             "capabilities": self.inner.backend.capabilities(),
         })
     }
+
+    async fn fetch_browser_tabs_content(
+        &self,
+        params: &Value,
+    ) -> std::result::Result<Value, ErrorObject> {
+        let urls = params_urls(params)?;
+        let content_type = params
+            .get("contentType")
+            .or_else(|| params.get("content_type"))
+            .and_then(Value::as_str)
+            .unwrap_or("text");
+        if !matches!(content_type, "text" | "html" | "json") {
+            return Ok(json!({
+                "results": urls.into_iter().map(|url| json!({
+                    "url": url,
+                    "status": "error",
+                    "errorCode": "unsupported_content_type",
+                    "errorMessage": format!("unsupported contentType: {content_type}")
+                })).collect::<Vec<_>>()
+            }));
+        }
+
+        let timeout = params
+            .get("timeout")
+            .or_else(|| params.get("client_timeout_ms"))
+            .and_then(Value::as_u64)
+            .map(Duration::from_millis)
+            .unwrap_or_else(|| Duration::from_secs(30));
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(timeout)
+            .build()
+            .map_err(|error| {
+                ErrorObject::new(
+                    ErrorCode::InternalError,
+                    format!("failed to build content HTTP client: {error}"),
+                )
+            })?;
+        let policy_ctx = PolicyContext {
+            command: methods::BROWSER_TABS_CONTENT,
+            kind: MethodPolicyKind::TargetUrl,
+            tab_id: None,
+            params,
+        };
+        let mut results = Vec::with_capacity(urls.len());
+        for url in urls {
+            results.push(
+                fetch_one_content_url(&client, &*self.inner.policy, &policy_ctx, url, timeout)
+                    .await,
+            );
+        }
+        Ok(json!({ "results": results }))
+    }
+}
+
+async fn fetch_one_content_url(
+    client: &reqwest::Client,
+    policy: &dyn HostPolicy,
+    policy_ctx: &PolicyContext<'_>,
+    original_url: String,
+    timeout: Duration,
+) -> Value {
+    let mut current = match Url::parse(&original_url) {
+        Ok(url) if matches!(url.scheme(), "http" | "https") => url,
+        Ok(_) => {
+            return json!({
+                "url": original_url,
+                "status": "error",
+                "errorCode": "unsupported_url_scheme",
+                "errorMessage": "only http and https URLs are supported"
+            });
+        }
+        Err(error) => {
+            return json!({
+                "url": original_url,
+                "status": "error",
+                "errorCode": "invalid_url",
+                "errorMessage": error.to_string()
+            });
+        }
+    };
+    let mut redirects = Vec::new();
+    for _ in 0..10 {
+        let response = match client.get(current.clone()).timeout(timeout).send().await {
+            Ok(response) => response,
+            Err(error) => {
+                return json!({
+                    "url": original_url,
+                    "finalUrl": current.as_str(),
+                    "status": "error",
+                    "redirects": redirects,
+                    "errorCode": "fetch_failed",
+                    "errorMessage": error.to_string()
+                });
+            }
+        };
+        let status = response.status();
+        if status.is_redirection() {
+            let Some(location) = response.headers().get(reqwest::header::LOCATION) else {
+                return json!({
+                    "url": original_url,
+                    "finalUrl": current.as_str(),
+                    "status": "error",
+                    "redirects": redirects,
+                    "httpStatus": status.as_u16(),
+                    "errorCode": "redirect_missing_location",
+                    "errorMessage": "redirect response did not include Location"
+                });
+            };
+            let Ok(location) = location.to_str() else {
+                return json!({
+                    "url": original_url,
+                    "finalUrl": current.as_str(),
+                    "status": "error",
+                    "redirects": redirects,
+                    "httpStatus": status.as_u16(),
+                    "errorCode": "invalid_redirect",
+                    "errorMessage": "redirect Location is not valid UTF-8"
+                });
+            };
+            let next = match current.join(location) {
+                Ok(url) => url,
+                Err(error) => {
+                    return json!({
+                        "url": original_url,
+                        "finalUrl": current.as_str(),
+                        "status": "error",
+                        "redirects": redirects,
+                        "httpStatus": status.as_u16(),
+                        "errorCode": "invalid_redirect",
+                        "errorMessage": error.to_string()
+                    });
+                }
+            };
+            if let Err(error) = policy.check_navigation(next.as_str(), policy_ctx) {
+                return json!({
+                    "url": original_url,
+                    "finalUrl": current.as_str(),
+                    "status": "error",
+                    "redirects": redirects,
+                    "httpStatus": status.as_u16(),
+                    "errorCode": "navigation_disallowed",
+                    "errorMessage": error.message
+                });
+            }
+            redirects.push(next.as_str().to_string());
+            current = next;
+            continue;
+        }
+        let http_status = status.as_u16();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        return match response.text().await {
+            Ok(text) => json!({
+                "url": original_url,
+                "finalUrl": current.as_str(),
+                "status": "ok",
+                "redirects": redirects,
+                "httpStatus": http_status,
+                "contentType": content_type,
+                "text": text
+            }),
+            Err(error) => json!({
+                "url": original_url,
+                "finalUrl": current.as_str(),
+                "status": "error",
+                "redirects": redirects,
+                "httpStatus": http_status,
+                "contentType": content_type,
+                "errorCode": "read_failed",
+                "errorMessage": error.to_string()
+            }),
+        };
+    }
+    json!({
+        "url": original_url,
+        "finalUrl": current.as_str(),
+        "status": "error",
+        "redirects": redirects,
+        "errorCode": "too_many_redirects",
+        "errorMessage": "redirect limit exceeded"
+    })
 }
 
 fn encode_response(response: &Response) -> Result<Bytes> {
@@ -648,6 +853,52 @@ fn encode_response(response: &Response) -> Result<Bytes> {
 
 fn params_str(value: &Value, key: &str) -> Option<String> {
     value.get(key).and_then(Value::as_str).map(String::from)
+}
+
+fn params_urls(value: &Value) -> std::result::Result<Vec<String>, ErrorObject> {
+    let Some(urls) = value.get("urls").and_then(Value::as_array) else {
+        return Err(invalid_params("missing urls array"));
+    };
+    if urls.is_empty() {
+        return Err(invalid_params("urls array must not be empty"));
+    }
+    urls.iter()
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|url| !url.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| invalid_params("urls entries must be non-empty strings"))
+        })
+        .collect()
+}
+
+fn expose_public_profile_metadata(metadata: &mut Value) {
+    let backend = metadata.get("backend").cloned().unwrap_or(Value::Null);
+    let Some(object) = metadata.as_object_mut() else {
+        return;
+    };
+    for key in [
+        "profileIdHash",
+        "profileIsLastUsed",
+        "profileOrdering",
+        "profileRuntimeBinding",
+    ] {
+        if let Some(value) = backend.get(key).filter(|value| !value.is_null()) {
+            object.insert(key.to_string(), value.clone());
+        }
+    }
+    if let Some(value) = backend
+        .pointer("/profile_metadata/diagnostics/profilePathRedacted")
+        .cloned()
+    {
+        let diagnostics = object
+            .entry("diagnostics".to_string())
+            .or_insert_with(|| json!({}));
+        if let Some(diagnostics) = diagnostics.as_object_mut() {
+            diagnostics.insert("profilePathRedacted".to_string(), value);
+        }
+    }
 }
 
 fn params_tab_id(value: &Value) -> Option<String> {

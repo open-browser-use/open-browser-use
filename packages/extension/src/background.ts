@@ -411,6 +411,7 @@ async function connectNative(): Promise<void> {
   });
 
   try {
+    const extensionInstance = await extensionInstanceId();
     targetPort.postMessage({
       type: "hello",
       extension_version: chrome.runtime.getManifest().version,
@@ -419,7 +420,8 @@ async function connectNative(): Promise<void> {
       native_host_name: HOST_NAME,
       browser_kind: await detectBrowserKind(),
       extension_id: chrome.runtime.id ?? "unknown",
-      extension_instance_id: await extensionInstanceId(),
+      extension_instance_id: extensionInstance,
+      profile_metadata: browserProfileMetadata(extensionInstance),
     });
     appendDebugLog("debug", "native.hello.sent", { host: HOST_NAME });
     scheduleHelloTimeout(targetPort);
@@ -587,6 +589,14 @@ async function dispatchHostRequest(method: string, params: unknown): Promise<unk
       return { tab: await resumeControl(requireSessionParams(params)) };
     case "getUserHistory":
       return { items: await getUserHistory(params) };
+    case "browser_viewport_set":
+      return await setBrowserViewport(requireSessionParams(params), params);
+    case "browser_viewport_reset":
+      return await resetBrowserViewport(requireSessionParams(params));
+    case "browser_visibility_set":
+      return await setBrowserVisibility(requireSessionParams(params), params);
+    case "browser_visibility_get":
+      return await getBrowserVisibility(requireSessionParams(params));
     case "moveMouse":
       return await moveMouse(params);
     case "attach":
@@ -715,7 +725,8 @@ async function resolveSessionActiveTabId(session: BrowserSession): Promise<numbe
     try {
       await chrome.tabs.get(session.activeTabId);
       return session.activeTabId;
-    } catch {
+    } catch (error) {
+      if (!isTabGoneError(error)) throw error;
       session.tabs.delete(session.activeTabId);
       session.activeTabId = undefined;
     }
@@ -729,7 +740,8 @@ async function resolveSessionActiveTabId(session: BrowserSession): Promise<numbe
     try {
       const tab = await chrome.tabs.get(tabId);
       candidates.push({ tabId, active: tab.active === true });
-    } catch {
+    } catch (error) {
+      if (!isTabGoneError(error)) throw error;
       session.tabs.delete(tabId);
     }
   }
@@ -785,27 +797,32 @@ async function finalizeTabs(sessionParams: SessionParams, params: unknown): Prom
   const releasedTabIds: number[] = [];
   const keptTabs: TabDto[] = [];
   const deliverableTabs: TabDto[] = [];
+  const actions: FinalizeTabAction[] = [];
+  const failures: FinalizeTabFailure[] = [];
 
   for (const [tabId, row] of [...session.tabs]) {
     const keepStatus = keep.get(tabId);
-    if (row.origin === "agent" && !keepStatus) {
-      await closeAgentTabWithDialogPolicy(sessionParams.session_id, session, tabId, "finalizeTabs");
-      await tabGroupManager.removeManagedTab(tabId);
-      session.tabs.delete(tabId);
-      session.finalizedTabs.delete(tabId);
-      closedTabIds.push(tabId);
-      continue;
-    }
-    if (row.origin === "user" && !keepStatus) {
-      await cleanupControlledTab(session, tabId);
-      await tabGroupManager.releaseManagedTab(tabId);
-      session.tabs.delete(tabId);
-      session.finalizedTabs.delete(tabId);
-      releasedTabIds.push(tabId);
-      continue;
-    }
+    const desiredStatus: FinalizeDesiredStatus = keepStatus ?? (row.origin === "agent" ? "close" : "release");
     try {
-      if (keepStatus === "deliverable") {
+      if (desiredStatus === "close") {
+        await closeAgentTabWithDialogPolicy(sessionParams.session_id, session, tabId, "finalizeTabs");
+        await tabGroupManager.removeManagedTab(tabId);
+        session.tabs.delete(tabId);
+        session.finalizedTabs.delete(tabId);
+        closedTabIds.push(tabId);
+        actions.push(finalizeAction(tabId, row.origin, desiredStatus, "closed"));
+        continue;
+      }
+      if (desiredStatus === "release") {
+        await cleanupControlledTab(session, tabId);
+        await tabGroupManager.releaseManagedTab(tabId);
+        session.tabs.delete(tabId);
+        session.finalizedTabs.delete(tabId);
+        releasedTabIds.push(tabId);
+        actions.push(finalizeAction(tabId, row.origin, desiredStatus, "released"));
+        continue;
+      }
+      if (desiredStatus === "deliverable") {
         await cleanupControlledTab(session, tabId);
         const tab = await chrome.tabs.get(tabId);
         const groupId = await moveTabToDeliverableGroup(sessionParams.session_id, session, tabId, row.origin);
@@ -815,33 +832,71 @@ async function finalizeTabs(sessionParams: SessionParams, params: unknown): Prom
         session.finalizedTabs.set(tabId, finalizedRow);
         keptTabs.push(dto);
         deliverableTabs.push(dto);
+        actions.push(finalizeAction(tabId, row.origin, desiredStatus, "kept_deliverable"));
       } else {
-        if (keepStatus === "handoff") {
+        if (desiredStatus === "handoff") {
           await cleanupControlledTab(session, tabId);
           const tab = await chrome.tabs.get(tabId);
           await tabGroupManager.setManagedTabStatus(tabId, "handoff");
           const handoffRow: SessionTab = { ...row, status: "handoff" };
           row.status = "handoff";
           keptTabs.push(toTabDto(tab, handoffRow));
+          actions.push(finalizeAction(tabId, row.origin, desiredStatus, "kept_handoff"));
         } else {
           keptTabs.push(toTabDto(await chrome.tabs.get(tabId), row));
         }
       }
     } catch (error) {
-      if (!isTabGoneError(error)) {
-        throw finalizeTabTransitionError(tabId, keepStatus, error);
+      if (isTabGoneError(error)) {
+        session.tabs.delete(tabId);
+        session.finalizedTabs.delete(tabId);
+        session.attachedTabIds.delete(tabId);
+        await tabGroupManager.removeManagedTab(tabId);
+        actions.push(finalizeAction(tabId, row.origin, desiredStatus, "tab_gone"));
+      } else {
+        const failure = finalizeFailure(tabId, desiredStatus, "failed", error);
+        failures.push(failure);
+        actions.push(finalizeAction(tabId, row.origin, desiredStatus, "failed", failure.errorCode, failure.errorMessage));
+        appendDebugLog("warn", "tabs.finalize.partial_failure", {
+          sessionId: sessionParams.session_id,
+          tabId,
+          desiredStatus,
+          errorCode: failure.errorCode,
+          errorMessage: failure.errorMessage,
+        });
       }
-      session.tabs.delete(tabId);
-      session.attachedTabIds.delete(tabId);
-      await tabGroupManager.removeManagedTab(tabId);
-      closedTabIds.push(tabId);
     }
   }
-  syncSessionGroupMirrors(session);
-  session.activeTabId = await resolveSessionActiveTabId(session);
-  await persistSessionState();
+  let finalTabs: FinalizeTabsResult["finalTabs"];
+  try {
+    syncSessionGroupMirrors(session);
+    session.activeTabId = await resolveSessionActiveTabId(session);
+    finalTabs = await reconcileFinalizeTabs(session);
+    await persistSessionState();
+  } catch (error) {
+    const fatal = finalizeFailure(undefined, undefined, "failed", error, "finalize_reconciliation_failed");
+    failures.push(fatal);
+    await persistSessionState();
+    return {
+      status: "fatal",
+      actions,
+      closedTabIds,
+      releasedTabIds,
+      keptTabs,
+      deliverableTabs,
+      finalTabs: null,
+      failures,
+      errorCode: fatal.errorCode,
+      errorMessage: fatal.errorMessage,
+      diagnostics: {
+        reconciledFromChrome: false,
+        reconciliationSource: "chrome.tabs",
+      },
+    };
+  }
   appendDebugLog("info", "tabs.finalized", {
     sessionId: sessionParams.session_id,
+    status: failures.length > 0 ? "partial" : "ok",
     closed: closedTabIds.length,
     released: releasedTabIds.length,
     kept: keptTabs.length,
@@ -849,7 +904,20 @@ async function finalizeTabs(sessionParams: SessionParams, params: unknown): Prom
   });
   schedulePendingExtensionUpdateCheck("tabs_finalized");
 
-  return { closedTabIds, releasedTabIds, keptTabs, deliverableTabs };
+  return {
+    status: failures.length > 0 ? "partial" : "ok",
+    actions,
+    closedTabIds,
+    releasedTabIds,
+    keptTabs,
+    deliverableTabs,
+    finalTabs,
+    failures,
+    diagnostics: {
+      reconciledFromChrome: true,
+      reconciliationSource: "chrome.tabs",
+    },
+  };
 }
 
 async function nameSession(sessionParams: SessionParams, params: unknown): Promise<void> {
@@ -912,6 +980,93 @@ async function getUserHistory(params: unknown): Promise<HistoryItemDto[]> {
       typedCount: row.typedCount,
     }));
 }
+
+async function setBrowserViewport(sessionParams: SessionParams, params: unknown): Promise<unknown> {
+  const { tabId } = await requireCurrentSessionTabForBrowserCommand(sessionParams, "browser viewport set");
+  const width = requiredPositiveInteger(params, "width", 1, 16_384);
+  const height = requiredPositiveInteger(params, "height", 1, 16_384);
+  const deviceScaleFactor = optionalFiniteNumber(params, "deviceScaleFactor", 1, 0.1, 8);
+  const mobile = isRecord(params) && params.mobile === true;
+  const session = sessionFor(sessionParams.session_id);
+  await ensureDebuggerAttached(session, tabId);
+  await chrome.debugger.sendCommand({ tabId }, "Emulation.setDeviceMetricsOverride", {
+    width,
+    height,
+    deviceScaleFactor,
+    mobile,
+  });
+  appendDebugLog("info", "browser.viewport.set", { sessionId: sessionParams.session_id, tabId, width, height });
+  return { width, height, deviceScaleFactor, mobile, tabId };
+}
+
+async function resetBrowserViewport(sessionParams: SessionParams): Promise<unknown> {
+  const { tabId } = await requireCurrentSessionTabForBrowserCommand(sessionParams, "browser viewport reset");
+  const session = sessionFor(sessionParams.session_id);
+  await ensureDebuggerAttached(session, tabId);
+  await chrome.debugger.sendCommand({ tabId }, "Emulation.clearDeviceMetricsOverride", {});
+  appendDebugLog("info", "browser.viewport.reset", { sessionId: sessionParams.session_id, tabId });
+  return { reset: true, tabId };
+}
+
+async function setBrowserVisibility(sessionParams: SessionParams, params: unknown): Promise<unknown> {
+  const { tab } = await requireCurrentSessionTabForBrowserCommand(sessionParams, "browser visibility set");
+  const visible = requiredBoolean(params, "visible");
+  const focus = isRecord(params) ? params.focused !== false : true;
+  const windowId = requireTabWindowId(tab);
+  const updateProperties: ChromeWindowUpdateInfo = visible
+    ? { state: "normal", focused: focus }
+    : { state: "minimized" };
+  const windowInfo = await chrome.windows.update(windowId, updateProperties) ?? await chrome.windows.get(windowId);
+  appendDebugLog("info", "browser.visibility.set", {
+    sessionId: sessionParams.session_id,
+    windowId,
+    visible,
+    focused: windowInfo.focused === true,
+    state: windowInfo.state,
+  });
+  return browserVisibilityDto(windowInfo);
+}
+
+async function getBrowserVisibility(sessionParams: SessionParams): Promise<unknown> {
+  const { tab } = await requireCurrentSessionTabForBrowserCommand(sessionParams, "browser visibility get");
+  const windowInfo = await chrome.windows.get(requireTabWindowId(tab));
+  return browserVisibilityDto(windowInfo);
+}
+
+async function requireCurrentSessionTabForBrowserCommand(
+  sessionParams: SessionParams,
+  operation: string,
+): Promise<{ tabId: number; tab: ChromeTab; row: SessionTab }> {
+  const session = sessionFor(sessionParams.session_id);
+  session.currentTurnId = sessionParams.turn_id;
+  ensureSessionAcceptsAction(session, operation);
+  const tabId = await resolveSessionActiveTabId(session);
+  if (tabId === undefined) throw new Error(`${operation} requires an active session tab`);
+  const row = session.tabs.get(tabId);
+  if (!row || row.status !== "active") throw new Error(`tab ${tabId} is not actively controlled`);
+  session.activeTabId = tabId;
+  await persistSessionState();
+  return { tabId, row, tab: await chrome.tabs.get(tabId) };
+}
+
+function browserVisibilityDto(windowInfo: ChromeWindow): {
+  visible: boolean;
+  focused: boolean;
+  windowId?: number;
+  state?: ChromeWindow["state"];
+} {
+  return {
+    visible: windowInfo.state !== "minimized",
+    focused: windowInfo.focused === true,
+    windowId: windowInfo.id,
+    state: windowInfo.state,
+  };
+}
+
+type ChromeWindowUpdateInfo = {
+  state?: ChromeWindow["state"];
+  focused?: boolean;
+};
 
 async function executeCdp(params: unknown): Promise<unknown> {
   const tabId = requireTabId(params);
@@ -1102,6 +1257,28 @@ function requiredNumber(params: unknown, key: string): number {
   return params[key];
 }
 
+function requiredBoolean(params: unknown, key: string): boolean {
+  if (!isRecord(params) || typeof params[key] !== "boolean") throw new Error(`${key} must be a boolean`);
+  return params[key];
+}
+
+function requiredPositiveInteger(params: unknown, key: string, min: number, max: number): number {
+  const value = requiredNumber(params, key);
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`${key} must be an integer between ${min} and ${max}`);
+  }
+  return value;
+}
+
+function optionalFiniteNumber(params: unknown, key: string, fallback: number, min: number, max: number): number {
+  const value = isRecord(params) ? params[key] : undefined;
+  if (value === undefined) return fallback;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max) {
+    throw new Error(`${key} must be a number between ${min} and ${max}`);
+  }
+  return value;
+}
+
 function requireCreatedTabId(tab: ChromeTab): number {
   if (!Number.isInteger(tab.id)) throw new Error("created tab did not include an id");
   return tab.id!;
@@ -1238,15 +1415,83 @@ function isTabGoneError(error: unknown): boolean {
   return /No tab|Cannot find|closed|does not exist|unknown tab/i.test(errorMessage(error));
 }
 
-function finalizeTabTransitionError(
+async function reconcileFinalizeTabs(session: BrowserSession): Promise<FinalizeTabsFinalTabs> {
+  const handoff: TabDto[] = [];
+  const deliverable: TabDto[] = [];
+  let changed = false;
+
+  for (const [tabId, row] of [...session.tabs]) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (row.status === "handoff") handoff.push(toTabDto(tab, row));
+    } catch (error) {
+      if (!isTabGoneError(error)) throw error;
+      session.tabs.delete(tabId);
+      session.attachedTabIds.delete(tabId);
+      await tabGroupManager.removeManagedTab(tabId);
+      changed = true;
+    }
+  }
+
+  for (const [tabId, row] of [...session.finalizedTabs]) {
+    try {
+      deliverable.push(toTabDto(await chrome.tabs.get(tabId), row));
+    } catch (error) {
+      if (!isTabGoneError(error)) throw error;
+      session.finalizedTabs.delete(tabId);
+      await tabGroupManager.removeManagedTab(tabId);
+      changed = true;
+    }
+  }
+
+  if (changed) syncSessionGroupMirrors(session);
+  return {
+    handoff,
+    deliverable,
+    activeTabId: session.activeTabId ?? null,
+  };
+}
+
+function finalizeAction(
   tabId: number,
-  keepStatus: SessionTab["status"] | undefined,
+  origin: "agent" | "user",
+  desiredStatus: FinalizeDesiredStatus,
+  outcome: FinalizeTabOutcome,
+  errorCode?: string,
+  errorMessage?: string,
+): FinalizeTabAction {
+  return {
+    tabId,
+    origin,
+    desiredStatus,
+    outcome,
+    ...(errorCode !== undefined ? { errorCode } : {}),
+    ...(errorMessage !== undefined ? { errorMessage } : {}),
+  };
+}
+
+function finalizeFailure(
+  tabId: number | undefined,
+  desiredStatus: FinalizeDesiredStatus | undefined,
+  outcome: Extract<FinalizeTabOutcome, "failed" | "not_attempted">,
   error: unknown,
-): Error {
-  const statusLabel = keepStatus ?? "active";
-  return new Error(
-    `finalizeTabs failed_to_finalize tab ${tabId} as ${statusLabel}; ownership is unchanged: ${errorMessage(error)}`,
-  );
+  fallbackCode = "failed_to_finalize",
+): FinalizeTabFailure {
+  const errorCode = finalizeErrorCode(error, fallbackCode);
+  return {
+    ...(tabId !== undefined ? { tabId } : {}),
+    ...(desiredStatus !== undefined ? { desiredStatus } : {}),
+    outcome,
+    errorCode,
+    errorMessage: errorMessage(error),
+  };
+}
+
+function finalizeErrorCode(error: unknown, fallbackCode: string): string {
+  const message = errorMessage(error);
+  if (/dialog_requires_decision/i.test(message)) return "dialog_requires_decision";
+  if (/disallowed|forbidden|denied/i.test(message)) return "command_disallowed";
+  return fallbackCode;
 }
 
 async function hideSessionTakeover(session: BrowserSession): Promise<void> {
@@ -1404,9 +1649,9 @@ async function handleForegroundTabChanged(tabId: number | undefined, reason: str
   await overlayCoordinator.syncForeground();
 }
 
-function parseFinalizeKeep(params: unknown): Map<number, SessionTab["status"]> {
+function parseFinalizeKeep(params: unknown): Map<number, Extract<SessionTab["status"], "handoff" | "deliverable">> {
   const rows = isRecord(params) && Array.isArray(params.keep) ? params.keep : [];
-  const keep = new Map<number, SessionTab["status"]>();
+  const keep = new Map<number, Extract<SessionTab["status"], "handoff" | "deliverable">>();
   for (const row of rows) {
     if (!isRecord(row)) throw new Error("finalizeTabs.keep entries must be objects");
     const tabId = requireTabId(row);
@@ -1824,6 +2069,25 @@ async function extensionInstanceId(): Promise<string> {
   return id;
 }
 
+function browserProfileMetadata(extensionInstance: string): {
+  profileIdHash: string;
+  profileRuntimeBinding: "webextension";
+} {
+  return {
+    profileIdHash: `obu-${stablePublicHash(`${chrome.runtime.id ?? "unknown"}:${extensionInstance}`)}`,
+    profileRuntimeBinding: "webextension",
+  };
+}
+
+function stablePublicHash(input: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
+}
+
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message = "native host request timed out"): Promise<T> {
   return new Promise((resolve, reject) => {
     const timeout = setTimeout(() => reject(new Error(message)), timeoutMs);
@@ -2120,11 +2384,55 @@ type SessionTabsResult = {
   deliverableTabs: TabDto[];
 };
 
+type FinalizeDesiredStatus = "close" | "release" | "handoff" | "deliverable";
+
+type FinalizeTabOutcome =
+  | "closed"
+  | "released"
+  | "kept_handoff"
+  | "kept_deliverable"
+  | "tab_gone"
+  | "failed"
+  | "not_attempted";
+
+type FinalizeTabAction = {
+  tabId: number;
+  origin: "agent" | "user";
+  desiredStatus: FinalizeDesiredStatus;
+  outcome: FinalizeTabOutcome;
+  errorCode?: string;
+  errorMessage?: string;
+};
+
+type FinalizeTabFailure = {
+  tabId?: number;
+  desiredStatus?: FinalizeDesiredStatus;
+  outcome: Extract<FinalizeTabOutcome, "failed" | "not_attempted">;
+  errorCode: string;
+  errorMessage: string;
+};
+
+type FinalizeTabsFinalTabs = {
+  handoff: TabDto[];
+  deliverable: TabDto[];
+  activeTabId: number | null;
+};
+
 type FinalizeTabsResult = {
+  status: "ok" | "partial" | "fatal";
+  actions: FinalizeTabAction[];
   closedTabIds: number[];
   releasedTabIds: number[];
   keptTabs: TabDto[];
   deliverableTabs: TabDto[];
+  finalTabs: FinalizeTabsFinalTabs | null;
+  failures: FinalizeTabFailure[];
+  diagnostics: {
+    reconciledFromChrome: boolean;
+    reconciliationSource?: "chrome.tabs";
+  };
+  errorCode?: string;
+  errorMessage?: string;
 };
 
 type HistoryItemDto = {

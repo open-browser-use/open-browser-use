@@ -73,6 +73,22 @@ pub const METHOD_POLICY_CLASSIFICATIONS: &[(&str, MethodPolicyKind)] = &[
         methods::EXECUTE_UNHANDLED_COMMAND,
         MethodPolicyKind::InternalLifecycle,
     ),
+    (
+        methods::BROWSER_VIEWPORT_SET,
+        MethodPolicyKind::InternalLifecycle,
+    ),
+    (
+        methods::BROWSER_VIEWPORT_RESET,
+        MethodPolicyKind::InternalLifecycle,
+    ),
+    (
+        methods::BROWSER_VISIBILITY_SET,
+        MethodPolicyKind::InternalLifecycle,
+    ),
+    (
+        methods::BROWSER_VISIBILITY_GET,
+        MethodPolicyKind::InternalLifecycle,
+    ),
     (methods::CREATE_TAB, MethodPolicyKind::TargetUrl),
     (methods::TAB_GOTO, MethodPolicyKind::TargetUrl),
     (methods::TAB_WAIT_FOR_URL, MethodPolicyKind::TargetUrl),
@@ -80,6 +96,7 @@ pub const METHOD_POLICY_CLASSIFICATIONS: &[(&str, MethodPolicyKind)] = &[
         methods::PLAYWRIGHT_WAIT_FOR_URL,
         MethodPolicyKind::TargetUrl,
     ),
+    (methods::BROWSER_TABS_CONTENT, MethodPolicyKind::TargetUrl),
     (methods::GET_USER_HISTORY, MethodPolicyKind::History),
     (methods::GET_USER_TABS, MethodPolicyKind::History),
     (methods::GET_SELECTED_TAB, MethodPolicyKind::History),

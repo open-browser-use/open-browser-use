@@ -82,6 +82,7 @@ declare const chrome: {
   };
   windows: {
     get(windowId: number): Promise<ChromeWindow>;
+    update(windowId: number, updateInfo: { state?: ChromeWindow["state"]; focused?: boolean }): Promise<ChromeWindow>;
     onFocusChanged?: {
       addListener(listener: (windowId: number) => void): void;
     };

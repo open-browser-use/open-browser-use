@@ -1260,6 +1260,21 @@ async fn webext_backend_dom_cua_uses_backend_node_ids() {
             .iter()
             .all(|node| node["node_id"] != "102" && node["node_id"] != "103")
     );
+    let dom_text = backend
+        .cua_command_with_context(
+            &ctx,
+            "dom_cua_get_visible_dom",
+            json!({ "tab_id": "42", "format": "text" }),
+        )
+        .await
+        .unwrap();
+    assert!(
+        dom_text["text"]
+            .as_str()
+            .unwrap()
+            .contains(r#"[101] <button aria-label="Submit"> Submit"#)
+    );
+    assert!(!dom_text["text"].as_str().unwrap().contains("Overlay"));
 
     backend
         .cua_command_with_context(

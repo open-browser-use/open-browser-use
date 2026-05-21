@@ -42,7 +42,18 @@ async fn native_messaging_hello_exposes_sdk_socket_descriptor_and_getinfo() {
             "native_host_name": "dev.obu.host",
             "browser_kind": "chrome",
             "extension_id": "test-extension",
-            "extension_instance_id": "test-instance"
+            "extension_instance_id": "test-instance",
+            "profile_metadata": {
+                "profileIdHash": "profile-hash",
+                "profileIsLastUsed": true,
+                "profileOrdering": 2,
+                "profileRuntimeBinding": "webextension",
+                "profilePath": "/Users/alice/Library/Application Support/Chrome/Profile 1",
+                "profileDisplayName": "Alice Personal",
+                "diagnostics": {
+                    "profilePathRedacted": "/Users/<redacted>/Library/Application Support/Chrome/Profile 1"
+                }
+            }
         }),
     )
     .await;
@@ -56,6 +67,24 @@ async fn native_messaging_hello_exposes_sdk_socket_descriptor_and_getinfo() {
         serde_json::from_slice(&std::fs::read(&descriptor_path).unwrap()).unwrap();
     assert_eq!(descriptor["type"], "webextension");
     assert_eq!(descriptor["metadata"]["extension_id"], "test-extension");
+    assert_eq!(descriptor["metadata"]["profileIdHash"], "profile-hash");
+    assert_eq!(descriptor["metadata"]["profileIsLastUsed"], true);
+    assert_eq!(descriptor["metadata"]["profileOrdering"], 2);
+    assert_eq!(
+        descriptor["metadata"]["profileRuntimeBinding"],
+        "webextension"
+    );
+    assert!(descriptor["metadata"].get("profilePath").is_none());
+    assert!(descriptor["metadata"].get("profileDisplayName").is_none());
+    assert!(
+        descriptor["metadata"]["profile_metadata"]
+            .get("profilePath")
+            .is_none()
+    );
+    assert!(
+        descriptor.to_string().contains("/Users/alice") == false,
+        "descriptor must not leak raw local profile paths"
+    );
 
     let socket_path = descriptor["socketPath"].as_str().unwrap();
     let token = descriptor["sdk_auth_token"].as_str().unwrap();
@@ -96,6 +125,16 @@ async fn native_messaging_hello_exposes_sdk_socket_descriptor_and_getinfo() {
         info["result"]["metadata"]["backend"]["extension_id"],
         "test-extension"
     );
+    assert_eq!(info["result"]["metadata"]["profileIdHash"], "profile-hash");
+    assert_eq!(
+        info["result"]["metadata"]["profileRuntimeBinding"],
+        "webextension"
+    );
+    assert_eq!(
+        info["result"]["metadata"]["diagnostics"]["profilePathRedacted"],
+        "/Users/<redacted>/Library/Application Support/Chrome/Profile 1"
+    );
+    assert!(info.to_string().contains("Alice Personal") == false);
 
     drop(framed);
     drop(stdin);

@@ -27,6 +27,13 @@ pub const MOVE_MOUSE: &str = "moveMouse";
 // History
 pub const GET_USER_HISTORY: &str = "getUserHistory";
 
+// Browser-level content fetch/export
+pub const BROWSER_TABS_CONTENT: &str = "browser_tabs_content";
+pub const BROWSER_VIEWPORT_SET: &str = "browser_viewport_set";
+pub const BROWSER_VIEWPORT_RESET: &str = "browser_viewport_reset";
+pub const BROWSER_VISIBILITY_SET: &str = "browser_visibility_set";
+pub const BROWSER_VISIBILITY_GET: &str = "browser_visibility_get";
+
 // Lifecycle
 pub const TURN_ENDED: &str = "turnEnded";
 pub const YIELD_CONTROL: &str = "yieldControl";
@@ -118,6 +125,11 @@ pub const ALL_INBOUND_METHODS: &[&str] = &[
     EXECUTE_CDP,
     MOVE_MOUSE,
     GET_USER_HISTORY,
+    BROWSER_TABS_CONTENT,
+    BROWSER_VIEWPORT_SET,
+    BROWSER_VIEWPORT_RESET,
+    BROWSER_VISIBILITY_SET,
+    BROWSER_VISIBILITY_GET,
     TURN_ENDED,
     YIELD_CONTROL,
     RESUME_CONTROL,

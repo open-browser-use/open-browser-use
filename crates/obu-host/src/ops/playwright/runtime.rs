@@ -814,7 +814,7 @@ where
         timeout_ms(&params),
     )
     .await?;
-    Ok(json!({ "dom_snapshot": value }))
+    Ok(json!({ "domSnapshot": value, "source": "playwright_dom_snapshot" }))
 }
 
 pub(crate) async fn wait_for_selector_state<B>(
@@ -1296,7 +1296,10 @@ mod tests {
         .await
         .unwrap();
 
-        assert_eq!(result, json!({ "dom_snapshot": "snapshot" }));
+        assert_eq!(
+            result,
+            json!({ "domSnapshot": "snapshot", "source": "playwright_dom_snapshot" })
+        );
         let expressions = backend.expressions.lock().unwrap();
         let expression = expressions.first().expect("snapshot expression captured");
         assert!(expression.contains("#obu-agent-overlay-root,[data-obu-overlay-root]"));
@@ -1305,6 +1308,41 @@ mod tests {
         assert!(expression.contains("overlay.hidden = true"));
         assert!(expression.contains("incrementalAriaSnapshot"));
         assert!(expression.contains("finally"));
+    }
+
+    #[tokio::test]
+    async fn read_all_captures_text_and_attributes_for_collection() {
+        let rows = json!([
+            {
+                "attributes": { "data-kind": "primary" },
+                "inner_text": "Save",
+                "text_content": " Save "
+            },
+            null
+        ]);
+        let backend = FakeCommandBackend::new(vec![rows.clone()], false);
+
+        let result = read_all(
+            &backend,
+            &BackendRequestContext::default(),
+            json!({
+                "tab_id": "tab-1",
+                "selector": ".item",
+                "relative_selector": ".label",
+                "timeout_ms": 1
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result, rows);
+        let expressions = backend.expressions.lock().unwrap();
+        let expression = expressions.first().expect("read_all expression captured");
+        assert!(expression.contains("evaluateOnSelectorAll"));
+        assert!(expression.contains(r#""relativeSelector":".label""#));
+        assert!(expression.contains("Object.fromEntries"));
+        assert!(expression.contains("inner_text"));
+        assert!(expression.contains("text_content"));
     }
 
     #[tokio::test]

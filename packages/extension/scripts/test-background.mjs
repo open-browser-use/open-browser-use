@@ -85,6 +85,7 @@ const calls = {
   tabsRemove: [],
   tabsSendMessage: [],
   tabsUngroup: [],
+  windowsUpdate: [],
   runtimeReload: [],
 };
 let nextTabId = 1;
@@ -272,6 +273,17 @@ globalThis.chrome = {
       if (!windowInfo) throw new Error(`unknown window ${windowId}`);
       return windowInfo;
     },
+    async update(windowId, updateInfo) {
+      calls.windowsUpdate.push({ windowId, updateInfo });
+      const windowInfo = windows.get(windowId);
+      if (!windowInfo) throw new Error(`unknown window ${windowId}`);
+      if (updateInfo.state) windowInfo.state = updateInfo.state;
+      if (typeof updateInfo.focused === "boolean") {
+        for (const row of windows.values()) row.focused = false;
+        windowInfo.focused = updateInfo.focused;
+      }
+      return windowInfo;
+    },
     onFocusChanged: windowFocusChangedEvents,
   },
   scripting: {
@@ -375,6 +387,10 @@ await waitFor(() => port.sent.find((message) => message.type === "hello"));
 assert.equal(port.sent[0].type, "hello");
 assert.equal(port.sent[0].extension_id, extensionId);
 assert.equal(port.sent[0].browser_kind, "chrome");
+assert.match(port.sent[0].profile_metadata.profileIdHash, /^obu-[0-9a-f]{8}$/);
+assert.equal(port.sent[0].profile_metadata.profileRuntimeBinding, "webextension");
+assert.equal(port.sent[0].profile_metadata.profilePath, undefined);
+assert.equal(port.sent[0].profile_metadata.profileDisplayName, undefined);
 
 port.emit({ type: "hello_ack", host_version: "0.1.0" });
 await waitFor(() => storage[statusKey]?.state === "connected");
@@ -665,6 +681,84 @@ assert.equal(captureSuppressionMessages.length, 2);
 assert.equal(captureSuppressionMessages[0].active, true);
 assert.equal(captureSuppressionMessages[1].active, false);
 assert.equal(captureSuppressionMessages[1].token, captureSuppressionMessages[0].token);
+
+const viewportSet = await hostRequest(port, "browser_viewport_set", {
+  session_id: "session",
+  turn_id: "turn",
+  width: 640,
+  height: 480,
+  deviceScaleFactor: 2,
+  mobile: false,
+});
+assert.deepEqual(viewportSet.result, {
+  width: 640,
+  height: 480,
+  deviceScaleFactor: 2,
+  mobile: false,
+  tabId: 1,
+});
+const viewportCommand = calls.debuggerSendCommand.at(-1);
+assert.equal(viewportCommand.target.tabId, 1);
+assert.equal(viewportCommand.method, "Emulation.setDeviceMetricsOverride");
+assert.deepEqual(viewportCommand.commandParams, {
+  width: 640,
+  height: 480,
+  deviceScaleFactor: 2,
+  mobile: false,
+});
+const viewportReset = await hostRequest(port, "browser_viewport_reset", {
+  session_id: "session",
+  turn_id: "turn",
+});
+assert.deepEqual(viewportReset.result, { reset: true, tabId: 1 });
+assert.equal(calls.debuggerSendCommand.at(-1).method, "Emulation.clearDeviceMetricsOverride");
+
+const hiddenVisibility = await hostRequest(port, "browser_visibility_set", {
+  session_id: "session",
+  turn_id: "turn",
+  visible: false,
+});
+assert.equal(hiddenVisibility.result.visible, false);
+assert.equal(hiddenVisibility.result.state, "minimized");
+assert.deepEqual(calls.windowsUpdate.at(-1), {
+  windowId: 1,
+  updateInfo: { state: "minimized" },
+});
+const visibleVisibility = await hostRequest(port, "browser_visibility_set", {
+  session_id: "session",
+  turn_id: "turn",
+  visible: true,
+});
+assert.equal(visibleVisibility.result.visible, true);
+assert.equal(visibleVisibility.result.focused, true);
+assert.deepEqual(calls.windowsUpdate.at(-1), {
+  windowId: 1,
+  updateInfo: { state: "normal", focused: true },
+});
+const currentVisibility = await hostRequest(port, "browser_visibility_get", {
+  session_id: "session",
+  turn_id: "turn",
+});
+assert.equal(currentVisibility.result.visible, true);
+assert.equal(currentVisibility.result.windowId, 1);
+const visibilityScreenshotStart = calls.tabsSendMessage.length;
+const visibilityScreenshot = await hostRequest(port, "executeCdp", {
+  session_id: "session",
+  turn_id: "turn",
+  target: { tabId: 1 },
+  method: "Page.captureScreenshot",
+  commandParams: { format: "png" },
+  suppressAgentOverlayForCapture: true,
+});
+assert.deepEqual(visibilityScreenshot.result, { ok: true });
+assert.equal(calls.debuggerSendCommand.at(-1).method, "Page.captureScreenshot");
+const visibilitySuppressionMessages = calls.tabsSendMessage
+  .slice(visibilityScreenshotStart)
+  .map((call) => call.message)
+  .filter((message) => message?.type === "OBU_CAPTURE_SUPPRESSION");
+assert.equal(visibilitySuppressionMessages.length, 2);
+assert.equal(visibilitySuppressionMessages[0].active, true);
+assert.equal(visibilitySuppressionMessages[1].active, false);
 const debuggerCommandsBeforeFailedScreenshot = calls.debuggerSendCommand.length;
 failNextCaptureSuppression = true;
 const failedScreenshotCdp = await hostRequest(port, "executeCdp", {
@@ -1158,7 +1252,13 @@ const dialogClose = await hostRequest(port, "finalizeTabs", {
   turn_id: "turn",
   keep: [],
 });
-assert.match(dialogClose.error.message, /dialog_requires_decision/);
+assert.equal(dialogClose.result.status, "partial");
+assert.deepEqual(dialogClose.result.failures.map((failure) => [
+  failure.tabId,
+  failure.desiredStatus,
+  failure.outcome,
+  failure.errorCode,
+]), [[dialogCloseTabId, "close", "failed", "dialog_requires_decision"]]);
 assert.equal(tabs.has(dialogCloseTabId), true);
 assert.equal(calls.tabsRemove.includes(dialogCloseTabId), false);
 const dialogCloseTabs = await hostRequest(port, "getTabs", {
@@ -1287,10 +1387,32 @@ const kept = await hostRequest(port, "finalizeTabs", {
     { tabId: deliverableTabId, status: "deliverable" },
   ],
 });
+assert.equal(kept.result.status, "ok");
 assert.deepEqual(kept.result.closedTabIds, []);
 assert.deepEqual(kept.result.releasedTabIds, []);
 assert.equal(kept.result.keptTabs.length, 2);
 assert.equal(kept.result.deliverableTabs[0].tabId, deliverableTabId);
+assert.deepEqual(
+  kept.result.actions.map((action) => [action.tabId, action.desiredStatus, action.outcome]),
+  [
+    [handoffTabId, "handoff", "kept_handoff"],
+    [deliverableTabId, "deliverable", "kept_deliverable"],
+  ],
+);
+assert.deepEqual(
+  kept.result.finalTabs.handoff.map((tab) => [tab.tabId, tab.status]),
+  [[handoffTabId, "handoff"]],
+);
+assert.deepEqual(
+  kept.result.finalTabs.deliverable.map((tab) => [tab.tabId, tab.status]),
+  [[deliverableTabId, "deliverable"]],
+);
+assert.equal(kept.result.finalTabs.activeTabId, null);
+assert.deepEqual(kept.result.failures, []);
+assert.deepEqual(kept.result.diagnostics, {
+  reconciledFromChrome: true,
+  reconciliationSource: "chrome.tabs",
+});
 assert.equal(tabs.get(handoffTabId).groupId, activeGroupId);
 assert.notEqual(tabs.get(deliverableTabId).groupId, activeGroupId);
 assert.deepEqual(calls.tabGroupsUpdate.at(-1).updateProperties, {
@@ -1329,7 +1451,10 @@ const handoffFailureTabId = handoffFailureCreated.result.tab.tabId;
 const originalTabsGet = chrome.tabs.get;
 let failHandoffGet = true;
 chrome.tabs.get = async (tabId) => {
-  if (tabId === handoffFailureTabId && failHandoffGet) throw new Error("synthetic metadata failure");
+  if (tabId === handoffFailureTabId && failHandoffGet) {
+    failHandoffGet = false;
+    throw new Error("synthetic metadata failure");
+  }
   return originalTabsGet.call(chrome.tabs, tabId);
 };
 const failedHandoffFinalize = await hostRequest(port, "finalizeTabs", {
@@ -1337,10 +1462,21 @@ const failedHandoffFinalize = await hostRequest(port, "finalizeTabs", {
   turn_id: "turn",
   keep: [{ tabId: handoffFailureTabId, status: "handoff" }],
 });
-failHandoffGet = false;
 chrome.tabs.get = originalTabsGet;
-assert.match(failedHandoffFinalize.error.message, /failed_to_finalize/);
-assert.match(failedHandoffFinalize.error.message, /ownership is unchanged/);
+assert.equal(failedHandoffFinalize.result.status, "partial");
+assert.deepEqual(failedHandoffFinalize.result.failures.map((failure) => [
+  failure.tabId,
+  failure.desiredStatus,
+  failure.outcome,
+  failure.errorCode,
+]), [[handoffFailureTabId, "handoff", "failed", "failed_to_finalize"]]);
+assert.deepEqual(failedHandoffFinalize.result.actions.map((action) => [
+  action.tabId,
+  action.desiredStatus,
+  action.outcome,
+  action.errorCode,
+]), [[handoffFailureTabId, "handoff", "failed", "failed_to_finalize"]]);
+assert.equal(failedHandoffFinalize.result.finalTabs.activeTabId, handoffFailureTabId);
 const handoffFailureTabs = await hostRequest(port, "getTabs", {
   session_id: "keep-failure-session",
   turn_id: "after-failed-handoff",
@@ -1377,8 +1513,20 @@ const failedDeliverableFinalize = await hostRequest(port, "finalizeTabs", {
   keep: [{ tabId: deliverableFailureTabId, status: "deliverable" }],
 });
 chrome.tabs.group = originalTabsGroup;
-assert.match(failedDeliverableFinalize.error.message, /failed_to_finalize/);
-assert.match(failedDeliverableFinalize.error.message, /ownership is unchanged/);
+assert.equal(failedDeliverableFinalize.result.status, "partial");
+assert.deepEqual(failedDeliverableFinalize.result.failures.map((failure) => [
+  failure.tabId,
+  failure.desiredStatus,
+  failure.outcome,
+  failure.errorCode,
+]), [[deliverableFailureTabId, "deliverable", "failed", "failed_to_finalize"]]);
+assert.deepEqual(failedDeliverableFinalize.result.actions.map((action) => [
+  action.tabId,
+  action.desiredStatus,
+  action.outcome,
+  action.errorCode,
+]), [[deliverableFailureTabId, "deliverable", "failed", "failed_to_finalize"]]);
+assert.equal(failedDeliverableFinalize.result.finalTabs.activeTabId, deliverableFailureTabId);
 const deliverableFailureTabs = await hostRequest(port, "getTabs", {
   session_id: "deliverable-failure-session",
   turn_id: "after-failed-deliverable",
@@ -1390,6 +1538,39 @@ assert.deepEqual(
 assert.deepEqual(deliverableFailureTabs.result.deliverableTabs, []);
 assert.equal(tabs.has(deliverableFailureTabId), true);
 assert.equal(tabs.get(deliverableFailureTabId).groupId, deliverableFailureGroupId);
+
+const fatalReconcileCreated = await hostRequest(port, "createTab", {
+  session_id: "fatal-reconcile-session",
+  turn_id: "turn",
+  url: "https://fatal-reconcile.example/",
+});
+const fatalReconcileTabId = fatalReconcileCreated.result.tab.tabId;
+const originalFatalTabsGet = chrome.tabs.get;
+let fatalReconcileGetCount = 0;
+chrome.tabs.get = async (tabId) => {
+  if (tabId === fatalReconcileTabId) {
+    fatalReconcileGetCount += 1;
+    if (fatalReconcileGetCount > 1) throw new Error("synthetic non-tab-gone reconciliation failure");
+  }
+  return originalFatalTabsGet.call(chrome.tabs, tabId);
+};
+const fatalReconcileFinalize = await hostRequest(port, "finalizeTabs", {
+  session_id: "fatal-reconcile-session",
+  turn_id: "turn",
+  keep: [{ tabId: fatalReconcileTabId, status: "deliverable" }],
+});
+chrome.tabs.get = originalFatalTabsGet;
+assert.equal(fatalReconcileFinalize.result.status, "fatal");
+assert.equal(fatalReconcileFinalize.result.finalTabs, null);
+assert.equal(fatalReconcileFinalize.result.errorCode, "finalize_reconciliation_failed");
+assert.deepEqual(fatalReconcileFinalize.result.diagnostics, {
+  reconciledFromChrome: false,
+  reconciliationSource: "chrome.tabs",
+});
+assert.ok(fatalReconcileFinalize.result.failures.some((failure) =>
+  failure.errorCode === "finalize_reconciliation_failed" &&
+  failure.errorMessage.includes("synthetic non-tab-gone reconciliation failure")
+));
 
 const deliverableCdp = await hostRequest(port, "executeCdp", {
   session_id: "keep-session",

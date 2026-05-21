@@ -628,6 +628,20 @@ impl BrowserBackend for WebExtensionBackend {
         Ok(normalized)
     }
 
+    async fn browser_command_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        self.ensure_active()?;
+        Self::require_session_context(ctx, method)?;
+        record_session_context(self, ctx)?;
+        self.transport(method)?
+            .request(method, context_payload(ctx, params))
+            .await
+    }
+
     async fn cua_command_with_context(
         &self,
         ctx: &BackendRequestContext,
@@ -2223,6 +2237,10 @@ async fn dom_cua_visible_dom(
     let mut nodes = Vec::new();
     collect_visible_dom_nodes(backend, ctx, tab_id, root, viewport, &mut nodes).await?;
     remember_visible_dom_nodes(backend, ctx, tab_id, &nodes).await;
+    if params.get("format").and_then(Value::as_str) == Some("text") {
+        let text = dom_cua::render_visible_dom_text(&nodes);
+        return Ok(json!({ "format": "text", "text": text, "nodes": nodes }));
+    }
     Ok(json!({ "nodes": nodes }))
 }
 
@@ -2359,7 +2377,7 @@ async fn collect_visible_dom_nodes(
 ) -> Result<()> {
     let mut stack = vec![node];
     while let Some(node) = stack.pop() {
-        if dom_cua::is_obu_overlay_node(node) {
+        if dom_cua::is_hidden_subtree(node) {
             continue;
         }
         if let Some(backend_node_id) = node.get("backendNodeId").and_then(Value::as_i64)
@@ -2367,19 +2385,9 @@ async fn collect_visible_dom_nodes(
             && rect.width > 0.0
             && rect.height > 0.0
             && rect.intersects(viewport)
+            && let Some(entry) = dom_cua::snapshot_entry(node, backend_node_id, rect)
         {
-            nodes.push(json!({
-                "node_id": backend_node_id.to_string(),
-                "tag": node.get("nodeName").and_then(Value::as_str).unwrap_or_default().to_ascii_lowercase(),
-                "text": node.get("nodeValue").and_then(Value::as_str).unwrap_or_default(),
-                "bounds": {
-                    "x": rect.x,
-                    "y": rect.y,
-                    "width": rect.width,
-                    "height": rect.height,
-                },
-                "attributes": dom_cua::attributes_object(node),
-            }));
+            nodes.push(entry);
         }
         for key in ["children", "shadowRoots", "pseudoElements"] {
             if let Some(children) = node.get(key).and_then(Value::as_array) {

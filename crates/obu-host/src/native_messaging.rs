@@ -385,6 +385,7 @@ fn extension_metadata(raw_hello: &Value, hello: &Hello) -> Value {
             .and_then(Value::as_str)
             .map(str::to_string)
     });
+    let profile_metadata = sanitize_profile_metadata(raw_hello.get("profile_metadata"));
     json!({
         "native_host_name": raw_hello
             .get("native_host_name")
@@ -401,7 +402,56 @@ fn extension_metadata(raw_hello: &Value, hello: &Hello) -> Value {
             .and_then(Value::as_str)
             .unwrap_or("unknown"),
         "manifest_version": hello.manifest_version,
+        "profileIdHash": profile_metadata.get("profileIdHash").cloned().unwrap_or(Value::Null),
+        "profileIsLastUsed": profile_metadata.get("profileIsLastUsed").cloned().unwrap_or(Value::Null),
+        "profileOrdering": profile_metadata.get("profileOrdering").cloned().unwrap_or(Value::Null),
+        "profileRuntimeBinding": profile_metadata
+            .get("profileRuntimeBinding")
+            .cloned()
+            .unwrap_or_else(|| Value::String("webextension".into())),
+        "profile_metadata": profile_metadata,
     })
+}
+
+fn sanitize_profile_metadata(raw: Option<&Value>) -> Value {
+    let mut profile = serde_json::Map::new();
+    let Some(raw) = raw.and_then(Value::as_object) else {
+        profile.insert(
+            "profileRuntimeBinding".into(),
+            Value::String("webextension".into()),
+        );
+        return Value::Object(profile);
+    };
+    if let Some(value) = raw.get("profileIdHash").and_then(Value::as_str) {
+        profile.insert("profileIdHash".into(), Value::String(value.to_string()));
+    }
+    if let Some(value) = raw.get("profileIsLastUsed").and_then(Value::as_bool) {
+        profile.insert("profileIsLastUsed".into(), Value::Bool(value));
+    }
+    if let Some(value) = raw.get("profileOrdering").and_then(Value::as_i64) {
+        profile.insert("profileOrdering".into(), Value::Number(value.into()));
+    }
+    let binding = raw
+        .get("profileRuntimeBinding")
+        .and_then(Value::as_str)
+        .filter(|value| matches!(*value, "webextension" | "cdp" | "unknown"))
+        .unwrap_or("webextension");
+    profile.insert(
+        "profileRuntimeBinding".into(),
+        Value::String(binding.to_string()),
+    );
+    if let Some(redacted) = raw
+        .get("diagnostics")
+        .and_then(Value::as_object)
+        .and_then(|diagnostics| diagnostics.get("profilePathRedacted"))
+        .and_then(Value::as_str)
+    {
+        profile.insert(
+            "diagnostics".into(),
+            json!({ "profilePathRedacted": redacted }),
+        );
+    }
+    Value::Object(profile)
 }
 
 struct RuntimeDescriptorRegistration {

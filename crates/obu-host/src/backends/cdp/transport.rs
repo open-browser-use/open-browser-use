@@ -197,9 +197,9 @@ impl CdpTransport {
 
 #[cfg(test)]
 mod tests {
-    use super::{CdpTransport, PendingRemovalGuard};
+    use super::{CdpError, CdpTransport, PendingRemovalGuard};
     use crate::backends::scope_client_timeout;
-    use futures_util::{SinkExt, StreamExt};
+    use futures_util::StreamExt;
     use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Mutex;
@@ -230,38 +230,28 @@ mod tests {
         assert_eq!(timeout, Some(Duration::from_secs(60)));
     }
 
-    #[tokio::test(start_paused = true)]
-    async fn send_command_honors_scoped_timeout_beyond_default() {
+    #[tokio::test]
+    async fn send_command_honors_scoped_timeout() {
         let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
+        let (request_received_tx, request_received_rx) = tokio::sync::oneshot::channel();
         tokio::spawn(async move {
             let (stream, _) = listener.accept().await.unwrap();
             let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
             let request = ws.next().await.unwrap().unwrap();
-            let request = match request {
-                Message::Text(text) => text.to_string(),
-                Message::Binary(bytes) => String::from_utf8(bytes.to_vec()).unwrap(),
+            match request {
+                Message::Text(_) | Message::Binary(_) => {}
                 other => panic!("unexpected websocket message: {other:?}"),
-            };
-            let request: serde_json::Value = serde_json::from_str(&request).unwrap();
-            tokio::time::sleep(Duration::from_secs(11)).await;
-            ws.send(Message::Text(
-                json!({
-                    "id": request["id"],
-                    "result": { "ok": true }
-                })
-                .to_string()
-                .into(),
-            ))
-            .await
-            .unwrap();
+            }
+            let _ = request_received_tx.send(());
+            futures_util::future::pending::<()>().await;
         });
 
         let transport = CdpTransport::connect(&format!("ws://{addr}/devtools/browser/fake"))
             .await
             .unwrap();
         let request = tokio::spawn(async move {
-            scope_client_timeout(Some(60_000), async {
+            scope_client_timeout(Some(25), async {
                 transport
                     .send_command("Runtime.evaluate", json!({}), None)
                     .await
@@ -269,9 +259,11 @@ mod tests {
             .await
         });
 
-        tokio::task::yield_now().await;
-        tokio::time::advance(Duration::from_secs(11)).await;
-
-        assert_eq!(request.await.unwrap().unwrap(), json!({ "ok": true }));
+        request_received_rx.await.unwrap();
+        let error = request.await.unwrap().unwrap_err();
+        let CdpError::Timeout(actual) = error else {
+            panic!("expected scoped timeout, got {error:?}");
+        };
+        assert_eq!(actual, Duration::from_millis(25));
     }
 }
