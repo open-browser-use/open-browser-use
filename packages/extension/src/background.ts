@@ -363,28 +363,22 @@ class TabGroupManager {
     const windowKey = String(windowId);
     const previousGroupId = this.state.sessionGroupsBySessionIdAndWindowId[sessionId]?.[windowKey];
     const groupId = await groupTab(tabId, previousGroupId);
-    if (previousGroupId !== undefined && previousGroupId !== groupId) {
-      this.deleteGroupById(previousGroupId);
-    }
+    this.deleteReplacedGroup(previousGroupId, groupId);
     this.removeTabFromManagedGroups(tabId, groupId);
 
     const now = Date.now();
     const title = sessionGroupTitle(label);
-    let group = this.groupById(groupId);
-    if (!group) {
-      group = {
-        groupId,
-        kind: "session",
-        windowId,
-        sessionId,
-        title,
-        color: DEFAULT_SESSION_GROUP_COLOR,
-        tabs: {},
-        createdAt: now,
-        updatedAt: now,
-      };
-      this.state.groups.push(group);
-    }
+    const group = this.ensureManagedGroup(groupId, () => ({
+      groupId,
+      kind: "session",
+      windowId,
+      sessionId,
+      title,
+      color: DEFAULT_SESSION_GROUP_COLOR,
+      tabs: {},
+      createdAt: now,
+      updatedAt: now,
+    }));
     group.kind = "session";
     group.windowId = windowId;
     group.sessionId = sessionId;
@@ -449,26 +443,20 @@ class TabGroupManager {
     const windowKey = String(windowId);
     const previousGroupId = this.state.deliverableGroupsByWindowId[windowKey];
     const groupId = await groupTab(tabId, previousGroupId);
-    if (previousGroupId !== undefined && previousGroupId !== groupId) {
-      this.deleteGroupById(previousGroupId);
-    }
+    this.deleteReplacedGroup(previousGroupId, groupId);
     this.removeTabFromManagedGroups(tabId, groupId);
 
     const now = Date.now();
-    let group = this.groupById(groupId);
-    if (!group) {
-      group = {
-        groupId,
-        kind: "deliverable",
-        windowId,
-        title: DELIVERABLE_GROUP_TITLE,
-        color: DELIVERABLE_GROUP_COLOR,
-        tabs: {},
-        createdAt: now,
-        updatedAt: now,
-      };
-      this.state.groups.push(group);
-    }
+    const group = this.ensureManagedGroup(groupId, () => ({
+      groupId,
+      kind: "deliverable",
+      windowId,
+      title: DELIVERABLE_GROUP_TITLE,
+      color: DELIVERABLE_GROUP_COLOR,
+      tabs: {},
+      createdAt: now,
+      updatedAt: now,
+    }));
     group.kind = "deliverable";
     group.windowId = windowId;
     delete group.sessionId;
@@ -631,6 +619,19 @@ class TabGroupManager {
 
   private groupById(groupId: number): ManagedTabGroup | undefined {
     return this.state.groups.find((group) => group.groupId === groupId);
+  }
+
+  private ensureManagedGroup(groupId: number, create: () => ManagedTabGroup): ManagedTabGroup {
+    const existing = this.groupById(groupId);
+    if (existing) return existing;
+    const group = create();
+    this.state.groups.push(group);
+    return group;
+  }
+
+  private deleteReplacedGroup(previousGroupId: number | undefined, groupId: number): void {
+    if (previousGroupId === undefined || previousGroupId === groupId) return;
+    this.deleteGroupById(previousGroupId);
   }
 
   private setSessionGroupIndex(sessionId: string, windowId: number, groupId: number): void {
@@ -896,8 +897,7 @@ async function handleDownloadChanged(delta: ChromeDownloadDelta): Promise<void> 
   const owner = downloadOwnersById.get(delta.id);
   if (!owner) return;
   const item = await chrome.downloads.search({ id: delta.id }).then((rows) => rows[0]).catch(() => undefined);
-  const state = item?.state ?? delta.state?.current;
-  const status = state === "complete" ? "complete" : state === "interrupted" ? "failed" : undefined;
+  const status = downloadStatus(item?.state ?? delta.state?.current);
   if (!status) return;
   appendDebugLog(status === "failed" ? "warn" : "debug", "download.changed", { id: delta.id, status, tabId: owner.tabId });
   sendNotification("onDownloadChange", {
@@ -912,6 +912,12 @@ async function handleDownloadChanged(delta: ChromeDownloadDelta): Promise<void> 
   if (status === "complete" || status === "failed") {
     downloadOwnersById.delete(delta.id);
   }
+}
+
+function downloadStatus(state: unknown): "complete" | "failed" | undefined {
+  if (state === "complete") return "complete";
+  if (state === "interrupted") return "failed";
+  return undefined;
 }
 
 async function connectNative(): Promise<void> {
