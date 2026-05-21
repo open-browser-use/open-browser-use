@@ -658,7 +658,7 @@ describe("SDK wire-shape contracts", () => {
           target: { tabId: "tab-1" },
           method: "Runtime.evaluate",
           commandParams: {
-            expression: expect.stringContaining("document.querySelectorAll"),
+            expression: expect.stringMatching(/obu-agent-overlay-root[\s\S]*document\.querySelectorAll/),
             awaitPromise: true,
             returnByValue: true,
           },
@@ -776,6 +776,28 @@ describe("SDK wire-shape contracts", () => {
 
   it("classifies every inbound wire method for structured guards", () => {
     expect(Object.keys(METHOD_CLASSIFICATION).sort()).toEqual([...M.ALL_INBOUND_METHODS].sort());
+  });
+
+  it("default guards do not call a remote policy service", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchCalls: unknown[] = [];
+    globalThis.fetch = ((...args: unknown[]) => {
+      fetchCalls.push(args);
+      throw new Error("remote policy call is not allowed by default");
+    }) as typeof fetch;
+    try {
+      const guards = new Guards();
+      await guards.ensureCommandAllowed({ command: M.TAB_GOTO, url: "https://example.test/" });
+      await guards.ensureCommandAllowed(
+        { command: M.PLAYWRIGHT_LOCATOR_CLICK, tab_id: "tab-1" },
+        { currentUrl: "https://example.test/" },
+      );
+      await guards.ensureCommandAllowed({ command: M.PLAYWRIGHT_WAIT_FOR_DOWNLOAD, tab_id: "tab-1" });
+      await guards.ensureCommandAllowed({ command: M.PLAYWRIGHT_FILE_CHOOSER_SET_FILES, tab_id: "tab-1", paths: ["/tmp/a.txt"] });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    expect(fetchCalls).toEqual([]);
   });
 
   it("structured guards block navigation before transport state changes", async () => {

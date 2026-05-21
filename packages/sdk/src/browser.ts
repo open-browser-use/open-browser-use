@@ -101,7 +101,7 @@ export class Browser {
     this.unsupportedMethods = stringList(this.capabilities.unsupported_methods);
     this.guards = guards;
     this.tabs = new BrowserTabs(transport, guards);
-    this.user = new BrowserUser(transport, guards, (method) => this.supports(method));
+    this.user = new BrowserUser(transport, guards, (method) => this.supports(method), info.type);
   }
 
   supports(method: string): boolean {

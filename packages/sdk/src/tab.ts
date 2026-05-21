@@ -450,8 +450,10 @@ function boundedEvaluateExpression(
 function snapshotTextExpression(maxItems: number, maxTextLength: number): string {
   return `
 (() => {
+  const OBU_OVERLAY_SELECTOR = "#obu-agent-overlay-root,[data-obu-overlay-root]";
   const text = (value) => String(value || "").replace(/\\s+/g, " ").trim().slice(0, ${maxTextLength});
-  const take = (selector) => Array.from(document.querySelectorAll(selector)).slice(0, ${maxItems});
+  const isObuOverlay = (el) => Boolean(el?.matches?.(OBU_OVERLAY_SELECTOR) || el?.closest?.(OBU_OVERLAY_SELECTOR));
+  const take = (selector) => Array.from(document.querySelectorAll(selector)).filter((el) => !isObuOverlay(el)).slice(0, ${maxItems});
   const labelFor = (input) => {
     if (input.labels && input.labels.length) return text(input.labels[0].textContent);
     if (input.getAttribute("aria-label")) return text(input.getAttribute("aria-label"));

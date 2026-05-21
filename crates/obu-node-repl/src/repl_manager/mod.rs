@@ -222,11 +222,9 @@ impl JsRuntimeManager {
         let inventory = self.backend_inventory();
         self.sync_backend_inventory_to_kernel(&inventory).await?;
         let (sdk_bootstrap, sdk_bootstrap_detail) = self.sdk_bootstrap_status();
-        let verify_hint = if inventory.backends.is_empty() {
-            "No browser backend discovered. Run `obu verify --repair --agent=<agent-id> --browser=<browser> --channel=<extension-channel> --extension-id=<extension-id>` with the exact extension channel/id from the popup handoff, then open the extension popup and click Resume if no runtime descriptor is active."
-        } else {
-            "obu verify --agent=<agent-id> --browser=<browser> --channel=<extension-channel> --extension-id=<extension-id>"
-        };
+        let product_error = browser_status_product_error(sdk_bootstrap, &inventory);
+        let (verify_hint, doctor_hint) = browser_status_hints(product_error.as_ref());
+        let advisories = browser_status_advisories(&inventory);
         Ok(json!({
             "sdk_bootstrap": sdk_bootstrap,
             "sdk_bootstrap_detail": sdk_bootstrap_detail,
@@ -234,7 +232,9 @@ impl JsRuntimeManager {
             "diagnostics": inventory.diagnostics,
             "runtime_dir": runtime_dir().to_string_lossy(),
             "verify_hint": verify_hint,
-            "doctor_hint": verify_hint,
+            "doctor_hint": doctor_hint,
+            "product_error": product_error,
+            "advisories": advisories,
         }))
     }
 
@@ -562,6 +562,10 @@ impl JsRuntimeManager {
                 .filter(|value| !value.is_null())
                 .cloned(),
             error,
+            error_detail: frame
+                .get("error_detail")
+                .filter(|value| !value.is_null())
+                .cloned(),
         })
     }
 
@@ -945,6 +949,103 @@ struct BackendInventory {
     auth_tokens: HashMap<PathBuf, String>,
 }
 
+const VERIFY_HINT: &str = "obu verify --agent=<agent-id> --browser=<browser> --channel=<extension-channel> --extension-id=<extension-id>";
+const VERIFY_REPAIR_HINT: &str = "obu verify --repair --agent=<agent-id> --browser=<browser> --channel=<extension-channel> --extension-id=<extension-id>";
+const DOCTOR_BROWSER_REPAIR_HINT: &str = "obu doctor browser --repair";
+const OPEN_POPUP_HINT: &str =
+    "Open the open-browser-use extension popup, click Resume if enabled, then rerun verify.";
+
+fn browser_status_product_error(
+    sdk_bootstrap: &str,
+    inventory: &BackendInventory,
+) -> Option<Value> {
+    if sdk_bootstrap != "available" {
+        return Some(product_error(
+            "setup_missing",
+            "Setup is incomplete",
+            "The SDK bootstrap is missing or untrusted in this MCP runtime.",
+            "run_verify",
+            "Run verify with the exact handoff target, using --repair when verify says repair is available.",
+            Some(VERIFY_REPAIR_HINT),
+        ));
+    }
+    if inventory.backends.is_empty() && !inventory.diagnostics.is_empty() {
+        return Some(product_error(
+            "stale_descriptor",
+            "Runtime descriptor is stale",
+            "Runtime descriptors were present but none produced a usable live backend.",
+            "run_repair",
+            "Run browser doctor repair or reopen the popup so the extension publishes a fresh descriptor.",
+            Some(DOCTOR_BROWSER_REPAIR_HINT),
+        ));
+    }
+    if inventory.backends.is_empty() {
+        return Some(product_error(
+            "browser_popup_boundary",
+            "Browser popup action required",
+            "No active WebExtension descriptor exists yet.",
+            "open_popup",
+            OPEN_POPUP_HINT,
+            Some(VERIFY_HINT),
+        ));
+    }
+    None
+}
+
+fn product_error(
+    code: &str,
+    title: &str,
+    summary: &str,
+    next_action_kind: &str,
+    next_action_summary: &str,
+    command: Option<&str>,
+) -> Value {
+    json!({
+        "code": code,
+        "title": title,
+        "summary": summary,
+        "next_action": {
+            "kind": next_action_kind,
+            "summary": next_action_summary,
+            "command": command,
+        }
+    })
+}
+
+fn browser_status_hints(product_error: Option<&Value>) -> (&'static str, &'static str) {
+    let code = product_error
+        .and_then(|value| value.get("code"))
+        .and_then(Value::as_str);
+    match code {
+        Some("setup_missing") => (VERIFY_REPAIR_HINT, DOCTOR_BROWSER_REPAIR_HINT),
+        Some("stale_descriptor") => (VERIFY_HINT, DOCTOR_BROWSER_REPAIR_HINT),
+        Some("browser_popup_boundary") => (OPEN_POPUP_HINT, DOCTOR_BROWSER_REPAIR_HINT),
+        _ => (VERIFY_HINT, DOCTOR_BROWSER_REPAIR_HINT),
+    }
+}
+
+fn browser_status_advisories(inventory: &BackendInventory) -> Vec<Value> {
+    let mut advisories = Vec::new();
+    for backend in &inventory.backends {
+        let Some(pending_update) = backend
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.pointer("/diagnostics/extension/pending_update"))
+            .filter(|value| value.is_object())
+        else {
+            continue;
+        };
+        advisories.push(json!({
+            "code": "pending_extension_update",
+            "title": "Extension update pending",
+            "summary": "The WebExtension has an update waiting for browser control to become idle.",
+            "backend": backend.name,
+            "pending_update": pending_update,
+        }));
+    }
+    advisories
+}
+
 enum RuntimeDescriptorRead {
     Usable(DiscoveredBackend, PathBuf, String),
     Ignored(String),
@@ -1081,16 +1182,22 @@ fn read_runtime_descriptor(path: &std::path::Path) -> Result<RuntimeDescriptorRe
             "descriptor process is not alive".to_string(),
         ));
     }
-    if !probe_runtime_descriptor(&canonical_socket, token, &value) {
+    let Some(probe_result) = probe_runtime_descriptor(&canonical_socket, token, &value) else {
         return Ok(RuntimeDescriptorRead::Ignored(
             "descriptor probe failed".to_string(),
         ));
-    }
+    };
     let mut metadata = value.get("metadata").cloned();
     if let Some(meta) = metadata.as_mut().and_then(Value::as_object_mut)
         && let Some(started_at) = value.get("startedAt")
     {
         meta.insert("startedAt".to_string(), started_at.clone());
+    }
+    if let Some(diagnostics) = probe_result.pointer("/metadata/diagnostics").cloned() {
+        let meta = metadata.get_or_insert_with(|| json!({}));
+        if let Some(object) = meta.as_object_mut() {
+            object.insert("diagnostics".to_string(), diagnostics);
+        }
     }
 
     let backend = DiscoveredBackend {
@@ -1215,18 +1322,18 @@ fn descriptor_process_alive(_value: &Value) -> bool {
 }
 
 #[cfg(unix)]
-fn probe_runtime_descriptor(socket: &Path, token: &str, descriptor: &Value) -> bool {
+fn probe_runtime_descriptor(socket: &Path, token: &str, descriptor: &Value) -> Option<Value> {
     match probe_runtime_descriptor_inner(socket, token, descriptor) {
-        Ok(()) => true,
+        Ok(result) => Some(result),
         Err(error) => {
             tracing::warn!(socket = %socket.display(), %error, "runtime backend descriptor probe failed");
-            false
+            None
         }
     }
 }
 
 #[cfg(unix)]
-fn probe_runtime_descriptor_inner(socket: &Path, token: &str, descriptor: &Value) -> Result<()> {
+fn probe_runtime_descriptor_inner(socket: &Path, token: &str, descriptor: &Value) -> Result<Value> {
     use std::os::unix::net::UnixStream;
 
     let mut stream = UnixStream::connect(socket)
@@ -1280,7 +1387,7 @@ fn probe_runtime_descriptor_inner(socket: &Path, token: &str, descriptor: &Value
     {
         return Err(anyhow!("getInfo metadata does not match descriptor"));
     }
-    Ok(())
+    Ok(result.clone())
 }
 
 #[cfg(unix)]
@@ -1307,8 +1414,8 @@ fn read_probe_frame(stream: &mut impl std::io::Read) -> Result<Value> {
 }
 
 #[cfg(not(unix))]
-fn probe_runtime_descriptor(_socket: &Path, _token: &str, _descriptor: &Value) -> bool {
-    true
+fn probe_runtime_descriptor(_socket: &Path, _token: &str, _descriptor: &Value) -> Option<Value> {
+    Some(json!({}))
 }
 
 fn runtime_dir() -> PathBuf {

@@ -198,6 +198,30 @@ stricter local host policy can opt in with environment variables:
 | `OBU_HOST_POLICY_BLOCK_UPLOADS` | Blocks upload commands when set to `1`, `true`, `yes`, or `on`. |
 | `OBU_GUARD_MODE=disabled` | Local/testing bypass for SDK and host policy checks. |
 
+SDK callers can install local hooks per browser handle:
+
+```ts
+import { Guards } from "@open-browser-use/sdk";
+
+const browser = await agent.browsers.get("chrome", {
+  guards: new Guards({
+    checkNavigation(url) {
+      if (url.startsWith("https://admin.example/")) throw new Error("navigation blocked");
+    },
+    checkDownload(tabId, url) {
+      if (url?.endsWith(".exe")) throw new Error(`download blocked for tab ${tabId ?? "unknown"}`);
+    },
+    checkUpload(_tabId, paths) {
+      if (paths.some((path) => path.includes("/secrets/"))) throw new Error("upload blocked");
+    },
+  }),
+});
+```
+
+The SDK hook surface covers navigation targets, current-origin commands,
+history, downloads, uploads, and raw CDP calls. Hooks run in the local agent
+process; the default implementation makes no network policy request.
+
 ## Third-party Notices
 
 open-browser-use project source is MIT licensed. Release payloads also carry

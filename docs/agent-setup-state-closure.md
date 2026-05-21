@@ -4,12 +4,13 @@ Date: 2026-05-19
 
 Status: the agent setup closure branch implements CLI-level `obu verify` as the
 canonical readiness surface. This document also records the stronger
-agent-runtime verification contract. The current build does not register trusted
-agent-runtime hooks, so `--require-agent-runtime` reports
-`agent_runtime_hook_unavailable` once CLI readiness is proved, and user-supplied
-status files remain diagnostic-only. Existing `obu setup`, `obu doctor browser`,
-and `obu agent doctor` commands remain mutating setup or lower-level diagnostics
-rather than the canonical readiness surface described here.
+agent-runtime verification contract. The current build registers a Codex CLI
+trusted runtime hook through OBU-owned runtime state; unsupported agents still
+report `agent_runtime_hook_unavailable` once CLI readiness is proved, and
+user-supplied status files remain diagnostic-only. Existing `obu setup`, `obu
+doctor browser`, and `obu agent doctor` commands remain mutating setup or
+lower-level diagnostics rather than the canonical readiness surface described
+here.
 
 ## Product Contract
 
@@ -649,7 +650,7 @@ transport, and target binding:
   "provenance": "agent_runtime_hook",
   "hook": {
     "id": "codex-cli-runtime-status",
-    "transport": "agent_connector"
+    "transport": "agent_owned_ipc"
   },
   "generatedAt": "2026-05-19T12:34:56.000Z",
   "challenge": {
@@ -737,6 +738,13 @@ obu verify --require-agent-runtime \
 # challenge. The hook calls browser_status through the selected agent's configured
 # OBU MCP server and returns the envelope through the trusted hook transport.
 ```
+
+For Codex CLI, the registered collection hook is the OBU MCP tool
+`agent_runtime_status`. The agent calls it with the challenge JSON path; the MCP
+server calls `browser_status`, writes the envelope to OBU-owned runtime state,
+and the follow-up `obu verify --require-agent-runtime
+--agent-runtime-challenge-json=<path>` reads only that deterministic state path.
+The diagnostic `--agent-runtime-status-json` flag is not this transport.
 
 A later verification pass may reference the challenge, but readiness can become
 `ready` only when the registered hook supplies the matching envelope through its
@@ -1154,7 +1162,7 @@ Trusted hook success:
   "provenance": "agent_runtime_hook",
   "hook": {
     "id": "codex-cli-runtime-status",
-    "transport": "agent_connector",
+    "transport": "agent_owned_ipc",
     "trusted": true
   },
   "generatedAt": "2026-05-19T12:34:56.000Z",
@@ -1218,7 +1226,7 @@ hook payload is a pending agent-runtime proof state:
   "reason": "agent_runtime_challenge_issued",
   "trustedHook": {
     "id": "codex-cli-runtime-status",
-    "transport": "agent_connector"
+    "transport": "agent_owned_ipc"
   }
 }
 ```

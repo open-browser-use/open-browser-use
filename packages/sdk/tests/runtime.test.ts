@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { Guards } from "../src/guards.js";
 import { setupObuRuntime } from "../src/runtime.js";
 import { FrameDecoder, FrameEncoder } from "../src/wire/frames.js";
 import type { NativePipeBridge, NativePipeConnection, NativePipeConnectionEvent } from "../src/wire/pipe.js";
@@ -75,6 +76,24 @@ describe("setupObuRuntime", () => {
     expect(discoveryCalls).toBe(2);
     expect(connectCalls).toBe(2);
     expect(connections[1]?.getInfoCalls).toBe(1);
+  });
+
+  it("passes configured local guards to acquired browsers", async () => {
+    (globalThis as { obuRepl?: unknown }).obuRepl = {
+      discoverBackends: () => [{ type: "cdp", name: "cdp", socketPath: "/tmp/obu.sock" }],
+    };
+    const pipeBridge: NativePipeBridge = {
+      createConnection: async () => new InfoConnection(),
+    };
+    const defaultGuards = new Guards();
+    const overrideGuards = new Guards();
+
+    const { agent } = await setupObuRuntime({ pipeBridge, guards: defaultGuards });
+    const defaultBrowser = await agent.browsers.get("cdp");
+    const overrideBrowser = await agent.browsers.get("cdp", { guards: overrideGuards });
+
+    expect(defaultBrowser.guards).toBe(defaultGuards);
+    expect(overrideBrowser.guards).toBe(overrideGuards);
   });
 
   it("surfaces backend discovery diagnostics in no-backend errors", async () => {

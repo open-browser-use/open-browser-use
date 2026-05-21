@@ -197,6 +197,10 @@ function formatCheckDetails(check: DoctorCheck): string[] {
   if (typeof deliverableRecovery === "string" && deliverableRecovery.length > 0) {
     rows.push(`  recover deliverables: ${deliverableRecovery}`);
   }
+  const pendingExtensionUpdate = formatPendingExtensionUpdate(check.details?.pending_extension_update);
+  if (pendingExtensionUpdate) {
+    rows.push(`  pending extension update: ${pendingExtensionUpdate}`);
+  }
   const resumeRequired = check.details?.resume_required;
   if (typeof resumeRequired === "boolean") {
     rows.push(`  resume required: ${resumeRequired ? "yes" : "no"}`);
@@ -208,6 +212,13 @@ function formatCheckDetails(check: DoctorCheck): string[] {
   const repair = check.details?.repair;
   if (typeof repair === "string" && repair.length > 0) rows.push(`  repair: ${repair}`);
   return rows;
+}
+
+function formatPendingExtensionUpdate(value: unknown): string | undefined {
+  if (!isRecord(value)) return undefined;
+  const state = typeof value.state === "string" && value.state.length > 0 ? value.state : "waiting_for_idle";
+  const version = typeof value.version === "string" && value.version.length > 0 ? ` ${value.version}` : "";
+  return `extension update${version} is ${state.replace(/_/g, " ")}`;
 }
 
 function formatStaleSessionReasons(value: unknown): string[] {
@@ -882,6 +893,14 @@ function runtimeDescriptorProbeDetails(infoResult: Record<string, any>): Record<
       || (Array.isArray(deliverableSummaries) && deliverableSummaries.length > 0)
     ) {
       details.deliverable_recovery = "run await browser.deliverables(), then call claim() on the tab to recover";
+    }
+  }
+  const extension = infoResult.metadata?.diagnostics?.extension;
+  if (isRecord(extension)) {
+    details.extension = extension;
+    const pendingUpdate = extension.pending_update;
+    if (isRecord(pendingUpdate)) {
+      details.pending_extension_update = pendingUpdate;
     }
   }
   return details;

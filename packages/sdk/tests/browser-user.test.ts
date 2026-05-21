@@ -104,11 +104,18 @@ describe("BrowserUser", () => {
       transport as unknown as Transport,
       new Guards(),
       (method) => method !== M.GET_USER_HISTORY,
+      "cdp",
     );
 
     await expect(user.history({ query: "example" })).rejects.toMatchObject({
       code: ERR_NOT_IMPLEMENTED,
       message: "backend does not support browser profile history",
+      data: {
+        code: "unsupported_backend_capability",
+        backend: "cdp",
+        method: M.GET_USER_HISTORY,
+        missing_capability: "method:getUserHistory",
+      },
     });
     expect(transport.calls).toEqual([]);
   });

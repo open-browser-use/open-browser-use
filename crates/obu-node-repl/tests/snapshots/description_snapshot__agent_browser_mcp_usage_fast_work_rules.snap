@@ -1,0 +1,13 @@
+---
+source: crates/obu-node-repl/tests/description_snapshot.rs
+assertion_line: 30
+expression: excerpt
+---
+1. Call `browser_status` before the first `js` cell when setup readiness is
+2. Call `browser.name("short task label")` early for real browser tasks so Chrome
+- Keep a `Tab` handle and use `await tab.goto(url)` for same-task or same-site
+- Reuse the last `tab.snapshotText()` result until navigation, a modal/dropdown,
+- Avoid broad browser-boundary loops such as `all()` followed by many
+- Arm `waitForEvent("download")` or `waitForEvent("filechooser")` before the
+- Use `browser.turnEnded()` to mark a turn boundary while keeping active tabs
+controlled. `browser.finishTurn(...)` first finalizes tabs and should be used

@@ -36,6 +36,7 @@ export class BrowserUser {
     private readonly transport: Transport,
     private readonly guards: Guards,
     private readonly supportsMethod: (method: string) => boolean = () => true,
+    private readonly backendType?: string,
   ) {}
 
   async openTabs(): Promise<Tab[]> {
@@ -49,6 +50,7 @@ export class BrowserUser {
       throw new ObuError(
         ERR_NOT_IMPLEMENTED,
         "backend does not support browser profile history",
+        unsupportedBackendCapabilityData(this.backendType, M.GET_USER_HISTORY),
       );
     }
     await this.guards.ensureCommandAllowed({
@@ -83,6 +85,15 @@ export class BrowserUser {
     if (!id) throw new Error(`${method} response missing tab_id`);
     return new Tab(this.transport, this.guards, id, tabMetadata(row));
   }
+}
+
+function unsupportedBackendCapabilityData(backend: string | undefined, method: string): Record<string, unknown> {
+  return {
+    code: "unsupported_backend_capability",
+    ...(backend ? { backend } : {}),
+    method,
+    missing_capability: `method:${method}`,
+  };
 }
 
 function tabMetadata(row: TabWire): TabMetadata {

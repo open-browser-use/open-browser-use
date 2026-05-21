@@ -800,6 +800,43 @@ test("doctorBrowser surfaces runtime descriptor lifecycle diagnostics", async (t
   assert.match(formatted, /recover deliverables: .*browser\.deliverables\(\).*claim\(\)/);
 });
 
+test("doctorBrowser surfaces pending extension update diagnostics", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("Unix socket probing is POSIX-only");
+    return;
+  }
+  const fixture = await createDoctorFixture(t);
+  const socketPath = path.join(fixture.root, "runtime-pending-update.sock");
+  const pendingUpdate = {
+    state: "waiting_for_idle",
+    version: "0.2.0",
+    pendingSince: 123,
+  };
+  await startRuntimeDescriptorServer(t, socketPath, {
+    name: "chrome",
+    getInfoResult: {
+      type: "webextension",
+      name: "chrome",
+      metadata: {
+        diagnostics: {
+          lifecycle: {},
+          extension: { pending_update: pendingUpdate },
+        },
+      },
+    },
+  });
+  const descriptorPath = path.join(fixture.runtimeDescriptorDir, "chrome.json");
+  await writeJson(descriptorPath, validRuntimeDescriptor({ socketPath }));
+  await chmod(descriptorPath, 0o600);
+
+  const report = await doctorBrowser(fixture.options);
+  const descriptorProbe = checksById(report)["runtime-descriptor-probe"];
+
+  assert.equal(descriptorProbe?.status, "pass");
+  assert.deepEqual(descriptorProbe?.details?.pending_extension_update, pendingUpdate);
+  assert.match(formatDoctorReport(report), /pending extension update: extension update 0\.2\.0 is waiting for idle/);
+});
+
 test("doctorBrowser warns when runtime descriptor reports stale lifecycle diagnostics", async (t) => {
   if (process.platform === "win32") {
     t.skip("Unix socket probing is POSIX-only");

@@ -1,5 +1,6 @@
 import { Browser } from "./browser.js";
-import { ObuError, ERR_NO_BACKEND } from "./errors.js";
+import { ObuError, ERR_NO_BACKEND, productErrorData } from "./errors.js";
+import { Guards } from "./guards.js";
 import type { ConnectedBackend } from "./runtime.js";
 
 export type DiscoveredBackend = {
@@ -20,10 +21,17 @@ export type RuntimeConnector = {
   connectBackend(backend: DiscoveredBackend): Promise<ConnectedBackend>;
 };
 
+export type BrowserGetOptions = {
+  guards?: Guards;
+};
+
 const CHROMIUM_FAMILY = new Set(["chrome", "edge", "brave", "arc", "chromium", "playwright"]);
 
 export class Browsers {
-  constructor(private readonly connector: RuntimeConnector) {}
+  constructor(
+    private readonly connector: RuntimeConnector,
+    private readonly defaultGuards = new Guards(),
+  ) {}
 
   async list(): Promise<DiscoveredBackend[]> {
     return this.connector.listBackends();
@@ -33,14 +41,14 @@ export class Browsers {
     return this.connector.listBackendDiagnostics?.() ?? [];
   }
 
-  async get(idOrKind = "chrome"): Promise<Browser> {
+  async get(idOrKind = "chrome", opts: BrowserGetOptions = {}): Promise<Browser> {
     const backend = selectBackend(
       this.connector.listBackends(),
       idOrKind,
       this.connector.listBackendDiagnostics?.() ?? [],
     );
     const connected = await this.connector.connectBackend(backend);
-    return new Browser(connected.transport, connected.info, connected.backend);
+    return new Browser(connected.transport, connected.info, connected.backend, opts.guards ?? this.defaultGuards);
   }
 }
 
@@ -111,6 +119,17 @@ function noBackend(kind: string, diagnostics: BackendDiscoveryDiagnostic[]): Obu
       message += `; +${diagnostics.length - visibleDiagnostics.length} more`;
     }
   }
+  const verifyHint = "obu verify --agent=<agent-id> --browser=<browser> --channel=<extension-channel> --extension-id=<extension-id>";
+  const doctorHint = "obu doctor browser --repair";
   message += ". Run obu verify for readiness; use obu doctor browser only for lower-level browser diagnostics.";
-  return new ObuError(ERR_NO_BACKEND, message);
+  return new ObuError(
+    ERR_NO_BACKEND,
+    message,
+    productErrorData("no_backend", {
+      requested_backend: kind,
+      diagnostics: visibleDiagnostics,
+      verify_hint: verifyHint,
+      doctor_hint: doctorHint,
+    }),
+  );
 }

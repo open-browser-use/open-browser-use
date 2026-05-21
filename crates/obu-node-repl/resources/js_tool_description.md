@@ -30,6 +30,27 @@ The WebExtension backend cannot drive `file://` pages. Serve local files over
 HTTP, for example `python3 -m http.server`, and navigate to
 `http://127.0.0.1:...`.
 
+Fast browser work rules:
+- Call `browser.name("short task label")` early for real browser tasks so Chrome
+  tab groups are attributable.
+- Reuse the same `browser` and `tab` handles. Use `tab.goto(...)` for same-task
+  navigation and create new tabs only when the task genuinely needs multiple
+  pages.
+- Use `tab.snapshotText()` or targeted locators for page state. Reuse the last
+  snapshot until navigation, a modal/dropdown, timeout, strict-match failure, or
+  parse failure means the UI changed.
+- Avoid broad browser-boundary loops such as `all()` followed by many
+  `getAttribute()` or `innerText()` calls. Use one constrained locator or one
+  page-side `tab.evaluate(...)` for bulk extraction.
+- Arm `waitForEvent("download")` or `waitForEvent("filechooser")` before the
+  click that triggers it, then consume the returned handle.
+- Run `browser_status` before the first browser action when readiness is
+  uncertain. Do not repeat setup diagnostics after an available backend is proven
+  unless a browser call fails.
+- Native `alert` and `beforeunload` dialogs on controlled tabs are auto-accepted.
+  Native `confirm` and `prompt` dialogs are dismissed and fail the operation with
+  `ObuError.code === -1203` and `error.data.code === "dialog_requires_decision"`.
+
 ## Arguments
 
 - `source` — JavaScript source to execute.
