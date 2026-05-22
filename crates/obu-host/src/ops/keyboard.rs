@@ -40,6 +40,7 @@ struct KeyDescriptor {
     location: i64,
     is_keypad: bool,
     text: String,
+    implied_modifiers: Vec<Modifier>,
 }
 
 #[derive(Debug, Clone)]
@@ -177,11 +178,13 @@ fn parse_key_stroke(key: &str, explicit_modifiers: &[Modifier]) -> Result<KeyStr
         }
         primary_key = parts[parts.len() - 1];
     }
-    let modifier_mask = modifiers
-        .iter()
-        .fold(0, |mask, modifier| mask | modifier.mask());
-    let descriptor = descriptor_for_key(primary_key, modifier_mask)
+    let modifier_mask = modifier_mask(&modifiers);
+    let infer_uppercase_shift = modifiers.is_empty();
+    let descriptor = descriptor_for_key(primary_key, modifier_mask, infer_uppercase_shift)
         .ok_or_else(|| HostError::Protocol(format!("unsupported key: {primary_key}")))?;
+    for modifier in &descriptor.implied_modifiers {
+        push_modifier(&mut modifiers, *modifier);
+    }
     Ok(KeyStroke {
         pressed_modifiers,
         active_modifiers: modifiers,
@@ -264,7 +267,11 @@ fn modifier_descriptor(modifier: Modifier) -> KeyDescriptor {
     }
 }
 
-fn descriptor_for_key(key: &str, modifiers: i64) -> Option<KeyDescriptor> {
+fn descriptor_for_key(
+    key: &str,
+    modifiers: i64,
+    infer_uppercase_shift: bool,
+) -> Option<KeyDescriptor> {
     let normalized = normalize_key_name(key);
     if let Some(modifier) = modifier_alias(&normalized) {
         return Some(modifier_descriptor(modifier));
@@ -286,12 +293,14 @@ fn descriptor_for_key(key: &str, modifiers: i64) -> Option<KeyDescriptor> {
         "End" => Some(named_descriptor("End", "End", 35, 0)),
         " " | "Space" => Some(printable_descriptor(" ", "Space", 32, false, 0)),
         value if value.starts_with("Numpad") => numpad_descriptor(value),
-        value if value.len() == 1 => printable_char_descriptor(value.chars().next()?, modifiers),
+        value if value.len() == 1 => {
+            printable_char_descriptor(value.chars().next()?, modifiers, infer_uppercase_shift)
+        }
         value if value.starts_with("Key") && value.len() == 4 => {
-            printable_char_descriptor(value.chars().nth(3)?.to_ascii_lowercase(), modifiers)
+            printable_char_descriptor(value.chars().nth(3)?.to_ascii_lowercase(), modifiers, false)
         }
         value if value.starts_with("Digit") && value.len() == 6 => {
-            printable_char_descriptor(value.chars().nth(5)?, modifiers)
+            printable_char_descriptor(value.chars().nth(5)?, modifiers, false)
         }
         _ => None,
     }
@@ -305,6 +314,7 @@ fn named_descriptor(key: &str, code: &str, vkey: i64, location: i64) -> KeyDescr
         location,
         is_keypad: false,
         text: String::new(),
+        implied_modifiers: Vec::new(),
     }
 }
 
@@ -316,9 +326,17 @@ fn printable_descriptor(
     location: i64,
 ) -> KeyDescriptor {
     let text = if shifted {
-        shifted_text(key).unwrap_or(key).to_string()
+        shifted_text(key)
+            .map(str::to_string)
+            .or_else(|| shifted_alpha_text(key))
+            .unwrap_or_else(|| key.to_string())
     } else {
         key.to_string()
+    };
+    let implied_modifiers = if shifted {
+        vec![Modifier::Shift]
+    } else {
+        Vec::new()
     };
     KeyDescriptor {
         key: text.clone(),
@@ -327,38 +345,42 @@ fn printable_descriptor(
         location,
         is_keypad: location == 3,
         text,
+        implied_modifiers,
     }
 }
 
-fn printable_char_descriptor(ch: char, modifiers: i64) -> Option<KeyDescriptor> {
-    let shifted = modifiers & Modifier::Shift.mask() != 0;
+fn printable_char_descriptor(
+    ch: char,
+    modifiers: i64,
+    infer_uppercase_shift: bool,
+) -> Option<KeyDescriptor> {
+    let explicit_shift = modifiers & Modifier::Shift.mask() != 0;
     if ch.is_ascii_alphabetic() {
         let lower = ch.to_ascii_lowercase();
-        let key = if shifted {
-            lower.to_ascii_uppercase().to_string()
-        } else {
-            lower.to_string()
-        };
         return Some(printable_descriptor(
-            &key,
+            &lower.to_string(),
             &format!("Key{}", lower.to_ascii_uppercase()),
             lower.to_ascii_uppercase() as i64,
-            false,
+            explicit_shift || (infer_uppercase_shift && ch.is_ascii_uppercase()),
             0,
         ));
     }
-    if ch.is_ascii_digit() {
+    let (base, implied_shift) = shifted_base_char(ch)
+        .map(|base| (base, true))
+        .unwrap_or((ch, false));
+    let shifted = explicit_shift || implied_shift;
+    if base.is_ascii_digit() {
         return Some(printable_descriptor(
-            &ch.to_string(),
-            &format!("Digit{ch}"),
-            ch as i64,
+            &base.to_string(),
+            &format!("Digit{base}"),
+            base as i64,
             shifted,
             0,
         ));
     }
-    let (code, vkey) = punctuation_code(ch)?;
+    let (code, vkey) = punctuation_code(base)?;
     Some(printable_descriptor(
-        &ch.to_string(),
+        &base.to_string(),
         code,
         vkey,
         shifted,
@@ -424,6 +446,41 @@ fn shifted_text(key: &str) -> Option<&'static str> {
     })
 }
 
+fn shifted_alpha_text(key: &str) -> Option<String> {
+    let ch = key.chars().next()?;
+    if key.len() == ch.len_utf8() && ch.is_ascii_alphabetic() {
+        return Some(ch.to_ascii_uppercase().to_string());
+    }
+    None
+}
+
+fn shifted_base_char(ch: char) -> Option<char> {
+    Some(match ch {
+        '!' => '1',
+        '@' => '2',
+        '#' => '3',
+        '$' => '4',
+        '%' => '5',
+        '^' => '6',
+        '&' => '7',
+        '*' => '8',
+        '(' => '9',
+        ')' => '0',
+        '_' => '-',
+        '+' => '=',
+        '{' => '[',
+        '}' => ']',
+        '|' => '\\',
+        ':' => ';',
+        '"' => '\'',
+        '<' => ',',
+        '>' => '.',
+        '?' => '/',
+        '~' => '`',
+        _ => return None,
+    })
+}
+
 fn native_edit_commands(descriptor: &KeyDescriptor, modifiers: i64) -> Option<Vec<&'static str>> {
     if modifiers & Modifier::Meta.mask() == 0 {
         return None;
@@ -454,6 +511,12 @@ fn push_modifier(modifiers: &mut Vec<Modifier>, modifier: Modifier) {
     if !modifiers.contains(&modifier) {
         modifiers.push(modifier);
     }
+}
+
+fn modifier_mask(modifiers: &[Modifier]) -> i64 {
+    modifiers
+        .iter()
+        .fold(0, |mask, modifier| mask | modifier.mask())
 }
 
 fn modifier_alias(key: &str) -> Option<Modifier> {
@@ -569,6 +632,36 @@ mod tests {
         assert_eq!(numpad[0]["code"], "Numpad1");
         assert_eq!(numpad[0]["location"], 3);
         assert_eq!(numpad[0]["isKeypad"], true);
+    }
+
+    #[test]
+    fn printable_shifted_characters_infer_shift_metadata() {
+        let uppercase = keypress_events(&json!({ "key": "A" })).unwrap();
+        assert_eq!(uppercase.len(), 2);
+        assert_eq!(uppercase[0]["type"], "keyDown");
+        assert_eq!(uppercase[0]["key"], "A");
+        assert_eq!(uppercase[0]["code"], "KeyA");
+        assert_eq!(uppercase[0]["text"], "A");
+        assert_eq!(uppercase[0]["unmodifiedText"], "A");
+        assert_eq!(uppercase[0]["modifiers"], 8);
+        assert_eq!(uppercase[0]["windowsVirtualKeyCode"], 65);
+        assert_eq!(uppercase[1]["type"], "keyUp");
+        assert_eq!(uppercase[1]["modifiers"], 8);
+
+        let bang = keypress_events(&json!({ "key": "!" })).unwrap();
+        assert_eq!(bang[0]["key"], "!");
+        assert_eq!(bang[0]["code"], "Digit1");
+        assert_eq!(bang[0]["text"], "!");
+        assert_eq!(bang[0]["unmodifiedText"], "!");
+        assert_eq!(bang[0]["modifiers"], 8);
+        assert_eq!(bang[0]["windowsVirtualKeyCode"], 49);
+
+        let question = keypress_events(&json!({ "key": "?" })).unwrap();
+        assert_eq!(question[0]["key"], "?");
+        assert_eq!(question[0]["code"], "Slash");
+        assert_eq!(question[0]["text"], "?");
+        assert_eq!(question[0]["modifiers"], 8);
+        assert_eq!(question[0]["windowsVirtualKeyCode"], 191);
     }
 
     #[test]
