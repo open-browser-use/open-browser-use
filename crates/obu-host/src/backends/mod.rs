@@ -109,7 +109,7 @@ pub fn capabilities_for_kind(kind: BackendKind) -> Value {
             "tab_content_export": true,
             "executeCdp": true,
             "playwright_locator_read_all": true,
-            "dom_cua_get_visible_dom": true
+            "dom_cua_get_visible_dom": !unsupported.contains(&methods::DOM_CUA_GET_VISIBLE_DOM)
         },
     });
     if kind == BackendKind::WebExtension

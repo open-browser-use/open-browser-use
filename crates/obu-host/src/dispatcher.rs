@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
@@ -733,6 +733,7 @@ async fn fetch_one_content_url(
         }
     };
     let mut redirects = Vec::new();
+    let deadline = Instant::now() + timeout;
     if let Err(error) = policy.check_navigation(current.as_str(), policy_ctx) {
         return json!({
             "url": original_url,
@@ -744,16 +745,24 @@ async fn fetch_one_content_url(
         });
     }
     for _ in 0..10 {
-        let response = match client.get(current.clone()).timeout(timeout).send().await {
+        let Some(remaining) = remaining_content_fetch_budget(deadline) else {
+            return content_fetch_timeout_error(&original_url, &current, &redirects);
+        };
+        let response = match client.get(current.clone()).timeout(remaining).send().await {
             Ok(response) => response,
             Err(error) => {
+                let message = if error.is_timeout() {
+                    "per-URL timeout exceeded".to_string()
+                } else {
+                    error.to_string()
+                };
                 return json!({
                     "url": original_url,
                     "finalUrl": current.as_str(),
                     "status": "error",
                     "redirects": redirects,
                     "errorCode": "fetch_failed",
-                    "errorMessage": error.to_string()
+                    "errorMessage": message
                 });
             }
         };
@@ -816,8 +825,11 @@ async fn fetch_one_content_url(
             .get(reqwest::header::CONTENT_TYPE)
             .and_then(|value| value.to_str().ok())
             .map(str::to_string);
-        return match response.text().await {
-            Ok(text) => json!({
+        let Some(remaining) = remaining_content_fetch_budget(deadline) else {
+            return content_fetch_timeout_error(&original_url, &current, &redirects);
+        };
+        return match tokio::time::timeout(remaining, response.text()).await {
+            Ok(Ok(text)) => json!({
                 "url": original_url,
                 "finalUrl": current.as_str(),
                 "status": "ok",
@@ -826,7 +838,7 @@ async fn fetch_one_content_url(
                 "contentType": content_type,
                 "text": text
             }),
-            Err(error) => json!({
+            Ok(Err(error)) => json!({
                 "url": original_url,
                 "finalUrl": current.as_str(),
                 "status": "error",
@@ -836,6 +848,7 @@ async fn fetch_one_content_url(
                 "errorCode": "read_failed",
                 "errorMessage": error.to_string()
             }),
+            Err(_) => content_fetch_timeout_error(&original_url, &current, &redirects),
         };
     }
     json!({
@@ -845,6 +858,23 @@ async fn fetch_one_content_url(
         "redirects": redirects,
         "errorCode": "too_many_redirects",
         "errorMessage": "redirect limit exceeded"
+    })
+}
+
+fn remaining_content_fetch_budget(deadline: Instant) -> Option<Duration> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+}
+
+fn content_fetch_timeout_error(original_url: &str, current: &Url, redirects: &[String]) -> Value {
+    json!({
+        "url": original_url,
+        "finalUrl": current.as_str(),
+        "status": "error",
+        "redirects": redirects,
+        "errorCode": "fetch_failed",
+        "errorMessage": "per-URL timeout exceeded"
     })
 }
 

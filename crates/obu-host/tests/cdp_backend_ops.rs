@@ -1653,6 +1653,70 @@ async fn cdp_wait_for_download_ignores_unrelated_frame_event() {
 }
 
 #[tokio::test]
+async fn cdp_download_path_rejects_canceled_progress_without_timing_out() {
+    let (ws_url, _requests) = spawn_fake_cdp_with_download_events(vec![
+        json!({
+            "method": "Browser.downloadWillBegin",
+            "params": {
+                "guid": "download-guid",
+                "frameId": "child-frame",
+                "url": "https://example.test/file.txt",
+                "suggestedFilename": "file.txt"
+            }
+        }),
+        json!({
+            "method": "Browser.downloadProgress",
+            "params": {
+                "guid": "download-guid",
+                "state": "canceled"
+            }
+        }),
+    ])
+    .await;
+    let backend = CdpBackend::connect(&ws_url, Arc::new(ServiceRegistry::default()))
+        .await
+        .unwrap();
+    let created = backend
+        .create_tab(Some("about:blank".into()))
+        .await
+        .unwrap();
+    let tab_id = created["id"].as_str().unwrap().to_string();
+    backend.attach(&tab_id).await.unwrap();
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+
+    let download = backend
+        .playwright_command_with_context(
+            &ctx,
+            methods::PLAYWRIGHT_WAIT_FOR_DOWNLOAD,
+            json!({ "tab_id": tab_id, "timeout_ms": 1000 }),
+        )
+        .await
+        .unwrap();
+    let error = backend
+        .playwright_command_with_context(
+            &ctx,
+            methods::PLAYWRIGHT_DOWNLOAD_PATH,
+            json!({
+                "tab_id": tab_id,
+                "download_id": download["download_id"],
+                "timeout_ms": 1000
+            }),
+        )
+        .await
+        .unwrap_err();
+
+    assert!(
+        error
+            .to_string()
+            .contains("download download-guid was canceled")
+    );
+}
+
+#[tokio::test]
 async fn cdp_file_chooser_rejects_wrong_session_without_consuming() {
     let (ws_url, mut requests) = spawn_fake_cdp().await;
     let backend = CdpBackend::connect(&ws_url, Arc::new(ServiceRegistry::default()))
@@ -1946,7 +2010,10 @@ async fn spawn_fake_cdp_inner(
             if method == "Page.getFrameTree"
                 && let Some(events) = download_events.take()
             {
-                for event in events {
+                for (index, event) in events.into_iter().enumerate() {
+                    if index > 0 {
+                        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                    }
                     ws.send(Message::Text(event.to_string().into()))
                         .await
                         .unwrap();

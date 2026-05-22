@@ -62,6 +62,10 @@ async fn getinfo_then_ping_round_trip() {
     );
     assert_eq!(info["result"]["capabilities"]["viewport"]["set"], true);
     assert_eq!(info["result"]["capabilities"]["visibility"]["get"], true);
+    assert_eq!(
+        info["result"]["capabilities"]["budgeted_outputs"]["dom_cua_get_visible_dom"],
+        true
+    );
 
     framed
         .send(frame(json!({
@@ -749,6 +753,10 @@ async fn getinfo_exposes_backend_capability_matrix() {
     );
     assert!(response["result"]["capabilities"]["viewport"].is_null());
     assert!(response["result"]["capabilities"]["visibility"].is_null());
+    assert_eq!(
+        response["result"]["capabilities"]["budgeted_outputs"]["dom_cua_get_visible_dom"],
+        false
+    );
     assert!(
         response["result"]["capabilities"]["supported_methods"]
             .as_array()
@@ -914,6 +922,38 @@ async fn browser_tabs_content_times_out_one_url_without_losing_other_results() {
     assert_eq!(results.len(), 2);
     assert_eq!(results[0]["status"], "error");
     assert_eq!(results[0]["errorCode"], "fetch_failed");
+    assert_eq!(results[1]["status"], "ok");
+    assert_eq!(results[1]["text"], "one");
+}
+
+#[tokio::test]
+async fn browser_tabs_content_spends_one_timeout_budget_across_redirects() {
+    let server = ContentTestServer::spawn().await;
+    let response = one_request(
+        Dispatcher::new("0.1.0".into(), Arc::new(RecordingBackend::default())),
+        json!({
+            "jsonrpc": "2.0",
+            "method": methods::BROWSER_TABS_CONTENT,
+            "params": {
+                "urls": [server.url("/slow-redirect-a"), server.url("/one")],
+                "timeout": 250,
+                "client_timeout_ms": 700
+            },
+            "id": 1,
+        }),
+    )
+    .await;
+
+    assert!(response.get("error").is_none(), "{response:#}");
+    let results = response["result"]["results"].as_array().unwrap();
+    assert_eq!(results.len(), 2);
+    assert_eq!(results[0]["status"], "error");
+    assert_eq!(results[0]["errorCode"], "fetch_failed");
+    assert_eq!(results[0]["errorMessage"], "per-URL timeout exceeded");
+    assert_eq!(
+        results[0]["redirects"],
+        json!([server.url("/slow-redirect-b")])
+    );
     assert_eq!(results[1]["status"], "ok");
     assert_eq!(results[1]["text"], "one");
 }
@@ -1119,6 +1159,14 @@ async fn handle_content_test_connection(
         }
         "/redirect-ok" => redirect_response("/one"),
         "/redirect-blocked" => redirect_response("https://blocked.example/content"),
+        "/slow-redirect-a" => {
+            tokio::time::sleep(Duration::from_millis(160)).await;
+            redirect_response("/slow-redirect-b")
+        }
+        "/slow-redirect-b" => {
+            tokio::time::sleep(Duration::from_millis(160)).await;
+            redirect_response("/one")
+        }
         "/slow" => {
             tokio::time::sleep(Duration::from_millis(200)).await;
             http_response("200 OK", &[("Content-Type", "text/plain")], "slow")
