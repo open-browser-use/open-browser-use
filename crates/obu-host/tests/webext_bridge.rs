@@ -683,7 +683,7 @@ impl ExtensionTransport for NavigatingFakeTransport {
 }
 
 #[tokio::test]
-async fn webext_backend_scroll_uses_script_fallback_without_cdp_input() {
+async fn webext_backend_scroll_uses_real_cdp_input_before_script_fallback() {
     let transport = Arc::new(FakeTransport::default());
     let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
     let ctx = BackendRequestContext {
@@ -702,20 +702,68 @@ async fn webext_backend_scroll_uses_script_fallback_without_cdp_input() {
         .unwrap();
 
     let calls = transport.calls.lock().unwrap();
+    assert!(calls.iter().any(|(method, params)| {
+        method == "moveMouse" && params["x"] == 10.0 && params["y"] == 20.0
+    }));
     let execute = calls
         .iter()
         .filter(|(method, _)| method == "executeCdp")
         .map(|(_, params)| params)
         .collect::<Vec<_>>();
-    let runtime = execute
+    let gesture = execute
         .iter()
-        .find(|params| params["method"] == "Runtime.evaluate")
-        .expect("expected Runtime.evaluate call");
-    assert_eq!(execute.len(), 2);
-    let expression = runtime["commandParams"]["expression"].as_str().unwrap();
-    assert!(expression.contains("document.elementFromPoint(x, y)"));
-    assert!(expression.contains("node.scrollBy"));
-    assert!(expression.contains("window.scrollBy"));
+        .find(|params| params["method"] == "Input.synthesizeScrollGesture")
+        .expect("expected Input.synthesizeScrollGesture call");
+    assert_eq!(gesture["commandParams"]["x"], 10.0);
+    assert_eq!(gesture["commandParams"]["y"], 20.0);
+    assert_eq!(gesture["commandParams"]["xDistance"], -3.0);
+    assert_eq!(gesture["commandParams"]["yDistance"], 4.0);
+}
+
+#[tokio::test]
+async fn webext_backend_modified_scroll_uses_mouse_wheel_without_gesture() {
+    let transport = Arc::new(FakeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+
+    backend
+        .cua_command_with_context(
+            &ctx,
+            "cua_scroll",
+            json!({
+                "tab_id": "42",
+                "x": 10,
+                "y": 20,
+                "deltaX": 3,
+                "deltaY": -4,
+                "modifiers": ["Shift"]
+            }),
+        )
+        .await
+        .unwrap();
+
+    let calls = transport.calls.lock().unwrap();
+    assert!(calls.iter().any(|(method, params)| {
+        method == "moveMouse" && params["x"] == 10.0 && params["y"] == 20.0
+    }));
+    assert!(!calls.iter().any(|(method, params)| {
+        method == "executeCdp" && params["method"] == "Input.synthesizeScrollGesture"
+    }));
+    let wheel = calls
+        .iter()
+        .find(|(method, params)| {
+            method == "executeCdp"
+                && params["method"] == "Input.dispatchMouseEvent"
+                && params["commandParams"]["type"] == "mouseWheel"
+        })
+        .expect("expected modified mouseWheel event");
+    assert_eq!(wheel.1["commandParams"]["modifiers"], 8);
+    assert_eq!(wheel.1["commandParams"]["deltaX"], 3.0);
+    assert_eq!(wheel.1["commandParams"]["deltaY"], -4.0);
 }
 
 #[tokio::test]
@@ -1185,6 +1233,24 @@ async fn webext_backend_keypress_routes_or_blocks_clipboard_shortcuts() {
         .await
         .unwrap();
 
+    backend
+        .cua_command_with_context(
+            &ctx,
+            "cua_keypress",
+            json!({ "tab_id": "42", "key": "ControlOrMeta+V" }),
+        )
+        .await
+        .unwrap();
+
+    backend
+        .cua_command_with_context(
+            &ctx,
+            "cua_keypress",
+            json!({ "tab_id": "42", "keys": ["ControlOrMeta+V"] }),
+        )
+        .await
+        .unwrap();
+
     let error = backend
         .cua_command_with_context(
             &ctx,
@@ -1275,6 +1341,20 @@ async fn webext_backend_dom_cua_uses_backend_node_ids() {
             .contains(r#"[101] <button aria-label="Submit"> Submit"#)
     );
     assert!(!dom_text["text"].as_str().unwrap().contains("Overlay"));
+    let dom_compact_text = backend
+        .cua_command_with_context(
+            &ctx,
+            "dom_cua_get_visible_dom",
+            json!({ "tab_id": "42", "format": "compact_text" }),
+        )
+        .await
+        .unwrap();
+    assert!(
+        dom_compact_text["text"]
+            .as_str()
+            .unwrap()
+            .contains(r#"<button node_id=101 aria-label="Submit">Submit</button>"#)
+    );
 
     backend
         .cua_command_with_context(
@@ -1296,6 +1376,155 @@ async fn webext_backend_dom_cua_uses_backend_node_ids() {
         .unwrap();
     assert_eq!(mouse.1["commandParams"]["x"], 20.0);
     assert_eq!(mouse.1["commandParams"]["y"], 30.0);
+}
+
+#[tokio::test]
+async fn webext_backend_dom_cua_click_forwards_modifiers_to_mouse_events() {
+    let transport = Arc::new(FakeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+
+    backend
+        .cua_command_with_context(&ctx, "dom_cua_get_visible_dom", json!({ "tab_id": "42" }))
+        .await
+        .unwrap();
+    backend
+        .cua_command_with_context(
+            &ctx,
+            "dom_cua_click",
+            json!({ "tab_id": "42", "node_id": "101", "modifiers": ["Shift"] }),
+        )
+        .await
+        .unwrap();
+
+    let calls = transport.calls.lock().unwrap();
+    let mouse_events = calls
+        .iter()
+        .filter(|(method, params)| {
+            method == "executeCdp" && params["method"] == "Input.dispatchMouseEvent"
+        })
+        .map(|(_, params)| params["commandParams"].clone())
+        .collect::<Vec<_>>();
+    assert!(
+        mouse_events.len() >= 3,
+        "expected move, press, and release events"
+    );
+    assert_eq!(mouse_events[0]["type"], "mouseMoved");
+    assert_eq!(mouse_events[1]["type"], "mousePressed");
+    assert_eq!(mouse_events[2]["type"], "mouseReleased");
+    assert!(
+        mouse_events
+            .iter()
+            .take(3)
+            .all(|event| event["modifiers"] == 8)
+    );
+}
+
+#[tokio::test]
+async fn webext_backend_dom_cua_modified_scroll_uses_mouse_wheel() {
+    let transport = Arc::new(FakeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+
+    backend
+        .cua_command_with_context(&ctx, "dom_cua_get_visible_dom", json!({ "tab_id": "42" }))
+        .await
+        .unwrap();
+    backend
+        .cua_command_with_context(
+            &ctx,
+            "dom_cua_scroll",
+            json!({
+                "tab_id": "42",
+                "node_id": "101",
+                "deltaX": 3,
+                "deltaY": -4,
+                "modifiers": ["Shift"]
+            }),
+        )
+        .await
+        .unwrap();
+
+    let calls = transport.calls.lock().unwrap();
+    assert!(!calls.iter().any(|(method, params)| {
+        method == "executeCdp" && params["method"] == "Input.synthesizeScrollGesture"
+    }));
+    let wheel = calls
+        .iter()
+        .find(|(method, params)| {
+            method == "executeCdp"
+                && params["method"] == "Input.dispatchMouseEvent"
+                && params["commandParams"]["type"] == "mouseWheel"
+        })
+        .expect("expected DOM-CUA modified scroll to use mouseWheel");
+    assert_eq!(wheel.1["commandParams"]["x"], 20.0);
+    assert_eq!(wheel.1["commandParams"]["y"], 30.0);
+    assert_eq!(wheel.1["commandParams"]["modifiers"], 8);
+    assert_eq!(wheel.1["commandParams"]["deltaX"], 3.0);
+    assert_eq!(wheel.1["commandParams"]["deltaY"], -4.0);
+}
+
+#[tokio::test]
+async fn webext_backend_dom_cua_keypress_modifiers_skip_focus_click() {
+    let transport = Arc::new(FakeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+
+    backend
+        .cua_command_with_context(&ctx, "dom_cua_get_visible_dom", json!({ "tab_id": "42" }))
+        .await
+        .unwrap();
+    backend
+        .cua_command_with_context(
+            &ctx,
+            "dom_cua_keypress",
+            json!({ "tab_id": "42", "node_id": "101", "key": "L", "modifiers": ["Shift"] }),
+        )
+        .await
+        .unwrap();
+
+    let calls = transport.calls.lock().unwrap();
+    let mouse_events = calls
+        .iter()
+        .filter(|(method, params)| {
+            method == "executeCdp" && params["method"] == "Input.dispatchMouseEvent"
+        })
+        .map(|(_, params)| params["commandParams"].clone())
+        .collect::<Vec<_>>();
+    assert!(
+        mouse_events.len() >= 3,
+        "expected unmodified focus click before keypress"
+    );
+    assert!(
+        mouse_events
+            .iter()
+            .take(3)
+            .all(|event| event["modifiers"] == 0)
+    );
+
+    let key_events = calls
+        .iter()
+        .filter(|(method, params)| {
+            method == "executeCdp" && params["method"] == "Input.dispatchKeyEvent"
+        })
+        .map(|(_, params)| params["commandParams"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(key_events.len(), 2);
+    assert!(key_events.iter().all(|event| event["modifiers"] == 8));
+    assert_eq!(key_events[0]["key"], "L");
+    assert_eq!(key_events[0]["code"], "KeyL");
 }
 
 #[tokio::test]
@@ -1326,6 +1555,46 @@ async fn webext_backend_dom_cua_rejects_node_outside_current_snapshot() {
             .to_string()
             .contains("was not returned by the current visible DOM snapshot")
     );
+}
+
+#[tokio::test]
+async fn webext_backend_dom_cua_node_less_scroll_uses_viewport_space_center() {
+    let transport = Arc::new(LayoutMetricsTransport {
+        calls: Mutex::new(Vec::new()),
+        metrics: json!({
+            "visualViewport": {
+                "pageX": 50,
+                "pageY": 1000,
+                "clientWidth": 800,
+                "clientHeight": 600
+            }
+        }),
+    });
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+
+    backend
+        .cua_command_with_context(
+            &ctx,
+            "dom_cua_scroll",
+            json!({ "tab_id": "42", "deltaY": 120 }),
+        )
+        .await
+        .unwrap();
+
+    let calls = transport.calls.lock().unwrap();
+    let gesture = calls
+        .iter()
+        .find(|(method, params)| {
+            method == "executeCdp" && params["method"] == "Input.synthesizeScrollGesture"
+        })
+        .expect("expected synthesized scroll gesture");
+    assert_eq!(gesture.1["commandParams"]["x"], 400.0);
+    assert_eq!(gesture.1["commandParams"]["y"], 300.0);
 }
 
 #[tokio::test]
@@ -2405,6 +2674,11 @@ struct FakeTransport {
     calls: Mutex<Vec<(String, Value)>>,
 }
 
+struct LayoutMetricsTransport {
+    calls: Mutex<Vec<(String, Value)>>,
+    metrics: Value,
+}
+
 struct DialogBlockingTransport {
     calls: Mutex<Vec<(String, Value)>>,
     blocked_method: String,
@@ -2594,6 +2868,28 @@ impl ExtensionTransport for FakeTransport {
                     "logicalActive": true
                 }
             }),
+            "executeCdp" => fake_cdp_response(&params),
+            _ => Value::Null,
+        })
+    }
+}
+
+#[async_trait]
+impl ExtensionTransport for LayoutMetricsTransport {
+    async fn request(&self, method: &str, params: Value) -> Result<Value> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((method.to_string(), params.clone()));
+        if method == "executeCdp"
+            && params
+                .get("method")
+                .and_then(Value::as_str)
+                .is_some_and(|method| method == "Page.getLayoutMetrics")
+        {
+            return Ok(self.metrics.clone());
+        }
+        Ok(match method {
             "executeCdp" => fake_cdp_response(&params),
             _ => Value::Null,
         })

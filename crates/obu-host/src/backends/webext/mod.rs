@@ -25,6 +25,7 @@ use crate::ops::playwright::runtime::{
     self as playwright_runtime, MEDIA_DOWNLOAD_FUNCTION, PlaywrightCommandBackend,
     PlaywrightRuntimeBackend, PlaywrightTextInputBackend,
 };
+use crate::ops::point::{self, PointCdpBackend};
 use crate::ops::tab_navigation::{self, TabNavigationBackend};
 use crate::service_registry::ServiceRegistry;
 use crate::tab_state::{TabId, TabOrigin, TabRecord, TabStatus};
@@ -1070,6 +1071,20 @@ impl PlaywrightTextInputBackend for WebExtensionBackend {
 }
 
 #[async_trait]
+impl PointCdpBackend for WebExtensionBackend {
+    async fn execute_point_cdp(
+        &self,
+        ctx: &BackendRequestContext,
+        tab_id: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        self.execute_cdp_with_context(ctx, tab_id, method, params)
+            .await
+    }
+}
+
+#[async_trait]
 impl PlaywrightCommandBackend for WebExtensionBackend {
     fn retarget_playwright_press_input(&self) -> bool {
         true
@@ -1104,6 +1119,22 @@ impl PlaywrightCommandBackend for WebExtensionBackend {
         params: Value,
     ) -> Result<Value> {
         capture_screenshot(self, ctx, params).await
+    }
+
+    async fn playwright_element_info(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value> {
+        point::element_info(self, ctx, params).await
+    }
+
+    async fn playwright_element_screenshot(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value> {
+        point::element_screenshot(self, ctx, params).await
     }
 
     async fn wait_for_playwright_url(
@@ -2038,7 +2069,7 @@ async fn move_mouse(
         ctx,
         tab_id,
     };
-    cua_ops::dispatch_move_command_at(&sink, x, y).await
+    cua_ops::dispatch_move_command_at(&sink, x, y, cua_ops::modifiers_mask(&params)).await
 }
 
 async fn scroll(
@@ -2051,8 +2082,70 @@ async fn scroll(
     let y = required_f64(&params, "y")?;
     let delta_x = cua_ops::scroll_delta(&params, "deltaX", "delta_x");
     let delta_y = cua_ops::scroll_delta(&params, "deltaY", "delta_y");
-    scroll_by_script(backend, ctx, tab_id, x, y, delta_x, delta_y).await?;
+    let modifiers = cua_ops::modifiers_mask(&params);
+    let _ = overlay_move_mouse(backend, ctx, tab_id, x, y).await;
+    match cua_ops::scroll_dispatch_plan(modifiers) {
+        cua_ops::ScrollDispatchPlan::GestureThenWheel => {
+            if dispatch_scroll_gesture(backend, ctx, tab_id, x, y, delta_x, delta_y)
+                .await
+                .is_err()
+            {
+                match dispatch_mouse_wheel(backend, ctx, tab_id, x, y, delta_x, delta_y, modifiers)
+                    .await
+                {
+                    Ok(()) => {}
+                    Err(_) => {
+                        scroll_by_script(backend, ctx, tab_id, x, y, delta_x, delta_y).await?;
+                    }
+                }
+            }
+        }
+        cua_ops::ScrollDispatchPlan::WheelOnly => {
+            dispatch_mouse_wheel(backend, ctx, tab_id, x, y, delta_x, delta_y, modifiers).await?;
+        }
+    }
     Ok(Value::Null)
+}
+
+async fn dispatch_scroll_gesture(
+    backend: &WebExtensionBackend,
+    ctx: &BackendRequestContext,
+    tab_id: &str,
+    x: f64,
+    y: f64,
+    delta_x: f64,
+    delta_y: f64,
+) -> Result<()> {
+    backend
+        .execute_cdp_with_context(
+            ctx,
+            tab_id,
+            "Input.synthesizeScrollGesture",
+            cua_ops::scroll_gesture_params(x, y, delta_x, delta_y),
+        )
+        .await
+        .map(|_| ())
+}
+
+async fn dispatch_mouse_wheel(
+    backend: &WebExtensionBackend,
+    ctx: &BackendRequestContext,
+    tab_id: &str,
+    x: f64,
+    y: f64,
+    delta_x: f64,
+    delta_y: f64,
+    modifiers: i64,
+) -> Result<()> {
+    backend
+        .execute_cdp_with_context(
+            ctx,
+            tab_id,
+            "Input.dispatchMouseEvent",
+            cua_ops::mouse_wheel_params(x, y, delta_x, delta_y, modifiers),
+        )
+        .await
+        .map(|_| ())
 }
 
 async fn scroll_by_script(
@@ -2163,7 +2256,8 @@ async fn drag(
         ctx,
         tab_id,
     };
-    cua_ops::dispatch_drag_path_command(&sink, path.as_slice()).await
+    cua_ops::dispatch_drag_path_command(&sink, path.as_slice(), cua_ops::modifiers_mask(&params))
+        .await
 }
 
 struct WebExtMouseEventSink<'a> {
@@ -2237,9 +2331,20 @@ async fn dom_cua_visible_dom(
     let mut nodes = Vec::new();
     collect_visible_dom_nodes(backend, ctx, tab_id, root, viewport, &mut nodes).await?;
     remember_visible_dom_nodes(backend, ctx, tab_id, &nodes).await;
-    if params.get("format").and_then(Value::as_str) == Some("text") {
-        let text = dom_cua::render_visible_dom_text(&nodes);
-        return Ok(json!({ "format": "text", "text": text, "nodes": nodes }));
+    match params.get("format").and_then(Value::as_str) {
+        Some("text") => {
+            let text = dom_cua::render_visible_dom_text(&nodes);
+            return Ok(json!({ "format": "text", "text": text, "nodes": nodes }));
+        }
+        Some("debug_text") => {
+            let text = dom_cua::render_visible_dom_debug_text(&nodes);
+            return Ok(json!({ "format": "debug_text", "text": text, "nodes": nodes }));
+        }
+        Some("compact_text") => {
+            let text = dom_cua::render_visible_dom_compact_text(&nodes);
+            return Ok(json!({ "format": "compact_text", "text": text, "nodes": nodes }));
+        }
+        _ => {}
     }
     Ok(json!({ "nodes": nodes }))
 }
@@ -2251,18 +2356,14 @@ async fn dom_cua_click(
     click_count: i64,
 ) -> Result<Value> {
     let tab_id = required_str(&params, "tab_id")?;
-    let (x, y) = node_center(backend, ctx, tab_id, required_str(&params, "node_id")?).await?;
-    click(
-        backend,
-        ctx,
-        json!({
-            "tab_id": tab_id,
-            "x": x,
-            "y": y,
-        }),
-        click_count,
-    )
-    .await
+    let (x, y) = node_action_point(backend, ctx, tab_id, required_str(&params, "node_id")?).await?;
+    let mut click_params = json!({
+        "tab_id": tab_id,
+        "x": x,
+        "y": y,
+    });
+    copy_modifiers(&mut click_params, &params);
+    click(backend, ctx, click_params, click_count).await
 }
 
 async fn dom_cua_scroll(
@@ -2271,19 +2372,30 @@ async fn dom_cua_scroll(
     params: Value,
 ) -> Result<Value> {
     let tab_id = required_str(&params, "tab_id")?;
-    let (x, y) = node_center(backend, ctx, tab_id, required_str(&params, "node_id")?).await?;
-    scroll(
-        backend,
-        ctx,
-        json!({
-            "tab_id": tab_id,
-            "x": x,
-            "y": y,
-            "deltaX": params.get("deltaX").or_else(|| params.get("delta_x")).and_then(Value::as_f64).unwrap_or(0.0),
-            "deltaY": params.get("deltaY").or_else(|| params.get("delta_y")).and_then(Value::as_f64).unwrap_or(0.0),
-        }),
-    )
-    .await
+    let (x, y) = if let Some(node_id) = params.get("node_id").and_then(Value::as_str) {
+        node_action_point(backend, ctx, tab_id, node_id).await?
+    } else {
+        visual_viewport_input_center(backend, ctx, tab_id).await?
+    };
+    let delta_x = params
+        .get("deltaX")
+        .or_else(|| params.get("delta_x"))
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let delta_y = params
+        .get("deltaY")
+        .or_else(|| params.get("delta_y"))
+        .and_then(Value::as_f64)
+        .unwrap_or(0.0);
+    let mut scroll_params = json!({
+        "tab_id": tab_id,
+        "x": x,
+        "y": y,
+        "deltaX": delta_x,
+        "deltaY": delta_y,
+    });
+    copy_modifiers(&mut scroll_params, &params);
+    scroll(backend, ctx, scroll_params).await
 }
 
 async fn dom_cua_type(
@@ -2292,7 +2404,7 @@ async fn dom_cua_type(
     params: Value,
 ) -> Result<Value> {
     let tab_id = required_str(&params, "tab_id")?;
-    let (x, y) = node_center(backend, ctx, tab_id, required_str(&params, "node_id")?).await?;
+    let (x, y) = node_action_point(backend, ctx, tab_id, required_str(&params, "node_id")?).await?;
     click(backend, ctx, json!({ "tab_id": tab_id, "x": x, "y": y }), 1).await?;
     type_text(
         backend,
@@ -2311,9 +2423,18 @@ async fn dom_cua_keypress(
     params: Value,
 ) -> Result<Value> {
     let tab_id = required_str(&params, "tab_id")?;
-    let (x, y) = node_center(backend, ctx, tab_id, required_str(&params, "node_id")?).await?;
+    let (x, y) = node_action_point(backend, ctx, tab_id, required_str(&params, "node_id")?).await?;
     click(backend, ctx, json!({ "tab_id": tab_id, "x": x, "y": y }), 1).await?;
     keypress(backend, ctx, params).await
+}
+
+fn copy_modifiers(target: &mut Value, source: &Value) {
+    let Some(modifiers) = source.get("modifiers") else {
+        return;
+    };
+    if let Some(object) = target.as_object_mut() {
+        object.insert("modifiers".into(), modifiers.clone());
+    }
 }
 
 async fn dom_cua_download_media(
@@ -2367,6 +2488,17 @@ async fn viewport_rect(
     dom_cua::viewport_rect_from_layout_metrics(&metrics)
 }
 
+async fn visual_viewport_input_center(
+    backend: &WebExtensionBackend,
+    ctx: &BackendRequestContext,
+    tab_id: &str,
+) -> Result<(f64, f64)> {
+    let metrics = backend
+        .execute_cdp_with_context(ctx, tab_id, "Page.getLayoutMetrics", json!({}))
+        .await?;
+    dom_cua::visual_viewport_input_center(&metrics)
+}
+
 async fn collect_visible_dom_nodes(
     backend: &WebExtensionBackend,
     ctx: &BackendRequestContext,
@@ -2403,7 +2535,7 @@ async fn collect_visible_dom_nodes(
     Ok(())
 }
 
-async fn node_center(
+async fn node_action_point(
     backend: &WebExtensionBackend,
     ctx: &BackendRequestContext,
     tab_id: &str,
@@ -2411,10 +2543,72 @@ async fn node_center(
 ) -> Result<(f64, f64)> {
     validate_visible_dom_node(backend, ctx, tab_id, node_id).await?;
     let backend_node_id = dom_cua::backend_node_id(node_id)?;
-    let rect = box_model_rect(backend, ctx, tab_id, backend_node_id)
-        .await?
-        .ok_or_else(|| HostError::Protocol(format!("DOM-CUA node {node_id} has no visible box")))?;
-    Ok(rect.center())
+    let _ = backend
+        .execute_cdp_with_context(
+            ctx,
+            tab_id,
+            "DOM.scrollIntoViewIfNeeded",
+            json!({ "backendNodeId": backend_node_id }),
+        )
+        .await;
+    let viewport = viewport_rect(backend, ctx, tab_id).await?;
+    if let Some(point) =
+        content_quad_action_point(backend, ctx, tab_id, backend_node_id, viewport).await?
+    {
+        return Ok(point);
+    }
+    if let Some(point) =
+        box_model_action_point(backend, ctx, tab_id, backend_node_id, viewport).await?
+    {
+        return Ok(point);
+    }
+    Err(HostError::Protocol(format!(
+        "node_outside_viewport_after_scroll: DOM-CUA node {node_id} has no reliable visible action point"
+    )))
+}
+
+async fn content_quad_action_point(
+    backend: &WebExtensionBackend,
+    ctx: &BackendRequestContext,
+    tab_id: &str,
+    backend_node_id: i64,
+    viewport: Rect,
+) -> Result<Option<(f64, f64)>> {
+    let result = match backend
+        .execute_cdp_with_context(
+            ctx,
+            tab_id,
+            "DOM.getContentQuads",
+            json!({ "backendNodeId": backend_node_id }),
+        )
+        .await
+    {
+        Ok(result) => result,
+        Err(_) => return Ok(None),
+    };
+    Ok(dom_cua::action_point_from_content_quads(&result, viewport))
+}
+
+async fn box_model_action_point(
+    backend: &WebExtensionBackend,
+    ctx: &BackendRequestContext,
+    tab_id: &str,
+    backend_node_id: i64,
+    viewport: Rect,
+) -> Result<Option<(f64, f64)>> {
+    let result = match backend
+        .execute_cdp_with_context(
+            ctx,
+            tab_id,
+            "DOM.getBoxModel",
+            json!({ "backendNodeId": backend_node_id }),
+        )
+        .await
+    {
+        Ok(result) => result,
+        Err(_) => return Ok(None),
+    };
+    Ok(dom_cua::action_point_from_box_model(&result, viewport))
 }
 
 async fn remember_visible_dom_nodes(

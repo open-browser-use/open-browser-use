@@ -141,13 +141,28 @@ async fn scroll(backend: &CdpBackend, params: Value) -> Result<Value> {
     let y = required_f64(&params, "y")?;
     let delta_x = cua_ops::scroll_delta(&params, "deltaX", "delta_x");
     let delta_y = cua_ops::scroll_delta(&params, "deltaY", "delta_y");
+    let modifiers = cua_ops::modifiers_mask(&params);
     run_input_sequence_with_dialog_policy(backend, tab_id, &session_id, "cua_scroll", async {
-        dispatch_mouse(backend, &session_id, cua_ops::mouse_move_event(x, y)).await?;
-        if dispatch_scroll_gesture(backend, &session_id, x, y, delta_x, delta_y)
-            .await
-            .is_err()
-        {
-            dispatch_mouse_wheel(backend, &session_id, x, y, delta_x, delta_y).await?;
+        dispatch_mouse(
+            backend,
+            &session_id,
+            cua_ops::mouse_move_event_with_modifiers(x, y, modifiers),
+        )
+        .await?;
+        match cua_ops::scroll_dispatch_plan(modifiers) {
+            cua_ops::ScrollDispatchPlan::GestureThenWheel => {
+                if dispatch_scroll_gesture(backend, &session_id, x, y, delta_x, delta_y)
+                    .await
+                    .is_err()
+                {
+                    dispatch_mouse_wheel(backend, &session_id, x, y, delta_x, delta_y, modifiers)
+                        .await?;
+                }
+            }
+            cua_ops::ScrollDispatchPlan::WheelOnly => {
+                dispatch_mouse_wheel(backend, &session_id, x, y, delta_x, delta_y, modifiers)
+                    .await?;
+            }
         }
         Ok(Value::Null)
     })
@@ -181,12 +196,13 @@ async fn dispatch_mouse_wheel(
     y: f64,
     delta_x: f64,
     delta_y: f64,
+    modifiers: i64,
 ) -> Result<()> {
     backend
         .transport()
         .send_command(
             "Input.dispatchMouseEvent",
-            cua_ops::mouse_wheel_params(x, y, delta_x, delta_y),
+            cua_ops::mouse_wheel_params(x, y, delta_x, delta_y, modifiers),
             Some(session_id),
         )
         .await
@@ -234,12 +250,13 @@ async fn drag(backend: &CdpBackend, params: Value) -> Result<Value> {
     let tab_id = cua_ops::command_tab_id(&params)?;
     let session_id = require_session(backend, tab_id)?;
     let path = cua_ops::interpolated_drag_path(&params, 20)?;
+    let modifiers = cua_ops::modifiers_mask(&params);
     let sink = CdpMouseEventSink {
         backend,
         session_id: &session_id,
     };
     run_input_sequence_with_dialog_policy(backend, tab_id, &session_id, "cua_drag", async {
-        cua_ops::dispatch_drag_path_command(&sink, path.as_slice()).await
+        cua_ops::dispatch_drag_path_command(&sink, path.as_slice(), modifiers).await
     })
     .await
 }

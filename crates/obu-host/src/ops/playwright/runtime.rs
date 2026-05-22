@@ -87,6 +87,18 @@ pub(crate) trait PlaywrightCommandBackend: PlaywrightTextInputBackend + Sync {
         params: Value,
     ) -> Result<Value>;
 
+    async fn playwright_element_info(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value>;
+
+    async fn playwright_element_screenshot(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value>;
+
     async fn wait_for_playwright_url(
         &self,
         ctx: &BackendRequestContext,
@@ -182,6 +194,10 @@ where
             .await
         }
         methods::PLAYWRIGHT_SCREENSHOT => backend.screenshot_playwright_page(ctx, params).await,
+        methods::PLAYWRIGHT_ELEMENT_INFO => backend.playwright_element_info(ctx, params).await,
+        methods::PLAYWRIGHT_ELEMENT_SCREENSHOT => {
+            backend.playwright_element_screenshot(ctx, params).await
+        }
         methods::PLAYWRIGHT_WAIT_FOR_TIMEOUT => wait_for_timeout(params).await,
         methods::PLAYWRIGHT_WAIT_FOR_URL => backend.wait_for_playwright_url(ctx, params).await,
         methods::PLAYWRIGHT_WAIT_FOR_LOAD_STATE => {
@@ -1153,6 +1169,22 @@ mod tests {
             _params: Value,
         ) -> Result<Value> {
             Ok(json!({ "kind": "screenshot" }))
+        }
+
+        async fn playwright_element_info(
+            &self,
+            _ctx: &BackendRequestContext,
+            _params: Value,
+        ) -> Result<Value> {
+            Ok(json!({ "kind": "element_info" }))
+        }
+
+        async fn playwright_element_screenshot(
+            &self,
+            _ctx: &BackendRequestContext,
+            _params: Value,
+        ) -> Result<Value> {
+            Ok(json!({ "kind": "element_screenshot" }))
         }
 
         async fn wait_for_playwright_url(

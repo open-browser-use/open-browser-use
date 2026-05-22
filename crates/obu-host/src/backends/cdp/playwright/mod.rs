@@ -20,6 +20,7 @@ use crate::ops::playwright::runtime::{
     self, PlaywrightCommandBackend, PlaywrightRuntimeBackend, PlaywrightTextInputBackend,
     timeout_ms,
 };
+use crate::ops::point::{self, PointCdpBackend};
 use crate::tab_state::TabId;
 
 /// Route a Playwright/locator method to the CDP implementation.
@@ -97,21 +98,30 @@ impl PlaywrightTextInputBackend for CdpBackend {
         key: &str,
     ) -> Result<()> {
         let session_id = require_session(self, tab_id)?;
-        for event_type in ["keyDown", "keyUp"] {
+        for event in crate::ops::keyboard::keypress_events(&json!({ "key": key }))? {
             self.transport()
-                .send_command(
-                    "Input.dispatchKeyEvent",
-                    json!({
-                        "type": event_type,
-                        "key": key,
-                        "text": if key.chars().count() == 1 { key } else { "" },
-                    }),
-                    Some(&session_id),
-                )
+                .send_command("Input.dispatchKeyEvent", event, Some(&session_id))
                 .await
                 .map_err(HostError::from)?;
         }
         Ok(())
+    }
+}
+
+#[async_trait]
+impl PointCdpBackend for CdpBackend {
+    async fn execute_point_cdp(
+        &self,
+        _ctx: &BackendRequestContext,
+        tab_id: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        let session_id = require_session(self, tab_id)?;
+        self.transport()
+            .send_command(method, params, Some(&session_id))
+            .await
+            .map_err(HostError::from)
     }
 }
 
@@ -155,6 +165,22 @@ impl PlaywrightCommandBackend for CdpBackend {
         params: Value,
     ) -> Result<Value> {
         tab_screenshot::screenshot_with_params(self, params).await
+    }
+
+    async fn playwright_element_info(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value> {
+        point::element_info(self, ctx, params).await
+    }
+
+    async fn playwright_element_screenshot(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value> {
+        point::element_screenshot(self, ctx, params).await
     }
 
     async fn wait_for_playwright_url(

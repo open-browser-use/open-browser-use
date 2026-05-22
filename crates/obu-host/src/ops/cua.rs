@@ -18,6 +18,12 @@ pub(crate) enum CoordinateCommand {
     DownloadMedia,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum ScrollDispatchPlan {
+    GestureThenWheel,
+    WheelOnly,
+}
+
 /// Classify method names that belong to the coordinate CUA surface.
 pub(crate) fn coordinate_command(method: &str) -> Option<CoordinateCommand> {
     match method {
@@ -57,6 +63,8 @@ pub(crate) struct MouseEvent<'a> {
     pub buttons: i64,
     /// Click count.
     pub click_count: i64,
+    /// CDP keyboard modifier bitmask active for this mouse event.
+    pub modifiers: i64,
 }
 
 impl MouseEvent<'_> {
@@ -69,6 +77,7 @@ impl MouseEvent<'_> {
             "button": self.button,
             "buttons": self.buttons,
             "clickCount": self.click_count,
+            "modifiers": self.modifiers,
         })
     }
 }
@@ -109,8 +118,12 @@ pub(crate) trait NavigationWaiter {
     ) -> crate::error::Result<()>;
 }
 
-/// Build a pointer move event with no pressed buttons.
-pub(crate) fn mouse_move_event(x: f64, y: f64) -> MouseEvent<'static> {
+/// Build a pointer move event with no pressed buttons and explicit modifiers.
+pub(crate) fn mouse_move_event_with_modifiers(
+    x: f64,
+    y: f64,
+    modifiers: i64,
+) -> MouseEvent<'static> {
     MouseEvent {
         event_type: "mouseMoved",
         x,
@@ -118,15 +131,17 @@ pub(crate) fn mouse_move_event(x: f64, y: f64) -> MouseEvent<'static> {
         button: "none",
         buttons: 0,
         click_count: 0,
+        modifiers,
     }
 }
 
-/// Build a mouse press event for a named button.
-pub(crate) fn mouse_press_event<'a>(
+/// Build a mouse press event for a named button and explicit modifiers.
+pub(crate) fn mouse_press_event_with_modifiers<'a>(
     x: f64,
     y: f64,
     button: &'a str,
     click_count: i64,
+    modifiers: i64,
 ) -> MouseEvent<'a> {
     MouseEvent {
         event_type: "mousePressed",
@@ -135,15 +150,17 @@ pub(crate) fn mouse_press_event<'a>(
         button,
         buttons: button_mask(button),
         click_count,
+        modifiers,
     }
 }
 
-/// Build a mouse release event for a named button.
-pub(crate) fn mouse_release_event<'a>(
+/// Build a mouse release event for a named button and explicit modifiers.
+pub(crate) fn mouse_release_event_with_modifiers<'a>(
     x: f64,
     y: f64,
     button: &'a str,
     click_count: i64,
+    modifiers: i64,
 ) -> MouseEvent<'a> {
     MouseEvent {
         event_type: "mouseReleased",
@@ -152,21 +169,38 @@ pub(crate) fn mouse_release_event<'a>(
         button,
         buttons: 0,
         click_count,
+        modifiers,
     }
 }
 
 /// Build the CDP mouse event sequence for a single or double click.
+#[cfg(test)]
 pub(crate) fn click_events<'a>(
     x: f64,
     y: f64,
     button: &'a str,
     click_count: i64,
 ) -> Vec<MouseEvent<'a>> {
+    click_events_with_modifiers(x, y, button, click_count, 0)
+}
+
+/// Build the CDP mouse event sequence for a click with explicit modifiers.
+pub(crate) fn click_events_with_modifiers<'a>(
+    x: f64,
+    y: f64,
+    button: &'a str,
+    click_count: i64,
+    modifiers: i64,
+) -> Vec<MouseEvent<'a>> {
     let mut events = Vec::with_capacity(1 + (click_count.max(0) as usize * 2));
-    events.push(mouse_move_event(x, y));
+    events.push(mouse_move_event_with_modifiers(x, y, modifiers));
     for count in 1..=click_count {
-        events.push(mouse_press_event(x, y, button, count));
-        events.push(mouse_release_event(x, y, button, count));
+        events.push(mouse_press_event_with_modifiers(
+            x, y, button, count, modifiers,
+        ));
+        events.push(mouse_release_event_with_modifiers(
+            x, y, button, count, modifiers,
+        ));
     }
     events
 }
@@ -178,11 +212,12 @@ pub(crate) async fn dispatch_click<S>(
     y: f64,
     button: &str,
     click_count: i64,
+    modifiers: i64,
 ) -> crate::error::Result<()>
 where
     S: MouseEventSink + Sync,
 {
-    for event in click_events(x, y, button, click_count) {
+    for event in click_events_with_modifiers(x, y, button, click_count, modifiers) {
         sink.dispatch_mouse_event(event).await?;
     }
     Ok(())
@@ -204,12 +239,13 @@ where
     N: NavigationWaiter + Sync,
 {
     let navigation_wait = navigation_wait_options(params);
+    let modifiers = modifiers_mask(params);
     let token = if let Some(wait) = navigation_wait.as_ref() {
         Some(navigation.arm_navigation_wait(tab_id, wait).await?)
     } else {
         None
     };
-    dispatch_click(sink, x, y, button, click_count).await?;
+    dispatch_click(sink, x, y, button, click_count, modifiers).await?;
     if let (Some(wait), Some(token)) = (navigation_wait.as_ref(), token) {
         navigation.wait_for_navigation(tab_id, wait, token).await?;
     }
@@ -263,11 +299,26 @@ where
 }
 
 /// Dispatch a single mouse move through the concrete backend sink.
+#[cfg(test)]
 pub(crate) async fn dispatch_move<S>(sink: &S, x: f64, y: f64) -> crate::error::Result<()>
 where
     S: MouseEventSink + Sync,
 {
-    sink.dispatch_mouse_event(mouse_move_event(x, y)).await
+    dispatch_move_with_modifiers(sink, x, y, 0).await
+}
+
+/// Dispatch a single mouse move with explicit modifiers.
+pub(crate) async fn dispatch_move_with_modifiers<S>(
+    sink: &S,
+    x: f64,
+    y: f64,
+    modifiers: i64,
+) -> crate::error::Result<()>
+where
+    S: MouseEventSink + Sync,
+{
+    sink.dispatch_mouse_event(mouse_move_event_with_modifiers(x, y, modifiers))
+        .await
 }
 
 /// Parse and dispatch a coordinate move command.
@@ -280,7 +331,7 @@ where
     S: MouseEventSink + Sync,
 {
     let (x, y) = command_point(params, numeric_error_style)?;
-    dispatch_move_command_at(sink, x, y).await
+    dispatch_move_command_at(sink, x, y, modifiers_mask(params)).await
 }
 
 /// Dispatch a coordinate move command after the backend has inspected the point.
@@ -288,21 +339,45 @@ pub(crate) async fn dispatch_move_command_at<S>(
     sink: &S,
     x: f64,
     y: f64,
+    modifiers: i64,
 ) -> crate::error::Result<Value>
 where
     S: MouseEventSink + Sync,
 {
-    dispatch_move(sink, x, y).await?;
+    dispatch_move_with_modifiers(sink, x, y, modifiers).await?;
     Ok(Value::Null)
 }
 
 /// Build the initial mouse move and press events for coordinate drag.
+#[cfg(test)]
 pub(crate) fn drag_start_events(x: f64, y: f64) -> [MouseEvent<'static>; 2] {
-    [mouse_move_event(x, y), mouse_press_event(x, y, "left", 1)]
+    drag_start_events_with_modifiers(x, y, 0)
+}
+
+/// Build the initial mouse move and press events for coordinate drag with explicit modifiers.
+pub(crate) fn drag_start_events_with_modifiers(
+    x: f64,
+    y: f64,
+    modifiers: i64,
+) -> [MouseEvent<'static>; 2] {
+    [
+        mouse_move_event_with_modifiers(x, y, modifiers),
+        mouse_press_event_with_modifiers(x, y, "left", 1, modifiers),
+    ]
 }
 
 /// Build a pressed-button drag move event.
+#[cfg(test)]
 pub(crate) fn drag_move_event(x: f64, y: f64) -> MouseEvent<'static> {
+    drag_move_event_with_modifiers(x, y, 0)
+}
+
+/// Build a pressed-button drag move event with explicit modifiers.
+pub(crate) fn drag_move_event_with_modifiers(
+    x: f64,
+    y: f64,
+    modifiers: i64,
+) -> MouseEvent<'static> {
     MouseEvent {
         event_type: "mouseMoved",
         x,
@@ -310,37 +385,63 @@ pub(crate) fn drag_move_event(x: f64, y: f64) -> MouseEvent<'static> {
         button: "left",
         buttons: 1,
         click_count: 1,
+        modifiers,
     }
 }
 
 /// Build a left-button drag release event.
+#[cfg(test)]
 pub(crate) fn drag_release_event(x: f64, y: f64) -> MouseEvent<'static> {
-    mouse_release_event(x, y, "left", 1)
+    drag_release_event_with_modifiers(x, y, 0)
+}
+
+/// Build a left-button drag release event with explicit modifiers.
+pub(crate) fn drag_release_event_with_modifiers(
+    x: f64,
+    y: f64,
+    modifiers: i64,
+) -> MouseEvent<'static> {
+    mouse_release_event_with_modifiers(x, y, "left", 1, modifiers)
 }
 
 /// Dispatch a drag path and release the mouse at the last successful point if a move fails.
+#[cfg(test)]
 pub(crate) async fn dispatch_drag_path<S>(sink: &S, path: &[(f64, f64)]) -> crate::error::Result<()>
+where
+    S: MouseEventSink + Sync,
+{
+    dispatch_drag_path_with_modifiers(sink, path, 0).await
+}
+
+/// Dispatch a drag path with explicit modifiers and release at the last successful point on failure.
+pub(crate) async fn dispatch_drag_path_with_modifiers<S>(
+    sink: &S,
+    path: &[(f64, f64)],
+    modifiers: i64,
+) -> crate::error::Result<()>
 where
     S: MouseEventSink + Sync,
 {
     let Some((first, rest)) = path.split_first() else {
         return Ok(());
     };
-    for event in drag_start_events(first.0, first.1) {
+    for event in drag_start_events_with_modifiers(first.0, first.1, modifiers) {
         sink.dispatch_mouse_event(event).await?;
     }
     let mut last = *first;
     for (x, y) in rest {
-        let result = sink.dispatch_mouse_event(drag_move_event(*x, *y)).await;
+        let result = sink
+            .dispatch_mouse_event(drag_move_event_with_modifiers(*x, *y, modifiers))
+            .await;
         if let Err(error) = result {
             let _ = sink
-                .dispatch_mouse_event(drag_release_event(last.0, last.1))
+                .dispatch_mouse_event(drag_release_event_with_modifiers(last.0, last.1, modifiers))
                 .await;
             return Err(error);
         }
         last = (*x, *y);
     }
-    sink.dispatch_mouse_event(drag_release_event(last.0, last.1))
+    sink.dispatch_mouse_event(drag_release_event_with_modifiers(last.0, last.1, modifiers))
         .await
 }
 
@@ -348,11 +449,12 @@ where
 pub(crate) async fn dispatch_drag_path_command<S>(
     sink: &S,
     path: &[(f64, f64)],
+    modifiers: i64,
 ) -> crate::error::Result<Value>
 where
     S: MouseEventSink + Sync,
 {
-    dispatch_drag_path(sink, path).await?;
+    dispatch_drag_path_with_modifiers(sink, path, modifiers).await?;
     Ok(Value::Null)
 }
 
@@ -469,6 +571,14 @@ pub(crate) fn scroll_delta(params: &Value, camel_key: &str, snake_key: &str) -> 
         .unwrap_or(0.0)
 }
 
+pub(crate) fn scroll_dispatch_plan(modifiers: i64) -> ScrollDispatchPlan {
+    if modifiers == 0 {
+        ScrollDispatchPlan::GestureThenWheel
+    } else {
+        ScrollDispatchPlan::WheelOnly
+    }
+}
+
 /// CDP params for synthesized scroll gesture.
 pub(crate) fn scroll_gesture_params(x: f64, y: f64, delta_x: f64, delta_y: f64) -> Value {
     json!({
@@ -483,45 +593,26 @@ pub(crate) fn scroll_gesture_params(x: f64, y: f64, delta_x: f64, delta_y: f64) 
 }
 
 /// CDP params for mouse wheel fallback.
-pub(crate) fn mouse_wheel_params(x: f64, y: f64, delta_x: f64, delta_y: f64) -> Value {
+pub(crate) fn mouse_wheel_params(
+    x: f64,
+    y: f64,
+    delta_x: f64,
+    delta_y: f64,
+    modifiers: i64,
+) -> Value {
     json!({
         "type": "mouseWheel",
         "x": x,
         "y": y,
         "deltaX": delta_x,
         "deltaY": delta_y,
+        "modifiers": modifiers,
     })
 }
 
 /// Build CDP keyDown/keyUp params for CUA keypress commands.
 pub(crate) fn keypress_events(params: &Value) -> crate::error::Result<Vec<Value>> {
-    let keys = if let Some(keys) = params.get("keys").and_then(Value::as_array) {
-        keys.iter()
-            .filter_map(Value::as_str)
-            .map(str::to_string)
-            .collect::<Vec<_>>()
-    } else {
-        vec![required_str(params, "key")?.to_string()]
-    };
-    let modifiers = modifiers_mask(params);
-    let mut events = Vec::with_capacity(keys.len() * 2);
-    for key in keys {
-        let key = normalize_dispatch_key(&key);
-        let text = if key.chars().count() == 1 {
-            key.clone()
-        } else {
-            String::new()
-        };
-        for event_type in ["keyDown", "keyUp"] {
-            events.push(json!({
-                "type": event_type,
-                "key": key,
-                "text": text,
-                "modifiers": modifiers,
-            }));
-        }
-    }
-    Ok(events)
+    crate::ops::keyboard::keypress_events(params)
 }
 
 /// Build and dispatch CDP key events for a CUA keypress command.
@@ -545,20 +636,6 @@ where
 {
     dispatch_keypress(sink, params).await?;
     Ok(Value::Null)
-}
-
-/// Normalize CUA key aliases to CDP dispatch key names.
-pub(crate) fn normalize_dispatch_key(key: &str) -> String {
-    match key.to_ascii_lowercase().as_str() {
-        "alt" | "option" => "Alt".into(),
-        "cmd" | "command" | "meta" => "Meta".into(),
-        "ctrl" | "control" => "Control".into(),
-        "controlormeta" | "control_or_meta" | "control-or-meta" => {
-            primary_modifier_dispatch_key().into()
-        }
-        "shift" => "Shift".into(),
-        _ => key.into(),
-    }
 }
 
 /// Build CUA click params while preserving explicit navigation wait options.
@@ -586,6 +663,9 @@ pub(crate) fn click_params_with_navigation_wait(
         {
             params.insert("navigation_timeout_ms".into(), timeout.clone());
         }
+    }
+    if let Some(modifiers) = source.get("modifiers").or_else(|| source.get("keys")) {
+        params.insert("modifiers".into(), modifiers.clone());
     }
 
     Value::Object(params)
@@ -619,6 +699,7 @@ fn primary_modifier_mask() -> i64 {
     if cfg!(target_os = "macos") { 4 } else { 2 }
 }
 
+#[cfg(test)]
 fn primary_modifier_dispatch_key() -> &'static str {
     if cfg!(target_os = "macos") {
         "Meta"
@@ -716,19 +797,14 @@ mod tests {
     #[test]
     fn keypress_events_normalize_aliases_and_emit_down_up() {
         let events = keypress_events(&json!({
-            "keys": ["option", "a"],
-            "modifiers": ["shift"]
+            "key": "Shift+/"
         }))
         .unwrap();
-        assert_eq!(
-            events,
-            vec![
-                json!({ "type": "keyDown", "key": "Alt", "text": "", "modifiers": 8 }),
-                json!({ "type": "keyUp", "key": "Alt", "text": "", "modifiers": 8 }),
-                json!({ "type": "keyDown", "key": "a", "text": "a", "modifiers": 8 }),
-                json!({ "type": "keyUp", "key": "a", "text": "a", "modifiers": 8 }),
-            ]
-        );
+        assert_eq!(events[0]["key"], "Shift");
+        assert_eq!(events[1]["key"], "?");
+        assert_eq!(events[1]["code"], "Slash");
+        assert_eq!(events[1]["text"], "?");
+        assert_eq!(events[1]["modifiers"], 8);
     }
 
     #[test]
@@ -748,6 +824,7 @@ mod tests {
                     "button": "none",
                     "buttons": 0,
                     "clickCount": 0,
+                    "modifiers": 0,
                 }),
                 json!({
                     "type": "mousePressed",
@@ -756,6 +833,7 @@ mod tests {
                     "button": "right",
                     "buttons": 2,
                     "clickCount": 1,
+                    "modifiers": 0,
                 }),
                 json!({
                     "type": "mouseReleased",
@@ -764,6 +842,7 @@ mod tests {
                     "button": "right",
                     "buttons": 0,
                     "clickCount": 1,
+                    "modifiers": 0,
                 }),
                 json!({
                     "type": "mousePressed",
@@ -772,6 +851,7 @@ mod tests {
                     "button": "right",
                     "buttons": 2,
                     "clickCount": 2,
+                    "modifiers": 0,
                 }),
                 json!({
                     "type": "mouseReleased",
@@ -780,6 +860,7 @@ mod tests {
                     "button": "right",
                     "buttons": 0,
                     "clickCount": 2,
+                    "modifiers": 0,
                 }),
             ]
         );
@@ -788,7 +869,7 @@ mod tests {
     #[tokio::test]
     async fn dispatch_click_sends_shared_input_sequence() {
         let sink = RecordingSink::new();
-        dispatch_click(&sink, 10.0, 20.0, "middle", 1)
+        dispatch_click(&sink, 10.0, 20.0, "middle", 1, 8)
             .await
             .unwrap();
         assert_eq!(
@@ -801,6 +882,7 @@ mod tests {
                     "button": "none",
                     "buttons": 0,
                     "clickCount": 0,
+                    "modifiers": 8,
                 }),
                 json!({
                     "type": "mousePressed",
@@ -809,6 +891,7 @@ mod tests {
                     "button": "middle",
                     "buttons": 4,
                     "clickCount": 1,
+                    "modifiers": 8,
                 }),
                 json!({
                     "type": "mouseReleased",
@@ -817,6 +900,7 @@ mod tests {
                     "button": "middle",
                     "buttons": 0,
                     "clickCount": 1,
+                    "modifiers": 8,
                 }),
             ]
         );
@@ -892,9 +976,10 @@ mod tests {
                 "type": "mouseMoved",
                 "x": 10.0,
                 "y": 20.0,
-                "button": "none",
-                "buttons": 0,
-                "clickCount": 0,
+                    "button": "none",
+                    "buttons": 0,
+                    "clickCount": 0,
+                    "modifiers": 0,
             })]
         );
     }
@@ -956,11 +1041,54 @@ mod tests {
             Value::Null
         );
         assert_eq!(
-            dispatch_drag_path_command(&sink, &[(1.0, 2.0), (3.0, 4.0)])
+            dispatch_drag_path_command(&sink, &[(1.0, 2.0), (3.0, 4.0)], 0)
                 .await
                 .unwrap(),
             Value::Null
         );
+    }
+
+    #[tokio::test]
+    async fn command_wrappers_preserve_mouse_modifiers_in_payloads() {
+        let sink = RecordingSink::new();
+        let navigation = RecordingNavigation::new(Arc::new(Mutex::new(Vec::new())));
+
+        dispatch_click_command(
+            &sink,
+            &navigation,
+            &json!({
+                "tab_id": "tab-1",
+                "x": 10.0,
+                "y": 20.0,
+                "modifiers": ["Shift"]
+            }),
+            1,
+            NumericErrorStyle::Missing,
+        )
+        .await
+        .unwrap();
+        assert!(
+            sink.payloads()
+                .iter()
+                .all(|payload| payload["modifiers"] == 8)
+        );
+    }
+
+    #[test]
+    fn click_params_with_navigation_wait_preserves_locator_modifiers() {
+        let params = click_params_with_navigation_wait(
+            "tab-1",
+            10.0,
+            20.0,
+            "left",
+            &json!({
+                "modifiers": ["Shift"],
+                "wait_for_navigation": true,
+                "navigation_timeout_ms": 250
+            }),
+        );
+        assert_eq!(params["modifiers"], json!(["Shift"]));
+        assert_eq!(params["wait_for_navigation"], true);
     }
 
     #[tokio::test]
@@ -969,21 +1097,17 @@ mod tests {
         dispatch_keypress(
             &sink,
             &json!({
-                "keys": ["control_or_meta", "x"],
-                "modifiers": ["shift"]
+                "key": "ControlOrMeta+X"
             }),
         )
         .await
         .unwrap();
-        assert_eq!(
-            sink.payloads(),
-            vec![
-                json!({ "type": "keyDown", "key": primary_modifier_dispatch_key(), "text": "", "modifiers": 8 }),
-                json!({ "type": "keyUp", "key": primary_modifier_dispatch_key(), "text": "", "modifiers": 8 }),
-                json!({ "type": "keyDown", "key": "x", "text": "x", "modifiers": 8 }),
-                json!({ "type": "keyUp", "key": "x", "text": "x", "modifiers": 8 }),
-            ]
-        );
+        let payloads = sink.payloads();
+        assert_eq!(payloads[0]["key"], primary_modifier_dispatch_key());
+        assert_eq!(payloads[1]["key"], "x");
+        assert_eq!(payloads[1]["code"], "KeyX");
+        assert_eq!(payloads[2]["type"], "keyUp");
+        assert_eq!(payloads[3]["key"], primary_modifier_dispatch_key());
     }
 
     #[test]
@@ -1024,6 +1148,7 @@ mod tests {
                     "button": "none",
                     "buttons": 0,
                     "clickCount": 0,
+                    "modifiers": 0,
                 }),
                 json!({
                     "type": "mousePressed",
@@ -1032,6 +1157,7 @@ mod tests {
                     "button": "left",
                     "buttons": 1,
                     "clickCount": 1,
+                    "modifiers": 0,
                 }),
                 json!({
                     "type": "mouseMoved",
@@ -1040,6 +1166,7 @@ mod tests {
                     "button": "left",
                     "buttons": 1,
                     "clickCount": 1,
+                    "modifiers": 0,
                 }),
                 json!({
                     "type": "mouseReleased",
@@ -1048,6 +1175,7 @@ mod tests {
                     "button": "left",
                     "buttons": 0,
                     "clickCount": 1,
+                    "modifiers": 0,
                 }),
             ]
         );

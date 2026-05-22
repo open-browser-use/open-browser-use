@@ -68,6 +68,16 @@ pnpm -C packages/extension build
 pnpm -C packages/extension test
 ```
 
+Wire method names, SDK guard classifications, host policy classifications, and
+backend support states are sourced from `wire/methods.json`. After adding or
+changing a wire method, regenerate the TS/Rust tables and run the currentness
+check:
+
+```bash
+pnpm generate:wire-methods
+pnpm check:wire-methods
+```
+
 Coverage entry points:
 
 ```bash

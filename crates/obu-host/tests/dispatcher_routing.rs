@@ -19,7 +19,7 @@ use obu_host::{
     socket::{Listener, unix::UnixSockListener},
 };
 use obu_wire::{
-    ErrorObject, FrameCodec,
+    ErrorCode, ErrorObject, FrameCodec,
     error::{ERR_DIALOG_REQUIRES_DECISION, ERR_NOT_IMPLEMENTED},
 };
 
@@ -59,6 +59,20 @@ async fn getinfo_then_ping_round_trip() {
             .unwrap()
             .iter()
             .any(|method| method == methods::DOM_CUA_CLICK)
+    );
+    assert!(
+        info["result"]["capabilities"]["supported_methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|method| method != methods::EXECUTE_UNHANDLED_COMMAND)
+    );
+    assert!(
+        info["result"]["capabilities"]["unsupported_methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|method| method != methods::EXECUTE_UNHANDLED_COMMAND)
     );
     assert_eq!(info["result"]["capabilities"]["viewport"]["set"], true);
     assert_eq!(info["result"]["capabilities"]["visibility"]["get"], true);
@@ -686,6 +700,31 @@ async fn cdp_capability_gate_rejects_profile_history_before_default_empty_result
 }
 
 #[tokio::test]
+async fn execute_unhandled_command_is_not_advertised_as_backend_supported() {
+    let backend = Arc::new(RecordingBackend::default());
+    let response = one_request(
+        Dispatcher::new("0.1.0".into(), backend.clone()),
+        json!({
+            "jsonrpc": "2.0",
+            "method": methods::EXECUTE_UNHANDLED_COMMAND,
+            "params": {},
+            "id": 1,
+        }),
+    )
+    .await;
+
+    assert_eq!(response["error"]["code"], ERR_NOT_IMPLEMENTED);
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("backend not implemented: executeUnhandledCommand")
+    );
+    assert!(response["error"]["data"].is_null());
+    assert!(backend.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn dispatcher_preserves_dialog_requires_decision_error_data() {
     let response = one_request(
         Dispatcher::new("0.1.0".into(), Arc::new(DialogErrorBackend)),
@@ -751,6 +790,13 @@ async fn getinfo_exposes_backend_capability_matrix() {
             .iter()
             .any(|method| method == methods::BROWSER_VIEWPORT_SET)
     );
+    assert!(
+        response["result"]["capabilities"]["unsupported_methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|method| method != methods::EXECUTE_UNHANDLED_COMMAND)
+    );
     assert!(response["result"]["capabilities"]["viewport"].is_null());
     assert!(response["result"]["capabilities"]["visibility"].is_null());
     assert_eq!(
@@ -764,6 +810,39 @@ async fn getinfo_exposes_backend_capability_matrix() {
             .iter()
             .any(|method| method == methods::PLAYWRIGHT_LOCATOR_CLICK)
     );
+    assert!(
+        response["result"]["capabilities"]["supported_methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|method| method != methods::EXECUTE_UNHANDLED_COMMAND)
+    );
+}
+
+#[tokio::test]
+async fn generated_webextension_methods_are_dispatcher_routable() {
+    for (method, _cdp, webextension) in methods::BACKEND_METHOD_SUPPORT {
+        if *webextension != methods::BackendMethodSupport::Implemented {
+            continue;
+        }
+
+        let response = one_request(
+            Dispatcher::new("0.1.0".into(), Arc::new(RecordingBackend::default())),
+            json!({
+                "jsonrpc": "2.0",
+                "method": method,
+                "params": routability_params(),
+                "id": 1,
+            }),
+        )
+        .await;
+
+        assert_ne!(
+            response["error"]["code"],
+            ErrorCode::MethodNotFound.value(),
+            "{method} is marked implemented for WebExtension but is not routed: {response:#}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1048,6 +1127,35 @@ async fn one_request(dispatcher: Dispatcher, request: serde_json::Value) -> serd
 async fn read_json(framed: &mut Framed<UnixStream, FrameCodec>) -> serde_json::Value {
     let bytes = framed.next().await.unwrap().unwrap();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+fn routability_params() -> Value {
+    json!({
+        "session_id": "session",
+        "turn_id": "turn",
+        "tab_id": "42",
+        "url": "https://example.test/",
+        "urls": [],
+        "selector": "body",
+        "state": "visible",
+        "text": "hello",
+        "key": "Enter",
+        "x": 1,
+        "y": 1,
+        "button": "left",
+        "deltaX": 0,
+        "deltaY": 10,
+        "from": { "x": 1, "y": 1 },
+        "to": { "x": 2, "y": 2 },
+        "path": [{ "x": 1, "y": 1 }, { "x": 2, "y": 2 }],
+        "method": "Runtime.evaluate",
+        "params": {},
+        "expression": "1 + 1",
+        "timeout": 1,
+        "load_state": "load",
+        "contentType": "text",
+        "files": [],
+    })
 }
 
 #[derive(Clone)]

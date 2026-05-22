@@ -3,7 +3,9 @@
 use serde_json::{Map, Value};
 
 use crate::error::{HostError, Result};
+use crate::ops::keyboard;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum ClipboardShortcut {
     Paste,
     Blocked,
@@ -33,46 +35,27 @@ pub(crate) fn include_rich_text(params: &Value) -> bool {
 }
 
 pub(crate) fn clipboard_shortcut(params: &Value) -> ClipboardShortcut {
-    let mut keys = if let Some(keys) = params.get("keys").and_then(Value::as_array) {
-        keys.iter()
-            .filter_map(Value::as_str)
-            .map(normalize_key)
-            .collect::<Vec<_>>()
-    } else if let Some(key) = params.get("key").and_then(Value::as_str) {
-        vec![normalize_key(key)]
+    let mut paste = false;
+    for shortcut in keyboard::shortcut_from_params(params) {
+        let is_c = matches!(shortcut.primary_key.as_str(), "c" | "keyc");
+        let is_v = matches!(shortcut.primary_key.as_str(), "v" | "keyv");
+        let is_x = matches!(shortcut.primary_key.as_str(), "x" | "keyx");
+        let is_insert = shortcut.primary_key == "insert";
+        if is_v && shortcut.has_primary_modifier && shortcut.modifier_count == 1 {
+            paste = true;
+            continue;
+        }
+        if (shortcut.has_primary_modifier && (is_c || is_v || is_x))
+            || (is_insert && (shortcut.has_primary_modifier || shortcut.has_shift))
+        {
+            return ClipboardShortcut::Blocked;
+        }
+    }
+    if paste {
+        ClipboardShortcut::Paste
     } else {
-        Vec::new()
-    };
-    if let Some(modifiers) = params.get("modifiers").and_then(Value::as_array) {
-        keys.extend(
-            modifiers
-                .iter()
-                .filter_map(Value::as_str)
-                .map(normalize_key),
-        );
+        ClipboardShortcut::None
     }
-    keys.sort();
-    keys.dedup();
-    let has_primary_modifier = keys.iter().any(|key| key == primary_modifier_key());
-    let has_shift = keys.iter().any(|key| key == "shift");
-    let has_insert = keys.iter().any(|key| key == "insert");
-    let has_c = keys.iter().any(|key| key == "c" || key == "keyc");
-    let has_v = keys.iter().any(|key| key == "v" || key == "keyv");
-    let has_x = keys.iter().any(|key| key == "x" || key == "keyx");
-    let modifier_count = keys
-        .iter()
-        .filter(|key| matches!(key.as_str(), "meta" | "control" | "shift" | "alt"))
-        .count();
-
-    if has_v && has_primary_modifier && modifier_count == 1 {
-        return ClipboardShortcut::Paste;
-    }
-    if (has_primary_modifier && (has_c || has_v || has_x))
-        || (has_insert && (has_primary_modifier || has_shift))
-    {
-        return ClipboardShortcut::Blocked;
-    }
-    ClipboardShortcut::None
 }
 
 pub(crate) fn native_clipboard_shortcut_error() -> HostError {
@@ -190,19 +173,64 @@ fn optional_string_field<'a>(
     }
 }
 
-fn normalize_key(key: &str) -> String {
-    match key.to_ascii_lowercase().as_str() {
-        "cmd" | "command" => "meta".into(),
-        "ctrl" => "control".into(),
-        "controlormeta" | "control_or_meta" | "control-or-meta" => primary_modifier_key().into(),
-        other => other.into(),
-    }
-}
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
 
-fn primary_modifier_key() -> &'static str {
-    if cfg!(target_os = "macos") {
-        "meta"
-    } else {
-        "control"
+    use super::*;
+
+    #[test]
+    fn clipboard_shortcut_accepts_plus_chord_paste_forms() {
+        assert_eq!(
+            clipboard_shortcut(&json!({ "key": "ControlOrMeta+V" })),
+            ClipboardShortcut::Paste
+        );
+        assert_eq!(
+            clipboard_shortcut(&json!({ "keys": ["ControlOrMeta+V"] })),
+            ClipboardShortcut::Paste
+        );
+        let primary = if cfg!(target_os = "macos") {
+            "Meta"
+        } else {
+            "Control"
+        };
+        assert_eq!(
+            clipboard_shortcut(&json!({ "keys": [primary, "v"] })),
+            ClipboardShortcut::Paste
+        );
+    }
+
+    #[test]
+    fn clipboard_shortcut_blocks_native_clipboard_chords() {
+        let primary = if cfg!(target_os = "macos") {
+            "Meta"
+        } else {
+            "Control"
+        };
+        assert_eq!(
+            clipboard_shortcut(&json!({ "key": format!("{primary}+C") })),
+            ClipboardShortcut::Blocked
+        );
+        assert_eq!(
+            clipboard_shortcut(&json!({ "key": "ControlOrMeta+V", "modifiers": ["Shift"] })),
+            ClipboardShortcut::Blocked
+        );
+        assert_eq!(
+            clipboard_shortcut(&json!({ "key": "Shift+Insert" })),
+            ClipboardShortcut::Blocked
+        );
+    }
+
+    #[test]
+    fn clipboard_shortcut_ignores_non_primary_clipboard_chords() {
+        let non_primary = if cfg!(target_os = "macos") {
+            "Control"
+        } else {
+            "Meta"
+        };
+        assert_eq!(
+            clipboard_shortcut(&json!({ "key": format!("{non_primary}+C") })),
+            ClipboardShortcut::None
+        );
     }
 }

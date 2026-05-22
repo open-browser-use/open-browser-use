@@ -6,5 +6,7 @@ pub(crate) mod cua;
 pub(crate) mod dialogs;
 pub(crate) mod dom_cua;
 pub(crate) mod event_wait;
+pub(crate) mod keyboard;
 pub(crate) mod playwright;
+pub(crate) mod point;
 pub(crate) mod tab_navigation;

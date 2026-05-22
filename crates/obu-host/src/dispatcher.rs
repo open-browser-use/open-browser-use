@@ -23,7 +23,11 @@ use obu_wire::{
     error::{ERR_IO, ERR_NO_BACKEND, ERR_NOT_IMPLEMENTED, ERR_PEER_AUTH, ERR_PROTOCOL},
 };
 
-use crate::backends::{BackendRequestContext, BrowserBackend, webext::WebExtensionBackend};
+use crate::backends::{
+    BackendRequestContext, BrowserBackend, BrowserControlOps, CdpBackendOps, CuaBackendOps,
+    LifecycleBackendOps, PlaywrightBackendOps, SessionBackendOps, TabBackendOps,
+    webext::WebExtensionBackend,
+};
 use crate::error::{HostError, Result};
 use crate::methods;
 use crate::peer_auth::check_capability_token;
@@ -295,150 +299,54 @@ impl Dispatcher {
         if let Err(error) = self.enforce_policy(&ctx, &req).await {
             return Response::err(req.id, error);
         }
-        let result = match req.method.as_str() {
-            methods::PING => self
-                .inner
-                .backend
-                .ping()
-                .await
-                .map(|value| Value::String(value.into()))
-                .map_err(host_err_to_rpc),
-            methods::GET_INFO => Ok(self.get_info()),
-            methods::ATTACH => match params_str(&req.params, "tab_id") {
-                Some(tab_id) => self
-                    .inner
-                    .backend
-                    .attach_with_context(&ctx, &tab_id)
-                    .await
-                    .map(|()| Value::Null)
-                    .map_err(host_err_to_rpc),
-                None => Err(invalid_params("missing tab_id")),
-            },
-            methods::DETACH => match params_str(&req.params, "tab_id") {
-                Some(tab_id) => self
-                    .inner
-                    .backend
-                    .detach_with_context(&ctx, &tab_id)
-                    .await
-                    .map(|()| Value::Null)
-                    .map_err(host_err_to_rpc),
-                None => Err(invalid_params("missing tab_id")),
-            },
-            methods::CREATE_TAB => self
-                .inner
-                .backend
-                .create_tab_with_context(&ctx, params_str(&req.params, "url"))
-                .await
-                .map_err(host_err_to_rpc),
-            methods::GET_TABS => self
-                .inner
-                .backend
-                .list_tabs_with_context(&ctx)
-                .await
-                .map_err(host_err_to_rpc),
-            methods::GET_CURRENT_TAB => self
-                .inner
-                .backend
-                .current_tab_with_context(&ctx)
-                .await
-                .map_err(host_err_to_rpc),
-            methods::GET_SELECTED_TAB => self
-                .inner
-                .backend
-                .selected_tab_with_context(&ctx)
-                .await
-                .map_err(host_err_to_rpc),
-            methods::GET_USER_TABS => self
-                .inner
-                .backend
-                .list_user_tabs_with_context(&ctx)
-                .await
-                .map_err(host_err_to_rpc),
-            methods::CLAIM_USER_TAB => match params_tab_id(&req.params) {
-                Some(tab_id) => self
-                    .inner
-                    .backend
-                    .claim_user_tab_with_context(&ctx, &tab_id)
-                    .await
-                    .map_err(host_err_to_rpc),
-                None => Err(invalid_params("missing tab_id")),
-            },
-            methods::FINALIZE_TABS => self
-                .inner
-                .backend
-                .finalize_tabs_with_context(&ctx, req.params)
-                .await
-                .map_err(host_err_to_rpc),
-            methods::NAME_SESSION => self
-                .inner
-                .backend
-                .name_session_with_context(&ctx, req.params)
-                .await
-                .map_err(host_err_to_rpc),
-            methods::TURN_ENDED => self
-                .inner
-                .backend
-                .turn_ended_with_context(&ctx, req.params)
-                .await
-                .map_err(host_err_to_rpc),
-            methods::YIELD_CONTROL => self
-                .inner
-                .backend
-                .yield_control_with_context(&ctx, req.params)
-                .await
-                .map_err(host_err_to_rpc),
-            methods::RESUME_CONTROL => self
-                .inner
-                .backend
-                .resume_control_with_context(&ctx, req.params)
-                .await
-                .map_err(host_err_to_rpc),
-            methods::CLEAR_LIFECYCLE_DIAGNOSTICS => self
-                .inner
-                .backend
-                .clear_lifecycle_diagnostics()
-                .map_err(host_err_to_rpc),
-            methods::GET_USER_HISTORY => self
-                .inner
-                .backend
-                .get_user_history_with_context(&ctx, req.params)
-                .await
-                .map_err(host_err_to_rpc),
-            methods::BROWSER_TABS_CONTENT => self.fetch_browser_tabs_content(&req.params).await,
-            methods::BROWSER_VIEWPORT_SET
+        let id = req.id.clone();
+        let result = self
+            .route_method_family(&req.method, &ctx, req.params)
+            .await;
+
+        match result {
+            Ok(value) => Response::ok(id, value),
+            Err(error) => Response::err(id, error),
+        }
+    }
+
+    async fn route_method_family(
+        &self,
+        method: &str,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> std::result::Result<Value, ErrorObject> {
+        match method {
+            methods::PING => self.route_lifecycle_request(method, ctx, params).await,
+            methods::GET_INFO => self.route_lifecycle_request(method, ctx, params).await,
+            methods::TURN_ENDED
+            | methods::YIELD_CONTROL
+            | methods::RESUME_CONTROL
+            | methods::CLEAR_LIFECYCLE_DIAGNOSTICS
+            | methods::EXECUTE_UNHANDLED_COMMAND => {
+                self.route_lifecycle_request(method, ctx, params).await
+            }
+            methods::CREATE_TAB
+            | methods::GET_TABS
+            | methods::GET_CURRENT_TAB
+            | methods::GET_SELECTED_TAB
+            | methods::GET_USER_TABS
+            | methods::CLAIM_USER_TAB
+            | methods::FINALIZE_TABS
+            | methods::NAME_SESSION
+            | methods::GET_USER_HISTORY => self.route_session_request(method, ctx, params).await,
+            methods::ATTACH | methods::DETACH | methods::EXECUTE_CDP => {
+                self.route_cdp_request(method, ctx, params).await
+            }
+            methods::BROWSER_TABS_CONTENT
+            | methods::BROWSER_VIEWPORT_SET
             | methods::BROWSER_VIEWPORT_RESET
             | methods::BROWSER_VISIBILITY_SET
-            | methods::BROWSER_VISIBILITY_GET => self
-                .inner
-                .backend
-                .browser_command_with_context(&ctx, &req.method, req.params)
-                .await
-                .map_err(host_err_to_rpc),
-            methods::EXECUTE_CDP => {
-                let tab_id = match cdp_tab_id(&req.params) {
-                    Ok(tab_id) => tab_id,
-                    Err(error) => return Response::err(req.id, error),
-                };
-                let method = params_str(&req.params, "method").unwrap_or_default();
-                let params = req
-                    .params
-                    .get("commandParams")
-                    .cloned()
-                    .or_else(|| req.params.get("params").cloned())
-                    .unwrap_or(Value::Null);
-                self.inner
-                    .backend
-                    .execute_cdp_with_context(&ctx, &tab_id, &method, params)
-                    .await
-                    .map_err(host_err_to_rpc)
+            | methods::BROWSER_VISIBILITY_GET => {
+                self.route_browser_request(method, ctx, params).await
             }
-            methods::MOVE_MOUSE => self
-                .inner
-                .backend
-                .cua_command_with_context(&ctx, methods::CUA_MOVE, req.params)
-                .await
-                .map_err(host_err_to_rpc),
-            methods::CUA_CLICK
+            methods::MOVE_MOUSE
+            | methods::CUA_CLICK
             | methods::CUA_DBLCLICK
             | methods::CUA_SCROLL
             | methods::CUA_TYPE
@@ -452,12 +360,7 @@ impl Dispatcher {
             | methods::DOM_CUA_SCROLL
             | methods::DOM_CUA_TYPE
             | methods::DOM_CUA_KEYPRESS
-            | methods::DOM_CUA_DOWNLOAD_MEDIA => self
-                .inner
-                .backend
-                .cua_command_with_context(&ctx, &req.method, req.params)
-                .await
-                .map_err(host_err_to_rpc),
+            | methods::DOM_CUA_DOWNLOAD_MEDIA => self.route_cua_request(method, ctx, params).await,
             methods::PLAYWRIGHT_LOCATOR_CLICK
             | methods::PLAYWRIGHT_LOCATOR_DBLCLICK
             | methods::PLAYWRIGHT_LOCATOR_DOWNLOAD_MEDIA
@@ -477,6 +380,8 @@ impl Dispatcher {
             | methods::PLAYWRIGHT_LOCATOR_HOVER
             | methods::PLAYWRIGHT_LOCATOR_BOUNDING_BOX
             | methods::PLAYWRIGHT_SCREENSHOT
+            | methods::PLAYWRIGHT_ELEMENT_INFO
+            | methods::PLAYWRIGHT_ELEMENT_SCREENSHOT
             | methods::PLAYWRIGHT_DOM_SNAPSHOT
             | methods::PLAYWRIGHT_WAIT_FOR_TIMEOUT
             | methods::PLAYWRIGHT_WAIT_FOR_URL
@@ -484,12 +389,9 @@ impl Dispatcher {
             | methods::PLAYWRIGHT_WAIT_FOR_FILE_CHOOSER
             | methods::PLAYWRIGHT_FILE_CHOOSER_SET_FILES
             | methods::PLAYWRIGHT_WAIT_FOR_DOWNLOAD
-            | methods::PLAYWRIGHT_DOWNLOAD_PATH => self
-                .inner
-                .backend
-                .playwright_command_with_context(&ctx, &req.method, req.params)
-                .await
-                .map_err(host_err_to_rpc),
+            | methods::PLAYWRIGHT_DOWNLOAD_PATH => {
+                self.route_playwright_request(method, ctx, params).await
+            }
             methods::TAB_GOTO
             | methods::TAB_RELOAD
             | methods::TAB_BACK
@@ -504,24 +406,336 @@ impl Dispatcher {
             | methods::TAB_CLIPBOARD_READ_TEXT
             | methods::TAB_CLIPBOARD_WRITE_TEXT
             | methods::TAB_CLIPBOARD_READ
-            | methods::TAB_CLIPBOARD_WRITE => self
-                .inner
-                .backend
-                .tab_command_with_context(&ctx, &req.method, req.params)
+            | methods::TAB_CLIPBOARD_WRITE => self.route_tab_request(method, ctx, params).await,
+            _ => Err(ErrorObject::new(
+                ErrorCode::MethodNotFound,
+                format!("method not found: {method}"),
+            )),
+        }
+    }
+
+    async fn route_lifecycle_request(
+        &self,
+        method: &str,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> std::result::Result<Value, ErrorObject> {
+        match method {
+            methods::PING => LifecycleBackendOps::ping(self.inner.backend.as_ref())
                 .await
+                .map(|value| Value::String(value.into()))
                 .map_err(host_err_to_rpc),
+            methods::GET_INFO => Ok(self.get_info()),
+            methods::TURN_ENDED => {
+                SessionBackendOps::turn_ended_with_context(self.inner.backend.as_ref(), ctx, params)
+                    .await
+                    .map_err(host_err_to_rpc)
+            }
+            methods::YIELD_CONTROL => SessionBackendOps::yield_control_with_context(
+                self.inner.backend.as_ref(),
+                ctx,
+                params,
+            )
+            .await
+            .map_err(host_err_to_rpc),
+            methods::RESUME_CONTROL => SessionBackendOps::resume_control_with_context(
+                self.inner.backend.as_ref(),
+                ctx,
+                params,
+            )
+            .await
+            .map_err(host_err_to_rpc),
+            methods::CLEAR_LIFECYCLE_DIAGNOSTICS => {
+                LifecycleBackendOps::clear_lifecycle_diagnostics(self.inner.backend.as_ref())
+                    .map_err(host_err_to_rpc)
+            }
             methods::EXECUTE_UNHANDLED_COMMAND => Err(host_err_to_rpc(HostError::NotImplemented(
                 "executeUnhandledCommand".into(),
             ))),
             _ => Err(ErrorObject::new(
                 ErrorCode::MethodNotFound,
-                format!("method not found: {}", req.method),
+                format!("method not found: {method}"),
             )),
-        };
+        }
+    }
 
-        match result {
-            Ok(value) => Response::ok(req.id, value),
-            Err(error) => Response::err(req.id, error),
+    async fn route_session_request(
+        &self,
+        method: &str,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> std::result::Result<Value, ErrorObject> {
+        match method {
+            methods::CREATE_TAB => SessionBackendOps::create_tab_with_context(
+                self.inner.backend.as_ref(),
+                ctx,
+                params_str(&params, "url"),
+            )
+            .await
+            .map_err(host_err_to_rpc),
+            methods::GET_TABS => {
+                SessionBackendOps::list_tabs_with_context(self.inner.backend.as_ref(), ctx)
+                    .await
+                    .map_err(host_err_to_rpc)
+            }
+            methods::GET_CURRENT_TAB => {
+                SessionBackendOps::current_tab_with_context(self.inner.backend.as_ref(), ctx)
+                    .await
+                    .map_err(host_err_to_rpc)
+            }
+            methods::GET_SELECTED_TAB => {
+                SessionBackendOps::selected_tab_with_context(self.inner.backend.as_ref(), ctx)
+                    .await
+                    .map_err(host_err_to_rpc)
+            }
+            methods::GET_USER_TABS => {
+                SessionBackendOps::list_user_tabs_with_context(self.inner.backend.as_ref(), ctx)
+                    .await
+                    .map_err(host_err_to_rpc)
+            }
+            methods::CLAIM_USER_TAB => match params_tab_id(&params) {
+                Some(tab_id) => SessionBackendOps::claim_user_tab_with_context(
+                    self.inner.backend.as_ref(),
+                    ctx,
+                    &tab_id,
+                )
+                .await
+                .map_err(host_err_to_rpc),
+                None => Err(invalid_params("missing tab_id")),
+            },
+            methods::FINALIZE_TABS => SessionBackendOps::finalize_tabs_with_context(
+                self.inner.backend.as_ref(),
+                ctx,
+                params,
+            )
+            .await
+            .map_err(host_err_to_rpc),
+            methods::NAME_SESSION => SessionBackendOps::name_session_with_context(
+                self.inner.backend.as_ref(),
+                ctx,
+                params,
+            )
+            .await
+            .map_err(host_err_to_rpc),
+            methods::GET_USER_HISTORY => SessionBackendOps::get_user_history_with_context(
+                self.inner.backend.as_ref(),
+                ctx,
+                params,
+            )
+            .await
+            .map_err(host_err_to_rpc),
+            _ => Err(ErrorObject::new(
+                ErrorCode::MethodNotFound,
+                format!("method not found: {method}"),
+            )),
+        }
+    }
+
+    async fn route_cdp_request(
+        &self,
+        method: &str,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> std::result::Result<Value, ErrorObject> {
+        match method {
+            methods::ATTACH => match params_str(&params, "tab_id") {
+                Some(tab_id) => {
+                    CdpBackendOps::attach_with_context(self.inner.backend.as_ref(), ctx, &tab_id)
+                        .await
+                        .map(|()| Value::Null)
+                        .map_err(host_err_to_rpc)
+                }
+                None => Err(invalid_params("missing tab_id")),
+            },
+            methods::DETACH => match params_str(&params, "tab_id") {
+                Some(tab_id) => {
+                    CdpBackendOps::detach_with_context(self.inner.backend.as_ref(), ctx, &tab_id)
+                        .await
+                        .map(|()| Value::Null)
+                        .map_err(host_err_to_rpc)
+                }
+                None => Err(invalid_params("missing tab_id")),
+            },
+            methods::EXECUTE_CDP => {
+                let tab_id = cdp_tab_id(&params)?;
+                let cdp_method = params_str(&params, "method").unwrap_or_default();
+                let command_params = params
+                    .get("commandParams")
+                    .cloned()
+                    .or_else(|| params.get("params").cloned())
+                    .unwrap_or(Value::Null);
+                CdpBackendOps::execute_cdp_with_context(
+                    self.inner.backend.as_ref(),
+                    ctx,
+                    &tab_id,
+                    &cdp_method,
+                    command_params,
+                )
+                .await
+                .map_err(host_err_to_rpc)
+            }
+            _ => Err(ErrorObject::new(
+                ErrorCode::MethodNotFound,
+                format!("method not found: {method}"),
+            )),
+        }
+    }
+
+    async fn route_browser_request(
+        &self,
+        method: &str,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> std::result::Result<Value, ErrorObject> {
+        match method {
+            methods::BROWSER_TABS_CONTENT => self.fetch_browser_tabs_content(&params).await,
+            methods::BROWSER_VIEWPORT_SET
+            | methods::BROWSER_VIEWPORT_RESET
+            | methods::BROWSER_VISIBILITY_SET
+            | methods::BROWSER_VISIBILITY_GET => BrowserControlOps::browser_command_with_context(
+                self.inner.backend.as_ref(),
+                ctx,
+                method,
+                params,
+            )
+            .await
+            .map_err(host_err_to_rpc),
+            _ => Err(ErrorObject::new(
+                ErrorCode::MethodNotFound,
+                format!("method not found: {method}"),
+            )),
+        }
+    }
+
+    async fn route_cua_request(
+        &self,
+        method: &str,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> std::result::Result<Value, ErrorObject> {
+        match method {
+            methods::MOVE_MOUSE => CuaBackendOps::cua_command_with_context(
+                self.inner.backend.as_ref(),
+                ctx,
+                methods::CUA_MOVE,
+                params,
+            )
+            .await
+            .map_err(host_err_to_rpc),
+            methods::CUA_CLICK
+            | methods::CUA_DBLCLICK
+            | methods::CUA_SCROLL
+            | methods::CUA_TYPE
+            | methods::CUA_KEYPRESS
+            | methods::CUA_DRAG
+            | methods::CUA_MOVE
+            | methods::CUA_DOWNLOAD_MEDIA
+            | methods::DOM_CUA_GET_VISIBLE_DOM
+            | methods::DOM_CUA_CLICK
+            | methods::DOM_CUA_DOUBLE_CLICK
+            | methods::DOM_CUA_SCROLL
+            | methods::DOM_CUA_TYPE
+            | methods::DOM_CUA_KEYPRESS
+            | methods::DOM_CUA_DOWNLOAD_MEDIA => CuaBackendOps::cua_command_with_context(
+                self.inner.backend.as_ref(),
+                ctx,
+                method,
+                params,
+            )
+            .await
+            .map_err(host_err_to_rpc),
+            _ => Err(ErrorObject::new(
+                ErrorCode::MethodNotFound,
+                format!("method not found: {method}"),
+            )),
+        }
+    }
+
+    async fn route_playwright_request(
+        &self,
+        method: &str,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> std::result::Result<Value, ErrorObject> {
+        match method {
+            methods::PLAYWRIGHT_LOCATOR_CLICK
+            | methods::PLAYWRIGHT_LOCATOR_DBLCLICK
+            | methods::PLAYWRIGHT_LOCATOR_DOWNLOAD_MEDIA
+            | methods::PLAYWRIGHT_LOCATOR_FILL
+            | methods::PLAYWRIGHT_LOCATOR_PRESS
+            | methods::PLAYWRIGHT_LOCATOR_WAIT_FOR
+            | methods::PLAYWRIGHT_LOCATOR_COUNT
+            | methods::PLAYWRIGHT_LOCATOR_SELECT_OPTION
+            | methods::PLAYWRIGHT_LOCATOR_SET_CHECKED
+            | methods::PLAYWRIGHT_LOCATOR_IS_VISIBLE
+            | methods::PLAYWRIGHT_LOCATOR_IS_ENABLED
+            | methods::PLAYWRIGHT_LOCATOR_ALL_TEXT_CONTENTS
+            | methods::PLAYWRIGHT_LOCATOR_TEXT_CONTENT
+            | methods::PLAYWRIGHT_LOCATOR_INNER_TEXT
+            | methods::PLAYWRIGHT_LOCATOR_GET_ATTRIBUTE
+            | methods::PLAYWRIGHT_LOCATOR_READ_ALL
+            | methods::PLAYWRIGHT_LOCATOR_HOVER
+            | methods::PLAYWRIGHT_LOCATOR_BOUNDING_BOX
+            | methods::PLAYWRIGHT_SCREENSHOT
+            | methods::PLAYWRIGHT_ELEMENT_INFO
+            | methods::PLAYWRIGHT_ELEMENT_SCREENSHOT
+            | methods::PLAYWRIGHT_DOM_SNAPSHOT
+            | methods::PLAYWRIGHT_WAIT_FOR_TIMEOUT
+            | methods::PLAYWRIGHT_WAIT_FOR_URL
+            | methods::PLAYWRIGHT_WAIT_FOR_LOAD_STATE
+            | methods::PLAYWRIGHT_WAIT_FOR_FILE_CHOOSER
+            | methods::PLAYWRIGHT_FILE_CHOOSER_SET_FILES
+            | methods::PLAYWRIGHT_WAIT_FOR_DOWNLOAD
+            | methods::PLAYWRIGHT_DOWNLOAD_PATH => {
+                PlaywrightBackendOps::playwright_command_with_context(
+                    self.inner.backend.as_ref(),
+                    ctx,
+                    method,
+                    params,
+                )
+                .await
+                .map_err(host_err_to_rpc)
+            }
+            _ => Err(ErrorObject::new(
+                ErrorCode::MethodNotFound,
+                format!("method not found: {method}"),
+            )),
+        }
+    }
+
+    async fn route_tab_request(
+        &self,
+        method: &str,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> std::result::Result<Value, ErrorObject> {
+        match method {
+            methods::TAB_GOTO
+            | methods::TAB_RELOAD
+            | methods::TAB_BACK
+            | methods::TAB_FORWARD
+            | methods::TAB_CLOSE
+            | methods::TAB_SCREENSHOT
+            | methods::TAB_WAIT_FOR_URL
+            | methods::TAB_WAIT_FOR_LOAD_STATE
+            | methods::TAB_CONTENT_EXPORT
+            | methods::TAB_URL
+            | methods::TAB_TITLE
+            | methods::TAB_CLIPBOARD_READ_TEXT
+            | methods::TAB_CLIPBOARD_WRITE_TEXT
+            | methods::TAB_CLIPBOARD_READ
+            | methods::TAB_CLIPBOARD_WRITE => TabBackendOps::tab_command_with_context(
+                self.inner.backend.as_ref(),
+                ctx,
+                method,
+                params,
+            )
+            .await
+            .map_err(host_err_to_rpc),
+            _ => Err(ErrorObject::new(
+                ErrorCode::MethodNotFound,
+                format!("method not found: {method}"),
+            )),
         }
     }
 
@@ -623,12 +837,14 @@ impl Dispatcher {
         let Some(tab_id) = tab_id else {
             return Err(invalid_params("missing tab_id for current-origin policy"));
         };
-        let current_url = self
-            .inner
-            .backend
-            .tab_command_with_context(ctx, methods::TAB_URL, json!({ "tab_id": tab_id }))
-            .await
-            .map_err(host_err_to_rpc)?;
+        let current_url = TabBackendOps::tab_command_with_context(
+            self.inner.backend.as_ref(),
+            ctx,
+            methods::TAB_URL,
+            json!({ "tab_id": tab_id }),
+        )
+        .await
+        .map_err(host_err_to_rpc)?;
         let url = current_url.as_str().ok_or_else(|| {
             invalid_params("current-origin policy expected tab_url string response")
         })?;

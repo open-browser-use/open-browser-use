@@ -30,6 +30,9 @@ jobs:
       - name: Rust format
         run: cargo fmt --all -- --check
 
+      - name: Wire method generation check
+        run: node scripts/generate-wire-methods.mjs --check
+
       - name: Install JS dependencies
         run: pnpm install --frozen-lockfile
 

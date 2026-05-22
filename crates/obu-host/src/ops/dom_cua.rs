@@ -28,6 +28,15 @@ impl Rect {
             && self.y < other.y + other.height
             && self.y + self.height > other.y
     }
+
+    pub(crate) fn is_finite_and_positive(self) -> bool {
+        self.x.is_finite()
+            && self.y.is_finite()
+            && self.width.is_finite()
+            && self.height.is_finite()
+            && self.width > 0.0
+            && self.height > 0.0
+    }
 }
 
 pub(crate) fn snapshot_key(ctx: &BackendRequestContext, tab_id: &str) -> String {
@@ -42,11 +51,16 @@ pub(crate) fn backend_node_id(node_id: &str) -> Result<i64> {
     })
 }
 
-pub(crate) fn viewport_rect_from_layout_metrics(metrics: &Value) -> Result<Rect> {
-    let viewport = metrics
-        .get("visualViewport")
+fn layout_metrics_viewport(metrics: &Value) -> Result<&Value> {
+    metrics
+        .get("cssVisualViewport")
+        .or_else(|| metrics.get("visualViewport"))
         .or_else(|| metrics.get("layoutViewport"))
-        .ok_or_else(|| HostError::Protocol("Page.getLayoutMetrics missing viewport".into()))?;
+        .ok_or_else(|| HostError::Protocol("Page.getLayoutMetrics missing viewport".into()))
+}
+
+pub(crate) fn visible_page_rect_from_layout_metrics(metrics: &Value) -> Result<Rect> {
+    let viewport = layout_metrics_viewport(metrics)?;
     Ok(Rect {
         x: viewport
             .get("pageX")
@@ -71,10 +85,70 @@ pub(crate) fn viewport_rect_from_layout_metrics(metrics: &Value) -> Result<Rect>
     })
 }
 
+pub(crate) fn viewport_rect_from_layout_metrics(metrics: &Value) -> Result<Rect> {
+    visible_page_rect_from_layout_metrics(metrics)
+}
+
+pub(crate) fn visual_viewport_input_center(metrics: &Value) -> Result<(f64, f64)> {
+    let viewport = metrics
+        .get("cssVisualViewport")
+        .or_else(|| metrics.get("visualViewport"))
+        .or_else(|| metrics.get("layoutViewport"))
+        .ok_or_else(|| HostError::Protocol("Page.getLayoutMetrics missing viewport".into()))?;
+    let width = viewport
+        .get("clientWidth")
+        .or_else(|| viewport.get("width"))
+        .and_then(Value::as_f64)
+        .ok_or_else(|| {
+            HostError::Protocol("Page.getLayoutMetrics viewport missing width".into())
+        })?;
+    let height = viewport
+        .get("clientHeight")
+        .or_else(|| viewport.get("height"))
+        .and_then(Value::as_f64)
+        .ok_or_else(|| {
+            HostError::Protocol("Page.getLayoutMetrics viewport missing height".into())
+        })?;
+    Ok((width / 2.0, height / 2.0))
+}
+
 pub(crate) fn rect_from_box_model(result: &Value) -> Option<Rect> {
+    rect_from_box_model_quad(result, "content")
+        .or_else(|| rect_from_box_model_quad(result, "border"))
+}
+
+pub(crate) fn action_point_from_content_quads(
+    result: &Value,
+    viewport: Rect,
+) -> Option<(f64, f64)> {
+    let quads = result.get("quads").and_then(Value::as_array)?;
+    quads
+        .iter()
+        .filter_map(|quad| point_from_quad(quad, Some(viewport)))
+        .max_by(|left, right| {
+            left.visible_area
+                .partial_cmp(&right.visible_area)
+                .unwrap_or(std::cmp::Ordering::Equal)
+        })
+        .map(|point| page_point_to_viewport(point.center, viewport))
+}
+
+pub(crate) fn action_point_from_box_model(result: &Value, viewport: Rect) -> Option<(f64, f64)> {
+    let rect = rect_from_box_model(result)?;
+    if !rect.is_finite_and_positive() || !rect.intersects(viewport) {
+        return None;
+    }
+    Some(page_point_to_viewport(rect.center(), viewport))
+}
+
+fn page_point_to_viewport(point: (f64, f64), viewport: Rect) -> (f64, f64) {
+    (point.0 - viewport.x, point.1 - viewport.y)
+}
+
+fn rect_from_box_model_quad(result: &Value, key: &str) -> Option<Rect> {
     let content = result
         .get("model")
-        .and_then(|model| model.get("content"))
+        .and_then(|model| model.get(key))
         .and_then(Value::as_array)?;
     if content.len() < 8 {
         return None;
@@ -89,12 +163,75 @@ pub(crate) fn rect_from_box_model(result: &Value) -> Option<Rect> {
     let max_x = xs.iter().copied().fold(f64::NEG_INFINITY, f64::max);
     let min_y = ys.iter().copied().fold(f64::INFINITY, f64::min);
     let max_y = ys.iter().copied().fold(f64::NEG_INFINITY, f64::max);
-    Some(Rect {
+    let rect = Rect {
         x: min_x,
         y: min_y,
         width: max_x - min_x,
         height: max_y - min_y,
+    };
+    rect.is_finite_and_positive().then_some(rect)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct QuadPoint {
+    center: (f64, f64),
+    visible_area: f64,
+}
+
+fn point_from_quad(quad: &Value, viewport: Option<Rect>) -> Option<QuadPoint> {
+    let points = quad
+        .as_array()?
+        .iter()
+        .filter_map(Value::as_f64)
+        .collect::<Vec<_>>();
+    if points.len() < 8 || !points.iter().all(|point| point.is_finite()) {
+        return None;
+    }
+    let xs = [points[0], points[2], points[4], points[6]];
+    let ys = [points[1], points[3], points[5], points[7]];
+    let center = (
+        xs.iter().copied().sum::<f64>() / 4.0,
+        ys.iter().copied().sum::<f64>() / 4.0,
+    );
+    let rect = Rect {
+        x: xs.iter().copied().fold(f64::INFINITY, f64::min),
+        y: ys.iter().copied().fold(f64::INFINITY, f64::min),
+        width: xs.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+            - xs.iter().copied().fold(f64::INFINITY, f64::min),
+        height: ys.iter().copied().fold(f64::NEG_INFINITY, f64::max)
+            - ys.iter().copied().fold(f64::INFINITY, f64::min),
+    };
+    if !rect.is_finite_and_positive() {
+        return None;
+    }
+    let visible_area = viewport.map_or(rect.width * rect.height, |viewport| {
+        intersection_area(rect, viewport)
+    });
+    if visible_area <= 0.0 {
+        return None;
+    }
+    Some(QuadPoint {
+        center: clamp_point_to_viewport(center, viewport),
+        visible_area,
     })
+}
+
+fn intersection_area(rect: Rect, viewport: Rect) -> f64 {
+    let left = rect.x.max(viewport.x);
+    let right = (rect.x + rect.width).min(viewport.x + viewport.width);
+    let top = rect.y.max(viewport.y);
+    let bottom = (rect.y + rect.height).min(viewport.y + viewport.height);
+    ((right - left).max(0.0)) * ((bottom - top).max(0.0))
+}
+
+fn clamp_point_to_viewport(point: (f64, f64), viewport: Option<Rect>) -> (f64, f64) {
+    let Some(viewport) = viewport else {
+        return point;
+    };
+    (
+        point.0.clamp(viewport.x, viewport.x + viewport.width),
+        point.1.clamp(viewport.y, viewport.y + viewport.height),
+    )
 }
 
 pub(crate) fn attributes_object(node: &Value) -> Value {
@@ -240,6 +377,53 @@ pub(crate) fn render_visible_dom_text(nodes: &[Value]) -> String {
     lines.join("\n")
 }
 
+pub(crate) fn render_visible_dom_debug_text(nodes: &[Value]) -> String {
+    render_visible_dom_text(nodes)
+}
+
+pub(crate) fn render_visible_dom_compact_text(nodes: &[Value]) -> String {
+    let mut lines = Vec::new();
+    for node in nodes {
+        let node_id = node.get("node_id").and_then(Value::as_str).unwrap_or("?");
+        let tag = node.get("tag").and_then(Value::as_str).unwrap_or("node");
+        let mut attrs = vec![format!("node_id={node_id}")];
+        if let Some(object) = node.get("attributes").and_then(Value::as_object) {
+            for key in [
+                "aria-label",
+                "contenteditable",
+                "href",
+                "name",
+                "placeholder",
+                "role",
+                "title",
+                "type",
+                "value",
+            ] {
+                if let Some(value) = object.get(key).and_then(Value::as_str)
+                    && !value.is_empty()
+                {
+                    attrs.push(format!(r#"{key}="{}""#, escape_text(value, 80)));
+                }
+            }
+            for key in [
+                "checked", "disabled", "multiple", "readonly", "required", "selected",
+            ] {
+                if object.contains_key(key) {
+                    attrs.push(key.to_string());
+                }
+            }
+        }
+        let text = node
+            .get("name")
+            .or_else(|| node.get("text"))
+            .and_then(Value::as_str)
+            .map(|value| escape_text(value, 180))
+            .unwrap_or_default();
+        lines.push(format!("<{tag} {}>{text}</{tag}>", attrs.join(" ")));
+    }
+    lines.join("\n")
+}
+
 pub(crate) fn aggregate_text(node: &Value, max_len: usize) -> String {
     let mut out = String::new();
     append_text(node, &mut out, max_len);
@@ -336,6 +520,88 @@ mod tests {
         assert_eq!(rect.width, 24.0);
         assert_eq!(rect.height, 33.0);
         assert_eq!(rect.center(), (20.0, 34.5));
+    }
+
+    #[test]
+    fn rect_from_box_model_falls_back_to_border_bounds() {
+        let result = json!({
+            "model": {
+                "border": [1, 2, 11, 2, 11, 22, 1, 22]
+            }
+        });
+        let rect = rect_from_box_model(&result).expect("rect");
+        assert_eq!(rect.x, 1.0);
+        assert_eq!(rect.y, 2.0);
+        assert_eq!(rect.width, 10.0);
+        assert_eq!(rect.height, 20.0);
+    }
+
+    #[test]
+    fn action_point_from_content_quads_prefers_visible_quad() {
+        let point = action_point_from_content_quads(
+            &json!({
+                "quads": [
+                    [-100, -100, -90, -100, -90, -90, -100, -90],
+                    [10, 20, 30, 20, 30, 40, 10, 40]
+                ]
+            }),
+            Rect {
+                x: 0.0,
+                y: 0.0,
+                width: 100.0,
+                height: 100.0,
+            },
+        )
+        .expect("point");
+        assert_eq!(point, (20.0, 30.0));
+    }
+
+    #[test]
+    fn action_point_helpers_return_viewport_space_points() {
+        let viewport = Rect {
+            x: 0.0,
+            y: 1000.0,
+            width: 100.0,
+            height: 100.0,
+        };
+        let point = action_point_from_content_quads(
+            &json!({
+                "quads": [
+                    [10, 1020, 30, 1020, 30, 1040, 10, 1040]
+                ]
+            }),
+            viewport,
+        )
+        .expect("point");
+        assert_eq!(point, (20.0, 30.0));
+
+        let box_point = action_point_from_box_model(
+            &json!({ "model": { "content": [10, 1020, 30, 1020, 30, 1040, 10, 1040] } }),
+            viewport,
+        )
+        .expect("box point");
+        assert_eq!(box_point, (20.0, 30.0));
+    }
+
+    #[test]
+    fn layout_metrics_helpers_keep_page_rect_and_input_center_separate() {
+        let metrics = json!({
+            "cssVisualViewport": {
+                "pageX": 50,
+                "pageY": 1000,
+                "clientWidth": 800,
+                "clientHeight": 600
+            }
+        });
+        let page_rect = visible_page_rect_from_layout_metrics(&metrics).expect("page rect");
+        assert_eq!(page_rect.x, 50.0);
+        assert_eq!(page_rect.y, 1000.0);
+        assert_eq!(page_rect.width, 800.0);
+        assert_eq!(page_rect.height, 600.0);
+        assert_eq!(
+            visual_viewport_input_center(&metrics).expect("input center"),
+            (400.0, 300.0)
+        );
     }
 
     #[test]
@@ -441,6 +707,36 @@ mod tests {
         assert_eq!(
             text,
             r#"[2] <button aria-label="Save now" role="button"> Save now"#
+        );
+    }
+
+    #[test]
+    fn render_visible_dom_debug_text_keeps_verbose_attribute_shape() {
+        let text = render_visible_dom_debug_text(&[json!({
+            "node_id": "2",
+            "tag": "button",
+            "name": "Save now",
+            "text": "Save now",
+            "attributes": { "role": "button", "aria-label": "Save now" }
+        })]);
+        assert_eq!(
+            text,
+            r#"[2] <button aria-label="Save now" role="button"> Save now"#
+        );
+    }
+
+    #[test]
+    fn render_visible_dom_compact_text_uses_element_like_rows() {
+        let text = render_visible_dom_compact_text(&[json!({
+            "node_id": "2",
+            "tag": "button",
+            "name": "Save now",
+            "text": "Save now",
+            "attributes": { "role": "button", "aria-label": "Save now" }
+        })]);
+        assert_eq!(
+            text,
+            r#"<button node_id=2 aria-label="Save now" role="button">Save now</button>"#
         );
     }
 

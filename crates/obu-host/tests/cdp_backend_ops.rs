@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -973,8 +973,9 @@ async fn cua_commands_validate_payloads_and_dispatch_expected_input_events() {
     let key_down = recv_until_method(&mut requests, "Input.dispatchKeyEvent").await;
     assert_eq!(key_down["method"], "Input.dispatchKeyEvent");
     assert_eq!(key_down["params"]["type"], "keyDown");
-    assert_eq!(key_down["params"]["key"], "x");
-    assert_eq!(key_down["params"]["text"], "x");
+    assert_eq!(key_down["params"]["key"], "X");
+    assert_eq!(key_down["params"]["text"], "");
+    assert_eq!(key_down["params"]["unmodifiedText"], "");
     assert_eq!(key_down["params"]["modifiers"], 15);
     let key_up = recv_until_method(&mut requests, "Input.dispatchKeyEvent").await;
     assert_eq!(key_up["params"]["type"], "keyUp");
@@ -1235,6 +1236,59 @@ async fn cdp_scroll_falls_back_to_mouse_wheel_when_synthesized_gesture_fails() {
     assert_eq!(observed[2]["params"]["type"], "mouseWheel");
     assert_eq!(observed[2]["params"]["deltaX"], 3.0);
     assert_eq!(observed[2]["params"]["deltaY"], -4.0);
+}
+
+#[tokio::test]
+async fn cdp_modified_scroll_uses_mouse_wheel_without_synthesized_gesture() {
+    let (ws_url, mut requests) = spawn_fake_cdp().await;
+    let backend = CdpBackend::connect(&ws_url, Arc::new(ServiceRegistry::default()))
+        .await
+        .unwrap();
+    let created = backend
+        .create_tab(Some("about:blank".into()))
+        .await
+        .unwrap();
+    let tab_id = created["id"].as_str().unwrap().to_string();
+    backend.attach(&tab_id).await.unwrap();
+
+    backend
+        .cua_command(
+            methods::CUA_SCROLL,
+            json!({
+                "tab_id": tab_id,
+                "x": 10,
+                "y": 20,
+                "deltaX": 3,
+                "deltaY": -4,
+                "modifiers": ["Shift"]
+            }),
+        )
+        .await
+        .unwrap();
+
+    let mut observed = Vec::new();
+    while observed.len() < 2 {
+        let request = requests.recv().await.unwrap();
+        if request["method"] == "Input.synthesizeScrollGesture"
+            || request["method"] == "Input.dispatchMouseEvent"
+        {
+            observed.push(request);
+        }
+    }
+    assert_eq!(observed[0]["method"], "Input.dispatchMouseEvent");
+    assert_eq!(observed[0]["params"]["type"], "mouseMoved");
+    assert_eq!(observed[0]["params"]["modifiers"], 8);
+    assert_eq!(observed[1]["method"], "Input.dispatchMouseEvent");
+    assert_eq!(observed[1]["params"]["type"], "mouseWheel");
+    assert_eq!(observed[1]["params"]["modifiers"], 8);
+    assert_eq!(observed[1]["params"]["deltaX"], 3.0);
+    assert_eq!(observed[1]["params"]["deltaY"], -4.0);
+
+    let next = tokio::time::timeout(Duration::from_millis(50), requests.recv()).await;
+    assert!(
+        next.is_err(),
+        "modified scroll should not enqueue a synthesized gesture"
+    );
 }
 
 #[tokio::test]
