@@ -593,6 +593,15 @@ if [ -n "$CHECKSUM" ]; then
 fi
 
 mkdir -p "$INSTALL_DIR/payloads" "$INSTALL_DIR/bin"
+OBU_SHIM_PATH="$INSTALL_DIR/bin/obu"
+if [ -L "$OBU_SHIM_PATH" ]; then
+  echo "install failed: shim path is a symlink: $OBU_SHIM_PATH" >&2
+  exit 1
+fi
+if [ -e "$OBU_SHIM_PATH" ] && [ ! -f "$OBU_SHIM_PATH" ]; then
+  echo "install failed: shim path is not a regular file: $OBU_SHIM_PATH" >&2
+  exit 1
+fi
 PAYLOAD_NAME="$(artifact_name "$ARTIFACT_FILE")"
 PAYLOAD_DIR="$INSTALL_DIR/payloads/$PAYLOAD_NAME"
 PAYLOAD_STAGE_DIR="$(mktemp -d "$INSTALL_DIR/payloads/.${PAYLOAD_NAME}.tmp.XXXXXX")"
@@ -669,7 +678,8 @@ fi
 rm -rf "$PAYLOAD_BACKUP_DIR"
 prune_old_payloads "$INSTALL_DIR/payloads" "$PAYLOAD_NAME" "$PREVIOUS_CURRENT" "$PAYLOAD_RETENTION" || exit $?
 
-cat > "$INSTALL_DIR/bin/obu" <<'SHIM'
+OBU_SHIM_STAGE="$(mktemp "$INSTALL_DIR/bin/.obu.tmp.XXXXXX")"
+cat > "$OBU_SHIM_STAGE" <<'SHIM'
 #!/bin/sh
 set -eu
 SOURCE="$0"
@@ -693,9 +703,57 @@ export OBU_NODE_BINARY="$NODE_BIN"
 export OBU_COMMAND="$0"
 exec "$NODE_BIN" "$PAYLOAD_ROOT/cli/dist/index.js" "$@"
 SHIM
-chmod 755 "$INSTALL_DIR/bin/obu"
-ln -sf obu "$INSTALL_DIR/bin/open-browser-use"
-log_verbose "shim: wrote $INSTALL_DIR/bin/obu"
+if ! chmod 755 "$OBU_SHIM_STAGE"; then
+  echo "install failed: could not chmod staged shim" >&2
+  rm -f "$OBU_SHIM_STAGE"
+  exit 1
+fi
+if [ -L "$OBU_SHIM_PATH" ]; then
+  echo "install failed: shim path became a symlink: $OBU_SHIM_PATH" >&2
+  rm -f "$OBU_SHIM_STAGE"
+  exit 1
+fi
+if [ -e "$OBU_SHIM_PATH" ] && [ ! -f "$OBU_SHIM_PATH" ]; then
+  echo "install failed: shim path is not a regular file: $OBU_SHIM_PATH" >&2
+  rm -f "$OBU_SHIM_STAGE"
+  exit 1
+fi
+if ! mv -f "$OBU_SHIM_STAGE" "$OBU_SHIM_PATH"; then
+  echo "install failed: could not write shim $OBU_SHIM_PATH" >&2
+  rm -f "$OBU_SHIM_STAGE"
+  exit 1
+fi
+
+OBU_ALIAS_PATH="$INSTALL_DIR/bin/open-browser-use"
+OBU_ALIAS_STAGE="$INSTALL_DIR/bin/.open-browser-use.tmp.$$"
+rm -f "$OBU_ALIAS_STAGE"
+if [ -e "$OBU_ALIAS_PATH" ] && [ ! -L "$OBU_ALIAS_PATH" ] && [ ! -f "$OBU_ALIAS_PATH" ]; then
+  echo "install failed: open-browser-use alias path is not a regular file or symlink: $OBU_ALIAS_PATH" >&2
+  exit 1
+fi
+if ! ln -s obu "$OBU_ALIAS_STAGE"; then
+  echo "install failed: could not stage open-browser-use alias" >&2
+  rm -f "$OBU_ALIAS_STAGE"
+  exit 1
+fi
+if [ -e "$OBU_ALIAS_PATH" ] || [ -L "$OBU_ALIAS_PATH" ]; then
+  if [ -d "$OBU_ALIAS_PATH" ] && [ ! -L "$OBU_ALIAS_PATH" ]; then
+    echo "install failed: open-browser-use alias path is a directory: $OBU_ALIAS_PATH" >&2
+    rm -f "$OBU_ALIAS_STAGE"
+    exit 1
+  fi
+  if ! rm -f "$OBU_ALIAS_PATH"; then
+    echo "install failed: could not replace open-browser-use alias $OBU_ALIAS_PATH" >&2
+    rm -f "$OBU_ALIAS_STAGE"
+    exit 1
+  fi
+fi
+if ! mv "$OBU_ALIAS_STAGE" "$OBU_ALIAS_PATH"; then
+  echo "install failed: could not install open-browser-use alias" >&2
+  rm -f "$OBU_ALIAS_STAGE"
+  exit 1
+fi
+log_verbose "shim: wrote $OBU_SHIM_PATH"
 
 if [ -n "$SELECTED_TARGET" ]; then
   echo "Selected target: $SELECTED_TARGET"

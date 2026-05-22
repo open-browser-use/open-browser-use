@@ -9,6 +9,7 @@ import {
   readdir,
   readlink,
   rm,
+  symlink,
   utimes,
   writeFile,
 } from "node:fs/promises";
@@ -34,6 +35,8 @@ try {
   await nonExecutableNodeReplKeepsOldPayload();
   await sameNameActivationFailureRestoresOldPayload();
   await currentSymlinkFailureRestoresPreviousSymlink();
+  await shimSymlinkFailsWithoutChangingTarget();
+  await aliasSymlinkReplacesOnlyAlias();
   await payloadMigrationHookRunsBeforeCurrentSwitch();
   await invalidMigrationHookNameFailsBeforeCurrentSwitch();
   await payloadMigrationFailureRestoresOldPayload();
@@ -182,6 +185,44 @@ async function currentSymlinkFailureRestoresPreviousSymlink() {
   assert.equal(await readlink(currentLink(installDir)), "open-browser-use-old");
   await assertPayloadMarker(installDir, "open-browser-use-old", "old");
   await assert.rejects(() => access(path.join(installDir, "payloads", "open-browser-use-new")), { code: "ENOENT" });
+}
+
+async function shimSymlinkFailsWithoutChangingTarget() {
+  const dir = await caseDir("shim-symlink");
+  const installDir = path.join(dir, "install");
+  const home = path.join(dir, "home");
+  const artifact = await makeArtifact(dir, "open-browser-use-shim", "old");
+  runInstall({ artifact, installDir, home });
+  const newArtifact = await makeArtifact(path.join(dir, "new"), "open-browser-use-shim", "new");
+
+  const target = path.join(dir, "outside-shim");
+  await writeFile(target, "do not change", "utf8");
+  await rm(path.join(installDir, "bin", "obu"), { force: true });
+  await symlink(target, path.join(installDir, "bin", "obu"));
+
+  const failed = runInstall({ artifact: newArtifact, installDir, home, allowFailure: true });
+  assert.equal(failed.status, 1);
+  assert.match(failed.stderr, /shim path is a symlink/);
+  assert.equal(await readFile(target, "utf8"), "do not change");
+  await assertPayloadMarker(installDir, "open-browser-use-shim", "old");
+}
+
+async function aliasSymlinkReplacesOnlyAlias() {
+  const dir = await caseDir("alias-symlink");
+  const installDir = path.join(dir, "install");
+  const home = path.join(dir, "home");
+  const artifact = await makeArtifact(dir, "open-browser-use-alias", "old");
+  runInstall({ artifact, installDir, home });
+
+  const aliasPath = path.join(installDir, "bin", "open-browser-use");
+  const target = path.join(dir, "outside-alias");
+  await writeFile(target, "do not change", "utf8");
+  await rm(aliasPath, { force: true });
+  await symlink(target, aliasPath);
+
+  runInstall({ artifact, installDir, home });
+  assert.equal(await readFile(target, "utf8"), "do not change");
+  assert.equal(await readlink(aliasPath), "obu");
 }
 
 async function payloadMigrationHookRunsBeforeCurrentSwitch() {
