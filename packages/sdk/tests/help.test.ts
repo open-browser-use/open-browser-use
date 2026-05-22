@@ -1,3 +1,4 @@
+import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 import { Agent } from "../src/agent.js";
 import { renderHelp } from "../src/help.js";
@@ -40,5 +41,21 @@ describe("help", () => {
     });
 
     expect(agent.help()).toBe(renderHelp());
+  });
+
+  it("keeps overview docs on the safe user-tab discovery surface", async () => {
+    const sdkReadme = await readFile(new URL("../README.md", import.meta.url), "utf8");
+    const architecture = await readFile(new URL("../../../docs/current-product-architecture.md", import.meta.url), "utf8");
+
+    expect(sdkReadme).toContain("browser.tabs.current()");
+    expect(sdkReadme).toContain("browser.tabs.selected()");
+    expect(sdkReadme).toContain("browser.user.discoverTabs()");
+    expect(sdkReadme).not.toContain("browser.user.openTabs/history/claimTab");
+    expect(sdkReadme).not.toContain("browser.user.openTabs()` |");
+
+    expect(architecture).toContain("tabs.create/list/get/current/selected");
+    expect(architecture).toContain("user.discoverTabs/history/claimTab");
+    expect(architecture).not.toContain("user.openTabs/history/claimTab");
+    expect(architecture).not.toContain("| `BrowserUser` | `openTabs()`");
   });
 });

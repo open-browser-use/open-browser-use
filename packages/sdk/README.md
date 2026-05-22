@@ -49,8 +49,8 @@ Call `agent.help()` for the live API table. Main layers:
 | `browser.finishTurn({ keep })` | `finalizeTabs`, `turnEnded` |
 | `browser.viewport?.set/reset` | `browser_viewport_*` when advertised |
 | `browser.visibility?.set/get` | `browser_visibility_*` when advertised |
-| `browser.tabs.create(urlOrOptions)/list/get` | `createTab`, `getTabs` |
-| `browser.user.openTabs/history/claimTab` | `getUserTabs`, `getUserHistory`, `claimUserTab` |
+| `browser.tabs.create(urlOrOptions)/list/get/current/selected` | `createTab`, `getTabs`, `getCurrentTab`, `getSelectedTab` |
+| `browser.user.discoverTabs/history/claimTab` | `getUserTabs`, `getUserHistory`, `claimUserTab` |
 | `tab.attach/detach` | `attach`, `detach` |
 | `tab.goto/back/forward/reload/waitForURL/waitForLoadState/screenshot` | `tab_*` |
 | `tab.evaluate()` / `tab.snapshotText()` | capped `executeCdp` evaluation |
@@ -68,6 +68,12 @@ Call `agent.help()` for the live API table. Main layers:
 `browser.tabs.create()` accepts either a URL string or `{ url }`. With no URL it
 creates `about:blank`, not Chrome's extension-restricted new-tab page.
 Keep a `Tab` handle and use `tab.goto(url)` for repeated same-task navigation.
+Use `browser.tabs.current()` for the session-owned continuation tab and
+`browser.tabs.selected()` only for browser-visible discovery; selected
+human-owned tabs return `UserTabRef` until explicitly claimed. Use
+`browser.user.discoverTabs()` for safe user-tab discovery. Legacy
+`browser.user.openTabs()` remains as a deprecated compatibility shim and is not
+the primary discovery API.
 `browser.turnEnded()` marks a turn boundary while preserving active control;
 `browser.finishTurn(...)` first finalizes tabs and is for close/release/handoff
 or deliverable workflows. For setup verification and browser readiness probes,
