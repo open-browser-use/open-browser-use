@@ -65,6 +65,7 @@ async fn native_messaging_hello_exposes_sdk_socket_descriptor_and_getinfo() {
     let descriptor_path = wait_for_descriptor(&runtime_path).await;
     let descriptor: Value =
         serde_json::from_slice(&std::fs::read(&descriptor_path).unwrap()).unwrap();
+    assert_runtime_descriptor_v1_shape(&descriptor);
     assert_eq!(descriptor["type"], "webextension");
     assert_eq!(descriptor["metadata"]["extension_id"], "test-extension");
     assert_eq!(descriptor["metadata"]["profileIdHash"], "profile-hash");
@@ -133,6 +134,10 @@ async fn native_messaging_hello_exposes_sdk_socket_descriptor_and_getinfo() {
     assert_eq!(
         info["result"]["metadata"]["diagnostics"]["profilePathRedacted"],
         "/Users/<redacted>/Library/Application Support/Chrome/Profile 1"
+    );
+    assert!(
+        !info.to_string().contains(token),
+        "getInfo metadata must not leak the SDK auth token"
     );
     assert!(info.to_string().contains("Alice Personal") == false);
 
@@ -304,4 +309,40 @@ async fn read_frame(stdout: &mut tokio::process::ChildStdout) -> Value {
 async fn read_json_frame(framed: &mut Framed<UnixStream, FrameCodec>) -> Value {
     let bytes = framed.next().await.unwrap().unwrap();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+fn assert_runtime_descriptor_v1_shape(descriptor: &Value) {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/runtime-descriptor/v1-webextension.json"
+    ))
+    .unwrap();
+    assert_eq!(descriptor["schema_version"], fixture["schema_version"]);
+    assert_eq!(descriptor["type"], fixture["type"]);
+    assert_eq!(descriptor["name"], fixture["name"]);
+    assert!(
+        descriptor["socketPath"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+    assert!(
+        descriptor["sdk_auth_token"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+    assert!(descriptor["pid"].as_u64().is_some_and(|value| value > 0));
+    assert!(
+        descriptor["startedAt"]
+            .as_str()
+            .and_then(|value| value.parse::<u128>().ok())
+            .is_some()
+    );
+
+    let metadata = descriptor["metadata"].as_object().unwrap();
+    let fixture_metadata = fixture["metadata"].as_object().unwrap();
+    for key in fixture_metadata.keys() {
+        assert!(
+            metadata.contains_key(key),
+            "descriptor metadata should include fixture field {key}"
+        );
+    }
 }

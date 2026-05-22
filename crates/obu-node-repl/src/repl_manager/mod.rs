@@ -1506,7 +1506,12 @@ fn seed_sdk_trust(
 
 #[cfg(test)]
 mod tests {
-    use super::{constant_time_eq, current_uid, descriptor_process_alive, product_error};
+    use super::{
+        DiscoveredBackend, JsRuntimeManager, ManagerOptions, constant_time_eq, current_uid,
+        descriptor_process_alive, product_error,
+    };
+    use std::path::PathBuf;
+
     use serde_json::json;
 
     #[test]
@@ -1525,6 +1530,36 @@ mod tests {
         assert_eq!(
             error["next_action"]["summary"],
             "Open the open-browser-use extension popup, click Resume if enabled, then rerun verify."
+        );
+    }
+
+    #[tokio::test]
+    async fn browser_status_does_not_expose_runtime_descriptor_tokens() {
+        let socket_path = PathBuf::from("/tmp/obu-runtime-token-boundary.sock");
+        let token = "fixture-sdk-auth-token";
+        let mut options = ManagerOptions::for_tests();
+        options.backends.push(DiscoveredBackend {
+            kind: "webextension".to_string(),
+            name: "chrome".to_string(),
+            socket_path: socket_path.to_string_lossy().to_string(),
+            metadata: Some(json!({ "source": "runtime-descriptor-fixture" })),
+        });
+        options
+            .backend_auth_tokens
+            .insert(socket_path.clone(), token.to_string());
+
+        let manager = JsRuntimeManager::new(options).await.unwrap();
+        let status = manager.browser_status().await.unwrap();
+        let serialized = status.to_string();
+
+        assert_eq!(status["backends"][0]["type"], "webextension");
+        assert_eq!(
+            status["backends"][0]["socketPath"],
+            socket_path.to_string_lossy().as_ref()
+        );
+        assert!(
+            !serialized.contains(token),
+            "browser_status must not expose descriptor auth tokens"
         );
     }
 

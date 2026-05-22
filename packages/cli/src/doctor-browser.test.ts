@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
+import { readFileSync } from "node:fs";
 import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
@@ -18,6 +19,10 @@ import { nativeHostWrapperContent, nativeHostWrapperPath } from "./native-host.j
 
 const HOST_NAME = "dev.obu.host";
 const EXTENSION_KEY = Buffer.from("open-browser-use test extension key").toString("base64");
+const RUNTIME_DESCRIPTOR_FIXTURE = JSON.parse(readFileSync(
+  new URL("../../../tests/fixtures/runtime-descriptor/v1-webextension.json", import.meta.url),
+  "utf8",
+)) as Record<string, unknown>;
 
 type DoctorFixture = {
   root: string;
@@ -579,6 +584,30 @@ test("doctorBrowser repair fixes runtime descriptor permissions", async (t) => {
   });
 });
 
+test("doctorBrowser accepts the versioned runtime descriptor fixture without leaking its token", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("Unix socket probing is POSIX-only");
+    return;
+  }
+  const fixture = await createDoctorFixture(t);
+  const socketPath = path.join(fixture.root, "runtime-fixture.sock");
+  await startRuntimeDescriptorServer(t, socketPath, { name: "chrome" });
+  const descriptorPath = path.join(fixture.runtimeDescriptorDir, "chrome.json");
+  await writeJson(descriptorPath, validRuntimeDescriptor({
+    socketPath,
+    sdk_auth_token: RUNTIME_DESCRIPTOR_FIXTURE.sdk_auth_token,
+  }));
+  await chmod(descriptorPath, 0o600);
+
+  const report = await doctorBrowser(fixture.options);
+  const descriptorProbe = checksById(report)["runtime-descriptor-probe"];
+
+  assert.equal(descriptorProbe?.status, "pass");
+  assert.match(descriptorProbe?.message ?? "", /chrome\.json responded to getInfo/);
+  assert.doesNotMatch(JSON.stringify(report), /fixture-sdk-auth-token/);
+  assert.doesNotMatch(formatDoctorReport(report), /fixture-sdk-auth-token/);
+});
+
 test("doctorBrowser reports stale runtime descriptor processes before socket probing", async (t) => {
   if (process.platform === "win32") {
     t.skip("process liveness probing is POSIX-only");
@@ -1036,12 +1065,11 @@ function validExtensionManifest() {
 
 function validRuntimeDescriptor(overrides: Record<string, unknown> = {}) {
   return {
-    schema_version: 1,
-    type: "webextension",
-    name: "chrome",
+    ...structuredClone(RUNTIME_DESCRIPTOR_FIXTURE),
     socketPath: path.join(os.tmpdir(), "missing-obu-runtime.sock"),
     sdk_auth_token: "secret-token",
     pid: process.pid,
+    startedAt: String(Date.now()),
     ...overrides,
   };
 }
@@ -1139,7 +1167,7 @@ function runtimeDescriptorResponse(
         name: options.name ?? "chrome",
         metadata: {
           diagnostics: {
-                lifecycle,
+            lifecycle,
           },
         },
       },

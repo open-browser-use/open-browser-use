@@ -8,6 +8,7 @@ packages/extension/.dev-native-host/
 dist/
 docs/*
 !docs/chrome-web-store-review-pack.md
+!docs/runtime-descriptor.md
 !docs/install.md
 !docs/release-checklist.md
 !docs/troubleshooting.md
