@@ -153,11 +153,31 @@ pub struct ServiceRegistry {
 
 #[derive(Default)]
 struct Inner {
+    tab_sessions: TabSessionStore,
+    handles: HandleStore,
+    downloads: DownloadStore,
+    diagnostics: RegistryDiagnosticsStore,
+}
+
+#[derive(Default)]
+struct TabSessionStore {
     sessions: HashMap<String, BrowserSessionRecord>,
     tabs: HashMap<TabId, TabRecord>,
     playwright_injected_tab_ids: HashSet<TabId>,
+}
+
+#[derive(Default)]
+struct HandleStore {
     file_choosers_by_id: HashMap<FileChooserId, FileChooserState>,
+}
+
+#[derive(Default)]
+struct DownloadStore {
     downloads_by_id: HashMap<DownloadId, DownloadState>,
+}
+
+#[derive(Default)]
+struct RegistryDiagnosticsStore {
     stale_tabs_by_id: HashMap<TabId, StaleTabState>,
     stale_file_choosers_by_id: HashMap<FileChooserId, StaleHandleState>,
     stale_downloads_by_id: HashMap<DownloadId, StaleHandleState>,
@@ -181,8 +201,8 @@ impl ServiceRegistry {
         if let Some(session_id) = record.session_id.as_deref() {
             touch_session_locked(&mut guard, session_id, None);
         }
-        guard.stale_tabs_by_id.remove(&record.id);
-        guard.tabs.insert(record.id.clone(), record);
+        guard.diagnostics.stale_tabs_by_id.remove(&record.id);
+        guard.tab_sessions.tabs.insert(record.id.clone(), record);
         Ok(())
     }
 
@@ -203,17 +223,18 @@ impl ServiceRegistry {
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
         let reason = reason.into();
         clear_tab_handles_locked(&mut guard, id, &reason);
-        let record = guard.tabs.remove(id);
+        let record = guard.tab_sessions.tabs.remove(id);
         if let Some(record) = record.as_ref() {
             if let Some(session_id) = record.session_id.as_deref()
                 && guard
+                    .tab_sessions
                     .sessions
                     .get(session_id)
                     .and_then(|session| session.active_tab_id.as_ref())
                     == Some(id)
             {
                 let next_active_tab_id = choose_active_tab_locked(&guard, session_id);
-                if let Some(session) = guard.sessions.get_mut(session_id) {
+                if let Some(session) = guard.tab_sessions.sessions.get_mut(session_id) {
                     session.active_tab_id = next_active_tab_id;
                     session.updated_at = SystemTime::now();
                 }
@@ -243,6 +264,7 @@ impl ServiceRegistry {
             .inner
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?
+            .tab_sessions
             .tabs
             .get(id)
             .cloned())
@@ -254,6 +276,7 @@ impl ServiceRegistry {
             .inner
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?
+            .tab_sessions
             .tabs
             .values()
             .cloned()
@@ -307,17 +330,18 @@ impl ServiceRegistry {
             .write()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
         if let Some(active_tab_id) = guard
+            .tab_sessions
             .sessions
             .get(session_id)
             .and_then(|session| session.active_tab_id.as_ref())
-            && let Some(record) = guard.tabs.get(active_tab_id)
+            && let Some(record) = guard.tab_sessions.tabs.get(active_tab_id)
             && record.session_id.as_deref() == Some(session_id)
             && record.status == TabStatus::Active
         {
             return Ok(Some(record.clone()));
         }
         let fallback_id = choose_active_tab_locked(&guard, session_id);
-        if let Some(session) = guard.sessions.get_mut(session_id)
+        if let Some(session) = guard.tab_sessions.sessions.get_mut(session_id)
             && session.active_tab_id != fallback_id
         {
             session.active_tab_id = fallback_id.clone();
@@ -326,7 +350,7 @@ impl ServiceRegistry {
         let Some(fallback_id) = fallback_id else {
             return Ok(None);
         };
-        Ok(guard.tabs.get(&fallback_id).cloned())
+        Ok(guard.tab_sessions.tabs.get(&fallback_id).cloned())
     }
 
     /// Mark a session as stale for diagnostics.
@@ -347,6 +371,7 @@ impl ServiceRegistry {
             .inner
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?
+            .tab_sessions
             .sessions
             .get(session_id)
             .cloned())
@@ -358,6 +383,7 @@ impl ServiceRegistry {
             .inner
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?
+            .tab_sessions
             .sessions
             .values()
             .cloned()
@@ -370,6 +396,7 @@ impl ServiceRegistry {
             .inner
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?
+            .tab_sessions
             .tabs
             .values()
             .filter(|record| record.session_id.as_deref() == Some(session_id))
@@ -396,6 +423,7 @@ impl ServiceRegistry {
         session.updated_at = now;
         let reason = reason.into();
         let stale = guard
+            .tab_sessions
             .tabs
             .iter()
             .filter(|(id, record)| {
@@ -407,11 +435,11 @@ impl ServiceRegistry {
             .collect::<Vec<_>>();
         for (id, record) in &stale {
             clear_tab_handles_locked(&mut guard, id, &reason);
-            guard.tabs.remove(id);
+            guard.tab_sessions.tabs.remove(id);
             record_stale_tab_locked(&mut guard, record.clone(), reason.clone());
         }
         let next_active_tab_id = choose_active_tab_locked(&guard, session_id);
-        if let Some(session) = guard.sessions.get_mut(session_id) {
+        if let Some(session) = guard.tab_sessions.sessions.get_mut(session_id) {
             session.active_tab_id = next_active_tab_id;
             session.updated_at = SystemTime::now();
         }
@@ -425,6 +453,7 @@ impl ServiceRegistry {
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
         Ok(guard
+            .diagnostics
             .stale_tabs_by_id
             .get(id)
             .map(|state| describe_stale_tab(&id.0, state))
@@ -448,14 +477,14 @@ impl ServiceRegistry {
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
         let before = lifecycle_counts_locked(&guard);
         let now = SystemTime::now();
-        for session in guard.sessions.values_mut() {
+        for session in guard.tab_sessions.sessions.values_mut() {
             if session.stale_reason.take().is_some() {
                 session.updated_at = now;
             }
         }
-        guard.stale_tabs_by_id.clear();
-        guard.stale_file_choosers_by_id.clear();
-        guard.stale_downloads_by_id.clear();
+        guard.diagnostics.stale_tabs_by_id.clear();
+        guard.diagnostics.stale_file_choosers_by_id.clear();
+        guard.diagnostics.stale_downloads_by_id.clear();
         Ok(before)
     }
 
@@ -466,6 +495,7 @@ impl ServiceRegistry {
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
         let mut rows = guard
+            .tab_sessions
             .sessions
             .values()
             .filter_map(|session| {
@@ -490,6 +520,7 @@ impl ServiceRegistry {
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
         let mut rows = guard
+            .tab_sessions
             .tabs
             .values()
             .filter(|record| record.status == TabStatus::Deliverable)
@@ -511,7 +542,7 @@ impl ServiceRegistry {
             .inner
             .write()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
-        if let Some(record) = guard.tabs.get_mut(id) {
+        if let Some(record) = guard.tab_sessions.tabs.get_mut(id) {
             f(record);
             Ok(true)
         } else {
@@ -524,6 +555,7 @@ impl ServiceRegistry {
         self.inner
             .write()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?
+            .tab_sessions
             .playwright_injected_tab_ids
             .insert(id.clone());
         Ok(())
@@ -535,6 +567,7 @@ impl ServiceRegistry {
             .inner
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?
+            .tab_sessions
             .playwright_injected_tab_ids
             .contains(id))
     }
@@ -544,6 +577,7 @@ impl ServiceRegistry {
         self.inner
             .write()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?
+            .tab_sessions
             .playwright_injected_tab_ids
             .remove(id);
         Ok(())
@@ -555,8 +589,8 @@ impl ServiceRegistry {
             .inner
             .write()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
-        guard.stale_file_choosers_by_id.remove(&id);
-        guard.file_choosers_by_id.insert(id, state);
+        guard.diagnostics.stale_file_choosers_by_id.remove(&id);
+        guard.handles.file_choosers_by_id.insert(id, state);
         Ok(())
     }
 
@@ -566,7 +600,7 @@ impl ServiceRegistry {
             .inner
             .write()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
-        let state = guard.file_choosers_by_id.remove(id);
+        let state = guard.handles.file_choosers_by_id.remove(id);
         if let Some(state) = state.as_ref() {
             record_stale_file_chooser_locked(
                 &mut guard,
@@ -584,6 +618,7 @@ impl ServiceRegistry {
             .inner
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?
+            .handles
             .file_choosers_by_id
             .get(id)
             .cloned())
@@ -596,6 +631,7 @@ impl ServiceRegistry {
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
         Ok(guard
+            .diagnostics
             .stale_file_choosers_by_id
             .get(id)
             .map(|state| describe_stale_handle("file chooser", &id.0, state))
@@ -608,8 +644,8 @@ impl ServiceRegistry {
             .inner
             .write()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
-        guard.stale_downloads_by_id.remove(&id);
-        guard.downloads_by_id.insert(id, state);
+        guard.diagnostics.stale_downloads_by_id.remove(&id);
+        guard.downloads.downloads_by_id.insert(id, state);
         Ok(())
     }
 
@@ -619,6 +655,7 @@ impl ServiceRegistry {
             .inner
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?
+            .downloads
             .downloads_by_id
             .get(id)
             .cloned())
@@ -631,6 +668,7 @@ impl ServiceRegistry {
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
         Ok(guard
+            .diagnostics
             .stale_downloads_by_id
             .get(id)
             .map(|state| describe_stale_handle("download", &id.0, state))
@@ -643,6 +681,7 @@ impl ServiceRegistry {
             .inner
             .write()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?
+            .downloads
             .downloads_by_id
             .get_mut(id)
         {
@@ -657,7 +696,7 @@ impl ServiceRegistry {
             .inner
             .write()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
-        let state = guard.downloads_by_id.remove(id);
+        let state = guard.downloads.downloads_by_id.remove(id);
         if let Some(state) = state.as_ref() {
             record_stale_download_locked(
                 &mut guard,
@@ -671,54 +710,59 @@ impl ServiceRegistry {
 }
 
 fn clear_tab_handles_locked(inner: &mut Inner, id: &TabId, stale_reason: &str) {
-    inner.playwright_injected_tab_ids.remove(id);
+    inner.tab_sessions.playwright_injected_tab_ids.remove(id);
     let file_chooser_ids = inner
+        .handles
         .file_choosers_by_id
         .iter()
         .filter(|(_, state)| &state.tab_id == id)
         .map(|(handle_id, state)| (handle_id.clone(), state.clone()))
         .collect::<Vec<_>>();
     for (handle_id, state) in file_chooser_ids {
-        inner.file_choosers_by_id.remove(&handle_id);
+        inner.handles.file_choosers_by_id.remove(&handle_id);
         record_stale_file_chooser_locked(inner, handle_id, &state, stale_reason.to_string());
     }
 
     let download_ids = inner
+        .downloads
         .downloads_by_id
         .iter()
         .filter(|(_, state)| &state.tab_id == id)
         .map(|(handle_id, state)| (handle_id.clone(), state.clone()))
         .collect::<Vec<_>>();
     for (handle_id, state) in download_ids {
-        inner.downloads_by_id.remove(&handle_id);
+        inner.downloads.downloads_by_id.remove(&handle_id);
         record_stale_download_locked(inner, handle_id, &state, stale_reason.to_string());
     }
 }
 
 fn lifecycle_counts_locked(inner: &Inner) -> RegistryLifecycleCounts {
     RegistryLifecycleCounts {
-        sessions: inner.sessions.len(),
+        sessions: inner.tab_sessions.sessions.len(),
         stale_sessions: inner
+            .tab_sessions
             .sessions
             .values()
             .filter(|session| session.stale_reason.is_some())
             .count(),
-        tabs: inner.tabs.len(),
+        tabs: inner.tab_sessions.tabs.len(),
         deliverable_tabs: inner
+            .tab_sessions
             .tabs
             .values()
             .filter(|record| record.status == TabStatus::Deliverable)
             .count(),
-        stale_tabs: inner.stale_tabs_by_id.len(),
-        file_choosers: inner.file_choosers_by_id.len(),
-        downloads: inner.downloads_by_id.len(),
-        stale_file_choosers: inner.stale_file_choosers_by_id.len(),
-        stale_downloads: inner.stale_downloads_by_id.len(),
+        stale_tabs: inner.diagnostics.stale_tabs_by_id.len(),
+        file_choosers: inner.handles.file_choosers_by_id.len(),
+        downloads: inner.downloads.downloads_by_id.len(),
+        stale_file_choosers: inner.diagnostics.stale_file_choosers_by_id.len(),
+        stale_downloads: inner.diagnostics.stale_downloads_by_id.len(),
     }
 }
 
 fn choose_active_tab_locked(inner: &Inner, session_id: &str) -> Option<TabId> {
     let mut candidates = inner
+        .tab_sessions
         .tabs
         .values()
         .filter(|record| {
@@ -737,6 +781,7 @@ fn touch_session_locked<'a>(
 ) -> &'a mut BrowserSessionRecord {
     let now = SystemTime::now();
     let session = inner
+        .tab_sessions
         .sessions
         .entry(session_id.to_string())
         .or_insert_with(|| BrowserSessionRecord {
@@ -757,7 +802,7 @@ fn touch_session_locked<'a>(
 }
 
 fn record_stale_tab_locked(inner: &mut Inner, record: TabRecord, reason: String) {
-    inner.stale_tabs_by_id.insert(
+    inner.diagnostics.stale_tabs_by_id.insert(
         record.id.clone(),
         StaleTabState {
             reason,
@@ -765,7 +810,9 @@ fn record_stale_tab_locked(inner: &mut Inner, record: TabRecord, reason: String)
             stale_at: SystemTime::now(),
         },
     );
-    prune_stale_map_locked(&mut inner.stale_tabs_by_id, |state| state.stale_at);
+    prune_stale_map_locked(&mut inner.diagnostics.stale_tabs_by_id, |state| {
+        state.stale_at
+    });
 }
 
 fn record_stale_file_chooser_locked(
@@ -774,7 +821,7 @@ fn record_stale_file_chooser_locked(
     state: &FileChooserState,
     reason: String,
 ) {
-    inner.stale_file_choosers_by_id.insert(
+    inner.diagnostics.stale_file_choosers_by_id.insert(
         id,
         StaleHandleState {
             reason,
@@ -784,7 +831,9 @@ fn record_stale_file_chooser_locked(
             stale_at: SystemTime::now(),
         },
     );
-    prune_stale_map_locked(&mut inner.stale_file_choosers_by_id, |state| state.stale_at);
+    prune_stale_map_locked(&mut inner.diagnostics.stale_file_choosers_by_id, |state| {
+        state.stale_at
+    });
 }
 
 fn record_stale_download_locked(
@@ -793,7 +842,7 @@ fn record_stale_download_locked(
     state: &DownloadState,
     reason: String,
 ) {
-    inner.stale_downloads_by_id.insert(
+    inner.diagnostics.stale_downloads_by_id.insert(
         id,
         StaleHandleState {
             reason,
@@ -803,7 +852,9 @@ fn record_stale_download_locked(
             stale_at: SystemTime::now(),
         },
     );
-    prune_stale_map_locked(&mut inner.stale_downloads_by_id, |state| state.stale_at);
+    prune_stale_map_locked(&mut inner.diagnostics.stale_downloads_by_id, |state| {
+        state.stale_at
+    });
 }
 
 fn prune_stale_map_locked<K, V>(map: &mut HashMap<K, V>, stale_at: impl Fn(&V) -> SystemTime)
