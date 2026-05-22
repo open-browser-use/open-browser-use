@@ -8,6 +8,7 @@ class FakeTransport {
 
   async sendRequest(method: string, params: Record<string, unknown>, timeout?: number): Promise<unknown> {
     this.calls.push({ method, params, timeout });
+    if (method === M.TAB_SCREENSHOT) return { data: "jpeg64", mime_type: "image/jpeg" };
     return null;
   }
 }
@@ -27,13 +28,14 @@ describe("TabCua", () => {
       timeout: 120,
       waitForNavigation: { waitUntil: "load", timeout: 1500 },
     });
-    await cua.scroll(12, 22, { deltaX: 3, deltaY: 4 });
+    await cua.scroll(12, 22, { deltaX: 3, deltaY: 4 }, { modifiers: ["Shift"] });
     await cua.scroll(13, 23, -250);
     await cua.type("hello");
     await cua.keypress(["Meta", "L"], { modifiers: ["Meta"] });
-    await cua.drag({ x: 0, y: 1 }, { x: 2, y: 3 }, { steps: 4 });
-    await cua.dragPath([{ x: 1, y: 2 }, { x: 3, y: 4 }]);
-    await cua.move(5, 6);
+    await cua.drag({ x: 0, y: 1 }, { x: 2, y: 3 }, { steps: 4, modifiers: ["Alt"] });
+    await cua.dragPath([{ x: 1, y: 2 }, { x: 3, y: 4 }], { modifiers: ["Control"] });
+    await cua.move(5, 6, { modifiers: ["Meta"] });
+    await cua.get_visible_screenshot({ timeout: 700 });
 
     expect(transport.calls).toEqual([
       {
@@ -76,7 +78,7 @@ describe("TabCua", () => {
       },
       {
         method: M.CUA_SCROLL,
-        params: { tab_id: "tab-1", x: 12, y: 22, deltaX: 3, deltaY: 4 },
+        params: { tab_id: "tab-1", x: 12, y: 22, deltaX: 3, deltaY: 4, modifiers: ["Shift"] },
         timeout: undefined,
       },
       {
@@ -96,18 +98,23 @@ describe("TabCua", () => {
       },
       {
         method: M.CUA_DRAG,
-        params: { tab_id: "tab-1", from: { x: 0, y: 1 }, to: { x: 2, y: 3 }, steps: 4 },
+        params: { tab_id: "tab-1", from: { x: 0, y: 1 }, to: { x: 2, y: 3 }, steps: 4, modifiers: ["Alt"] },
         timeout: undefined,
       },
       {
         method: M.CUA_DRAG,
-        params: { tab_id: "tab-1", path: [{ x: 1, y: 2 }, { x: 3, y: 4 }] },
+        params: { tab_id: "tab-1", path: [{ x: 1, y: 2 }, { x: 3, y: 4 }], modifiers: ["Control"] },
         timeout: undefined,
       },
       {
         method: M.CUA_MOVE,
-        params: { tab_id: "tab-1", x: 5, y: 6 },
+        params: { tab_id: "tab-1", x: 5, y: 6, modifiers: ["Meta"] },
         timeout: undefined,
+      },
+      {
+        method: M.TAB_SCREENSHOT,
+        params: { tab_id: "tab-1", type: "jpeg", quality: 80, fullPage: false },
+        timeout: 700,
       },
     ]);
   });

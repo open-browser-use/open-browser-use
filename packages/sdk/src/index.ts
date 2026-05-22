@@ -83,5 +83,7 @@ export { TabCua } from "./tab-cua.js";
 export { TabDev } from "./tab-dev.js";
 export { TabDomCua } from "./tab-dom-cua.js";
 export type { DomCuaNode, DomCuaSnapshot } from "./tab-dom-cua.js";
+export { TabPlaywright } from "./tab-playwright.js";
+export type { ElementInfo, ElementPointOptions } from "./tab-playwright.js";
 export type * from "./types.js";
 export { SDK_VERSION } from "./version.js";

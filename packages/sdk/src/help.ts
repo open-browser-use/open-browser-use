@@ -37,9 +37,10 @@ Tab:
   .screenshot({type?, quality?, clip?, fullPage?}) -> Image with toBase64(); use display(await tab.screenshot())
   .screenshotForModel({clip?, artifactMode?}) -> compact screenshot summary or inline bytes
   .domSnapshot() -> model-safe Playwright DOM/ARIA snapshot string
+  .playwright.elementInfo({x,y}) / .playwright.elementScreenshot({x,y}) -> point-level inspection
   .evaluate(expressionOrFn, {maxJsonBytes?}) -> capped JSON-safe page result
   .snapshotText({maxItems?, maxTextLength?}) -> compact page text summary
-  .cua.click() / .dblclick() / .scroll() / .type() / .keypress() / .drag() / .dragPath() / .move()
+  .cua.click() / .dblclick() / .scroll() / .type() / .keypress() / .drag() / .dragPath() / .move() / .get_visible_screenshot()
   .clipboard.readText() / .writeText() / .read() / .write()
   .dom_cua.get_visible_dom({format:"text"}) / .dom_cua.text() -> LLM-readable visible DOM-CUA
   .dev.cdp(method, params)

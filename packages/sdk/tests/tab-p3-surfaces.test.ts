@@ -65,11 +65,12 @@ describe("P3 tab surfaces", () => {
         },
       ]);
       await expect(tab.dom_cua.get_visible_dom()).resolves.toEqual({ nodes: [{ node_id: "42" }] });
-      await tab.dom_cua.click("42");
-      await tab.dom_cua.double_click("42");
-      await tab.dom_cua.scroll("42", { deltaX: 1, deltaY: 2 });
+      await tab.dom_cua.click("42", { modifiers: ["Shift"] });
+      await tab.dom_cua.double_click("42", { modifiers: ["Shift"] });
+      await tab.dom_cua.scroll("42", { deltaX: 1, deltaY: 2 }, { modifiers: ["Alt"] });
+      await tab.dom_cua.scroll(-120, { modifiers: ["Control"] });
       await tab.dom_cua.type("42", "hello");
-      await tab.dom_cua.keypress("42", ["Meta", "L"]);
+      await tab.dom_cua.keypress("42", ["Meta", "L"], { modifiers: ["Meta"] });
       await tab.dom_cua.download_media("42");
     } finally {
       global.obuRepl = original;
@@ -117,17 +118,22 @@ describe("P3 tab surfaces", () => {
       },
       {
         method: M.DOM_CUA_CLICK,
-        params: { tab_id: "tab-1", node_id: "42", session_id: "session", turn_id: "turn" },
+        params: { tab_id: "tab-1", node_id: "42", modifiers: ["Shift"], session_id: "session", turn_id: "turn" },
         timeout: undefined,
       },
       {
         method: M.DOM_CUA_DOUBLE_CLICK,
-        params: { tab_id: "tab-1", node_id: "42", session_id: "session", turn_id: "turn" },
+        params: { tab_id: "tab-1", node_id: "42", modifiers: ["Shift"], session_id: "session", turn_id: "turn" },
         timeout: undefined,
       },
       {
         method: M.DOM_CUA_SCROLL,
-        params: { tab_id: "tab-1", node_id: "42", deltaX: 1, deltaY: 2, session_id: "session", turn_id: "turn" },
+        params: { tab_id: "tab-1", node_id: "42", deltaX: 1, deltaY: 2, modifiers: ["Alt"], session_id: "session", turn_id: "turn" },
+        timeout: undefined,
+      },
+      {
+        method: M.DOM_CUA_SCROLL,
+        params: { tab_id: "tab-1", deltaX: 0, deltaY: -120, modifiers: ["Control"], session_id: "session", turn_id: "turn" },
         timeout: undefined,
       },
       {
@@ -137,7 +143,7 @@ describe("P3 tab surfaces", () => {
       },
       {
         method: M.DOM_CUA_KEYPRESS,
-        params: { tab_id: "tab-1", node_id: "42", keys: ["Meta", "L"], session_id: "session", turn_id: "turn" },
+        params: { tab_id: "tab-1", node_id: "42", keys: ["Meta", "L"], modifiers: ["Meta"], session_id: "session", turn_id: "turn" },
         timeout: undefined,
       },
       {

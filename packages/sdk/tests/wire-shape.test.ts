@@ -112,6 +112,13 @@ class FakeTransport {
     ]);
     this.responses.set(M.PLAYWRIGHT_LOCATOR_BOUNDING_BOX, { x: 1, y: 2, width: 3, height: 4 });
     this.responses.set(M.PLAYWRIGHT_SCREENSHOT, { data: "cropped64" });
+    this.responses.set(M.PLAYWRIGHT_ELEMENT_INFO, {
+      node_id: "7",
+      backendNodeId: 7,
+      nodeName: "BUTTON",
+      point: { x: 10, y: 20 },
+    });
+    this.responses.set(M.PLAYWRIGHT_ELEMENT_SCREENSHOT, { data: "element64", mime_type: "image/png" });
     this.responses.set(M.PLAYWRIGHT_DOWNLOAD_PATH, { path: "/tmp/download.txt" });
     this.responses.set(M.FINALIZE_TABS, {
       status: "ok",
@@ -248,6 +255,75 @@ describe("SDK wire-shape contracts", () => {
 
     expect(transport.calls).toEqual([
       { method: M.PLAYWRIGHT_DOM_SNAPSHOT, params: { tab_id: "tab-a", ...meta }, timeout: 444 },
+    ]);
+  });
+
+  it("Tab.playwright point inspection delegates to point-level wire methods", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    const guardedCommands: Record<string, unknown>[] = [];
+    const tab = new Tab(
+      asTransport(transport),
+      new Guards({ beforeCommand: (command) => guardedCommands.push(command) }),
+      "tab-a",
+    );
+
+    try {
+      await expect(tab.playwright.elementInfo({
+        x: 10,
+        y: 20,
+        includeNonInteractable: true,
+        timeout: 333,
+      })).resolves.toMatchObject({
+        node_id: "7",
+        point: { x: 10, y: 20 },
+      });
+      const screenshot = await tab.playwright.elementScreenshot({ x: 30, y: 40, timeout: 334 });
+      expect(screenshot).toBeInstanceOf(Image);
+      expect(screenshot.toBase64()).toBe("element64");
+    } finally {
+      restoreMeta();
+    }
+
+    expect(transport.calls).toEqual([
+      {
+        method: M.PLAYWRIGHT_ELEMENT_INFO,
+        params: {
+          tab_id: "tab-a",
+          x: 10,
+          y: 20,
+          includeNonInteractable: true,
+          ...meta,
+        },
+        timeout: 333,
+      },
+      {
+        method: M.PLAYWRIGHT_ELEMENT_SCREENSHOT,
+        params: {
+          tab_id: "tab-a",
+          x: 30,
+          y: 40,
+          includeNonInteractable: undefined,
+          ...meta,
+        },
+        timeout: 334,
+      },
+    ]);
+    expect(guardedCommands).toEqual([
+      {
+        command: M.PLAYWRIGHT_ELEMENT_INFO,
+        tab_id: "tab-a",
+        x: 10,
+        y: 20,
+        includeNonInteractable: true,
+      },
+      {
+        command: M.PLAYWRIGHT_ELEMENT_SCREENSHOT,
+        tab_id: "tab-a",
+        x: 30,
+        y: 40,
+        includeNonInteractable: undefined,
+      },
     ]);
   });
 
@@ -1759,6 +1835,8 @@ describe("SDK wire-shape contracts", () => {
       await expect(tab.dom_cua.get_visible_dom({ timeout: 47 })).resolves.toMatchObject({ nodes: [] });
       await expect(tab.dom_cua.get_visible_dom({ timeout: 48, format: "text" })).resolves.toBe("[1] <button> Save");
       await expect(tab.dom_cua.text({ timeout: 49 })).resolves.toBe("[1] <button> Save");
+      await expect(tab.dom_cua.get_visible_dom({ timeout: 50, format: "debug_text" })).resolves.toBe("[1] <button> Save");
+      await expect(tab.dom_cua.get_visible_dom({ timeout: 51, format: "compact_text" })).resolves.toBe("[1] <button> Save");
     } finally {
       restoreMeta();
     }
@@ -1769,6 +1847,8 @@ describe("SDK wire-shape contracts", () => {
       { tabId: "tab-1", url: "https://example.test/", command: M.TAB_CLIPBOARD_WRITE_TEXT },
       { tabId: "tab-1", url: "https://example.test/", command: M.TAB_CLIPBOARD_READ },
       { tabId: "tab-1", url: "https://example.test/", command: M.TAB_CLIPBOARD_WRITE },
+      { tabId: "tab-1", url: "https://example.test/", command: M.DOM_CUA_GET_VISIBLE_DOM },
+      { tabId: "tab-1", url: "https://example.test/", command: M.DOM_CUA_GET_VISIBLE_DOM },
       { tabId: "tab-1", url: "https://example.test/", command: M.DOM_CUA_GET_VISIBLE_DOM },
       { tabId: "tab-1", url: "https://example.test/", command: M.DOM_CUA_GET_VISIBLE_DOM },
       { tabId: "tab-1", url: "https://example.test/", command: M.DOM_CUA_GET_VISIBLE_DOM },
@@ -1857,6 +1937,26 @@ describe("SDK wire-shape contracts", () => {
         method: M.DOM_CUA_GET_VISIBLE_DOM,
         params: { tab_id: "tab-1", format: "text", ...meta },
         timeout: 49,
+      },
+      {
+        method: M.TAB_URL,
+        params: { tab_id: "tab-1", ...meta },
+        timeout: 50,
+      },
+      {
+        method: M.DOM_CUA_GET_VISIBLE_DOM,
+        params: { tab_id: "tab-1", format: "debug_text", ...meta },
+        timeout: 50,
+      },
+      {
+        method: M.TAB_URL,
+        params: { tab_id: "tab-1", ...meta },
+        timeout: 51,
+      },
+      {
+        method: M.DOM_CUA_GET_VISIBLE_DOM,
+        params: { tab_id: "tab-1", format: "compact_text", ...meta },
+        timeout: 51,
       },
     ]);
   });

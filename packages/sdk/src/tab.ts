@@ -9,6 +9,7 @@ import { TabContent } from "./tab-content.js";
 import { TabCua } from "./tab-cua.js";
 import { TabDev } from "./tab-dev.js";
 import { TabDomCua } from "./tab-dom-cua.js";
+import { TabPlaywright } from "./tab-playwright.js";
 import { withSessionMeta } from "./session-meta.js";
 import type { Transport } from "./wire/transport.js";
 import * as M from "./wire/methods.js";
@@ -112,6 +113,7 @@ export class Tab {
   readonly cua: TabCua;
   readonly dev: TabDev;
   readonly dom_cua: TabDomCua;
+  readonly playwright: TabPlaywright;
   readonly metadata: TabMetadata;
 
   constructor(
@@ -125,6 +127,7 @@ export class Tab {
     this.cua = new TabCua(transport, guards, id);
     this.dev = new TabDev(transport, guards, id);
     this.dom_cua = new TabDomCua(transport, guards, id);
+    this.playwright = new TabPlaywright(transport, guards, id);
     this.metadata = metadata;
   }
 
