@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -74,6 +74,64 @@ test("installNativeHosts dry-run does not write wrapper or manifest", async (t) 
   assert.equal(actions[0]?.status, "would_apply");
   const wrapperPath = path.join(layout.nativeHostInstallRoot, "dev.obu.host", "chrome", "obu-host-wrapper");
   await assert.rejects(readFile(wrapperPath, "utf8"));
+});
+
+test("installNativeHosts refuses a symlinked wrapper path without changing the target", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-native-host-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const hostBin = path.join(root, "bin", "obu-host");
+  await mkdir(path.dirname(hostBin), { recursive: true });
+  await writeFile(hostBin, "#!/bin/sh\n", "utf8");
+  await chmod(hostBin, 0o755);
+  const manifestPath = path.join(root, "manifest.json");
+  await writeFile(manifestPath, JSON.stringify({ key: EXTENSION_KEY }), "utf8");
+  const layout = fakeLayout(root, hostBin, path.join(root, "runtime"));
+  const wrapperPath = path.join(layout.nativeHostInstallRoot, "dev.obu.host", "chrome", "obu-host-wrapper");
+  await mkdir(path.dirname(wrapperPath), { recursive: true });
+  const target = path.join(root, "outside-wrapper");
+  await writeFile(target, "do not change", "utf8");
+  await symlink(target, wrapperPath);
+
+  await assert.rejects(
+    installNativeHosts({
+      layout,
+      browsers: ["chrome"],
+      platform: "darwin",
+      homeDir: root,
+      manifestPath,
+    }),
+    /symlink/,
+  );
+  assert.equal(await readFile(target, "utf8"), "do not change");
+});
+
+test("installNativeHosts refuses a symlinked native manifest path without changing the target", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-native-host-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const hostBin = path.join(root, "bin", "obu-host");
+  await mkdir(path.dirname(hostBin), { recursive: true });
+  await writeFile(hostBin, "#!/bin/sh\n", "utf8");
+  await chmod(hostBin, 0o755);
+  const manifestPath = path.join(root, "manifest.json");
+  await writeFile(manifestPath, JSON.stringify({ key: EXTENSION_KEY }), "utf8");
+  const layout = fakeLayout(root, hostBin, path.join(root, "runtime"));
+  const nativeManifestPath = path.join(root, "Library", "Application Support", "Google", "Chrome", "NativeMessagingHosts", "dev.obu.host.json");
+  await mkdir(path.dirname(nativeManifestPath), { recursive: true });
+  const target = path.join(root, "outside-manifest.json");
+  await writeFile(target, "do not change", "utf8");
+  await symlink(target, nativeManifestPath);
+
+  await assert.rejects(
+    installNativeHosts({
+      layout,
+      browsers: ["chrome"],
+      platform: "darwin",
+      homeDir: root,
+      manifestPath,
+    }),
+    /symlink/,
+  );
+  assert.equal(await readFile(target, "utf8"), "do not change");
 });
 
 test("installNativeHosts writes Chrome for Testing manifest under its profile root on macOS", async (t) => {

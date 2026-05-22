@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -232,6 +232,21 @@ test("doctorBrowser repair writes an invalid native host manifest", async (t) =>
     human: /APPLIED wrote native host manifest/,
     details: ["path", "wrapperPath"],
   });
+});
+
+test("doctorBrowser repair refuses a symlinked native host manifest without changing the target", async (t) => {
+  const fixture = await createDoctorFixture(t);
+  const target = path.join(fixture.root, "outside-manifest.json");
+  await writeFile(target, "do not change", "utf8");
+  await rm(fixture.nativeHostManifestPath, { force: true });
+  await symlink(target, fixture.nativeHostManifestPath);
+
+  const report = await doctorBrowser({ ...fixture.options, repair: true });
+  const repair = report.repairs?.find((row) => row.id === "native-host-manifest");
+
+  assert.equal(repair?.status, "failed");
+  assert.match(repair?.message ?? "", /symlink/);
+  assert.equal(await readFile(target, "utf8"), "do not change");
 });
 
 test("doctorBrowser repair skips a valid native host manifest", async (t) => {

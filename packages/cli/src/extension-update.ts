@@ -62,7 +62,7 @@ export async function updateExtension(options: UpdateExtensionOptions): Promise<
     ], options.verifyTarget);
   }
 
-  const versionDir = path.join(options.layout.extensionInstallRoot, "versions", manifest.version);
+  const versionDir = extensionVersionDir(options.layout.extensionInstallRoot, manifest.version);
   if (dryRun) {
     steps.push({
       id: "extension-stage",
@@ -114,7 +114,7 @@ export async function updateExtension(options: UpdateExtensionOptions): Promise<
     return result("manual_action_required", dryRun, options.layout, steps, options.verifyTarget, manifest);
   }
 
-  if (await hasActiveWebExtensionRuntimeDescriptor(options.layout.runtimeDir)) {
+  if (await hasActiveWebExtensionRuntimeDescriptor(options.layout.runtimeDir, descriptorTarget(options.verifyTarget, manifest))) {
     steps.push({
       id: "runtime-descriptor-probe",
       status: "applied",
@@ -143,7 +143,46 @@ async function readExtensionManifest(sourceDir: string): Promise<ExtensionManife
   const raw = JSON.parse(await readFile(path.join(sourceDir, "manifest.json"), "utf8")) as Partial<ExtensionManifest>;
   if (raw.manifest_version !== 3) throw new Error("manifest_version must be 3");
   if (typeof raw.version !== "string" || raw.version.length === 0) throw new Error("manifest version is required");
+  validateChromeManifestVersion(raw.version);
   return raw as ExtensionManifest;
+}
+
+function validateChromeManifestVersion(version: string): void {
+  const parts = version.split(".");
+  if (parts.length < 1 || parts.length > 4) {
+    throw new Error("manifest version must contain one to four dot-separated integers");
+  }
+  for (const part of parts) {
+    if (!/^(0|[1-9]\d*)$/.test(part)) {
+      throw new Error("manifest version must contain only non-negative integer segments without path characters");
+    }
+    const value = Number(part);
+    if (!Number.isSafeInteger(value) || value > 65535) {
+      throw new Error("manifest version segments must be integers between 0 and 65535");
+    }
+  }
+}
+
+function extensionVersionDir(installRoot: string, version: string): string {
+  const versionsRoot = path.resolve(installRoot, "versions");
+  const versionDir = path.resolve(versionsRoot, version);
+  if (!isPathInside(versionDir, versionsRoot)) {
+    throw new Error("manifest version resolved outside extension versions directory");
+  }
+  return versionDir;
+}
+
+function isPathInside(candidate: string, root: string): boolean {
+  const relative = path.relative(root, candidate);
+  return relative === "" || (!relative.startsWith("..") && !path.isAbsolute(relative));
+}
+
+function descriptorTarget(
+  target: UpdateExtensionOptions["verifyTarget"],
+  manifest: ExtensionManifest | undefined,
+): { extensionId?: string } | undefined {
+  const extensionId = target?.extensionId ?? extensionIdForVerify(manifest);
+  return extensionId ? { extensionId } : undefined;
 }
 
 async function stageVersion(sourceDir: string, versionDir: string, installRoot: string): Promise<void> {

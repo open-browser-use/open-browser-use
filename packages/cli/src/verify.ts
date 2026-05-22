@@ -2899,7 +2899,7 @@ function encodeFrame(payload: Record<string, unknown>): Buffer {
 function mergedDescriptorMetadata(descriptor: Record<string, unknown>, infoResult: Record<string, any>): Record<string, unknown> {
   const descriptorMetadata = isRecord(descriptor.metadata) ? descriptor.metadata : {};
   const infoBackend = isRecord(infoResult.metadata?.backend) ? infoResult.metadata.backend : {};
-  return { ...infoBackend, ...descriptorMetadata };
+  return { ...descriptorMetadata, ...infoBackend };
 }
 
 function descriptorProfilePath(metadata: Record<string, unknown>): string | undefined {

@@ -1,9 +1,10 @@
 import { constants } from "node:fs";
-import { access, copyFile, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import type { McpServerInvocation } from "./registry.js";
+import { readOptionalRegularText, writeRegularTextFile } from "./safe-file.js";
 
 export type CodexConfigOptions = {
   homeDir?: string;
@@ -76,9 +77,9 @@ export async function writeCodexMcpServer(
     let backupPath: string | undefined;
     if (existing !== undefined) {
       backupPath = `${configPath}.bak-${utcBackupTimestamp(options.now ?? new Date())}`;
-      await copyFile(configPath, backupPath);
+      await writeRegularTextFile(backupPath, existing, 0o600);
     }
-    await writeFile(configPath, next, { encoding: "utf8", mode: 0o600 });
+    await writeRegularTextFile(configPath, next, 0o600);
     return { status: "applied", path: configPath, ...(backupPath ? { backupPath } : {}) };
   } catch (error) {
     return ioError(configPath, error);
@@ -98,13 +99,7 @@ export function equivalentCodexServer(
 }
 
 async function readOptionalFile(file: string): Promise<string | undefined> {
-  try {
-    return await readFile(file, "utf8");
-  } catch (error) {
-    const nodeError = error as NodeJS.ErrnoException;
-    if (nodeError.code === "ENOENT") return undefined;
-    throw error;
-  }
+  return await readOptionalRegularText(file);
 }
 
 async function exists(file: string): Promise<boolean> {

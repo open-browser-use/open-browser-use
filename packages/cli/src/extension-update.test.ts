@@ -5,6 +5,7 @@ import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
+import { extensionIdFromManifestKey } from "./extension-channel.js";
 import { updateExtension } from "./extension-update.js";
 import type { RuntimeLayout } from "./runtime-layout.js";
 
@@ -38,6 +39,23 @@ test("updateExtension dry-run reports actions without writing", async (t) => {
 
   assert.equal(result.result, "manual_action_required");
   assert.equal(result.steps.some((step) => step.status === "would_apply"), true);
+  await assert.rejects(readFile(path.join(layout.extensionCurrentDir, "manifest.json"), "utf8"));
+});
+
+test("updateExtension rejects manifest versions before deriving filesystem paths", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-extension-update-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sourceDir = await extensionSource(root, "../../pwn");
+  const layout = fakeLayout(root);
+  const wouldBeTraversalTarget = path.join(root, ".obu", "pwn");
+  await mkdir(wouldBeTraversalTarget, { recursive: true });
+  await writeFile(path.join(wouldBeTraversalTarget, "sentinel.txt"), "keep", "utf8");
+
+  const result = await updateExtension({ layout, sourceDir });
+
+  assert.equal(result.result, "failed");
+  assert.match(String(result.steps[0]?.details?.error), /manifest version/);
+  assert.equal(await readFile(path.join(wouldBeTraversalTarget, "sentinel.txt"), "utf8"), "keep");
   await assert.rejects(readFile(path.join(layout.extensionCurrentDir, "manifest.json"), "utf8"));
 });
 
@@ -126,10 +144,161 @@ test("updateExtension reports complete when a runtime descriptor probes successf
   assert.doesNotMatch(result.nextActions[0]?.value ?? "", /doctor browser/);
 });
 
-async function extensionSource(root: string, version: string): Promise<string> {
+test("updateExtension waits for a descriptor matching the requested extension id", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("runtime descriptor socket probing is POSIX-only");
+    return;
+  }
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-extension-update-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sourceDir = await extensionSource(root, "0.5.1");
+  const layout = fakeLayout(root);
+  const descriptorDir = path.join(layout.runtimeDir, "webextension");
+  const socketPath = path.join(root, "runtime.sock");
+  const requestedExtensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const wrongExtensionId = "ponmlkjihgfedcbaponmlkjihgfedcba";
+  await mkdir(descriptorDir, { recursive: true, mode: 0o700 });
+  await chmod(descriptorDir, 0o700);
+  await startRuntimeDescriptorServer(t, socketPath, "chrome", {
+    metadata: { backend: { extension_id: wrongExtensionId, browser_kind: "chrome" } },
+  });
+  const descriptorPath = path.join(descriptorDir, "chrome.json");
+  await writeFile(
+    descriptorPath,
+    JSON.stringify({
+      schema_version: 1,
+      type: "webextension",
+      name: "chrome",
+      socketPath,
+      sdk_auth_token: "token",
+      pid: process.pid,
+      metadata: { extension_id: wrongExtensionId, browser_kind: "chrome" },
+    }),
+    "utf8",
+  );
+  await chmod(descriptorPath, 0o600);
+
+  const result = await updateExtension({
+    layout,
+    sourceDir,
+    verifyTarget: {
+      channel: "unpacked-dev",
+      extensionId: requestedExtensionId,
+    },
+  });
+
+  assert.equal(result.result, "manual_action_required");
+  assert.equal(result.steps.at(-1)?.id, "runtime-descriptor-probe");
+  assert.equal(result.steps.at(-1)?.status, "manual_action_required");
+});
+
+test("updateExtension waits for a descriptor matching the manifest-derived extension id", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("runtime descriptor socket probing is POSIX-only");
+    return;
+  }
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-extension-update-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const extensionKey = Buffer.from("open-browser-use update-extension manifest key").toString("base64");
+  const expectedExtensionId = extensionIdFromManifestKey(extensionKey);
+  const wrongExtensionId = "ponmlkjihgfedcbaponmlkjihgfedcba";
+  assert.notEqual(expectedExtensionId, wrongExtensionId);
+  const sourceDir = await extensionSource(root, "0.5.2", extensionKey);
+  const layout = fakeLayout(root);
+  const descriptorDir = path.join(layout.runtimeDir, "webextension");
+  const socketPath = path.join(root, "runtime.sock");
+  await mkdir(descriptorDir, { recursive: true, mode: 0o700 });
+  await chmod(descriptorDir, 0o700);
+  await startRuntimeDescriptorServer(t, socketPath, "chrome", {
+    metadata: { backend: { extension_id: wrongExtensionId, browser_kind: "chrome" } },
+  });
+  const descriptorPath = path.join(descriptorDir, "chrome.json");
+  await writeFile(
+    descriptorPath,
+    JSON.stringify({
+      schema_version: 1,
+      type: "webextension",
+      name: "chrome",
+      socketPath,
+      sdk_auth_token: "token",
+      pid: process.pid,
+      metadata: { extension_id: wrongExtensionId, browser_kind: "chrome" },
+    }),
+    "utf8",
+  );
+  await chmod(descriptorPath, 0o600);
+
+  const result = await updateExtension({
+    layout,
+    sourceDir,
+    verifyTarget: { channel: "unpacked-dev" },
+  });
+
+  assert.equal(result.result, "manual_action_required");
+  assert.equal(result.steps.at(-1)?.id, "runtime-descriptor-probe");
+  assert.equal(result.steps.at(-1)?.status, "manual_action_required");
+  assert.match(
+    result.nextActions.map((action) => action.value).join("\n"),
+    new RegExp(`--extension-id=${expectedExtensionId}`),
+  );
+});
+
+test("updateExtension rejects stale descriptor metadata when live getInfo reports another extension id", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("runtime descriptor socket probing is POSIX-only");
+    return;
+  }
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-extension-update-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sourceDir = await extensionSource(root, "0.5.3");
+  const layout = fakeLayout(root);
+  const descriptorDir = path.join(layout.runtimeDir, "webextension");
+  const socketPath = path.join(root, "runtime.sock");
+  const requestedExtensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const liveExtensionId = "ponmlkjihgfedcbaponmlkjihgfedcba";
+  await mkdir(descriptorDir, { recursive: true, mode: 0o700 });
+  await chmod(descriptorDir, 0o700);
+  await startRuntimeDescriptorServer(t, socketPath, "chrome", {
+    metadata: { backend: { extension_id: liveExtensionId, browser_kind: "chrome" } },
+  });
+  const descriptorPath = path.join(descriptorDir, "chrome.json");
+  await writeFile(
+    descriptorPath,
+    JSON.stringify({
+      schema_version: 1,
+      type: "webextension",
+      name: "chrome",
+      socketPath,
+      sdk_auth_token: "token",
+      pid: process.pid,
+      metadata: { extension_id: requestedExtensionId, browser_kind: "chrome" },
+    }),
+    "utf8",
+  );
+  await chmod(descriptorPath, 0o600);
+
+  const result = await updateExtension({
+    layout,
+    sourceDir,
+    verifyTarget: {
+      channel: "unpacked-dev",
+      extensionId: requestedExtensionId,
+    },
+  });
+
+  assert.equal(result.result, "manual_action_required");
+  assert.equal(result.steps.at(-1)?.id, "runtime-descriptor-probe");
+  assert.equal(result.steps.at(-1)?.status, "manual_action_required");
+});
+
+async function extensionSource(root: string, version: string, key?: string): Promise<string> {
   const sourceDir = path.join(root, "source");
   await mkdir(sourceDir, { recursive: true });
-  await writeFile(path.join(sourceDir, "manifest.json"), JSON.stringify({ manifest_version: 3, version }), "utf8");
+  await writeFile(
+    path.join(sourceDir, "manifest.json"),
+    JSON.stringify({ manifest_version: 3, version, ...(key ? { key } : {}) }),
+    "utf8",
+  );
   await writeFile(path.join(sourceDir, "marker.txt"), version, "utf8");
   return sourceDir;
 }
@@ -155,7 +324,12 @@ function fakeLayout(root: string): RuntimeLayout {
   };
 }
 
-async function startRuntimeDescriptorServer(t: { after: (fn: () => void | Promise<void>) => void }, socketPath: string, name: string): Promise<void> {
+async function startRuntimeDescriptorServer(
+  t: { after: (fn: () => void | Promise<void>) => void },
+  socketPath: string,
+  name: string,
+  infoResult: Record<string, unknown> = {},
+): Promise<void> {
   const server = net.createServer((socket) => {
     let buffer = Buffer.alloc(0);
     socket.on("error", () => undefined);
@@ -169,7 +343,11 @@ async function startRuntimeDescriptorServer(t: { after: (fn: () => void | Promis
         if (payload.method === "auth") {
           socket.write(encodeTestFrame({ jsonrpc: "2.0", id: payload.id, result: null }));
         } else if (payload.method === "getInfo") {
-          socket.write(encodeTestFrame({ jsonrpc: "2.0", id: payload.id, result: { type: "webextension", name } }));
+          socket.write(encodeTestFrame({
+            jsonrpc: "2.0",
+            id: payload.id,
+            result: { type: "webextension", name, ...infoResult },
+          }));
         } else {
           socket.write(encodeTestFrame({
             jsonrpc: "2.0",

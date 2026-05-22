@@ -1,5 +1,5 @@
 import { constants } from "node:fs";
-import { access, chmod, mkdir, readFile, writeFile } from "node:fs/promises";
+import { access, chmod, lstat, mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -158,14 +158,39 @@ export function nativeHostWrapperContent(input: { hostBin: string; browser: Brow
   ].join("\n");
 }
 
-async function writeIfChanged(file: string, content: string, mode: number): Promise<boolean> {
-  const current = await readFile(file, "utf8").catch(() => undefined);
+export async function writeIfChanged(file: string, content: string, mode: number): Promise<boolean> {
+  const existing = await lstat(file).catch((error) => error as NodeJS.ErrnoException);
+  const exists = !(existing instanceof Error);
+  if (exists) {
+    if (existing.isSymbolicLink()) throw new Error(`refusing to write through symlink: ${file}`);
+    if (!existing.isFile()) throw new Error(`refusing to overwrite non-file path: ${file}`);
+  } else if (existing.code !== "ENOENT") {
+    throw existing;
+  }
+  const current = exists ? await readFile(file, "utf8") : undefined;
   if (current === content) {
+    const latest = await lstat(file);
+    if (latest.isSymbolicLink()) throw new Error(`refusing to chmod symlink: ${file}`);
+    if (!latest.isFile()) throw new Error(`refusing to chmod non-file path: ${file}`);
     await chmod(file, mode);
     return false;
   }
-  await writeFile(file, content, { encoding: "utf8", mode });
-  await chmod(file, mode);
+  const temp = path.join(path.dirname(file), `.${path.basename(file)}.tmp-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`);
+  try {
+    await writeFile(temp, content, { encoding: "utf8", mode });
+    await chmod(temp, mode);
+    const latest = await lstat(file).catch((error) => error as NodeJS.ErrnoException);
+    if (!(latest instanceof Error)) {
+      if (latest.isSymbolicLink()) throw new Error(`refusing to replace symlink: ${file}`);
+      if (!latest.isFile()) throw new Error(`refusing to replace non-file path: ${file}`);
+    } else if (latest.code !== "ENOENT") {
+      throw latest;
+    }
+    await rename(temp, file);
+  } catch (error) {
+    await rm(temp, { force: true }).catch(() => undefined);
+    throw error;
+  }
   return true;
 }
 

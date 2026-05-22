@@ -197,8 +197,25 @@ export function platformDefaultRuntimeDir(input: {
 }
 
 export async function ensureRuntimeDir(runtimeDir: string): Promise<RuntimeDirValidation> {
-  await mkdir(runtimeDir, { recursive: true, mode: 0o700 });
-  if (process.platform !== "win32") await chmod(runtimeDir, 0o700);
+  if (process.platform === "win32") {
+    await mkdir(runtimeDir, { recursive: true, mode: 0o700 });
+    return validateRuntimeDir(runtimeDir);
+  }
+  const stats = await lstat(runtimeDir).catch((error) => error as NodeJS.ErrnoException);
+  if (stats instanceof Error) {
+    if (stats.code !== "ENOENT") return validateRuntimeDir(runtimeDir);
+    await mkdir(runtimeDir, { recursive: true, mode: 0o700 });
+    await chmod(runtimeDir, 0o700);
+    return validateRuntimeDir(runtimeDir);
+  }
+  if (stats.isSymbolicLink() || !stats.isDirectory()) {
+    return validateRuntimeDir(runtimeDir);
+  }
+  const uid = currentUid();
+  if (uid !== undefined && stats.uid !== uid) {
+    return validateRuntimeDir(runtimeDir);
+  }
+  if ((stats.mode & 0o077) !== 0) await chmod(runtimeDir, 0o700);
   return validateRuntimeDir(runtimeDir);
 }
 

@@ -302,6 +302,70 @@ test("verify product errors come from descriptor product codes instead of messag
   );
 });
 
+test("verify prefers live runtime metadata over stale descriptor metadata", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  withTestXdgConfigHome(t, home);
+  const extensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const liveExtensionId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const runtimeDir = path.join(home, "runtime");
+  const hostBin = await writeExecutable(path.join(bin, "obu-host"), "#!/bin/sh\nexit 0\n");
+  await writeCodexMcpConfig(home);
+  await writeNativeHostManifest(home, hostBin, extensionId, runtimeDir);
+  const profilePath = path.join(browserProfileRoot("chrome", process.platform, home), "Default");
+  await writeChromePreferences(profilePath, extensionId, 1);
+  await mkdir(path.join(runtimeDir, "webextension"), { recursive: true, mode: 0o700 });
+  await chmod(runtimeDir, 0o700);
+  await chmod(path.join(runtimeDir, "webextension"), 0o700);
+  const socketPath = path.join(runtimeDir, "webextension", "chrome.sock");
+  await startRuntimeDescriptorServer(t, socketPath, {
+    getInfoResult: {
+      type: "webextension",
+      name: "chrome",
+      metadata: {
+        backend: { browser_kind: "chrome", extension_id: liveExtensionId },
+        diagnostics: { lifecycle: {} },
+      },
+    },
+  });
+  await writeRuntimeDescriptor(path.join(runtimeDir, "webextension", "chrome.json"), {
+    schema_version: 1,
+    type: "webextension",
+    name: "chrome",
+    socketPath,
+    sdk_auth_token: "token",
+    pid: process.pid,
+    metadata: {
+      browser_kind: "chrome",
+      extension_id: extensionId,
+      profile_path: profilePath,
+    },
+  });
+
+  const result = await runCli([
+    "verify",
+    "--agent=codex-cli",
+    "--browser=chrome",
+    "--channel=store",
+    `--extension-id=${extensionId}`,
+    "--json",
+  ], {
+    HOME: home,
+    OBU_HOST_BIN: hostBin,
+    OBU_RUNTIME_DIR: runtimeDir,
+  });
+
+  assert.equal(result.code, 1);
+  const payload = JSON.parse(result.stdout);
+  assertVerifyOutcome(payload, "needs_browser_popup", "open_popup");
+  assert.equal(payload.productError.code, "extension_id_mismatch");
+  const descriptorProbe = payload.checks.find((check: any) => check.id === "runtime-descriptor-probe");
+  assert.deepEqual(descriptorProbe?.details?.descriptorProductErrors, ["extension_id_mismatch"]);
+  assert.match(descriptorProbe?.details?.descriptorErrors?.join("\n") ?? "", new RegExp(liveExtensionId));
+});
+
 test("verify repairs stale native-host manifests before popup handoff", async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
   const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
@@ -1905,7 +1969,11 @@ async function writeRuntimeDescriptor(file: string, value: Record<string, unknow
   await chmod(file, 0o600);
 }
 
-async function startRuntimeDescriptorServer(t: { after: (fn: () => void | Promise<void>) => void }, socketPath: string): Promise<void> {
+async function startRuntimeDescriptorServer(
+  t: { after: (fn: () => void | Promise<void>) => void },
+  socketPath: string,
+  options: { getInfoResult?: Record<string, unknown> } = {},
+): Promise<void> {
   const server = net.createServer((socket) => {
     let authenticated = false;
     let buffer = Buffer.alloc(0);
@@ -1926,7 +1994,7 @@ async function startRuntimeDescriptorServer(t: { after: (fn: () => void | Promis
           socket.write(encodeTestFrame({
             jsonrpc: "2.0",
             id: request.id,
-            result: { type: "webextension", name: "chrome", metadata: { diagnostics: { lifecycle: {} } } },
+            result: options.getInfoResult ?? { type: "webextension", name: "chrome", metadata: { diagnostics: { lifecycle: {} } } },
           }));
           continue;
         }
