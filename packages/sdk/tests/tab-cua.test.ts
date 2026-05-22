@@ -58,7 +58,7 @@ describe("TabCua", () => {
           navigation_wait_until: "domcontentloaded",
           navigation_timeout_ms: 1500,
         },
-        timeout: 2000,
+        timeout: 3500,
       },
       {
         method: M.CUA_CLICK,
@@ -72,7 +72,7 @@ describe("TabCua", () => {
           navigation_wait_until: "load",
           navigation_timeout_ms: 1500,
         },
-        timeout: 1500,
+        timeout: 1620,
       },
       {
         method: M.CUA_SCROLL,

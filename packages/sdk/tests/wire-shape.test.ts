@@ -1146,7 +1146,7 @@ describe("SDK wire-shape contracts", () => {
           navigation_timeout_ms: 1500,
           ...meta,
         },
-        timeout: 1500,
+        timeout: 1620,
       },
       {
         method: M.PLAYWRIGHT_LOCATOR_WAIT_FOR,
@@ -1221,6 +1221,58 @@ describe("SDK wire-shape contracts", () => {
           ...meta,
         },
         timeout: 124,
+      },
+    ]);
+  });
+
+  it("coordinate CUA navigation waits compose action and navigation request timeouts", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    const tab = new Tab(asTransport(transport), new Guards(), "tab-1");
+
+    try {
+      await tab.cua.click(10, 20, {
+        button: "left",
+        timeout: 200,
+        waitForNavigation: { waitUntil: "load", timeout: 800 },
+      });
+      await tab.cua.dblclick(30, 40, {
+        timeout: 300,
+        waitForNavigation: true,
+      });
+    } finally {
+      restoreMeta();
+    }
+
+    expect(transport.calls).toEqual([
+      {
+        method: M.CUA_CLICK,
+        params: {
+          tab_id: "tab-1",
+          x: 10,
+          y: 20,
+          button: "left",
+          modifiers: undefined,
+          wait_for_navigation: true,
+          navigation_wait_until: "load",
+          navigation_timeout_ms: 800,
+          ...meta,
+        },
+        timeout: 1000,
+      },
+      {
+        method: M.CUA_DBLCLICK,
+        params: {
+          tab_id: "tab-1",
+          x: 30,
+          y: 40,
+          button: undefined,
+          modifiers: undefined,
+          wait_for_navigation: true,
+          navigation_timeout_ms: 300,
+          ...meta,
+        },
+        timeout: 600,
       },
     ]);
   });

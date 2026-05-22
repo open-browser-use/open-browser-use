@@ -130,6 +130,8 @@ function navigationWaitParams(opts: TabCuaMouseOptions): Record<string, unknown>
 
 function requestTimeoutWithNavigationWait(opts: TabCuaMouseOptions): number | undefined {
   const wait = opts.waitForNavigation;
-  if (!wait || wait === true || wait.timeout === undefined) return opts.timeout;
-  return Math.max(opts.timeout ?? DEFAULT_TIMEOUT_MS, wait.timeout);
+  if (!wait) return opts.timeout;
+  const actionTimeout = opts.timeout ?? DEFAULT_TIMEOUT_MS;
+  const navigationTimeout = wait === true ? actionTimeout : (wait.timeout ?? actionTimeout);
+  return actionTimeout + navigationTimeout;
 }
