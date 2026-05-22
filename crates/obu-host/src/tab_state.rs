@@ -13,6 +13,18 @@ impl TabId {
     }
 }
 
+impl From<String> for TabId {
+    fn from(value: String) -> Self {
+        Self(value)
+    }
+}
+
+impl From<&str> for TabId {
+    fn from(value: &str) -> Self {
+        Self(value.to_string())
+    }
+}
+
 /// Who created or claimed a tab.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -29,7 +41,7 @@ pub enum TabOrigin {
 pub enum TabStatus {
     /// Controlled by the current browser session.
     Active,
-    /// Kept under active browser control for handoff.
+    /// Parked for handoff outside active browser-control commands.
     Handoff,
     /// Preserved as a stable deliverable outside active browser control.
     Deliverable,

@@ -11,7 +11,7 @@ pub use spawn::{SpawnOptions, SpawnedKernel};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex as StdMutex};
+use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 
 use crate::native_pipe::{
@@ -20,7 +20,7 @@ use crate::native_pipe::{
 };
 use anyhow::{Context, Result, anyhow};
 use obu_wire::runtime_dir::{resolve_runtime_dir, validate_owner_only_dir};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::{Value, json};
 use tokio::sync::{Mutex, mpsc, oneshot};
 use tokio_util::sync::CancellationToken;
@@ -217,16 +217,14 @@ impl JsRuntimeManager {
     /// Read-only browser-use readiness status for MCP clients.
     pub async fn browser_status(&self) -> Result<Value> {
         if self.options.dynamic_backend_discovery {
-            self.refresh_backend_inventory();
+            self.refresh_backend_inventory().await?;
         }
         let inventory = self.backend_inventory();
         self.sync_backend_inventory_to_kernel(&inventory).await?;
         let (sdk_bootstrap, sdk_bootstrap_detail) = self.sdk_bootstrap_status();
-        let verify_hint = if inventory.backends.is_empty() {
-            "No browser backend discovered. Run `obu verify --repair --agent=<agent-id> --browser=<browser> --channel=<extension-channel> --extension-id=<extension-id>` with the exact extension channel/id from the popup handoff, then open the extension popup and click Resume if no runtime descriptor is active."
-        } else {
-            "obu verify --agent=<agent-id> --browser=<browser> --channel=<extension-channel> --extension-id=<extension-id>"
-        };
+        let product_error = browser_status_product_error(sdk_bootstrap, &inventory);
+        let (verify_hint, doctor_hint) = browser_status_hints(product_error.as_ref());
+        let advisories = browser_status_advisories(&inventory);
         Ok(json!({
             "sdk_bootstrap": sdk_bootstrap,
             "sdk_bootstrap_detail": sdk_bootstrap_detail,
@@ -234,7 +232,9 @@ impl JsRuntimeManager {
             "diagnostics": inventory.diagnostics,
             "runtime_dir": runtime_dir().to_string_lossy(),
             "verify_hint": verify_hint,
-            "doctor_hint": verify_hint,
+            "doctor_hint": doctor_hint,
+            "product_error": product_error,
+            "advisories": advisories,
         }))
     }
 
@@ -562,6 +562,10 @@ impl JsRuntimeManager {
                 .filter(|value| !value.is_null())
                 .cloned(),
             error,
+            error_detail: frame
+                .get("error_detail")
+                .filter(|value| !value.is_null())
+                .cloned(),
         })
     }
 
@@ -571,7 +575,7 @@ impl JsRuntimeManager {
         *self.state.lock().await = KernelState::Restarting;
         self.kill_kernel().await;
         *self.registry.lock().await = ExecRegistry::default();
-        self.refresh_backend_inventory();
+        self.refresh_backend_inventory().await?;
         *self.state.lock().await = KernelState::Idle;
         self.boot_locked().await
     }
@@ -692,11 +696,15 @@ impl JsRuntimeManager {
         }
     }
 
-    fn refresh_backend_inventory(&self) {
+    async fn refresh_backend_inventory(&self) -> Result<()> {
         if !self.options.dynamic_backend_discovery {
-            return;
+            return Ok(());
         }
-        *self.backend_state.lock().expect("backend inventory lock") = discover_backend_inventory();
+        let inventory = tokio::task::spawn_blocking(discover_backend_inventory)
+            .await
+            .context("refresh browser backend inventory task failed")?;
+        *self.backend_state.lock().expect("backend inventory lock") = inventory;
+        Ok(())
     }
 }
 
@@ -945,6 +953,117 @@ struct BackendInventory {
     auth_tokens: HashMap<PathBuf, String>,
 }
 
+const VERIFY_HINT: &str = "obu verify --agent=<agent-id> --browser=<browser> --channel=<extension-channel> --extension-id=<extension-id>";
+const VERIFY_REPAIR_HINT: &str = "obu verify --repair --agent=<agent-id> --browser=<browser> --channel=<extension-channel> --extension-id=<extension-id>";
+const DOCTOR_BROWSER_REPAIR_HINT: &str = "obu doctor browser --repair";
+const OPEN_POPUP_HINT: &str =
+    "Open the open-browser-use extension popup, click Resume if enabled, then rerun verify.";
+
+fn browser_status_product_error(
+    sdk_bootstrap: &str,
+    inventory: &BackendInventory,
+) -> Option<Value> {
+    if sdk_bootstrap != "available" {
+        return Some(product_error("setup_missing"));
+    }
+    if inventory.backends.is_empty() && !inventory.diagnostics.is_empty() {
+        return Some(product_error("stale_descriptor"));
+    }
+    if inventory.backends.is_empty() {
+        return Some(product_error("browser_popup_boundary"));
+    }
+    None
+}
+
+#[derive(Deserialize)]
+struct ProductErrorSchema {
+    #[serde(rename = "schemaVersion")]
+    schema_version: u32,
+    errors: Vec<ProductErrorSchemaEntry>,
+}
+
+#[derive(Deserialize)]
+struct ProductErrorSchemaEntry {
+    code: String,
+    title: String,
+    summary: String,
+    #[serde(rename = "nextAction")]
+    next_action: ProductErrorSchemaNextAction,
+}
+
+#[derive(Deserialize)]
+struct ProductErrorSchemaNextAction {
+    kind: String,
+    summary: String,
+    command: Option<String>,
+}
+
+fn product_error_entry(code: &str) -> &'static ProductErrorSchemaEntry {
+    static PRODUCT_ERROR_ENTRIES: OnceLock<Vec<ProductErrorSchemaEntry>> = OnceLock::new();
+    PRODUCT_ERROR_ENTRIES
+        .get_or_init(|| {
+            let schema: ProductErrorSchema =
+                serde_json::from_str(include_str!("../../../../product-errors.json"))
+                    .expect("product-errors.json parses");
+            assert_eq!(
+                schema.schema_version, 1,
+                "product-errors.json schema version"
+            );
+            schema.errors
+        })
+        .iter()
+        .find(|entry| entry.code == code)
+        .unwrap_or_else(|| panic!("missing product error schema entry {code}"))
+}
+
+fn product_error(code: &str) -> Value {
+    let entry = product_error_entry(code);
+    json!({
+        "code": entry.code,
+        "title": entry.title,
+        "summary": entry.summary,
+        "next_action": {
+            "kind": entry.next_action.kind,
+            "summary": entry.next_action.summary,
+            "command": entry.next_action.command,
+        }
+    })
+}
+
+fn browser_status_hints(product_error: Option<&Value>) -> (&'static str, &'static str) {
+    let code = product_error
+        .and_then(|value| value.get("code"))
+        .and_then(Value::as_str);
+    match code {
+        Some("setup_missing") => (VERIFY_REPAIR_HINT, DOCTOR_BROWSER_REPAIR_HINT),
+        Some("stale_descriptor") => (VERIFY_HINT, DOCTOR_BROWSER_REPAIR_HINT),
+        Some("browser_popup_boundary") => (OPEN_POPUP_HINT, DOCTOR_BROWSER_REPAIR_HINT),
+        _ => (VERIFY_HINT, DOCTOR_BROWSER_REPAIR_HINT),
+    }
+}
+
+fn browser_status_advisories(inventory: &BackendInventory) -> Vec<Value> {
+    let mut advisories = Vec::new();
+    for backend in &inventory.backends {
+        let Some(pending_update) = backend
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.pointer("/diagnostics/extension/pending_update"))
+            .filter(|value| value.is_object())
+        else {
+            continue;
+        };
+        advisories.push(json!({
+            "code": "pending_extension_update",
+            "title": "Extension update pending",
+            "summary": "The WebExtension has an update waiting for browser control to become idle.",
+            "backend": backend.name,
+            "pending_update": pending_update,
+        }));
+    }
+    advisories
+}
+
 enum RuntimeDescriptorRead {
     Usable(DiscoveredBackend, PathBuf, String),
     Ignored(String),
@@ -1081,16 +1200,22 @@ fn read_runtime_descriptor(path: &std::path::Path) -> Result<RuntimeDescriptorRe
             "descriptor process is not alive".to_string(),
         ));
     }
-    if !probe_runtime_descriptor(&canonical_socket, token, &value) {
+    let Some(probe_result) = probe_runtime_descriptor(&canonical_socket, token, &value) else {
         return Ok(RuntimeDescriptorRead::Ignored(
             "descriptor probe failed".to_string(),
         ));
-    }
+    };
     let mut metadata = value.get("metadata").cloned();
     if let Some(meta) = metadata.as_mut().and_then(Value::as_object_mut)
         && let Some(started_at) = value.get("startedAt")
     {
         meta.insert("startedAt".to_string(), started_at.clone());
+    }
+    if let Some(diagnostics) = probe_result.pointer("/metadata/diagnostics").cloned() {
+        let meta = metadata.get_or_insert_with(|| json!({}));
+        if let Some(object) = meta.as_object_mut() {
+            object.insert("diagnostics".to_string(), diagnostics);
+        }
     }
 
     let backend = DiscoveredBackend {
@@ -1175,38 +1300,28 @@ fn validate_descriptor_socket(raw: &str) -> Result<PathBuf> {
 
 #[cfg(unix)]
 fn current_uid() -> Result<u32> {
-    let output = std::process::Command::new("id")
-        .arg("-u")
-        .output()
-        .context("run id -u")?;
-    if !output.status.success() {
-        return Err(anyhow!("id -u failed with status {}", output.status));
-    }
-    let raw = std::str::from_utf8(&output.stdout)
-        .context("parse id -u output as utf-8")?
-        .trim();
-    raw.parse::<u32>().context("parse id -u output")
+    static CURRENT_UID: OnceLock<u32> = OnceLock::new();
+    Ok(*CURRENT_UID.get_or_init(|| rustix::process::getuid().as_raw()))
 }
 
 #[cfg(unix)]
 fn descriptor_process_alive(value: &Value) -> bool {
+    use rustix::process::{Pid, test_kill_process};
+
     let Some(pid) = value.get("pid").and_then(Value::as_u64) else {
         return false;
     };
     if pid == 0 || pid > i32::MAX as u64 {
         return false;
     }
-    let Ok(output) = std::process::Command::new("kill")
-        .arg("-0")
-        .arg(pid.to_string())
-        .output()
-    else {
+    let Some(pid) = Pid::from_raw(pid as i32) else {
         return false;
     };
-    output.status.success()
-        || std::str::from_utf8(&output.stderr)
-            .map(|stderr| stderr.contains("Operation not permitted"))
-            .unwrap_or(false)
+    match test_kill_process(pid) {
+        Ok(()) => true,
+        Err(rustix::io::Errno::PERM) => true,
+        Err(_) => false,
+    }
 }
 
 #[cfg(not(unix))]
@@ -1215,18 +1330,18 @@ fn descriptor_process_alive(_value: &Value) -> bool {
 }
 
 #[cfg(unix)]
-fn probe_runtime_descriptor(socket: &Path, token: &str, descriptor: &Value) -> bool {
+fn probe_runtime_descriptor(socket: &Path, token: &str, descriptor: &Value) -> Option<Value> {
     match probe_runtime_descriptor_inner(socket, token, descriptor) {
-        Ok(()) => true,
+        Ok(result) => Some(result),
         Err(error) => {
             tracing::warn!(socket = %socket.display(), %error, "runtime backend descriptor probe failed");
-            false
+            None
         }
     }
 }
 
 #[cfg(unix)]
-fn probe_runtime_descriptor_inner(socket: &Path, token: &str, descriptor: &Value) -> Result<()> {
+fn probe_runtime_descriptor_inner(socket: &Path, token: &str, descriptor: &Value) -> Result<Value> {
     use std::os::unix::net::UnixStream;
 
     let mut stream = UnixStream::connect(socket)
@@ -1280,7 +1395,7 @@ fn probe_runtime_descriptor_inner(socket: &Path, token: &str, descriptor: &Value
     {
         return Err(anyhow!("getInfo metadata does not match descriptor"));
     }
-    Ok(())
+    Ok(result.clone())
 }
 
 #[cfg(unix)]
@@ -1307,8 +1422,8 @@ fn read_probe_frame(stream: &mut impl std::io::Read) -> Result<Value> {
 }
 
 #[cfg(not(unix))]
-fn probe_runtime_descriptor(_socket: &Path, _token: &str, _descriptor: &Value) -> bool {
-    true
+fn probe_runtime_descriptor(_socket: &Path, _token: &str, _descriptor: &Value) -> Option<Value> {
+    Some(json!({}))
 }
 
 fn runtime_dir() -> PathBuf {
@@ -1391,7 +1506,8 @@ fn seed_sdk_trust(
 
 #[cfg(test)]
 mod tests {
-    use super::constant_time_eq;
+    use super::{constant_time_eq, current_uid, descriptor_process_alive, product_error};
+    use serde_json::json;
 
     #[test]
     fn native_pipe_token_compare_requires_exact_match() {
@@ -1399,5 +1515,29 @@ mod tests {
         assert!(!constant_time_eq(b"token", b"tokem"));
         assert!(!constant_time_eq(b"token", b"token-extra"));
         assert!(!constant_time_eq(b"token", b""));
+    }
+
+    #[test]
+    fn browser_status_product_error_uses_repo_schema() {
+        let error = product_error("browser_popup_boundary");
+        assert_eq!(error["title"], "Browser popup action required");
+        assert_eq!(error["next_action"]["kind"], "open_popup");
+        assert_eq!(
+            error["next_action"]["summary"],
+            "Open the open-browser-use extension popup, click Resume if enabled, then rerun verify."
+        );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn unix_helpers_use_process_syscalls_without_shelling_out() {
+        assert_eq!(current_uid().unwrap(), rustix::process::getuid().as_raw(),);
+        assert!(descriptor_process_alive(
+            &json!({ "pid": std::process::id() })
+        ));
+        assert!(!descriptor_process_alive(&json!({ "pid": 0 })));
+        assert!(!descriptor_process_alive(
+            &json!({ "pid": (i32::MAX as u64) + 1 })
+        ));
     }
 }

@@ -42,3 +42,48 @@ impl TrustGate for LocalDevTrust {
         })
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn trusts_configured_dir_and_files_under_it() {
+        let trusted = tempfile::tempdir().unwrap();
+        let nested = trusted.path().join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let module = nested.join("tool.mjs");
+        std::fs::write(&module, b"export {};").unwrap();
+
+        let gate = LocalDevTrust::with_dirs(vec![trusted.path().to_path_buf()]);
+
+        assert!(gate.is_trusted(b"", trusted.path()));
+        assert!(gate.is_trusted(b"export {};", &module));
+    }
+
+    #[test]
+    fn rejects_paths_outside_configured_dirs() {
+        let trusted = tempfile::tempdir().unwrap();
+        let outside = tempfile::tempdir().unwrap();
+        let outside_module = outside.path().join("tool.mjs");
+        std::fs::write(&outside_module, b"export {};").unwrap();
+
+        let gate = LocalDevTrust::with_dirs(vec![trusted.path().to_path_buf()]);
+
+        assert!(!gate.is_trusted(b"export {};", &outside_module));
+    }
+
+    #[test]
+    fn rejects_missing_paths_and_unresolvable_trusted_dirs() {
+        let temp = tempfile::tempdir().unwrap();
+        let existing_module = temp.path().join("tool.mjs");
+        std::fs::write(&existing_module, b"export {};").unwrap();
+        let missing_module = temp.path().join("missing.mjs");
+        let missing_trusted_dir = temp.path().join("missing-trusted-dir");
+
+        let gate = LocalDevTrust::with_dirs(vec![missing_trusted_dir]);
+
+        assert!(!gate.is_trusted(b"export {};", &existing_module));
+        assert!(!gate.is_trusted(b"export {};", &missing_module));
+    }
+}

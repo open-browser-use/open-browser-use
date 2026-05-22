@@ -82,6 +82,31 @@
   "resumeButton": {
     "message": "Fortsetzen"
   },
+  "cleanupButton": {
+    "message": "Browser-Tabs bereinigen"
+  },
+  "cleanupResult": {
+    "message": "$closed$ geschlossen, $released$ freigegeben, $kept$ Lieferungen behalten.",
+    "placeholders": {
+      "closed": {
+        "content": "$1"
+      },
+      "released": {
+        "content": "$2"
+      },
+      "kept": {
+        "content": "$3"
+      }
+    }
+  },
+  "cleanupFailed": {
+    "message": "Bereinigung fehlgeschlagen: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
   "debugLogsLabel": {
     "message": "Debug-Protokolle"
   },

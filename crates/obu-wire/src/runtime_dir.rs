@@ -2,6 +2,8 @@
 
 use std::io;
 use std::path::{Path, PathBuf};
+#[cfg(unix)]
+use std::sync::OnceLock;
 
 /// Resolve the open-browser-use runtime directory from environment and platform defaults.
 ///
@@ -128,18 +130,8 @@ pub fn validate_owner_only_dir(path: &Path) -> io::Result<()> {
 
 #[cfg(unix)]
 fn current_uid() -> io::Result<u32> {
-    let output = std::process::Command::new("id").arg("-u").output()?;
-    if !output.status.success() {
-        return Err(io::Error::other(format!(
-            "id -u failed with status {}",
-            output.status
-        )));
-    }
-    let raw = std::str::from_utf8(&output.stdout)
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?
-        .trim();
-    raw.parse::<u32>()
-        .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+    static CURRENT_UID: OnceLock<u32> = OnceLock::new();
+    Ok(*CURRENT_UID.get_or_init(|| rustix::process::getuid().as_raw()))
 }
 
 fn current_uid_label() -> String {

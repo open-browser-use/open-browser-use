@@ -65,7 +65,18 @@ try {
   const setupJson = JSON.parse(setup.stdout);
   assert.equal(setupJson.result, "manual_action_required");
   assertStep(setupJson, "agent-codex-cli", "applied");
-  assert.match(await readFile(codexLog, "utf8"), new RegExp(`mcp add open-browser-use -- ${escapeRegExp(obu)} mcp stdio`));
+  const codexShellLog = await readFile(codexLog, "utf8").catch((error) => {
+    if (error?.code === "ENOENT") return "";
+    throw error;
+  });
+  if (codexShellLog) {
+    assert.match(codexShellLog, new RegExp(`mcp add open-browser-use -- ${escapeRegExp(obu)} mcp stdio`));
+  } else {
+    const codexConfig = await readFile(path.join(home, ".codex", "config.toml"), "utf8");
+    assert.match(codexConfig, /\[mcp_servers\.open-browser-use\]/);
+    assert.match(codexConfig, new RegExp(`command = ${escapeRegExp(JSON.stringify(obu))}`));
+    assert.match(codexConfig, /args = \["mcp", "stdio"\]/);
+  }
   const extensionCurrent = path.join(home, ".obu", "extension", "current");
   await access(path.join(extensionCurrent, "manifest.json"));
 

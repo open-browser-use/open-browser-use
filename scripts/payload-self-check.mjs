@@ -2,8 +2,10 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { spawnSync } from "node:child_process";
+import { constants } from "node:fs";
 import { access, readFile, readdir } from "node:fs/promises";
 import path from "node:path";
+import { payloadRequiredFiles } from "./payload-contract.mjs";
 
 const args = parseArgs(process.argv.slice(2));
 const payload = path.resolve(args.payload);
@@ -15,23 +17,39 @@ assert.match(metadata.nodeVersion, /^\d+\.\d+\.\d+/);
 assert.match(metadata.sdkHash, /^sha256:[0-9a-f]{64}$/);
 assert.equal(metadata.extensionChannel, "unpacked-dev");
 assert.match(metadata.extensionId, /^[a-p]{32}$/);
+assert.equal(metadata.release?.schemaVersion, 1);
+assert.equal(metadata.release?.payloadVersion, metadata.packageVersion);
+assert.equal(metadata.release?.targetTriple, metadata.targetTriple);
+assert.match(metadata.release?.extensionId, /^[a-p]{32}$/);
+assert.match(metadata.release?.nativeHostManifest?.hostName, /^dev\.obu\.host$/);
+assert.equal(metadata.release?.nativeHostManifest?.type, "stdio");
+assert.equal(metadata.release?.nativeHostManifest?.allowedOriginTemplate, "chrome-extension://<extension-id>/");
+assert.equal(metadata.release?.migrationHooks?.installerDirectory, "install-migrations.d");
+assert.equal(metadata.release?.migrationHooks?.namePattern, "^[0-9]{3}-[a-z0-9-]+\\.sh$");
+assert.ok(Array.isArray(metadata.release?.migrationHooks?.environment));
+assert.equal(metadata.release?.payloadRetention?.owner, "installer");
+assert.equal(metadata.release?.payloadRetention?.env, "OBU_PAYLOAD_RETENTION");
+assert.deepEqual(metadata.release?.payloadRetention?.preserves, ["active", "rollback"]);
+assert.deepEqual(metadata.release?.requiredFiles, payloadRequiredFiles);
 if (metadata.storeExtensionId !== undefined) {
   assert.match(metadata.storeExtensionId, /^[a-p]{32}$/);
   assert.equal(metadata.storeManifestKeyPolicy, "omitted-for-store-upload");
   assert.equal(metadata.sourceManifestKeyId, metadata.extensionId);
   assert.equal(typeof metadata.sourceManifestPublicKey, "string");
+  assert.equal(metadata.release?.extensionChannel, "store");
+  assert.equal(metadata.release?.extensionId, metadata.storeExtensionId);
+} else {
+  assert.equal(metadata.release?.extensionChannel, "unpacked-dev");
+  assert.equal(metadata.release?.extensionId, metadata.extensionId);
 }
 assert.match(metadata.extensionZipSha256, /^sha256:[0-9a-f]{64}$/);
 
-await mustExist("bin/obu-host");
-await mustExist("bin/obu-node-repl");
-await mustExist("node/bin/node");
+for (const required of payloadRequiredFiles) {
+  await mustExist(required.path, required.executable ? constants.X_OK : constants.F_OK);
+}
 await mustExist("cli/package.json");
-await mustExist("cli/dist/index.js");
 await mustExist("node_modules/@open-browser-use/sdk/package.json");
-await mustExist("node_modules/@open-browser-use/sdk/dist/index.mjs");
 await mustExist("node_modules/jsonc-parser/package.json");
-await mustExist("extension/dist/manifest.json");
 await mustExist(metadata.extensionZip);
 assert.equal(await sha256(path.join(payload, metadata.extensionZip)), metadata.extensionZipSha256);
 await mustExist("LICENSE");
@@ -55,8 +73,8 @@ assert.equal(extensionManifest.version, metadata.extensionVersion);
 
 console.log(`payload self-check passed for ${payload}`);
 
-async function mustExist(relativePath) {
-  await access(path.join(payload, relativePath));
+async function mustExist(relativePath, mode = constants.F_OK) {
+  await access(path.join(payload, relativePath), mode);
 }
 
 async function sha256(file) {

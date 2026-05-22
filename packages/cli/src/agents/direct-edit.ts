@@ -1,11 +1,12 @@
 import { constants } from "node:fs";
-import { access, copyFile, mkdir, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { access, mkdir, readdir, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import { applyEdits, modify, parse, type ParseError } from "jsonc-parser";
 
 import type { AgentId, McpServerInvocation } from "./registry.js";
+import { readOptionalRegularText, writeRegularTextFile } from "./safe-file.js";
 
 export type DirectEditAgentId =
   | "cursor"
@@ -113,9 +114,9 @@ export async function writeDirectEditAgentConfig(
     let backupPath: string | undefined;
     if (existing !== undefined) {
       backupPath = backupPathFor(targetPath, options.now ?? new Date());
-      await copyFile(targetPath, backupPath);
+      await writeRegularTextFile(backupPath, existing, 0o600);
     }
-    await writeFile(targetPath, next, { encoding: "utf8", mode: 0o600 });
+    await writeRegularTextFile(targetPath, next, 0o600);
     const deletedBackups = await retainOpenBrowserUseBackups(targetPath, 5);
     return {
       status: "applied",
@@ -172,13 +173,7 @@ export async function cleanOpenBrowserUseBackups(
 }
 
 async function readOptionalFile(file: string): Promise<string | undefined> {
-  try {
-    return await readFile(file, "utf8");
-  } catch (error) {
-    const nodeError = error as NodeJS.ErrnoException;
-    if (nodeError.code === "ENOENT") return undefined;
-    throw error;
-  }
+  return await readOptionalRegularText(file);
 }
 
 function validateJsonc(raw: string): string[] {

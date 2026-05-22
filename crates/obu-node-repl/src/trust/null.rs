@@ -12,3 +12,16 @@ impl TrustGate for NullTrust {
         false
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn never_trusts_any_source_or_path() {
+        let gate = NullTrust;
+
+        assert!(!gate.is_trusted(b"export {};", Path::new("/tmp/module.mjs")));
+        assert!(!gate.is_trusted(b"", Path::new("relative.mjs")));
+    }
+}

@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readdir, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
@@ -139,6 +139,27 @@ test("configureAgents writes Codex global MCP config without requiring codex on 
   assert.equal(second[0]?.status, "skipped");
 });
 
+test("configureAgents refuses symlinked Codex config without changing the target", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-agent-config-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configPath = path.join(root, ".codex", "config.toml");
+  const target = path.join(root, "outside-codex.toml");
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(target, "do not change", "utf8");
+  await symlink(target, configPath);
+
+  const steps = await configureAgents({
+    agents: ["codex-cli"],
+    server: server(root),
+    env: { PATH: "" },
+    homeDir: root,
+  });
+
+  assert.equal(steps[0]?.status, "manual_action_required");
+  assert.equal(steps[0]?.details?.code, "ELOOP");
+  assert.equal(await readFile(target, "utf8"), "do not change");
+});
+
 test("configureAgents does not overwrite divergent Codex MCP config", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "obu-agent-config-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -215,6 +236,27 @@ test("configureAgents writes JSONC direct-edit adapters and skips unchanged reru
   });
   assert.equal(second[0]?.status, "skipped");
   assert.deepEqual(await readdir(path.dirname(configPath)), ["settings.json"]);
+});
+
+test("configureAgents refuses symlinked direct-edit config without changing the target", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-agent-config-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const configPath = path.join(root, ".cursor", "mcp.json");
+  const target = path.join(root, "outside-cursor.json");
+  await mkdir(path.dirname(configPath), { recursive: true });
+  await writeFile(target, "do not change", "utf8");
+  await symlink(target, configPath);
+
+  const steps = await configureAgents({
+    agents: ["cursor"],
+    server: server(root),
+    env: { PATH: "" },
+    homeDir: root,
+  });
+
+  assert.equal(steps[0]?.status, "manual_action_required");
+  assert.equal(steps[0]?.details?.code, "ELOOP");
+  assert.equal(await readFile(target, "utf8"), "do not change");
 });
 
 test("configureAgents direct-edit adapters create backups and retain only open-browser-use's newest five", async (t) => {
@@ -312,6 +354,29 @@ test("configureAgents writes primary-browser instructions only when requested", 
     writeInstructions: true,
   });
   assert.equal(rerun.find((step) => step.id === "agent-codex-cli-instructions")?.status, "skipped");
+});
+
+test("configureAgents refuses symlinked primary instructions without changing the target", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-agent-config-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const instructionPath = path.join(root, ".codex", "AGENTS.md");
+  const target = path.join(root, "outside-agents.md");
+  await mkdir(path.dirname(instructionPath), { recursive: true });
+  await writeFile(target, "do not change", "utf8");
+  await symlink(target, instructionPath);
+
+  const steps = await configureAgents({
+    agents: ["codex-cli"],
+    server: server(root),
+    env: { PATH: "" },
+    homeDir: root,
+    writeInstructions: true,
+  });
+  const instructionStep = steps.find((step) => step.id === "agent-codex-cli-instructions");
+
+  assert.equal(instructionStep?.status, "failed");
+  assert.equal(instructionStep?.details?.code, "ELOOP");
+  assert.equal(await readFile(target, "utf8"), "do not change");
 });
 
 test("configureAgents prefers an existing project instruction file over the global file", async (t) => {

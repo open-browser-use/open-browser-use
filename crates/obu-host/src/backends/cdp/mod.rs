@@ -7,11 +7,13 @@ use serde_json::{Value, json};
 
 use crate::backends::{BackendKind, BackendRequestContext, BrowserBackend};
 use crate::error::{HostError, Result};
+use crate::ops::dialogs::DialogTraceStore;
 use crate::service_registry::ServiceRegistry;
 
 pub mod attach;
 pub mod compose;
 pub mod cua;
+pub(crate) mod dialogs;
 pub mod discovery;
 pub mod ensure_injected;
 pub mod error;
@@ -25,6 +27,7 @@ pub mod transport;
 pub struct CdpBackend {
     transport: Arc<transport::CdpTransport>,
     registry: Arc<ServiceRegistry>,
+    dialog_traces: DialogTraceStore,
     download_dir: tempfile::TempDir,
 }
 
@@ -53,6 +56,7 @@ impl CdpBackend {
         Ok(Self {
             transport,
             registry,
+            dialog_traces: DialogTraceStore::default(),
             download_dir,
         })
     }
@@ -71,6 +75,11 @@ impl CdpBackend {
     pub fn download_dir(&self) -> &std::path::Path {
         self.download_dir.path()
     }
+
+    /// Recent handled native-dialog traces.
+    pub(crate) fn dialog_traces(&self) -> &DialogTraceStore {
+        &self.dialog_traces
+    }
 }
 
 #[async_trait]
@@ -86,6 +95,7 @@ impl BrowserBackend for CdpBackend {
     fn diagnostics(&self) -> Value {
         json!({
             "lifecycle": registry_lifecycle_metadata(self.registry()),
+            "dialogs": self.dialog_traces().diagnostics(),
         })
     }
 
@@ -100,6 +110,7 @@ impl BrowserBackend for CdpBackend {
             },
             "diagnostics": {
                 "lifecycle": registry_lifecycle_metadata(self.registry()),
+                "dialogs": self.dialog_traces().diagnostics(),
             },
         }))
     }
@@ -159,6 +170,20 @@ impl BrowserBackend for CdpBackend {
         execute::execute_cdp(self, tab_id, method, params).await
     }
 
+    async fn execute_cdp_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        tab_id: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        if let Some(session_id) = ctx.session_id.as_deref() {
+            self.registry()
+                .set_active_tab(session_id, tab_id, ctx.turn_id.as_deref())?;
+        }
+        self.execute_cdp(tab_id, method, params).await
+    }
+
     async fn create_tab(&self, url: Option<String>) -> Result<Value> {
         targets::create_tab(self, url).await
     }
@@ -177,6 +202,8 @@ impl BrowserBackend for CdpBackend {
                     .update(&crate::tab_state::TabId::new(tab_id), |record| {
                         record.session_id = Some(session_id.to_string());
                     })?;
+                self.registry()
+                    .set_active_tab(session_id, tab_id, ctx.turn_id.as_deref())?;
             }
         }
         Ok(created)
@@ -192,6 +219,14 @@ impl BrowserBackend for CdpBackend {
                 .touch_session(session_id, ctx.turn_id.as_deref())?;
         }
         targets::list_tabs(self).await
+    }
+
+    async fn current_tab_with_context(&self, ctx: &BackendRequestContext) -> Result<Value> {
+        targets::current_tab(self, ctx).await
+    }
+
+    async fn selected_tab_with_context(&self, ctx: &BackendRequestContext) -> Result<Value> {
+        targets::selected_tab(self, ctx).await
     }
 
     async fn claim_user_tab_with_context(
@@ -241,12 +276,65 @@ impl BrowserBackend for CdpBackend {
         Ok(json!({}))
     }
 
+    async fn yield_control_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        _params: Value,
+    ) -> Result<Value> {
+        if let Some(session_id) = ctx.session_id.as_deref() {
+            self.registry()
+                .touch_session(session_id, ctx.turn_id.as_deref())?;
+        }
+        Ok(json!({}))
+    }
+
+    async fn resume_control_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        _params: Value,
+    ) -> Result<Value> {
+        targets::current_tab(self, ctx).await
+    }
+
     async fn tab_command(&self, method: &str, params: Value) -> Result<Value> {
         compose::run_tab_command(self, method, params).await
     }
 
+    async fn tab_command_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        if let Some(session_id) = ctx.session_id.as_deref()
+            && let Some(tab_id) = params
+                .get("tab_id")
+                .or_else(|| params.get("tabId"))
+                .and_then(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_string)
+                        .or_else(|| value.as_i64().map(|value| value.to_string()))
+                })
+        {
+            self.registry()
+                .set_active_tab(session_id, tab_id, ctx.turn_id.as_deref())?;
+        }
+        self.tab_command(method, params).await
+    }
+
     async fn cua_command(&self, method: &str, params: Value) -> Result<Value> {
         cua::run(self, method, params).await
+    }
+
+    async fn cua_command_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        self.remember_tab_param(ctx, &params)?;
+        self.cua_command(method, params).await
     }
 
     async fn playwright_command(&self, method: &str, params: Value) -> Result<Value> {
@@ -259,7 +347,28 @@ impl BrowserBackend for CdpBackend {
         method: &str,
         params: Value,
     ) -> Result<Value> {
+        self.remember_tab_param(ctx, &params)?;
         playwright::run_with_context(self, ctx, method, params).await
+    }
+}
+
+impl CdpBackend {
+    fn remember_tab_param(&self, ctx: &BackendRequestContext, params: &Value) -> Result<()> {
+        if let Some(session_id) = ctx.session_id.as_deref()
+            && let Some(tab_id) = params
+                .get("tab_id")
+                .or_else(|| params.get("tabId"))
+                .and_then(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_string)
+                        .or_else(|| value.as_i64().map(|value| value.to_string()))
+                })
+        {
+            self.registry()
+                .set_active_tab(session_id, tab_id, ctx.turn_id.as_deref())?;
+        }
+        Ok(())
     }
 }
 

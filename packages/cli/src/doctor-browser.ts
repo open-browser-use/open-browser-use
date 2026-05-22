@@ -9,7 +9,7 @@ import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { browserInstallPath, browserProfileRoot, nativeMessagingHostDir, type BrowserKind } from "./browser-paths.js";
 import { type ExtensionChannel, type ExtensionIdSource } from "./extension-channel.js";
-import { nativeHostWrapperContent, nativeHostWrapperPath } from "./native-host.js";
+import { nativeHostWrapperContent, nativeHostWrapperPath, writeIfChanged } from "./native-host.js";
 import { resolveRuntimeLayout, validateRuntimeDir, type RuntimeLayout } from "./runtime-layout.js";
 
 const execFileAsync = promisify(execFile);
@@ -79,16 +79,46 @@ export type DoctorBrowserOptions = {
 };
 
 type RuntimeDescriptorProbeResult =
-  | { ok: true; details: Record<string, unknown> }
+  | { ok: true; details: Record<string, unknown>; infoResult: Record<string, any> }
   | { ok: false; message: string };
 
-export async function hasActiveWebExtensionRuntimeDescriptor(runtimeDir: string): Promise<boolean> {
+export type WebExtensionRuntimeDescriptorTarget = {
+  extensionId?: string;
+  browserKind?: string;
+};
+
+export async function hasActiveWebExtensionRuntimeDescriptor(
+  runtimeDir: string,
+  target: WebExtensionRuntimeDescriptorTarget = {},
+): Promise<boolean> {
   const descriptorDir = path.join(runtimeDir, "webextension");
   const descriptorDirCheck = await checkRuntimeDescriptorDir(descriptorDir);
   if (descriptorDirCheck.status === "fail") return false;
+  if (target.extensionId || target.browserKind) {
+    return await hasMatchingRuntimeDescriptor(descriptorDir, target);
+  }
   const descriptorCheck = await checkRuntimeDescriptors(descriptorDir);
   return typeof descriptorCheck.details?.descriptor === "string" &&
     /responded to getInfo/.test(descriptorCheck.message);
+}
+
+async function hasMatchingRuntimeDescriptor(
+  descriptorDir: string,
+  target: WebExtensionRuntimeDescriptorTarget,
+): Promise<boolean> {
+  const files = await readdir(descriptorDir).catch(() => []);
+  for (const file of files.filter((file) => file.endsWith(".json"))) {
+    const descriptorPath = path.join(descriptorDir, file);
+    const fileIssue = await validateRuntimeDescriptorFile(descriptorPath);
+    if (fileIssue) continue;
+    const descriptor = await readJson(descriptorPath).catch(() => undefined);
+    if (!isRecord(descriptor)) continue;
+    const result = await probeDescriptor(descriptor);
+    if (result.ok && runtimeDescriptorMatchesTarget(descriptor, result.infoResult, target)) {
+      return true;
+    }
+  }
+  return false;
 }
 
 export async function doctorBrowser(options: DoctorBrowserOptions = {}): Promise<DoctorReport> {
@@ -197,6 +227,10 @@ function formatCheckDetails(check: DoctorCheck): string[] {
   if (typeof deliverableRecovery === "string" && deliverableRecovery.length > 0) {
     rows.push(`  recover deliverables: ${deliverableRecovery}`);
   }
+  const pendingExtensionUpdate = formatPendingExtensionUpdate(check.details?.pending_extension_update);
+  if (pendingExtensionUpdate) {
+    rows.push(`  pending extension update: ${pendingExtensionUpdate}`);
+  }
   const resumeRequired = check.details?.resume_required;
   if (typeof resumeRequired === "boolean") {
     rows.push(`  resume required: ${resumeRequired ? "yes" : "no"}`);
@@ -208,6 +242,13 @@ function formatCheckDetails(check: DoctorCheck): string[] {
   const repair = check.details?.repair;
   if (typeof repair === "string" && repair.length > 0) rows.push(`  repair: ${repair}`);
   return rows;
+}
+
+function formatPendingExtensionUpdate(value: unknown): string | undefined {
+  if (!isRecord(value)) return undefined;
+  const state = typeof value.state === "string" && value.state.length > 0 ? value.state : "waiting_for_idle";
+  const version = typeof value.version === "string" && value.version.length > 0 ? ` ${value.version}` : "";
+  return `extension update${version} is ${state.replace(/_/g, " ")}`;
 }
 
 function formatStaleSessionReasons(value: unknown): string[] {
@@ -310,23 +351,32 @@ async function repairNativeHostManifest(input: NativeHostRepairInput): Promise<D
     ];
   }
 
-  const wrapperDir = path.dirname(wrapperPath);
-  await mkdir(wrapperDir, { recursive: true });
-  await writeFile(wrapperPath, wrapper, "utf8");
-  await chmod(wrapperPath, 0o755);
-  await mkdir(path.dirname(input.nativeManifestPath), { recursive: true });
-  await writeFile(
-    input.nativeManifestPath,
-    `${JSON.stringify({
-      name: HOST_NAME,
-      description: "open-browser-use native messaging host",
-      path: wrapperPath,
-      type: "stdio",
-      allowed_origins: [`chrome-extension://${input.extensionId}/`],
-    }, null, 2)}\n`,
-    "utf8",
-  );
-  await chmod(input.nativeManifestPath, 0o644);
+  try {
+    const wrapperDir = path.dirname(wrapperPath);
+    await mkdir(wrapperDir, { recursive: true });
+    await writeIfChanged(wrapperPath, wrapper, 0o755);
+    await mkdir(path.dirname(input.nativeManifestPath), { recursive: true });
+    await writeIfChanged(
+      input.nativeManifestPath,
+      `${JSON.stringify({
+        name: HOST_NAME,
+        description: "open-browser-use native messaging host",
+        path: wrapperPath,
+        type: "stdio",
+        allowed_origins: [`chrome-extension://${input.extensionId}/`],
+      }, null, 2)}\n`,
+      0o644,
+    );
+  } catch (error) {
+    return [
+      {
+        id: "native-host-manifest",
+        status: "failed",
+        message: `could not write native host manifest: ${error instanceof Error ? error.message : String(error)}`,
+        details: { path: input.nativeManifestPath, wrapperPath, extensionId: input.extensionId },
+      },
+    ];
+  }
   return [
     {
       id: "native-host-manifest",
@@ -571,7 +621,11 @@ async function clearLifecycleDiagnostics(descriptor: Record<string, unknown>): P
   if (auth.error) return probeError("auth rejected");
   if (clear.error) return probeError(`clearLifecycleDiagnostics failed: ${JSON.stringify(clear.error)}`);
   if (info.error) return probeError(`getInfo failed: ${JSON.stringify(info.error)}`);
-  return { ok: true, details: { clear: clear.result, ...runtimeDescriptorProbeDetails(info.result) } };
+  return {
+    ok: true,
+    details: { clear: clear.result, ...runtimeDescriptorProbeDetails(info.result) },
+    infoResult: info.result,
+  };
 }
 
 function isRepairableDescriptorProbeFailure(message: string): boolean {
@@ -860,6 +914,7 @@ async function probeDescriptor(descriptor: Record<string, unknown>): Promise<Run
     return {
       ok: true,
       details: runtimeDescriptorProbeDetails(info.result),
+      infoResult: info.result,
     };
   } catch (error) {
     return probeError(`socket probe failed: ${String(error)}`);
@@ -884,7 +939,60 @@ function runtimeDescriptorProbeDetails(infoResult: Record<string, any>): Record<
       details.deliverable_recovery = "run await browser.deliverables(), then call claim() on the tab to recover";
     }
   }
+  const extension = infoResult.metadata?.diagnostics?.extension;
+  if (isRecord(extension)) {
+    details.extension = extension;
+    const pendingUpdate = extension.pending_update;
+    if (isRecord(pendingUpdate)) {
+      details.pending_extension_update = pendingUpdate;
+    }
+  }
   return details;
+}
+
+function runtimeDescriptorMatchesTarget(
+  descriptor: Record<string, unknown>,
+  infoResult: Record<string, any>,
+  target: WebExtensionRuntimeDescriptorTarget,
+): boolean {
+  const descriptorMetadata = isRecord(descriptor.metadata) ? descriptor.metadata : {};
+  const infoBackend = isRecord(infoResult.metadata?.backend) ? infoResult.metadata.backend : {};
+  if (target.extensionId) {
+    if (!metadataMatchesTarget(infoBackend, descriptorMetadata, ["extension_id", "extensionId"], target.extensionId)) return false;
+  }
+  if (target.browserKind) {
+    if (!metadataMatchesTarget(infoBackend, descriptorMetadata, ["browser_kind", "browserKind"], target.browserKind)) return false;
+  }
+  return true;
+}
+
+function metadataMatchesTarget(
+  liveMetadata: Record<string, unknown>,
+  descriptorMetadata: Record<string, unknown>,
+  keys: string[],
+  target: string,
+): boolean {
+  const liveValue = stringFromAnyKey(liveMetadata, keys);
+  const descriptorValue = stringFromAnyKey(descriptorMetadata, keys);
+  if (liveValue && descriptorValue && liveValue !== descriptorValue) return false;
+  return (liveValue ?? descriptorValue) === target;
+}
+
+function stringFromAnyKey(value: Record<string, unknown>, keys: string[]): string | undefined {
+  for (const key of keys) {
+    const candidate = stringFromPath(value, [key]);
+    if (candidate !== undefined) return candidate;
+  }
+  return undefined;
+}
+
+function stringFromPath(value: Record<string, unknown>, pathParts: string[]): string | undefined {
+  let current: unknown = value;
+  for (const part of pathParts) {
+    if (!isRecord(current)) return undefined;
+    current = current[part];
+  }
+  return typeof current === "string" ? current : undefined;
 }
 
 function staleLifecycleSummary(lifecycle: unknown): string | undefined {

@@ -1,0 +1,81 @@
+{
+  "schemaVersion": "open-browser-use.product-contracts/v1",
+  "sourceAnchors": [
+    "codex-re/oracles/p2/README.md:1-50",
+    "codex-re/oracles/p2/README.md:68-75",
+    "docs/concurrency-design-readiness-analysis.md:90-108"
+  ],
+  "requiredWireMethods": [
+    "getInfo",
+    "getTabs",
+    "createTab",
+    "finalizeTabs",
+    "claimUserTab",
+    "attach",
+    "detach",
+    "executeCdp",
+    "turnEnded",
+    "playwright_locator_click",
+    "playwright_wait_for_file_chooser",
+    "playwright_wait_for_download",
+    "playwright_download_path",
+    "cua_click",
+    "dom_cua_get_visible_dom",
+    "tab_goto",
+    "tab_reload",
+    "tab_close",
+    "tab_wait_for_load_state",
+    "tab_url"
+  ],
+  "requiredProductErrors": [
+    "setup_missing",
+    "browser_popup_boundary",
+    "native_host_broken",
+    "extension_id_mismatch",
+    "no_backend",
+    "stale_descriptor",
+    "timeout",
+    "disallowed_command",
+    "missing_handle",
+    "dialog_requires_decision",
+    "transport_closed"
+  ],
+  "requiredRpcErrorConstants": [
+    "ERR_TIMEOUT",
+    "ERR_DISALLOWED",
+    "ERR_NO_BACKEND",
+    "ERR_PEER_AUTH",
+    "ERR_CMD_DISALLOWED",
+    "ERR_PAGE_CLOSED",
+    "ERR_TAB_NOT_ATTACHED",
+    "ERR_DIALOG_REQUIRES_DECISION"
+  ],
+  "goldenFixtures": [
+    {
+      "id": "selector-builder",
+      "path": "packages/sdk/tests/fixtures/selector-builder.oracle.json",
+      "schemaVersion": "open-browser-use.selector-fixture/v1"
+    },
+    {
+      "id": "selector-fuzz",
+      "path": "packages/sdk/tests/fixtures/selector-fuzz.oracle.json",
+      "schemaVersion": "open-browser-use.selector-fixture/v1"
+    }
+  ],
+  "liveBrowserContracts": [
+    {
+      "id": "cdp-dirty-form-dialogs",
+      "test": "cargo test -p obu-host --test e2e_failure_modes cdp_dirty_form_beforeunload_does_not_block_navigation_close_or_finish_turn -- --ignored",
+      "smokeScript": "smoke:cdp-dirty-form-live",
+      "scope": "CDP dirty-form beforeunload navigation, reload, close, and finishTurn",
+      "requiresLiveBrowser": true
+    },
+    {
+      "id": "webextension-dirty-form-reattach",
+      "test": "cargo test -p obu-host --test e2e_node_repl_to_webextension webextension_dirty_form_beforeunload_survives_reattach_and_finish_turn -- --ignored",
+      "smokeScript": "smoke:webext-dirty-form-live",
+      "scope": "WebExtension dirty-form beforeunload after detach/reattach and finishTurn",
+      "requiresLiveBrowser": true
+    }
+  ]
+}

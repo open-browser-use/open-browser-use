@@ -17,16 +17,18 @@ const tab = await browser.tabs.create("https://example.com");
 await tab.attach();
 await tab.goto("https://example.com/docs");
 await tab.locator("h1").click();
-await tab.screenshotForModel({ clip: { x: 0, y: 0, width: 900, height: 700, scale: 0.5 } });
+await display(await tab.screenshot({ clip: { x: 0, y: 0, width: 900, height: 700, scale: 0.5 } }));
 await browser.turnEnded();
 ```
 
 Backend discovery is lazy. `setupObuRuntime()` installs `agent` without opening
 a socket; `agent.browsers.get(kind)` performs discovery, connects, and sends
 `getInfo`. For Chromium-family kinds (`chrome`, `edge`, `brave`, `arc`,
-`chromium`), discovery prefers live WebExtension descriptors and falls back to
-CDP. `agent.browsers.get("cdp")` forces a CDP backend, and passing an exact
-`socketPath` forces that backend.
+`chromium`), discovery requires a live matching WebExtension descriptor and
+fails fast instead of falling back to CDP. This keeps the default path aligned
+with Chrome profile state, tab groups, visible state, and human takeover.
+`agent.browsers.get("cdp")` forces a CDP backend as an explicit lower-fidelity
+escape hatch, and passing an exact `socketPath` forces that backend.
 If no backend is available, `agent.browsers.get(kind)` includes ignored runtime
 descriptor diagnostics in the thrown `ERR_NO_BACKEND` message. Call
 `await agent.browsers.diagnostics()` to inspect those setup diagnostics without
@@ -45,8 +47,10 @@ Call `agent.help()` for the live API table. Main layers:
 | `browser.deliverables()` | `getTabs`, `getInfo`, `claimUserTab` |
 | `browser.clearLifecycleDiagnostics()` | `clearLifecycleDiagnostics` |
 | `browser.finishTurn({ keep })` | `finalizeTabs`, `turnEnded` |
-| `browser.tabs.create(urlOrOptions)/list/get` | `createTab`, `getTabs` |
-| `browser.user.openTabs/history/claimTab` | `getUserTabs`, `getUserHistory`, `claimUserTab` |
+| `browser.viewport?.set/reset` | `browser_viewport_*` when advertised |
+| `browser.visibility?.set/get` | `browser_visibility_*` when advertised |
+| `browser.tabs.create(urlOrOptions)/list/get/current/selected` | `createTab`, `getTabs`, `getCurrentTab`, `getSelectedTab` |
+| `browser.user.discoverTabs/history/claimTab` | `getUserTabs`, `getUserHistory`, `claimUserTab` |
 | `tab.attach/detach` | `attach`, `detach` |
 | `tab.goto/back/forward/reload/waitForURL/waitForLoadState/screenshot` | `tab_*` |
 | `tab.evaluate()` / `tab.snapshotText()` | capped `executeCdp` evaluation |
@@ -64,6 +68,12 @@ Call `agent.help()` for the live API table. Main layers:
 `browser.tabs.create()` accepts either a URL string or `{ url }`. With no URL it
 creates `about:blank`, not Chrome's extension-restricted new-tab page.
 Keep a `Tab` handle and use `tab.goto(url)` for repeated same-task navigation.
+Use `browser.tabs.current()` for the session-owned continuation tab and
+`browser.tabs.selected()` only for browser-visible discovery; selected
+human-owned tabs return `UserTabRef` until explicitly claimed. Use
+`browser.user.discoverTabs()` for safe user-tab discovery. Legacy
+`browser.user.openTabs()` remains as a deprecated compatibility shim and is not
+the primary discovery API.
 `browser.turnEnded()` marks a turn boundary while preserving active control;
 `browser.finishTurn(...)` first finalizes tabs and is for close/release/handoff
 or deliverable workflows. For setup verification and browser readiness probes,

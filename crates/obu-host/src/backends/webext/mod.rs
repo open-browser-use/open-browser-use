@@ -1,8 +1,8 @@
 //! WebExtension/native-messaging browser backend.
 
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, Mutex as StdMutex};
 
 use async_trait::async_trait;
 use serde_json::{Map, Value, json};
@@ -17,6 +17,7 @@ use crate::ops::cua::{
     self as cua_ops, CoordinateCommand, KeyEventSink, MouseEvent, MouseEventSink,
     NavigationWaitOptions, NavigationWaiter,
 };
+use crate::ops::dialogs::DialogTraceStore;
 use crate::ops::dom_cua::{self, Rect};
 use crate::ops::event_wait;
 use crate::ops::playwright::handles as handle_ops;
@@ -36,6 +37,8 @@ pub struct WebExtensionBackend {
     transport: Option<Arc<dyn ExtensionTransport>>,
     event_tx: broadcast::Sender<ExtensionNotification>,
     registry: Arc<ServiceRegistry>,
+    dialog_traces: DialogTraceStore,
+    extension_diagnostics: Arc<StdMutex<Value>>,
     visible_dom_nodes: Arc<Mutex<HashMap<String, HashSet<String>>>>,
     virtual_clipboard_scripts: Arc<Mutex<HashMap<String, String>>>,
 }
@@ -51,6 +54,8 @@ impl WebExtensionBackend {
             transport: None,
             event_tx,
             registry: Arc::new(ServiceRegistry::default()),
+            dialog_traces: DialogTraceStore::default(),
+            extension_diagnostics: Arc::new(StdMutex::new(json!({}))),
             visible_dom_nodes: Arc::new(Mutex::new(HashMap::new())),
             virtual_clipboard_scripts: Arc::new(Mutex::new(HashMap::new())),
         }
@@ -110,6 +115,10 @@ impl WebExtensionBackend {
     /// Publish a host-extension notification into the backend event bus.
     pub fn handle_notification(&self, method: impl Into<String>, params: Value) {
         let method = method.into();
+        if method == "onExtensionStatus" {
+            self.update_extension_diagnostics(params);
+            return;
+        }
         if !matches!(method.as_str(), "onCDPEvent" | "onDownloadChange") {
             return;
         }
@@ -119,6 +128,27 @@ impl WebExtensionBackend {
     /// Shared per-backend service registry.
     pub fn registry(&self) -> &Arc<ServiceRegistry> {
         &self.registry
+    }
+
+    /// Recent handled native-dialog traces.
+    pub(crate) fn dialog_traces(&self) -> &DialogTraceStore {
+        &self.dialog_traces
+    }
+
+    fn update_extension_diagnostics(&self, params: Value) {
+        if !params.is_object() {
+            return;
+        }
+        if let Ok(mut diagnostics) = self.extension_diagnostics.lock() {
+            *diagnostics = params;
+        }
+    }
+
+    fn extension_diagnostics(&self) -> Value {
+        self.extension_diagnostics
+            .lock()
+            .map(|diagnostics| diagnostics.clone())
+            .unwrap_or_else(|_| json!({}))
     }
 }
 
@@ -161,6 +191,8 @@ impl BrowserBackend for WebExtensionBackend {
     fn diagnostics(&self) -> Value {
         json!({
             "lifecycle": registry_lifecycle_metadata(self.registry()),
+            "dialogs": self.dialog_traces().diagnostics(),
+            "extension": self.extension_diagnostics(),
         })
     }
 
@@ -175,6 +207,8 @@ impl BrowserBackend for WebExtensionBackend {
             },
             "diagnostics": {
                 "lifecycle": registry_lifecycle_metadata(self.registry()),
+                "dialogs": self.dialog_traces().diagnostics(),
+                "extension": self.extension_diagnostics(),
             },
         }))
     }
@@ -249,25 +283,15 @@ impl BrowserBackend for WebExtensionBackend {
         method: &str,
         params: Value,
     ) -> Result<Value> {
-        self.ensure_active()?;
-        Self::require_session_context(ctx, "executeCdp")?;
-        let parsed_tab_id = parse_tab_id(tab_id)?;
-        let normalized_tab_id = parsed_tab_id.to_string();
-        ensure_active_tab_if_recorded(self, &normalized_tab_id)?;
-        record_session_context(self, ctx)?;
-        self.transport("executeCdp")?
-            .request(
-                "executeCdp",
-                json!({
-                    "session_id": ctx.session_id.clone(),
-                    "turn_id": ctx.turn_id.clone(),
-                    "target": { "tabId": parsed_tab_id },
-                    "method": method,
-                    "commandParams": params,
-                    "timeoutMs": ctx.client_timeout_ms,
-                }),
-            )
-            .await
+        execute_cdp_with_context_options(
+            self,
+            ctx,
+            tab_id,
+            method,
+            params,
+            ExecuteCdpOptions::default(),
+        )
+        .await
     }
 
     async fn create_tab_with_context(
@@ -335,6 +359,62 @@ impl BrowserBackend for WebExtensionBackend {
         Ok(normalized)
     }
 
+    async fn current_tab_with_context(&self, ctx: &BackendRequestContext) -> Result<Value> {
+        self.ensure_active()?;
+        Self::require_session_context(ctx, "getCurrentTab")?;
+        record_session_context(self, ctx)?;
+        let response = self
+            .transport("getCurrentTab")?
+            .request(
+                "getCurrentTab",
+                context_payload(ctx, Value::Object(Map::new())),
+            )
+            .await?;
+        let Some(normalized) = normalize_optional_tab_response(response)? else {
+            return Ok(Value::Null);
+        };
+        if let Some(tab_id) = normalized.get("tab_id").and_then(Value::as_str) {
+            record_webext_tab(self, ctx, &normalized, TabOrigin::Agent, TabStatus::Active)?;
+            self.registry().set_active_tab(
+                ctx.session_id.as_deref().unwrap_or_default(),
+                tab_id,
+                ctx.turn_id.as_deref(),
+            )?;
+        }
+        Ok(normalized)
+    }
+
+    async fn selected_tab_with_context(&self, ctx: &BackendRequestContext) -> Result<Value> {
+        self.ensure_active()?;
+        Self::require_session_context(ctx, "getSelectedTab")?;
+        record_session_context(self, ctx)?;
+        let response = self
+            .transport("getSelectedTab")?
+            .request(
+                "getSelectedTab",
+                context_payload(ctx, Value::Object(Map::new())),
+            )
+            .await?;
+        let Some(normalized) = normalize_optional_tab_response(response)? else {
+            return Ok(Value::Null);
+        };
+        if normalized
+            .get("commandable")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+        {
+            record_webext_tab(self, ctx, &normalized, TabOrigin::Agent, TabStatus::Active)?;
+            if let Some(tab_id) = normalized.get("tab_id").and_then(Value::as_str) {
+                self.registry().set_active_tab(
+                    ctx.session_id.as_deref().unwrap_or_default(),
+                    tab_id,
+                    ctx.turn_id.as_deref(),
+                )?;
+            }
+        }
+        Ok(normalized)
+    }
+
     async fn list_user_tabs_with_context(&self, ctx: &BackendRequestContext) -> Result<Value> {
         self.ensure_active()?;
         Self::require_session_context(ctx, "getUserTabs")?;
@@ -389,6 +469,11 @@ impl BrowserBackend for WebExtensionBackend {
             object.insert("status".into(), Value::String("active".into()));
         }
         record_webext_tab(self, ctx, &normalized, TabOrigin::User, TabStatus::Active)?;
+        self.registry().set_active_tab(
+            ctx.session_id.as_deref().unwrap_or_default(),
+            normalized_tab_id.as_str(),
+            ctx.turn_id.as_deref(),
+        )?;
         Ok(normalized)
     }
 
@@ -418,14 +503,25 @@ impl BrowserBackend for WebExtensionBackend {
         let session_tabs = self
             .registry()
             .tabs_for_session(ctx.session_id.as_deref().unwrap_or_default())?;
+        let keep_tab_ids = finalize_keep_tab_ids(&params)?;
+        let mut preclosed_agent_tab_ids = Vec::new();
         for tab in session_tabs {
             cleanup_virtual_clipboard_script(self, ctx, &tab.id.0).await;
+            if tab.origin == TabOrigin::Agent && !keep_tab_ids.contains(&tab.id.0) {
+                self.execute_cdp_with_context(ctx, &tab.id.0, "Page.close", json!({}))
+                    .await?;
+                preclosed_agent_tab_ids.push(tab.id.0);
+            }
         }
         let response = self
             .transport("finalizeTabs")?
             .request("finalizeTabs", normalize_finalize_request(ctx, params)?)
             .await?;
-        let normalized = normalize_finalize_response(response)?;
+        let mut normalized = normalize_finalize_response(response)?;
+        include_tab_ids(&mut normalized, "closed_tab_ids", &preclosed_agent_tab_ids)?;
+        let terminal_tab_ids =
+            collect_finalize_terminal_tab_ids(&normalized, &["closed_tab_ids", "released_tab_ids"]);
+        prune_finalized_tab_rows(&mut normalized, &terminal_tab_ids)?;
         for key in ["closed_tab_ids", "released_tab_ids"] {
             let Some(tab_ids) = normalized.get(key).and_then(Value::as_array) else {
                 continue;
@@ -492,6 +588,60 @@ impl BrowserBackend for WebExtensionBackend {
         Ok(Value::Null)
     }
 
+    async fn yield_control_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value> {
+        self.ensure_active()?;
+        Self::require_session_context(ctx, "yieldControl")?;
+        record_session_context(self, ctx)?;
+        self.transport("yieldControl")?
+            .request("yieldControl", context_payload(ctx, params))
+            .await?;
+        Ok(Value::Null)
+    }
+
+    async fn resume_control_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value> {
+        self.ensure_active()?;
+        Self::require_session_context(ctx, "resumeControl")?;
+        record_session_context(self, ctx)?;
+        let response = self
+            .transport("resumeControl")?
+            .request("resumeControl", context_payload(ctx, params))
+            .await?;
+        let Some(normalized) = normalize_optional_tab_response(response)? else {
+            return Ok(Value::Null);
+        };
+        if let Some(tab_id) = normalized.get("tab_id").and_then(Value::as_str) {
+            record_webext_tab(self, ctx, &normalized, TabOrigin::Agent, TabStatus::Active)?;
+            self.registry().set_active_tab(
+                ctx.session_id.as_deref().unwrap_or_default(),
+                tab_id,
+                ctx.turn_id.as_deref(),
+            )?;
+        }
+        Ok(normalized)
+    }
+
+    async fn browser_command_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        self.ensure_active()?;
+        Self::require_session_context(ctx, method)?;
+        record_session_context(self, ctx)?;
+        self.transport(method)?
+            .request(method, context_payload(ctx, params))
+            .await
+    }
+
     async fn cua_command_with_context(
         &self,
         ctx: &BackendRequestContext,
@@ -502,6 +652,7 @@ impl BrowserBackend for WebExtensionBackend {
         Self::require_session_context(ctx, method)?;
         ensure_active_tab_param_if_recorded(self, &params)?;
         record_session_context(self, ctx)?;
+        remember_active_tab_param(self, ctx, &params)?;
         run_cua_command(self, ctx, method, params).await
     }
 
@@ -515,6 +666,7 @@ impl BrowserBackend for WebExtensionBackend {
         Self::require_session_context(ctx, method)?;
         ensure_active_tab_param_if_recorded(self, &params)?;
         record_session_context(self, ctx)?;
+        remember_active_tab_param(self, ctx, &params)?;
         run_playwright_command(self, ctx, method, params).await
     }
 
@@ -528,6 +680,7 @@ impl BrowserBackend for WebExtensionBackend {
         Self::require_session_context(ctx, method)?;
         ensure_active_tab_param_if_recorded(self, &params)?;
         record_session_context(self, ctx)?;
+        remember_active_tab_param(self, ctx, &params)?;
         run_tab_command(self, ctx, method, params).await
     }
 }
@@ -540,6 +693,205 @@ fn record_session_context(
         ctx.session_id.as_deref().unwrap_or_default(),
         ctx.turn_id.as_deref(),
     )
+}
+
+fn remember_active_tab_param(
+    backend: &WebExtensionBackend,
+    ctx: &BackendRequestContext,
+    params: &Value,
+) -> Result<()> {
+    if let Some(tab_id) = params
+        .get("tab_id")
+        .or_else(|| params.get("tabId"))
+        .and_then(|value| {
+            value
+                .as_str()
+                .map(str::to_string)
+                .or_else(|| value.as_i64().map(|value| value.to_string()))
+        })
+    {
+        backend.registry().set_active_tab(
+            ctx.session_id.as_deref().unwrap_or_default(),
+            tab_id,
+            ctx.turn_id.as_deref(),
+        )?;
+    }
+    Ok(())
+}
+
+async fn execute_cdp_raw_with_context(
+    backend: &WebExtensionBackend,
+    ctx: &BackendRequestContext,
+    parsed_tab_id: i64,
+    method: &str,
+    params: Value,
+) -> Result<Value> {
+    execute_cdp_raw_with_options(
+        backend,
+        ctx,
+        parsed_tab_id,
+        method,
+        params,
+        ExecuteCdpOptions::default(),
+    )
+    .await
+}
+
+#[derive(Clone, Copy, Default)]
+struct ExecuteCdpOptions {
+    suppress_agent_overlay_for_capture: bool,
+}
+
+async fn execute_cdp_with_context_options(
+    backend: &WebExtensionBackend,
+    ctx: &BackendRequestContext,
+    tab_id: &str,
+    method: &str,
+    params: Value,
+    options: ExecuteCdpOptions,
+) -> Result<Value> {
+    backend.ensure_active()?;
+    WebExtensionBackend::require_session_context(ctx, "executeCdp")?;
+    let parsed_tab_id = parse_tab_id(tab_id)?;
+    let normalized_tab_id = parsed_tab_id.to_string();
+    ensure_active_tab_if_recorded(backend, &normalized_tab_id)?;
+    record_session_context(backend, ctx)?;
+    backend.registry().set_active_tab(
+        ctx.session_id.as_deref().unwrap_or_default(),
+        normalized_tab_id.as_str(),
+        ctx.turn_id.as_deref(),
+    )?;
+    if crate::backends::cdp::dialogs::method_can_open_dialog(method) {
+        execute_cdp_with_dialog_policy(
+            backend,
+            ctx,
+            &normalized_tab_id,
+            parsed_tab_id,
+            method,
+            params,
+            options,
+        )
+        .await
+    } else {
+        execute_cdp_raw_with_options(backend, ctx, parsed_tab_id, method, params, options).await
+    }
+}
+
+async fn execute_cdp_raw_with_options(
+    backend: &WebExtensionBackend,
+    ctx: &BackendRequestContext,
+    parsed_tab_id: i64,
+    method: &str,
+    params: Value,
+    options: ExecuteCdpOptions,
+) -> Result<Value> {
+    let mut request = Map::new();
+    request.insert("session_id".into(), json!(ctx.session_id.clone()));
+    request.insert("turn_id".into(), json!(ctx.turn_id.clone()));
+    request.insert("target".into(), json!({ "tabId": parsed_tab_id }));
+    request.insert("method".into(), Value::String(method.to_string()));
+    request.insert("commandParams".into(), params);
+    request.insert("timeoutMs".into(), json!(ctx.client_timeout_ms));
+    if options.suppress_agent_overlay_for_capture {
+        request.insert("suppressAgentOverlayForCapture".into(), Value::Bool(true));
+    }
+    backend
+        .transport("executeCdp")?
+        .request("executeCdp", Value::Object(request))
+        .await
+}
+
+async fn execute_cdp_with_dialog_policy(
+    backend: &WebExtensionBackend,
+    ctx: &BackendRequestContext,
+    tab_id: &str,
+    parsed_tab_id: i64,
+    method: &str,
+    params: Value,
+    options: ExecuteCdpOptions,
+) -> Result<Value> {
+    let events = backend.subscribe_notifications();
+    execute_cdp_raw_with_context(backend, ctx, parsed_tab_id, "Page.enable", json!({})).await?;
+    let context = crate::ops::dialogs::DialogContext {
+        tab_id: tab_id.to_string(),
+        session_id: ctx.session_id.clone(),
+        cdp_session_id: None,
+        operation_id: None,
+        operation: Some(method.to_string()),
+    };
+    let operation =
+        execute_cdp_raw_with_options(backend, ctx, parsed_tab_id, method, params, options);
+    crate::ops::dialogs::run_broadcast_dialog_policy_loop(
+        &context,
+        Some(backend.dialog_traces()),
+        operation,
+        events,
+        "extension",
+        |event| {
+            let Some(dialog) = matching_webext_dialog_event(&event, ctx, parsed_tab_id) else {
+                return None;
+            };
+            if let Some(action) = extension_handled_dialog_action(&event, &dialog) {
+                return Some(
+                    crate::ops::dialogs::DialogPolicyEvent::HandledByExternalPolicy {
+                        dialog,
+                        action,
+                    },
+                );
+            }
+            Some(crate::ops::dialogs::DialogPolicyEvent::Open(dialog))
+        },
+        |params| async {
+            execute_cdp_raw_with_context(
+                backend,
+                ctx,
+                parsed_tab_id,
+                "Page.handleJavaScriptDialog",
+                params,
+            )
+            .await
+            .map(|_| ())
+        },
+    )
+    .await
+}
+
+fn matching_webext_dialog_event(
+    event: &ExtensionNotification,
+    ctx: &BackendRequestContext,
+    parsed_tab_id: i64,
+) -> Option<crate::ops::dialogs::JavaScriptDialog> {
+    if event.method != "onCDPEvent" {
+        return None;
+    }
+    if event.params.get("session_id").and_then(Value::as_str) != ctx.session_id.as_deref() {
+        return None;
+    }
+    if event
+        .params
+        .get("source")
+        .and_then(|source| source.get("tabId"))
+        .and_then(Value::as_i64)
+        != Some(parsed_tab_id)
+    {
+        return None;
+    }
+    if event.params.get("method").and_then(Value::as_str) != Some("Page.javascriptDialogOpening") {
+        return None;
+    }
+    crate::ops::dialogs::parse_javascript_dialog(
+        &event.params.get("params").cloned().unwrap_or(Value::Null),
+    )
+}
+
+fn extension_handled_dialog_action(
+    event: &ExtensionNotification,
+    dialog: &crate::ops::dialogs::JavaScriptDialog,
+) -> Option<crate::ops::dialogs::DialogAction> {
+    let handled = event.params.get("handledByExtension")?;
+    let accept = handled.get("accept").and_then(Value::as_bool)?;
+    let action = crate::ops::dialogs::action_for_dialog_type(&dialog.dialog_type);
+    (action.accept() == accept).then_some(action)
 }
 
 fn ensure_active_tab_param_if_recorded(
@@ -1626,8 +1978,17 @@ impl ContentExportBackend for WebExtensionBackend {
         tab_id: &str,
         cdp_params: Value,
     ) -> Result<Value> {
-        self.execute_cdp_with_context(ctx, tab_id, "Page.captureScreenshot", cdp_params)
-            .await
+        execute_cdp_with_context_options(
+            self,
+            ctx,
+            tab_id,
+            "Page.captureScreenshot",
+            cdp_params,
+            ExecuteCdpOptions {
+                suppress_agent_overlay_for_capture: true,
+            },
+        )
+        .await
     }
 
     async fn print_pdf_cdp(&self, ctx: &BackendRequestContext, tab_id: &str) -> Result<Value> {
@@ -1876,6 +2237,10 @@ async fn dom_cua_visible_dom(
     let mut nodes = Vec::new();
     collect_visible_dom_nodes(backend, ctx, tab_id, root, viewport, &mut nodes).await?;
     remember_visible_dom_nodes(backend, ctx, tab_id, &nodes).await;
+    if params.get("format").and_then(Value::as_str) == Some("text") {
+        let text = dom_cua::render_visible_dom_text(&nodes);
+        return Ok(json!({ "format": "text", "text": text, "nodes": nodes }));
+    }
     Ok(json!({ "nodes": nodes }))
 }
 
@@ -2012,24 +2377,17 @@ async fn collect_visible_dom_nodes(
 ) -> Result<()> {
     let mut stack = vec![node];
     while let Some(node) = stack.pop() {
+        if dom_cua::is_hidden_subtree(node) {
+            continue;
+        }
         if let Some(backend_node_id) = node.get("backendNodeId").and_then(Value::as_i64)
             && let Some(rect) = box_model_rect(backend, ctx, tab_id, backend_node_id).await?
             && rect.width > 0.0
             && rect.height > 0.0
             && rect.intersects(viewport)
+            && let Some(entry) = dom_cua::snapshot_entry(node, backend_node_id, rect)
         {
-            nodes.push(json!({
-                "node_id": backend_node_id.to_string(),
-                "tag": node.get("nodeName").and_then(Value::as_str).unwrap_or_default().to_ascii_lowercase(),
-                "text": node.get("nodeValue").and_then(Value::as_str).unwrap_or_default(),
-                "bounds": {
-                    "x": rect.x,
-                    "y": rect.y,
-                    "width": rect.width,
-                    "height": rect.height,
-                },
-                "attributes": dom_cua::attributes_object(node),
-            }));
+            nodes.push(entry);
         }
         for key in ["children", "shadowRoots", "pseudoElements"] {
             if let Some(children) = node.get(key).and_then(Value::as_array) {
@@ -2190,6 +2548,14 @@ fn normalize_tab_response(response: Value) -> Result<Value> {
     normalize_tab(tab)
 }
 
+fn normalize_optional_tab_response(response: Value) -> Result<Option<Value>> {
+    let tab = response.get("tab").cloned().unwrap_or(response);
+    if tab.is_null() {
+        return Ok(None);
+    }
+    normalize_tab(tab).map(Some)
+}
+
 fn normalize_tabs_response(response: Value) -> Result<Value> {
     let tabs = response
         .get("tabs")
@@ -2226,7 +2592,52 @@ fn normalize_tab(tab: Value) -> Result<Value> {
     if let Some(status) = tab.get("status").and_then(Value::as_str) {
         object.insert("status".into(), Value::String(status.to_string()));
     }
+    copy_bool_field(&tab, &mut object, "active", "active");
+    copy_bool_field(&tab, &mut object, "pinned", "pinned");
+    copy_bool_field(&tab, &mut object, "owned", "owned");
+    copy_bool_field(&tab, &mut object, "claimRequired", "claimRequired");
+    copy_bool_field(&tab, &mut object, "commandable", "commandable");
+    copy_bool_field(&tab, &mut object, "logicalActive", "logicalActive");
+    copy_number_field(&tab, &mut object, "windowId", "windowId");
+    copy_number_field(&tab, &mut object, "groupId", "groupId");
+    copy_number_field(&tab, &mut object, "lastAccessed", "lastAccessed");
+    copy_number_field(&tab, &mut object, "lastUsedAt", "lastUsedAt");
+    copy_string_field(&tab, &mut object, "tabGroupTitle", "tabGroupTitle");
+    copy_string_field(&tab, &mut object, "tabGroup", "tabGroup");
     Ok(Value::Object(object))
+}
+
+fn copy_bool_field(
+    source: &Value,
+    target: &mut Map<String, Value>,
+    source_key: &str,
+    target_key: &str,
+) {
+    if let Some(value) = source.get(source_key).and_then(Value::as_bool) {
+        target.insert(target_key.into(), Value::Bool(value));
+    }
+}
+
+fn copy_number_field(
+    source: &Value,
+    target: &mut Map<String, Value>,
+    source_key: &str,
+    target_key: &str,
+) {
+    if let Some(value) = source.get(source_key).and_then(Value::as_i64) {
+        target.insert(target_key.into(), Value::Number(value.into()));
+    }
+}
+
+fn copy_string_field(
+    source: &Value,
+    target: &mut Map<String, Value>,
+    source_key: &str,
+    target_key: &str,
+) {
+    if let Some(value) = source.get(source_key).and_then(Value::as_str) {
+        target.insert(target_key.into(), Value::String(value.to_string()));
+    }
 }
 
 fn record_webext_tab(
@@ -2355,6 +2766,40 @@ fn normalize_finalize_request(ctx: &BackendRequestContext, params: Value) -> Res
     Ok(Value::Object(payload))
 }
 
+fn finalize_keep_tab_ids(params: &Value) -> Result<HashSet<String>> {
+    let mut keep = HashSet::new();
+    let Some(rows) = params.get("keep").and_then(Value::as_array) else {
+        return Ok(keep);
+    };
+    for row in rows {
+        let Some(object) = row.as_object() else {
+            return Err(HostError::Protocol(
+                "finalizeTabs keep entries must be objects".into(),
+            ));
+        };
+        let raw_id = object
+            .get("tab_id")
+            .or_else(|| object.get("tabId"))
+            .or_else(|| object.get("id"))
+            .cloned()
+            .ok_or_else(|| HostError::Protocol("finalizeTabs keep entry missing tab id".into()))?;
+        let tab_id = match raw_id {
+            Value::String(value) => parse_tab_id(&value)?.to_string(),
+            Value::Number(value) => value
+                .as_i64()
+                .ok_or_else(|| HostError::Protocol("finalizeTabs tabId must be an integer".into()))?
+                .to_string(),
+            _ => {
+                return Err(HostError::Protocol(
+                    "finalizeTabs tabId must be string or integer".into(),
+                ));
+            }
+        };
+        keep.insert(tab_id);
+    }
+    Ok(keep)
+}
+
 fn normalize_finalize_response(response: Value) -> Result<Value> {
     let mut object = response
         .as_object()
@@ -2365,6 +2810,68 @@ fn normalize_finalize_response(response: Value) -> Result<Value> {
     normalize_tab_array(&mut object, "keptTabs", "kept_tabs")?;
     normalize_tab_array(&mut object, "deliverableTabs", "deliverable_tabs")?;
     Ok(Value::Object(object))
+}
+
+fn include_tab_ids(response: &mut Value, key: &str, tab_ids: &[String]) -> Result<()> {
+    if tab_ids.is_empty() {
+        return Ok(());
+    }
+    let object = response
+        .as_object_mut()
+        .ok_or_else(|| HostError::Protocol("finalizeTabs response must be an object".into()))?;
+    let entry = object
+        .entry(key.to_string())
+        .or_insert_with(|| Value::Array(Vec::new()));
+    let values = entry
+        .as_array_mut()
+        .ok_or_else(|| HostError::Protocol(format!("finalizeTabs {key} must be an array")))?;
+    let mut seen = values
+        .iter()
+        .filter_map(Value::as_str)
+        .map(str::to_string)
+        .collect::<HashSet<_>>();
+    for tab_id in tab_ids {
+        if seen.insert(tab_id.clone()) {
+            values.push(Value::String(tab_id.clone()));
+        }
+    }
+    Ok(())
+}
+
+fn collect_finalize_terminal_tab_ids(response: &Value, keys: &[&str]) -> HashSet<String> {
+    let mut tab_ids = HashSet::new();
+    for key in keys {
+        let Some(values) = response.get(*key).and_then(Value::as_array) else {
+            continue;
+        };
+        tab_ids.extend(values.iter().filter_map(Value::as_str).map(str::to_string));
+    }
+    tab_ids
+}
+
+fn prune_finalized_tab_rows(
+    response: &mut Value,
+    terminal_tab_ids: &HashSet<String>,
+) -> Result<()> {
+    if terminal_tab_ids.is_empty() {
+        return Ok(());
+    }
+    let object = response
+        .as_object_mut()
+        .ok_or_else(|| HostError::Protocol("finalizeTabs response must be an object".into()))?;
+    for key in ["kept_tabs", "deliverable_tabs"] {
+        let Some(tabs) = object.get_mut(key).and_then(Value::as_array_mut) else {
+            continue;
+        };
+        tabs.retain(|tab| {
+            let tab_id = tab
+                .get("tab_id")
+                .or_else(|| tab.get("id"))
+                .and_then(Value::as_str);
+            !tab_id.is_some_and(|tab_id| terminal_tab_ids.contains(tab_id))
+        });
+    }
+    Ok(())
 }
 
 fn normalize_tab_id_array(object: &mut Map<String, Value>, source: &str, dest: &str) -> Result<()> {

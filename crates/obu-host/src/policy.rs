@@ -53,6 +53,7 @@ pub const METHOD_POLICY_CLASSIFICATIONS: &[(&str, MethodPolicyKind)] = &[
     (methods::PING, MethodPolicyKind::AlwaysAllowed),
     (methods::GET_INFO, MethodPolicyKind::AlwaysAllowed),
     (methods::GET_TABS, MethodPolicyKind::AlwaysAllowed),
+    (methods::GET_CURRENT_TAB, MethodPolicyKind::AlwaysAllowed),
     (methods::NAME_SESSION, MethodPolicyKind::AlwaysAllowed),
     (
         methods::PLAYWRIGHT_WAIT_FOR_TIMEOUT,
@@ -64,10 +65,28 @@ pub const METHOD_POLICY_CLASSIFICATIONS: &[(&str, MethodPolicyKind)] = &[
         MethodPolicyKind::InternalLifecycle,
     ),
     (methods::FINALIZE_TABS, MethodPolicyKind::InternalLifecycle),
+    (methods::YIELD_CONTROL, MethodPolicyKind::InternalLifecycle),
+    (methods::RESUME_CONTROL, MethodPolicyKind::InternalLifecycle),
     (methods::ATTACH, MethodPolicyKind::InternalLifecycle),
     (methods::DETACH, MethodPolicyKind::InternalLifecycle),
     (
         methods::EXECUTE_UNHANDLED_COMMAND,
+        MethodPolicyKind::InternalLifecycle,
+    ),
+    (
+        methods::BROWSER_VIEWPORT_SET,
+        MethodPolicyKind::InternalLifecycle,
+    ),
+    (
+        methods::BROWSER_VIEWPORT_RESET,
+        MethodPolicyKind::InternalLifecycle,
+    ),
+    (
+        methods::BROWSER_VISIBILITY_SET,
+        MethodPolicyKind::InternalLifecycle,
+    ),
+    (
+        methods::BROWSER_VISIBILITY_GET,
         MethodPolicyKind::InternalLifecycle,
     ),
     (methods::CREATE_TAB, MethodPolicyKind::TargetUrl),
@@ -77,8 +96,10 @@ pub const METHOD_POLICY_CLASSIFICATIONS: &[(&str, MethodPolicyKind)] = &[
         methods::PLAYWRIGHT_WAIT_FOR_URL,
         MethodPolicyKind::TargetUrl,
     ),
+    (methods::BROWSER_TABS_CONTENT, MethodPolicyKind::TargetUrl),
     (methods::GET_USER_HISTORY, MethodPolicyKind::History),
     (methods::GET_USER_TABS, MethodPolicyKind::History),
+    (methods::GET_SELECTED_TAB, MethodPolicyKind::History),
     (methods::CLAIM_USER_TAB, MethodPolicyKind::History),
     (
         methods::PLAYWRIGHT_LOCATOR_DOWNLOAD_MEDIA,

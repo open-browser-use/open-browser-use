@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { spawn } from "node:child_process";
 import net from "node:net";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
@@ -70,6 +71,67 @@ test("agent commands accept common human agent aliases", async (t) => {
   assert.equal(payload.agent, "codex-cli");
 });
 
+test("verify reports CLI ready without requiring agent-runtime proof by default", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  withTestXdgConfigHome(t, home);
+  const extensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const runtimeDir = path.join(home, "runtime");
+  const hostBin = await writeExecutable(path.join(bin, "obu-host"), "#!/bin/sh\nexit 0\n");
+  const fakeObu = await writeFakeMcpObu(bin, extensionId);
+  await writeCodexMcpConfig(home, fakeObu, ["mcp", "stdio"]);
+  await writeNativeHostManifest(home, hostBin, extensionId, runtimeDir);
+  const profilePath = path.join(browserProfileRoot("chrome", process.platform, home), "Default");
+  await writeChromePreferences(profilePath, extensionId, 1);
+  await mkdir(path.join(runtimeDir, "webextension"), { recursive: true, mode: 0o700 });
+  await chmod(runtimeDir, 0o700);
+  await chmod(path.join(runtimeDir, "webextension"), 0o700);
+  const socketPath = path.join(runtimeDir, "webextension", "chrome.sock");
+  await startRuntimeDescriptorServer(t, socketPath);
+  await writeRuntimeDescriptor(path.join(runtimeDir, "webextension", "chrome.json"), {
+    schema_version: 1,
+    type: "webextension",
+    name: "chrome",
+    socketPath,
+    sdk_auth_token: "token",
+    pid: process.pid,
+    metadata: {
+      browser_kind: "chrome",
+      extension_id: extensionId,
+      profile_path: profilePath,
+    },
+  });
+
+  const result = await runCli([
+    "verify",
+    "--agent=codex-cli",
+    "--browser=chrome",
+    "--channel=store",
+    `--extension-id=${extensionId}`,
+    "--json",
+  ], {
+    HOME: home,
+    OBU_COMMAND: fakeObu,
+    OBU_HOST_BIN: hostBin,
+    OBU_RUNTIME_DIR: runtimeDir,
+  });
+
+  assert.equal(result.code, 0);
+  assert.equal(result.stderr, "");
+  const payload = JSON.parse(result.stdout);
+  assertVerifyOutcome(payload, "ready", null);
+  assert.equal(payload.verificationTarget, "cli");
+  assert.equal(payload.readiness.cli, "ready");
+  assert.equal(payload.readiness.agentRuntime, "not_checked");
+  assert.equal(payload.agent.runtimeStatus.status, "not_checked");
+  assert.equal(payload.agent.runtimeStatus.reason, "verification_target_cli");
+  assert.equal(payload.mcpRuntime.cli.mcpStarts, true);
+  assert.equal(payload.mcpRuntime.cli.sdkBootstrap, "available");
+  assert.equal(payload.mcpRuntime.cli.backendCount, 1);
+});
+
 test("verify reports browser popup boundary with one next action", async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
   const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
@@ -104,8 +166,10 @@ test("verify reports browser popup boundary with one next action", async (t) => 
   assert.equal(result.code, 1);
   assert.equal(result.stderr, "");
   const payload = JSON.parse(result.stdout);
-  assert.equal(payload.result, "needs_browser_popup");
-  assert.equal(payload.nextAction.kind, "open_popup");
+  assertVerifyOutcome(payload, "needs_browser_popup", "open_popup");
+  assert.equal(payload.productError.code, "browser_popup_boundary");
+  assert.equal(payload.productError.nextAction.kind, "open_popup");
+  assert.equal(payload.checks.find((check: any) => check.id === "runtime-descriptor-probe")?.productError, "browser_popup_boundary");
   assert.equal(payload.agent.id, "codex-cli");
   assert.equal(payload.agent.runtimeStatus.reason, "verification_target_cli");
   assert.equal(payload.browser.profile.path, profilePath);
@@ -115,6 +179,191 @@ test("verify reports browser popup boundary with one next action", async (t) => 
   assert.equal(payload.checks.filter((check: any) => check.status === "fail" && check.actionCandidate).length > 0, true);
   assert.equal(payload.checks.find((check: any) => check.id === "agent-primary-instruction")?.status, "warn");
   assert.equal(payload.checks.find((check: any) => check.id === "agent-primary-instruction")?.reason, "missing_instruction");
+});
+
+test("verify reports setup_missing for extension install and enable actions before popup handoff", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  withTestXdgConfigHome(t, home);
+  const extensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const runtimeDir = path.join(home, "runtime");
+  const hostBin = await writeExecutable(path.join(bin, "obu-host"), "#!/bin/sh\nexit 0\n");
+  await writeCodexMcpConfig(home);
+  await writeNativeHostManifest(home, hostBin, extensionId, runtimeDir);
+  await mkdir(path.join(runtimeDir, "webextension"), { recursive: true, mode: 0o700 });
+  await chmod(runtimeDir, 0o700);
+  await chmod(path.join(runtimeDir, "webextension"), 0o700);
+
+  const missingProfile = path.join(browserProfileRoot("chrome", process.platform, home), "MissingExtension");
+  await mkdir(missingProfile, { recursive: true });
+  const missingResult = await runCli([
+    "verify",
+    "--agent=codex-cli",
+    "--browser=chrome",
+    "--channel=store",
+    `--extension-id=${extensionId}`,
+    "--profile",
+    missingProfile,
+    "--json",
+  ], {
+    HOME: home,
+    OBU_HOST_BIN: hostBin,
+    OBU_RUNTIME_DIR: runtimeDir,
+  });
+
+  assert.equal(missingResult.code, 1);
+  const missingPayload = JSON.parse(missingResult.stdout);
+  assertVerifyOutcome(missingPayload, "needs_manual_action", "install_extension");
+  assert.equal(missingPayload.productError.code, "setup_missing");
+  assert.equal(missingPayload.productError.nextAction.kind, "install_extension");
+  assert.equal(missingPayload.checks.find((check: any) => check.id === "browser-extension-installed")?.productError, "setup_missing");
+
+  const disabledProfile = path.join(browserProfileRoot("chrome", process.platform, home), "DisabledExtension");
+  await writeChromePreferences(disabledProfile, extensionId, 0);
+  const disabledResult = await runCli([
+    "verify",
+    "--agent=codex-cli",
+    "--browser=chrome",
+    "--channel=store",
+    `--extension-id=${extensionId}`,
+    "--profile",
+    disabledProfile,
+    "--json",
+  ], {
+    HOME: home,
+    OBU_HOST_BIN: hostBin,
+    OBU_RUNTIME_DIR: runtimeDir,
+  });
+
+  assert.equal(disabledResult.code, 1);
+  const disabledPayload = JSON.parse(disabledResult.stdout);
+  assertVerifyOutcome(disabledPayload, "needs_manual_action", "enable_extension");
+  assert.equal(disabledPayload.productError.code, "setup_missing");
+  assert.equal(disabledPayload.productError.nextAction.kind, "enable_extension");
+  assert.equal(disabledPayload.checks.find((check: any) => check.id === "browser-extension-installed")?.productError, "setup_missing");
+});
+
+test("verify product errors come from descriptor product codes instead of message parsing", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  withTestXdgConfigHome(t, home);
+  const extensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const wrongExtensionId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const runtimeDir = path.join(home, "runtime");
+  const hostBin = await writeExecutable(path.join(bin, "obu-host"), "#!/bin/sh\nexit 0\n");
+  await writeCodexMcpConfig(home);
+  await writeNativeHostManifest(home, hostBin, extensionId, runtimeDir);
+  const profilePath = path.join(browserProfileRoot("chrome", process.platform, home), "Default");
+  await writeChromePreferences(profilePath, extensionId, 1);
+  await mkdir(path.join(runtimeDir, "webextension"), { recursive: true, mode: 0o700 });
+  await chmod(runtimeDir, 0o700);
+  await chmod(path.join(runtimeDir, "webextension"), 0o700);
+  const socketPath = path.join(runtimeDir, "webextension", "chrome.sock");
+  await startRuntimeDescriptorServer(t, socketPath);
+  await writeRuntimeDescriptor(path.join(runtimeDir, "webextension", "chrome.json"), {
+    schema_version: 1,
+    type: "webextension",
+    name: "chrome",
+    socketPath,
+    sdk_auth_token: "token",
+    pid: process.pid,
+    metadata: {
+      browser_kind: "chrome",
+      extension_id: wrongExtensionId,
+      profile_path: profilePath,
+    },
+  });
+
+  const result = await runCli([
+    "verify",
+    "--agent=codex-cli",
+    "--browser=chrome",
+    "--channel=store",
+    `--extension-id=${extensionId}`,
+    "--json",
+  ], {
+    HOME: home,
+    OBU_HOST_BIN: hostBin,
+    OBU_RUNTIME_DIR: runtimeDir,
+  });
+
+  assert.equal(result.code, 1);
+  const payload = JSON.parse(result.stdout);
+  assertVerifyOutcome(payload, "needs_browser_popup", "open_popup");
+  assert.equal(payload.productError.code, "extension_id_mismatch");
+  assert.equal(payload.checks.find((check: any) => check.id === "runtime-descriptor-probe")?.productError, "extension_id_mismatch");
+  assert.deepEqual(
+    payload.checks.find((check: any) => check.id === "runtime-descriptor-probe")?.details?.descriptorProductErrors,
+    ["extension_id_mismatch"],
+  );
+});
+
+test("verify prefers live runtime metadata over stale descriptor metadata", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  withTestXdgConfigHome(t, home);
+  const extensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const liveExtensionId = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const runtimeDir = path.join(home, "runtime");
+  const hostBin = await writeExecutable(path.join(bin, "obu-host"), "#!/bin/sh\nexit 0\n");
+  await writeCodexMcpConfig(home);
+  await writeNativeHostManifest(home, hostBin, extensionId, runtimeDir);
+  const profilePath = path.join(browserProfileRoot("chrome", process.platform, home), "Default");
+  await writeChromePreferences(profilePath, extensionId, 1);
+  await mkdir(path.join(runtimeDir, "webextension"), { recursive: true, mode: 0o700 });
+  await chmod(runtimeDir, 0o700);
+  await chmod(path.join(runtimeDir, "webextension"), 0o700);
+  const socketPath = path.join(runtimeDir, "webextension", "chrome.sock");
+  await startRuntimeDescriptorServer(t, socketPath, {
+    getInfoResult: {
+      type: "webextension",
+      name: "chrome",
+      metadata: {
+        backend: { browser_kind: "chrome", extension_id: liveExtensionId },
+        diagnostics: { lifecycle: {} },
+      },
+    },
+  });
+  await writeRuntimeDescriptor(path.join(runtimeDir, "webextension", "chrome.json"), {
+    schema_version: 1,
+    type: "webextension",
+    name: "chrome",
+    socketPath,
+    sdk_auth_token: "token",
+    pid: process.pid,
+    metadata: {
+      browser_kind: "chrome",
+      extension_id: extensionId,
+      profile_path: profilePath,
+    },
+  });
+
+  const result = await runCli([
+    "verify",
+    "--agent=codex-cli",
+    "--browser=chrome",
+    "--channel=store",
+    `--extension-id=${extensionId}`,
+    "--json",
+  ], {
+    HOME: home,
+    OBU_HOST_BIN: hostBin,
+    OBU_RUNTIME_DIR: runtimeDir,
+  });
+
+  assert.equal(result.code, 1);
+  const payload = JSON.parse(result.stdout);
+  assertVerifyOutcome(payload, "needs_browser_popup", "open_popup");
+  assert.equal(payload.productError.code, "extension_id_mismatch");
+  const descriptorProbe = payload.checks.find((check: any) => check.id === "runtime-descriptor-probe");
+  assert.deepEqual(descriptorProbe?.details?.descriptorProductErrors, ["extension_id_mismatch"]);
+  assert.match(descriptorProbe?.details?.descriptorErrors?.join("\n") ?? "", new RegExp(liveExtensionId));
 });
 
 test("verify repairs stale native-host manifests before popup handoff", async (t) => {
@@ -160,10 +409,12 @@ test("verify repairs stale native-host manifests before popup handoff", async (t
   assert.equal(result.code, 1);
   const payload = JSON.parse(result.stdout);
   const nativeHost = payload.checks.find((check: any) => check.id === "native-host-manifest");
-  assert.equal(payload.result, "needs_repair");
-  assert.equal(payload.nextAction.kind, "run_repair");
+  assertVerifyOutcome(payload, "needs_repair", "run_repair");
+  assert.equal(payload.productError.code, "native_host_broken");
+  assert.equal(payload.productError.nextAction.kind, "run_repair");
   assert.equal(nativeHost?.status, "fail");
   assert.equal(nativeHost?.reason, "native_host_manifest_invalid");
+  assert.equal(nativeHost?.productError, "native_host_broken");
   assert.match(nativeHost?.message ?? "", /managed wrapper/);
 
   const repaired = await runCli([...verifyArgs.slice(0, -1), "--repair", "--json"], env);
@@ -172,6 +423,7 @@ test("verify repairs stale native-host manifests before popup handoff", async (t
   const repairedNativeHost = repairedPayload.checks.find((check: any) => check.id === "native-host-manifest");
   const repairedManifest = JSON.parse(await readFile(manifestPath, "utf8"));
   assert.equal(repairedPayload.result, "needs_browser_popup");
+  assert.equal(repairedPayload.productError.code, "browser_popup_boundary");
   assert.equal(repairedNativeHost?.status, "pass");
   assert.match(repairedManifest.path, /native-host\/dev\.obu\.host\/chrome\/obu-host-wrapper$/);
 });
@@ -211,8 +463,9 @@ test("verify asks for profile selection when multiple matching profiles are ambi
 
   assert.equal(result.code, 1);
   const payload = JSON.parse(result.stdout);
-  assert.equal(payload.result, "needs_manual_action");
-  assert.equal(payload.nextAction.kind, "select_profile");
+  assertVerifyOutcome(payload, "needs_manual_action", "select_profile");
+  assert.equal(payload.productError.code, "setup_missing");
+  assert.equal(payload.productError.nextAction.kind, "select_profile");
   assert.equal(payload.browser.profile.path, null);
   assert.equal(payload.browser.profile.suggestedPath, defaultProfile);
   assert.deepEqual(payload.browser.profile.candidates.map((candidate: any) => candidate.path), [defaultProfile, secondProfile]);
@@ -267,15 +520,14 @@ test("verify treats missing Codex config as repairable when codex is not on PATH
 
   assert.equal(result.code, 1);
   const payload = JSON.parse(result.stdout);
-  assert.equal(payload.result, "needs_repair");
-  assert.equal(payload.nextAction.kind, "run_repair");
+  assertVerifyOutcome(payload, "needs_repair", "run_repair");
   assert.match(payload.nextAction.command, /verify .*--repair/);
   const agentMcp = payload.checks.find((check: any) => check.id === "agent-mcp-server");
   assert.equal(agentMcp?.reason, "agent_mcp_missing");
   assert.equal(agentMcp?.actionCandidate?.kind, "run_repair");
 });
 
-test("verify does not issue trusted agent-runtime challenges without a registered hook", async (t) => {
+test("verify accepts trusted Codex agent-runtime hook state and rejects stale hook state", async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
   const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
   t.after(() => rm(home, { recursive: true, force: true }));
@@ -331,45 +583,70 @@ test("verify does not issue trusted agent-runtime challenges without a registere
   assert.equal(issuedPayload.readiness.cli, "ready");
   assert.equal(issuedPayload.readiness.agentRuntime, "blocked");
   assert.equal(issuedPayload.agent.runtimeStatus.status, "not_checked");
-  assert.equal(issuedPayload.agent.runtimeStatus.reason, "agent_runtime_hook_unavailable");
-  assert.equal(issuedPayload.nextAction.kind, "unsupported");
-  assert.doesNotMatch(issuedPayload.nextAction.command, /--require-agent-runtime/);
-  await assert.rejects(readFile(challengePath, "utf8"));
+  assert.equal(issuedPayload.agent.runtimeStatus.reason, "agent_runtime_challenge_issued");
+  assert.equal(issuedPayload.agent.runtimeStatus.trustedHook.id, "codex-cli-runtime-status");
+  assert.equal(issuedPayload.agent.runtimeStatus.trustedHook.transport, "agent_owned_ipc");
+  assert.equal(issuedPayload.nextAction.kind, "collect_agent_runtime_status");
+  assert.equal(issuedPayload.nextAction.challenge.path, challengePath);
+  assert.equal(issuedPayload.nextAction.trustedHook.id, "codex-cli-runtime-status");
 
-  const forgedChallengePath = path.join(home, "forged-challenge.json");
+  await writeTrustedAgentRuntimeResult(runtimeDir, challengePath, extensionId, {
+    generatedAt: new Date(Date.now() - 120_000).toISOString(),
+  });
+  const stale = await runCli([
+    "verify",
+    "--agent=codex-cli",
+    "--browser=chrome",
+    "--channel=store",
+    `--extension-id=${extensionId}`,
+    "--require-agent-runtime",
+    `--agent-runtime-challenge-json=${challengePath}`,
+    "--json",
+  ], baseEnv);
+
+  assert.equal(stale.code, 1);
+  const stalePayload = JSON.parse(stale.stdout);
+  assert.equal(stalePayload.result, "needs_manual_action");
+  assert.equal(stalePayload.readiness.cli, "ready");
+  assert.equal(stalePayload.readiness.agentRuntime, "blocked");
+  assert.equal(stalePayload.agent.runtimeStatus.status, "fail");
+  assert.equal(stalePayload.agent.runtimeStatus.provenance, "agent_runtime_hook");
+  assert.equal(stalePayload.agent.runtimeStatus.reason, "stale_status");
+  assert.equal(stalePayload.agent.runtimeStatus.hook.trusted, true);
+
+  const trustedResultFile = await writeTrustedAgentRuntimeResult(runtimeDir, challengePath, extensionId);
+  const ready = await runCli([
+    "verify",
+    "--agent=codex-cli",
+    "--browser=chrome",
+    "--channel=store",
+    `--extension-id=${extensionId}`,
+    "--require-agent-runtime",
+    `--agent-runtime-challenge-json=${challengePath}`,
+    "--json",
+  ], baseEnv);
+
+  assert.equal(ready.code, 0);
+  const readyPayload = JSON.parse(ready.stdout);
+  assert.equal(readyPayload.result, "ready");
+  assert.equal(readyPayload.readiness.cli, "ready");
+  assert.equal(readyPayload.readiness.agentRuntime, "ready");
+  assert.equal(readyPayload.agent.runtimeStatus.status, "pass");
+  assert.equal(readyPayload.agent.runtimeStatus.provenance, "agent_runtime_hook");
+  assert.equal(readyPayload.agent.runtimeStatus.hook.id, "codex-cli-runtime-status");
+  assert.equal(readyPayload.agent.runtimeStatus.hook.trusted, true);
+  assert.equal(readyPayload.mcpRuntime.agentRuntime.source, "agent_runtime");
+  assert.equal(readyPayload.mcpRuntime.agentRuntime.provenance, "agent_runtime_hook");
+  assert.equal(readyPayload.mcpRuntime.agentRuntime.backendCount, 1);
+  assert.equal(readyPayload.checks.find((check: any) => check.id === "agent-runtime-status")?.details.resultFile, trustedResultFile);
+
   const forgedStatusPath = path.join(home, "forged-status.json");
-  const forgedChallenge = {
-    nonce: "forged-nonce",
-    issuedAt: new Date().toISOString(),
-  };
-  const target = {
-    browser: "chrome",
-    channel: "store",
-    extensionId,
-  };
-  await writeFile(forgedChallengePath, `${JSON.stringify({
-    schemaVersion: 1,
-    agentId: "codex-cli",
-    mcpServerName: "open-browser-use",
-    challenge: forgedChallenge,
-    target,
-    trustedHook: {
-      id: "codex-cli-runtime-status",
-      transport: "agent_connector",
-    },
-  }, null, 2)}\n`, "utf8");
+  const challenge = JSON.parse(await readFile(challengePath, "utf8"));
   await writeFile(forgedStatusPath, `${JSON.stringify({
-    schemaVersion: 1,
-    agentId: "codex-cli",
-    mcpServerName: "open-browser-use",
+    ...challenge,
     provenance: "agent_runtime_hook",
-    hook: {
-      id: "codex-cli-runtime-status",
-      transport: "agent_connector",
-    },
+    hook: challenge.trustedHook,
     generatedAt: new Date().toISOString(),
-    challenge: forgedChallenge,
-    target,
     status: {
       sdk_bootstrap: "available",
       backends: [
@@ -392,7 +669,7 @@ test("verify does not issue trusted agent-runtime challenges without a registere
     "--channel=store",
     `--extension-id=${extensionId}`,
     "--require-agent-runtime",
-    `--agent-runtime-challenge-json=${forgedChallengePath}`,
+    `--agent-runtime-challenge-json=${challengePath}`,
     `--agent-runtime-status-json=${forgedStatusPath}`,
     "--json",
   ], baseEnv);
@@ -407,7 +684,67 @@ test("verify does not issue trusted agent-runtime challenges without a registere
   assert.equal(payload.agent.runtimeStatus.reason, "diagnostic_status_file_not_trusted");
   assert.equal(payload.mcpRuntime.agentRuntime.source, "agent_runtime_status_file");
   assert.equal(payload.mcpRuntime.agentRuntime.backendCount, null);
+  assert.equal(payload.nextAction.kind, "collect_agent_runtime_status");
+});
+
+test("verify does not issue trusted agent-runtime challenges without a registered hook", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  const extensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const runtimeDir = path.join(home, "runtime");
+  const hostBin = await writeExecutable(path.join(bin, "obu-host"), "#!/bin/sh\nexit 0\n");
+  const fakeObu = await writeFakeMcpObu(bin, extensionId);
+  await writeCursorMcpConfig(home, fakeObu, ["mcp", "stdio"]);
+  await writeNativeHostManifest(home, hostBin, extensionId, runtimeDir);
+  const profilePath = path.join(browserProfileRoot("chrome", process.platform, home), "Default");
+  await writeChromePreferences(profilePath, extensionId, 1);
+  await mkdir(path.join(runtimeDir, "webextension"), { recursive: true, mode: 0o700 });
+  await chmod(runtimeDir, 0o700);
+  await chmod(path.join(runtimeDir, "webextension"), 0o700);
+  const socketPath = path.join(runtimeDir, "webextension", "chrome.sock");
+  await startRuntimeDescriptorServer(t, socketPath);
+  await writeRuntimeDescriptor(path.join(runtimeDir, "webextension", "chrome.json"), {
+    schema_version: 1,
+    type: "webextension",
+    name: "chrome",
+    socketPath,
+    sdk_auth_token: "token",
+    pid: process.pid,
+    metadata: {
+      browser_kind: "chrome",
+      extension_id: extensionId,
+      profile_path: profilePath,
+    },
+  });
+  const challengePath = path.join(home, "cursor-challenge.json");
+
+  const result = await runCli([
+    "verify",
+    "--agent=cursor",
+    "--browser=chrome",
+    "--channel=store",
+    `--extension-id=${extensionId}`,
+    "--require-agent-runtime",
+    `--agent-runtime-challenge-out=${challengePath}`,
+    "--json",
+  ], {
+    HOME: home,
+    OBU_COMMAND: fakeObu,
+    OBU_HOST_BIN: hostBin,
+    OBU_RUNTIME_DIR: runtimeDir,
+  });
+
+  assert.equal(result.code, 1);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.readiness.cli, "ready");
+  assert.equal(payload.readiness.agentRuntime, "blocked");
+  assert.equal(payload.agent.runtimeStatus.status, "not_checked");
+  assert.equal(payload.agent.runtimeStatus.reason, "agent_runtime_hook_unavailable");
   assert.equal(payload.nextAction.kind, "unsupported");
+  assert.doesNotMatch(payload.nextAction.command, /--require-agent-runtime/);
+  await assert.rejects(readFile(challengePath, "utf8"));
 });
 
 test("agent doctor verifies Codex global config without codex on PATH", async (t) => {
@@ -1273,8 +1610,14 @@ test("setup can write Codex and Claude primary-browser instructions explicitly",
   const payload = JSON.parse(result.stdout);
   assert.equal(payload.steps.find((step: any) => step.id === "agent-codex-cli-instructions")?.status, "applied");
   assert.equal(payload.steps.find((step: any) => step.id === "agent-claude-code-instructions")?.status, "applied");
-  assert.match(await readFile(path.join(home, ".codex", "AGENTS.md"), "utf8"), /primary BrowserUse\/browser automation tool/);
-  assert.match(await readFile(path.join(home, ".claude", "CLAUDE.md"), "utf8"), /primary BrowserUse\/browser automation tool/);
+  const codexInstructions = await readFile(path.join(home, ".codex", "AGENTS.md"), "utf8");
+  const claudeInstructions = await readFile(path.join(home, ".claude", "CLAUDE.md"), "utf8");
+  for (const instructions of [codexInstructions, claudeInstructions]) {
+    assert.match(instructions, /primary BrowserUse\/browser automation tool/);
+    assert.match(instructions, /Check `browser_status`/);
+    assert.match(instructions, /use the `js` tool for browser automation/);
+    assert.match(instructions, /run `~\/\.obu\/bin\/obu verify --agent=<agent-id> --browser=<browser> --channel=<channel> --extension-id=<extension-id>`/);
+  }
 });
 
 test("setup returns a manual action instead of writing malformed Codex config", async (t) => {
@@ -1484,6 +1827,57 @@ async function writeCodexMcpConfig(home: string, command = process.execPath, arg
   ].join("\n"), "utf8");
 }
 
+async function writeCursorMcpConfig(home: string, command: string, args: string[]): Promise<void> {
+  await mkdir(path.join(home, ".cursor"), { recursive: true });
+  await writeFile(path.join(home, ".cursor", "mcp.json"), `${JSON.stringify({
+    mcpServers: {
+      "open-browser-use": {
+        command,
+        args,
+      },
+    },
+  }, null, 2)}\n`, "utf8");
+}
+
+async function writeTrustedAgentRuntimeResult(
+  runtimeDir: string,
+  challengePath: string,
+  extensionId: string,
+  options: { generatedAt?: string; status?: Record<string, unknown> } = {},
+): Promise<string> {
+  const challenge = JSON.parse(await readFile(challengePath, "utf8"));
+  const nonce = challenge.challenge.nonce;
+  const digest = createHash("sha256").update(nonce).digest("hex");
+  const resultFile = path.join(runtimeDir, "agent-runtime-hooks", challenge.agentId, challenge.trustedHook.id, `${digest}.json`);
+  await mkdir(path.dirname(resultFile), { recursive: true, mode: 0o700 });
+  const status = options.status ?? {
+    sdk_bootstrap: "available",
+    backends: [
+      {
+        type: "webextension",
+        name: "chrome",
+        metadata: {
+          browser_kind: "chrome",
+          extension_id: extensionId,
+        },
+      },
+    ],
+  };
+  await writeFile(resultFile, `${JSON.stringify({
+    schemaVersion: 1,
+    agentId: challenge.agentId,
+    mcpServerName: "open-browser-use",
+    provenance: "agent_runtime_hook",
+    hook: challenge.trustedHook,
+    generatedAt: options.generatedAt ?? new Date().toISOString(),
+    challenge: challenge.challenge,
+    target: challenge.target,
+    status,
+  }, null, 2)}\n`, "utf8");
+  await chmod(resultFile, 0o600);
+  return resultFile;
+}
+
 async function writeFakeMcpObu(bin: string, extensionId: string): Promise<string> {
   const mcpScript = path.join(bin, "fake-mcp.js");
   await writeFile(mcpScript, `
@@ -1575,7 +1969,11 @@ async function writeRuntimeDescriptor(file: string, value: Record<string, unknow
   await chmod(file, 0o600);
 }
 
-async function startRuntimeDescriptorServer(t: { after: (fn: () => void | Promise<void>) => void }, socketPath: string): Promise<void> {
+async function startRuntimeDescriptorServer(
+  t: { after: (fn: () => void | Promise<void>) => void },
+  socketPath: string,
+  options: { getInfoResult?: Record<string, unknown> } = {},
+): Promise<void> {
   const server = net.createServer((socket) => {
     let authenticated = false;
     let buffer = Buffer.alloc(0);
@@ -1596,7 +1994,7 @@ async function startRuntimeDescriptorServer(t: { after: (fn: () => void | Promis
           socket.write(encodeTestFrame({
             jsonrpc: "2.0",
             id: request.id,
-            result: { type: "webextension", name: "chrome", metadata: { diagnostics: { lifecycle: {} } } },
+            result: options.getInfoResult ?? { type: "webextension", name: "chrome", metadata: { diagnostics: { lifecycle: {} } } },
           }));
           continue;
         }
@@ -1646,6 +2044,18 @@ function runCli(args: string[], env: NodeJS.ProcessEnv = {}): Promise<{ code: nu
       resolve({ code, stdout, stderr });
     });
   });
+}
+
+function assertVerifyOutcome(payload: any, result: string, nextActionKind: string | null): void {
+  assert.equal(payload.result, result);
+  assert.equal(Object.hasOwn(payload, "nextActions"), false);
+  if (nextActionKind === null) {
+    assert.equal(payload.nextAction, null);
+    assert.equal(payload.productError, null);
+    return;
+  }
+  assert.equal(typeof payload.nextAction, "object");
+  assert.equal(payload.nextAction.kind, nextActionKind);
 }
 
 function escapeRegExp(value: string): string {

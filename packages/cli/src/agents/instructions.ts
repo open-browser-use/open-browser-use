@@ -1,10 +1,11 @@
 import { access } from "node:fs/promises";
 import { constants } from "node:fs";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
 import type { AgentId } from "./registry.js";
+import { readOptionalRegularText, writeRegularTextFile } from "./safe-file.js";
 
 export type AgentInstructionStep = {
   id: string;
@@ -29,6 +30,11 @@ export const PRIMARY_BROWSER_INSTRUCTION = [
   PRIMARY_INSTRUCTION_NEEDLE,
   "Prefer the `open-browser-use` MCP server for browser tasks. Check `browser_status`",
   "before the first browser action, use the `js` tool for browser automation, and",
+  "keep browser state continuous with persistent `globalThis.browser` / `globalThis.tab`",
+  "handles. Prefer `browser.tabs.current()` for same-task continuation, and do not",
+  "open repeated search tabs once a page has an authoritative success/cart/result signal.",
+  "Use `browser.yieldControl()` / `browser.resumeControl()` for human takeover without",
+  "destroying the current task tab.",
   "run `~/.obu/bin/obu verify --agent=<agent-id> --browser=<browser> --channel=<channel> --extension-id=<extension-id>` if setup appears stale.",
 ].join("\n");
 
@@ -69,7 +75,7 @@ export async function configureAgentInstructions(options: AgentInstructionOption
 
   try {
     await mkdir(path.dirname(target.path), { recursive: true, mode: 0o700 });
-    await writeFile(target.path, appendInstruction(current), { encoding: "utf8", mode: 0o600 });
+    await writeRegularTextFile(target.path, appendInstruction(current), 0o600);
   } catch (error) {
     return ioFailure(id, target.path, error);
   }
@@ -132,13 +138,7 @@ function globalInstructionPath(agent: AgentId, homeDir: string): string | undefi
 }
 
 async function readOptionalFile(file: string): Promise<string | undefined> {
-  try {
-    return await readFile(file, "utf8");
-  } catch (error) {
-    const nodeError = error as NodeJS.ErrnoException;
-    if (nodeError.code === "ENOENT") return undefined;
-    throw error;
-  }
+  return await readOptionalRegularText(file);
 }
 
 async function exists(file: string): Promise<boolean> {

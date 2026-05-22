@@ -54,19 +54,19 @@ impl PlaywrightRuntimeBackend for CdpBackend {
         expression: String,
     ) -> Result<Value> {
         let session_id = require_session(self, tab_id)?;
-        self.transport()
-            .send_command(
-                "Runtime.evaluate",
-                json!({
-                    "expression": expression,
-                    "returnByValue": true,
-                    "awaitPromise": true,
-                    "userGesture": true,
-                }),
-                Some(&session_id),
-            )
-            .await
-            .map_err(HostError::from)
+        crate::backends::cdp::dialogs::send_command_with_dialog_policy(
+            self,
+            tab_id,
+            &session_id,
+            "Runtime.evaluate",
+            json!({
+                "expression": expression,
+                "returnByValue": true,
+                "awaitPromise": true,
+                "userGesture": true,
+            }),
+        )
+        .await
     }
 }
 
@@ -352,7 +352,7 @@ async fn download_path(
             |_| HostError::from(crate::backends::cdp::error::CdpError::Disconnected),
             |event| {
                 if event.method == "Browser.downloadProgress"
-                    && handle_ops::download_progress_completed_for_guid(&event.params, &guid)
+                    && handle_ops::download_progress_terminal_for_guid(&event.params, &guid)
                 {
                     return Some(event.params);
                 }
@@ -360,6 +360,12 @@ async fn download_path(
             },
         )
         .await?;
+        if handle_ops::download_progress_is_canceled(&progress) {
+            return Err(HostError::CdpFailure(format!(
+                "download {} was canceled; event={progress}",
+                download_id.0
+            )));
+        }
         let path = handle_ops::download_progress_file_path(&progress);
         handle_ops::mark_download_completed(backend.registry(), &download_id, &mut state, path)?;
     }

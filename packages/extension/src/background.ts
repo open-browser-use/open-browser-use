@@ -1,10 +1,33 @@
-import { initI18n, msg } from "./i18n.js";
+import {
+  OverlayCoordinator,
+  type CdpInputBypass,
+  type CursorTarget,
+  type CursorVisualEvent,
+  type InputBypassEventFamily,
+  type PendingExtensionUpdateTrigger,
+  type SessionParams,
+} from "./overlay_coordinator.js";
+import {
+  NativeHostBridge,
+  type JsonRpcRequest,
+  type JsonRpcResponse,
+} from "./native_host_bridge.js";
+import {
+  createBrowserSession,
+  parsePersistedBrowserSessionState,
+  serializeBrowserSessions,
+  type BrowserSession,
+  type SessionTab,
+  type TabOrigin,
+} from "./session_store.js";
+import { requireTabWindowId, TabGroupManager } from "./tab_group_manager.js";
 
 const HOST_NAME = "dev.obu.host";
 const STATUS_KEY = "OBU_NATIVE_HOST_STATUS";
 const INSTANCE_KEY = "OBU_EXTENSION_INSTANCE_ID";
 const SESSION_STATE_KEY = "OBU_BROWSER_SESSION_STATE";
 const DEBUG_LOG_KEY = "OBU_DEBUG_LOG";
+const PENDING_UPDATE_KEY = "OBU_PENDING_EXTENSION_UPDATE";
 const DEBUG_LOG_MAX_ENTRIES = 200;
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 const HELLO_TIMEOUT_MS = 5_000;
@@ -13,10 +36,6 @@ const HEARTBEAT_TIMEOUT_MS = 5_000;
 const RECONNECT_INITIAL_MS = 1_000;
 const RECONNECT_MAX_MS = 30_000;
 const RECONNECT_ALARM_NAME = "obu.reconnectNativeHost";
-const CURSOR_ARRIVAL_TIMEOUT_MS = 750;
-const CONTENT_PING_TIMEOUT_MS = 1_000;
-const CONTENT_SCRIPT_HANDLER = "__OBU_CURSOR_CONTENT_SCRIPT_HANDLE_MESSAGE__";
-
 type HostStatus = {
   state: "disconnected" | "connecting" | "connected" | "version_mismatch" | "stopped" | "error";
   message?: string;
@@ -25,7 +44,14 @@ type HostStatus = {
   deliverableTabs?: number;
   retryDelayMs?: number;
   nextRetryAt?: number;
+  pendingExtensionUpdate?: PendingExtensionUpdate;
   updatedAt: number;
+};
+
+type PendingExtensionUpdate = {
+  version?: string;
+  pendingSince: number;
+  state: "waiting_for_idle";
 };
 
 type HostDiagnosis =
@@ -37,26 +63,6 @@ type HostDiagnosis =
   | "native_host_heartbeat_timeout"
   | "native_host_unavailable"
   | "version_mismatch";
-
-type JsonRpcRequest = {
-  jsonrpc: "2.0";
-  id: number;
-  method: string;
-  params?: unknown;
-};
-
-type JsonRpcResponse = {
-  jsonrpc: "2.0";
-  id: number;
-  result?: unknown;
-  error?: { code: number; message: string; data?: unknown };
-};
-
-type JsonRpcNotification = {
-  jsonrpc: "2.0";
-  method: string;
-  params?: unknown;
-};
 
 type DebugLogLevel = "debug" | "info" | "warn" | "error";
 
@@ -74,234 +80,31 @@ type DebugLogSnapshot = {
 
 let status: HostStatus = { state: "disconnected", updatedAt: Date.now() };
 let port: NativePort | null = null;
-let nextId = 1;
 let stopping = false;
 let debugLog: DebugLogSnapshot = { enabled: false, entries: [] };
 let debugLogSave: Promise<void> = Promise.resolve();
-const pending = new Map<number, { resolve(value: unknown): void; reject(error: Error): void }>();
 const sessions = new Map<string, BrowserSession>();
 const downloadOwnersByUrl = new Map<string, DownloadOwner[]>();
 const downloadOwnersById = new Map<number, DownloadOwner>();
 const debuggerAttachLocks = new Map<number, Promise<void>>();
+const pendingDialogAwareCloses = new Map<number, PendingDialogAwareClose>();
 let helloTimer: ReturnType<typeof setTimeout> | undefined;
 let heartbeatTimer: ReturnType<typeof setTimeout> | undefined;
 let reconnectTimer: ReturnType<typeof setTimeout> | undefined;
 let reconnectDelayMs = RECONNECT_INITIAL_MS;
+let pendingExtensionUpdate: PendingExtensionUpdate | undefined;
+let pendingExtensionUpdateCheckTimer: ReturnType<typeof setTimeout> | undefined;
+let pendingExtensionUpdateCheckTrigger: PendingExtensionUpdateTrigger | undefined;
+let applyingPendingExtensionUpdate = false;
 
-class OverlayCoordinator {
-  private nextCursorSequence = 1;
-  private cursorArrivalWaiters = new Map<number, CursorArrivalWaiter>();
-  private activeTakeovers = new Map<number, ActiveTakeover>();
-  private contentScriptPreparations = new Map<number, Promise<boolean>>();
-
-  async activate(tabId: number, sessionParams: SessionParams): Promise<void> {
-    const state: ActiveTakeover = {
-      sessionId: sessionParams.session_id,
-      turnId: sessionParams.turn_id,
-      lockInputs: true,
-    };
-    this.activeTakeovers.set(tabId, state);
-    await this.sendTakeoverState(tabId, state);
-  }
-
-  async reassert(tabId: number): Promise<void> {
-    const state = this.activeTakeovers.get(tabId);
-    if (!state) return;
-    await this.sendTakeoverState(tabId, state);
-  }
-
-  forget(tabId: number): void {
-    this.activeTakeovers.delete(tabId);
-    this.rejectWaitersForTab(tabId);
-  }
-
-  activeTabIds(): number[] {
-    return [...this.activeTakeovers.keys()];
-  }
-
-  private async sendTakeoverState(tabId: number, state: ActiveTakeover): Promise<boolean> {
-    return await this.sendContentMessage(tabId, {
-      type: "OBU_TAKEOVER_STATE",
-      active: true,
-      lockInputs: state.lockInputs,
-      sessionId: state.sessionId,
-      turnId: state.turnId,
-      reason: "browser-control",
-    });
-  }
-
-  async moveMouse(tabId: number, sessionParams: SessionParams, x: number, y: number): Promise<unknown> {
-    const visible = await this.isTabVisible(tabId);
-    if (!visible) return { visible: false };
-    await this.activate(tabId, sessionParams);
-
-    const sequence = this.nextCursorSequence++;
-    const arrival = this.waitForArrival(tabId, sequence, sessionParams);
-    const sent = await this.sendContentMessage(tabId, {
-      type: "OBU_CURSOR_MOVE",
-      x,
-      y,
-      sequence,
-      sessionId: sessionParams.session_id,
-      turnId: sessionParams.turn_id,
-    });
-    if (!sent) {
-      this.cancelArrival(sequence, false);
-      return { visible: false };
-    }
-    const arrived = await arrival;
-    return { visible: true, arrived, sequence };
-  }
-
-  async sendCursorEvent(tabId: number, sessionParams: SessionParams, event: CursorVisualEvent): Promise<void> {
-    await this.sendContentMessage(tabId, {
-      type: "OBU_CURSOR_EVENT",
-      kind: event.kind,
-      x: event.x,
-      y: event.y,
-      button: event.button,
-      sessionId: sessionParams.session_id,
-      turnId: sessionParams.turn_id,
-    });
-  }
-
-  async allowCdpInput(tabId: number, sessionParams: SessionParams, bypass: CdpInputBypass): Promise<void> {
-    await this.sendContentMessage(tabId, {
-      type: "OBU_INPUT_BYPASS",
-      durationMs: bypass.durationMs,
-      eventFamilies: bypass.eventFamilies,
-      sessionId: sessionParams.session_id,
-      turnId: sessionParams.turn_id,
-      reason: bypass.reason,
-    });
-  }
-
-  handleCursorArrived(message: unknown): void {
-    if (!isRecord(message) || typeof message.sequence !== "number") return;
-    const waiter = this.cursorArrivalWaiters.get(message.sequence);
-    if (!waiter) return;
-    if (message.sessionId !== waiter.sessionId) return;
-    if (message.turnId !== waiter.turnId) return;
-    this.cursorArrivalWaiters.delete(message.sequence);
-    clearTimeout(waiter.timer);
-    waiter.resolve(true);
-  }
-
-  async hide(tabId: number): Promise<void> {
-    this.activeTakeovers.delete(tabId);
-    this.rejectWaitersForTab(tabId);
-    await this.sendContentMessage(tabId, { type: "OBU_CURSOR_HIDE" }, { prepare: false });
-  }
-
-  private async sendContentMessage(tabId: number, message: unknown, options: { prepare?: boolean } = {}): Promise<boolean> {
-    if (options.prepare !== false && !await this.prepareContentScript(tabId)) return false;
-    try {
-      const results = await chrome.scripting.executeScript({
-        target: { tabId, allFrames: true },
-        world: "ISOLATED",
-        args: [CONTENT_SCRIPT_HANDLER, message],
-        func: (handlerName: string, payload: unknown) => {
-          const handler = (globalThis as Record<string, unknown>)[handlerName];
-          if (typeof handler !== "function") return false;
-          handler(payload);
-          return true;
-        },
-      });
-      return results.some((result) => result.result === true);
-    } catch {
-      return false;
-    }
-  }
-
-  private async prepareContentScript(tabId: number): Promise<boolean> {
-    if (await this.pingContentScript(tabId)) return true;
-    let pending = this.contentScriptPreparations.get(tabId);
-    if (!pending) {
-      pending = this.injectContentScript(tabId).finally(() => {
-        this.contentScriptPreparations.delete(tabId);
-      });
-      this.contentScriptPreparations.set(tabId, pending);
-    }
-    return await pending;
-  }
-
-  private async pingContentScript(tabId: number): Promise<boolean> {
-    try {
-      const response = await withTimeout(
-        chrome.tabs.sendMessage(tabId, { type: "OBU_CONTENT_PING" }),
-        CONTENT_PING_TIMEOUT_MS,
-      );
-      return isRecord(response) && response.ok === true;
-    } catch {
-      return false;
-    }
-  }
-
-  private async injectContentScript(tabId: number): Promise<boolean> {
-    try {
-      await chrome.scripting.executeScript({
-        files: ["cursor.js"],
-        injectImmediately: true,
-        world: "ISOLATED",
-        target: { tabId, allFrames: true },
-      });
-    } catch {
-      return false;
-    }
-    return await this.pingContentScript(tabId);
-  }
-
-  private async isTabVisible(tabId: number): Promise<boolean> {
-    let tab: ChromeTab;
-    try {
-      tab = await chrome.tabs.get(tabId);
-    } catch {
-      return false;
-    }
-    if (tab.active !== true || typeof tab.windowId !== "number") return false;
-    try {
-      const windowInfo = await chrome.windows.get(tab.windowId);
-      return windowInfo.type === "normal" && windowInfo.state !== "minimized";
-    } catch {
-      return false;
-    }
-  }
-
-  private waitForArrival(tabId: number, sequence: number, sessionParams: SessionParams): Promise<boolean> {
-    return new Promise((resolve) => {
-      const timer = scheduleTimer(() => {
-        this.cursorArrivalWaiters.delete(sequence);
-        resolve(false);
-      }, CURSOR_ARRIVAL_TIMEOUT_MS);
-      this.cursorArrivalWaiters.set(sequence, {
-        tabId,
-        sessionId: sessionParams.session_id,
-        turnId: sessionParams.turn_id,
-        timer,
-        resolve,
-      });
-    });
-  }
-
-  private cancelArrival(sequence: number, value: boolean): void {
-    const waiter = this.cursorArrivalWaiters.get(sequence);
-    if (!waiter) return;
-    this.cursorArrivalWaiters.delete(sequence);
-    clearTimeout(waiter.timer);
-    waiter.resolve(value);
-  }
-
-  private rejectWaitersForTab(tabId: number): void {
-    for (const [sequence, waiter] of this.cursorArrivalWaiters) {
-      if (waiter.tabId !== tabId) continue;
-      this.cursorArrivalWaiters.delete(sequence);
-      clearTimeout(waiter.timer);
-      waiter.resolve(false);
-    }
-  }
-}
-
-const overlayCoordinator = new OverlayCoordinator();
+const overlayCoordinator = new OverlayCoordinator((trigger) => {
+  schedulePendingExtensionUpdateCheck(trigger);
+});
+const nativeHostBridge = new NativeHostBridge(
+  () => port,
+  (level, event, data) => appendDebugLog(level, event, data),
+);
+const tabGroupManager = new TabGroupManager((level, event, data) => appendDebugLog(level, event, data));
 
 void bootstrapBackground();
 
@@ -313,8 +116,40 @@ chrome.alarms.onAlarm.addListener((alarm) => {
   }
 });
 
+chrome.runtime.onUpdateAvailable?.addListener((details) => {
+  void handleUpdateAvailable(details);
+});
+
 chrome.tabs.onRemoved.addListener((tabId) => {
   void handleTabRemoved(tabId);
+});
+
+chrome.tabs.onActivated?.addListener((activeInfo) => {
+  void handleForegroundTabChanged(activeInfo.tabId, "tab_activated");
+});
+
+chrome.tabs.onAttached?.addListener((tabId) => {
+  void handleForegroundTabChanged(tabId, "tab_attached");
+});
+
+chrome.tabs.onDetached?.addListener((tabId) => {
+  void handleForegroundTabChanged(tabId, "tab_detached");
+});
+
+chrome.tabs.onReplaced?.addListener((addedTabId, removedTabId) => {
+  void handleTabReplaced(addedTabId, removedTabId);
+});
+
+chrome.windows.onFocusChanged?.addListener((windowId) => {
+  void handleWindowFocusChanged(windowId);
+});
+
+chrome.tabGroups.onCreated?.addListener((group) => {
+  if (Number.isInteger(group.id)) void tabGroupManager.reconcileGroupId(group.id);
+});
+
+chrome.tabGroups.onUpdated?.addListener((group) => {
+  if (Number.isInteger(group.id)) void tabGroupManager.reconcileGroupId(group.id);
 });
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
@@ -331,6 +166,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     if (isMessage(message, "RESUME_BROWSER_CONTROL")) {
       await resumeBrowserControl();
       sendResponse(await getStatus());
+      return;
+    }
+    if (isMessage(message, "CLEAN_UP_BROWSER_TABS")) {
+      sendResponse(await cleanUpBrowserTabs());
       return;
     }
     if (isMessage(message, "GET_DEBUG_LOG_STATUS")) {
@@ -371,7 +210,46 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   if (!owner || !owner.session.attachedTabIds.has(tabId!)) return;
   appendDebugLog("debug", "debugger.event", { method, tabId });
   if (method === "Page.downloadWillBegin" && isRecord(params) && typeof params.url === "string") {
-    enqueueDownloadOwner(params.url, { sessionId: owner.sessionId, tabId });
+    enqueueDownloadOwner(params.url, {
+      sessionId: owner.sessionId,
+      tabId,
+      suggestedFilename: typeof params.suggestedFilename === "string" ? params.suggestedFilename : undefined,
+    });
+  }
+  const safeDialogAction = safeDialogAutoAction(method, params);
+  if (safeDialogAction) {
+    sendNotification("onCDPEvent", {
+      session_id: owner.sessionId,
+      source: { tabId },
+      method,
+      params,
+      handledByExtension: safeDialogAction,
+    });
+    void chrome.debugger
+      .sendCommand({ tabId: tabId! }, "Page.handleJavaScriptDialog", { accept: safeDialogAction.accept })
+      .catch((error) => {
+        appendDebugLog("warn", "debugger.dialog.handle.failed", { tabId, message: errorMessage(error) });
+    });
+    return;
+  }
+  const closeDecisionAction = pendingCloseDecisionAction(tabId!, method, params);
+  if (closeDecisionAction) {
+    sendNotification("onCDPEvent", {
+      session_id: owner.sessionId,
+      source: { tabId },
+      method,
+      params,
+      handledByExtension: closeDecisionAction.handledByExtension,
+    });
+    void chrome.debugger
+      .sendCommand({ tabId: tabId! }, "Page.handleJavaScriptDialog", { accept: false })
+      .catch((error) => {
+        appendDebugLog("warn", "debugger.dialog.dismiss.failed", { tabId, message: errorMessage(error) });
+      })
+      .finally(() => {
+        closeDecisionAction.reject();
+      });
+    return;
   }
   sendNotification("onCDPEvent", {
     session_id: owner.sessionId,
@@ -380,6 +258,41 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
     params,
   });
 });
+
+function safeDialogAutoAction(method: string, params: unknown): { defaultAction: "accept"; accept: true } | undefined {
+  if (method !== "Page.javascriptDialogOpening" || !isRecord(params)) return undefined;
+  const dialogType = typeof params.type === "string" ? params.type : "";
+  if (dialogType !== "alert" && dialogType !== "beforeunload") return undefined;
+  return { defaultAction: "accept", accept: true };
+}
+
+function pendingCloseDecisionAction(
+  tabId: number,
+  method: string,
+  params: unknown,
+): { handledByExtension: { defaultAction: "dismiss_requires_decision"; accept: false }; reject(): void } | undefined {
+  if (method !== "Page.javascriptDialogOpening" || !isRecord(params)) return undefined;
+  const pendingClose = pendingDialogAwareCloses.get(tabId);
+  if (!pendingClose) return undefined;
+  const dialogType = typeof params.type === "string" ? params.type : "";
+  if (dialogType !== "confirm" && dialogType !== "prompt") return undefined;
+  const messageLength = typeof params.message === "string" ? params.message.length : 0;
+  return {
+    handledByExtension: { defaultAction: "dismiss_requires_decision", accept: false },
+    reject() {
+      pendingClose.reject(new Error(
+        `dialog_requires_decision: ${dialogType} dialog on tab ${tabId} blocked ${pendingClose.operation} and was dismissed`,
+      ));
+      appendDebugLog("warn", "debugger.dialog.requires_decision", {
+        tabId,
+        sessionId: pendingClose.sessionId,
+        operation: pendingClose.operation,
+        dialogType,
+        messageLength,
+      });
+    },
+  };
+}
 
 chrome.debugger.onDetach.addListener((source) => {
   const tabId = source.tabId;
@@ -398,7 +311,7 @@ chrome.debugger.onDetach.addListener((source) => {
 });
 
 chrome.downloads.onCreated.addListener((item) => {
-  const owner = typeof item.url === "string" ? takeDownloadOwner(item.url) : undefined;
+  const owner = takeDownloadOwner(item);
   if (!owner) return;
   appendDebugLog("debug", "download.created", { id: item.id, tabId: owner.tabId });
   downloadOwnersById.set(item.id, owner);
@@ -420,8 +333,7 @@ async function handleDownloadChanged(delta: ChromeDownloadDelta): Promise<void> 
   const owner = downloadOwnersById.get(delta.id);
   if (!owner) return;
   const item = await chrome.downloads.search({ id: delta.id }).then((rows) => rows[0]).catch(() => undefined);
-  const state = item?.state ?? delta.state?.current;
-  const status = state === "complete" ? "complete" : state === "interrupted" ? "failed" : undefined;
+  const status = downloadStatus(item?.state ?? delta.state?.current);
   if (!status) return;
   appendDebugLog(status === "failed" ? "warn" : "debug", "download.changed", { id: delta.id, status, tabId: owner.tabId });
   sendNotification("onDownloadChange", {
@@ -436,6 +348,12 @@ async function handleDownloadChanged(delta: ChromeDownloadDelta): Promise<void> 
   if (status === "complete" || status === "failed") {
     downloadOwnersById.delete(delta.id);
   }
+}
+
+function downloadStatus(state: unknown): "complete" | "failed" | undefined {
+  if (state === "complete") return "complete";
+  if (state === "interrupted") return "failed";
+  return undefined;
 }
 
 async function connectNative(): Promise<void> {
@@ -469,7 +387,7 @@ async function connectNative(): Promise<void> {
     if (port !== targetPort) return;
     const wasConnecting = status.state === "connecting";
     port = null;
-    rejectPending(message ?? "native host disconnected");
+    nativeHostBridge.rejectPending(message ?? "native host disconnected");
     clearHelloTimeout();
     clearHeartbeat();
     if (status.state !== "stopped" && status.state !== "version_mismatch") {
@@ -493,6 +411,7 @@ async function connectNative(): Promise<void> {
   });
 
   try {
+    const extensionInstance = await extensionInstanceId();
     targetPort.postMessage({
       type: "hello",
       extension_version: chrome.runtime.getManifest().version,
@@ -501,7 +420,8 @@ async function connectNative(): Promise<void> {
       native_host_name: HOST_NAME,
       browser_kind: await detectBrowserKind(),
       extension_id: chrome.runtime.id ?? "unknown",
-      extension_instance_id: await extensionInstanceId(),
+      extension_instance_id: extensionInstance,
+      profile_metadata: browserProfileMetadata(extensionInstance),
     });
     appendDebugLog("debug", "native.hello.sent", { host: HOST_NAME });
     scheduleHelloTimeout(targetPort);
@@ -539,6 +459,8 @@ async function handleNativeMessage(message: unknown, sourcePort: NativePort): Pr
       updatedAt: Date.now(),
     });
     scheduleHeartbeat();
+    publishExtensionStatus();
+    schedulePendingExtensionUpdateCheck("native_hello_ack");
     return;
   }
   if (isRecord(message) && message.type === "version_mismatch") {
@@ -563,16 +485,7 @@ async function handleNativeMessage(message: unknown, sourcePort: NativePort): Pr
     return;
   }
   if (isJsonRpcResponse(message)) {
-    const waiter = pending.get(message.id);
-    if (!waiter) return;
-    pending.delete(message.id);
-    if (message.error) {
-      appendDebugLog("warn", "native.response.error", { id: message.id, message: message.error.message });
-      waiter.reject(new Error(message.error.message));
-    } else {
-      appendDebugLog("debug", "native.response.ok", { id: message.id });
-      waiter.resolve(message.result);
-    }
+    nativeHostBridge.resolveResponse(message);
   }
 }
 
@@ -598,9 +511,10 @@ async function stopBrowserControl(): Promise<void> {
       await stopActiveBrowserControl();
     }
   } finally {
-    rejectPending("browser control stopped");
+    nativeHostBridge.rejectPending("browser control stopped");
     port = null;
     await setStatus({ state: "stopped", message: "Stopped by user", updatedAt: Date.now() });
+    schedulePendingExtensionUpdateCheck("control_stopped");
   }
 }
 
@@ -613,26 +527,11 @@ async function resumeBrowserControl(): Promise<void> {
 }
 
 function sendRequest(method: string, params?: unknown): Promise<unknown> {
-  if (!port) return Promise.reject(new Error("native host is not connected"));
-  const id = nextId++;
-  const request: JsonRpcRequest = { jsonrpc: "2.0", id, method, params };
-  const targetPort = port;
-  appendDebugLog("debug", "native.outbound.request", { id, method });
-  return new Promise((resolve, reject) => {
-    pending.set(id, { resolve, reject });
-    try {
-      targetPort?.postMessage(request);
-    } catch (error) {
-      pending.delete(id);
-      appendDebugLog("error", "native.outbound.failed", { id, method, message: errorMessage(error) });
-      reject(error instanceof Error ? error : new Error(String(error)));
-    }
-  });
+  return nativeHostBridge.sendRequest(method, params);
 }
 
 function sendNotification(method: string, params?: unknown): void {
-  appendDebugLog("debug", "native.outbound.notification", { method });
-  port?.postMessage({ jsonrpc: "2.0", method, params } satisfies JsonRpcNotification);
+  nativeHostBridge.sendNotification(method, params);
 }
 
 async function handleHostRequest(request: JsonRpcRequest, sourcePort: NativePort): Promise<void> {
@@ -665,6 +564,10 @@ async function dispatchHostRequest(method: string, params: unknown): Promise<unk
       return { tab: toTabDto(await createSessionTab(requireSessionParams(params), params)) };
     case "getTabs":
       return await getSessionTabs(requireSessionParams(params));
+    case "getCurrentTab":
+      return { tab: await getCurrentSessionTab(requireSessionParams(params)) };
+    case "getSelectedTab":
+      return { tab: await getSelectedTab(requireSessionParams(params)) };
     case "getUserTabs":
       return { tabs: await getUserTabs(requireSessionParams(params)) };
     case "claimUserTab": {
@@ -679,8 +582,21 @@ async function dispatchHostRequest(method: string, params: unknown): Promise<unk
     case "turnEnded":
       await markTurnEnded(requireSessionParams(params));
       return {};
+    case "yieldControl":
+      await yieldControl(requireSessionParams(params));
+      return {};
+    case "resumeControl":
+      return { tab: await resumeControl(requireSessionParams(params)) };
     case "getUserHistory":
       return { items: await getUserHistory(params) };
+    case "browser_viewport_set":
+      return await setBrowserViewport(requireSessionParams(params), params);
+    case "browser_viewport_reset":
+      return await resetBrowserViewport(requireSessionParams(params));
+    case "browser_visibility_set":
+      return await setBrowserVisibility(requireSessionParams(params), params);
+    case "browser_visibility_get":
+      return await getBrowserVisibility(requireSessionParams(params));
     case "moveMouse":
       return await moveMouse(params);
     case "attach":
@@ -698,13 +614,17 @@ async function dispatchHostRequest(method: string, params: unknown): Promise<unk
 
 async function createSessionTab(sessionParams: SessionParams, params: unknown): Promise<ChromeTab> {
   const url = isRecord(params) && typeof params.url === "string" ? params.url : "about:blank";
-  const tab = await chrome.tabs.create({ url, active: true });
-  const tabId = requireCreatedTabId(tab);
   const session = sessionFor(sessionParams.session_id);
   session.currentTurnId = sessionParams.turn_id;
+  ensureSessionAcceptsAction(session, "createTab");
+  const tab = await chrome.tabs.create({ url, active: true });
+  const tabId = requireCreatedTabId(tab);
+  session.activeTabId = tabId;
+  delete session.controlState;
   session.tabs.set(tabId, { tabId, origin: "agent", status: "active" });
-  await addTabToSessionGroup(session, tabId);
+  await addTabToSessionGroup(sessionParams.session_id, session, tabId, "agent");
   await overlayCoordinator.activate(tabId, sessionParams);
+  await persistSessionState();
   appendDebugLog("info", "tab.created", { sessionId: sessionParams.session_id, tabId });
   return tab;
 }
@@ -715,11 +635,19 @@ async function getSessionTabs(sessionParams: SessionParams): Promise<SessionTabs
   const rows: TabDto[] = [];
   const deliverableTabs: TabDto[] = [];
   let changed = false;
+  const logicalActiveTabId = await resolveSessionActiveTabId(session);
+  session.activeTabId = logicalActiveTabId;
   for (const tabId of session.tabs.keys()) {
     try {
-      rows.push(toTabDto(await chrome.tabs.get(tabId), session.tabs.get(tabId)));
+      rows.push(toTabDto(await chrome.tabs.get(tabId), session.tabs.get(tabId), {
+        owned: true,
+        claimRequired: false,
+        commandable: session.tabs.get(tabId)?.status === "active" && session.controlState !== "human_takeover",
+        logicalActive: tabId === logicalActiveTabId,
+      }));
     } catch {
       session.tabs.delete(tabId);
+      await tabGroupManager.removeManagedTab(tabId);
       changed = true;
     }
   }
@@ -728,11 +656,100 @@ async function getSessionTabs(sessionParams: SessionParams): Promise<SessionTabs
       deliverableTabs.push(toTabDto(await chrome.tabs.get(tabId), row));
     } catch {
       session.finalizedTabs.delete(tabId);
+      await tabGroupManager.removeManagedTab(tabId);
       changed = true;
     }
   }
-  if (changed) await persistSessionState();
+  if (changed) {
+    syncSessionGroupMirrors(session);
+    await persistSessionState();
+  }
   return { tabs: rows, deliverableTabs };
+}
+
+async function getCurrentSessionTab(sessionParams: SessionParams): Promise<TabDto | null> {
+  const session = sessionFor(sessionParams.session_id);
+  session.currentTurnId = sessionParams.turn_id;
+  const tabId = await resolveSessionActiveTabId(session);
+  if (tabId === undefined) return null;
+  const row = session.tabs.get(tabId);
+  if (!row || row.status !== "active") return null;
+  session.activeTabId = tabId;
+  await persistSessionState();
+  return toTabDto(await chrome.tabs.get(tabId), row, {
+    owned: true,
+    claimRequired: false,
+    commandable: session.controlState !== "human_takeover",
+    logicalActive: true,
+  });
+}
+
+async function getSelectedTab(sessionParams: SessionParams): Promise<TabDto | null> {
+  const session = sessionFor(sessionParams.session_id);
+  session.currentTurnId = sessionParams.turn_id;
+  const tab = await selectedChromeTab();
+  if (!tab || !Number.isInteger(tab.id)) return null;
+  const tabId = tab.id!;
+  const row = session.tabs.get(tabId);
+  if (row && row.status === "active") {
+    session.activeTabId = tabId;
+    await persistSessionState();
+    return toTabDto(tab, row, {
+      owned: true,
+      claimRequired: false,
+      commandable: session.controlState !== "human_takeover",
+      logicalActive: true,
+    });
+  }
+  if (!isClaimableUserTab(tab) || ownedByAnotherSession(sessionParams.session_id, tabId)) {
+    return null;
+  }
+  return toTabDto(tab, { tabId, origin: "user", status: "active" }, {
+    owned: false,
+    claimRequired: true,
+    commandable: false,
+    logicalActive: false,
+  });
+}
+
+async function selectedChromeTab(): Promise<ChromeTab | undefined> {
+  const focused = await chrome.tabs.query({ active: true, lastFocusedWindow: true });
+  if (focused[0]) return focused[0];
+  const active = await chrome.tabs.query({ active: true });
+  return active[0];
+}
+
+async function resolveSessionActiveTabId(session: BrowserSession): Promise<number | undefined> {
+  const activeRow = session.activeTabId !== undefined ? session.tabs.get(session.activeTabId) : undefined;
+  if (session.activeTabId !== undefined && activeRow?.status === "active") {
+    try {
+      await chrome.tabs.get(session.activeTabId);
+      return session.activeTabId;
+    } catch (error) {
+      if (!isTabGoneError(error)) throw error;
+      session.tabs.delete(session.activeTabId);
+      session.activeTabId = undefined;
+    }
+  } else if (session.activeTabId !== undefined) {
+    session.activeTabId = undefined;
+  }
+
+  const candidates: Array<{ tabId: number; active: boolean }> = [];
+  for (const [tabId, row] of session.tabs) {
+    if (row.status !== "active") continue;
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      candidates.push({ tabId, active: tab.active === true });
+    } catch (error) {
+      if (!isTabGoneError(error)) throw error;
+      session.tabs.delete(tabId);
+    }
+  }
+  candidates.sort((left, right) => {
+    if (left.active !== right.active) return left.active ? -1 : 1;
+    return left.tabId - right.tabId;
+  });
+  return candidates[0]?.tabId;
 }
 
 async function getUserTabs(sessionParams: SessionParams): Promise<TabDto[]> {
@@ -742,7 +759,12 @@ async function getUserTabs(sessionParams: SessionParams): Promise<TabDto[]> {
   return tabs
     .filter((tab) => Number.isInteger(tab.id) && isClaimableUserTab(tab))
     .filter((tab) => !ownedByAnotherSession(sessionParams.session_id, tab.id!))
-    .map((tab) => toTabDto(tab, { tabId: tab.id!, origin: "user", status: "active" }));
+    .map((tab) => toTabDto(tab, { tabId: tab.id!, origin: "user", status: "active" }, {
+      owned: false,
+      claimRequired: true,
+      commandable: false,
+      logicalActive: false,
+    }));
 }
 
 async function claimUserTab(sessionParams: SessionParams, params: unknown): Promise<ChromeTab> {
@@ -755,9 +777,12 @@ async function claimUserTab(sessionParams: SessionParams, params: unknown): Prom
   const session = sessionFor(sessionParams.session_id);
   session.currentTurnId = sessionParams.turn_id;
   removeFinalizedTabFromAllSessions(tabId);
+  session.activeTabId = tabId;
+  delete session.controlState;
   session.tabs.set(tabId, { tabId, origin: "user", status: "active" });
-  await addTabToSessionGroup(session, tabId);
-  await overlayCoordinator.activate(tabId, sessionParams);
+  await addTabToSessionGroup(sessionParams.session_id, session, tabId, "user");
+  for (const managedSession of sessions.values()) syncSessionGroupMirrors(managedSession);
+  await overlayCoordinator.activate(tabId, sessionParams, session.tabs.get(tabId)?.lastCursor);
   await persistSessionState();
   appendDebugLog("info", "tab.claimed", { sessionId: sessionParams.session_id, tabId });
   return tab;
@@ -772,61 +797,127 @@ async function finalizeTabs(sessionParams: SessionParams, params: unknown): Prom
   const releasedTabIds: number[] = [];
   const keptTabs: TabDto[] = [];
   const deliverableTabs: TabDto[] = [];
+  const actions: FinalizeTabAction[] = [];
+  const failures: FinalizeTabFailure[] = [];
 
   for (const [tabId, row] of [...session.tabs]) {
     const keepStatus = keep.get(tabId);
-    if (keepStatus) row.status = keepStatus;
-    if (row.origin === "agent" && !keepStatus) {
-      await cleanupControlledTab(session, tabId);
-      try {
-        await chrome.tabs.remove(tabId);
-      } catch {
-        // Already closed tabs are removed from the registry below.
-      }
-      session.tabs.delete(tabId);
-      session.finalizedTabs.delete(tabId);
-      closedTabIds.push(tabId);
-      continue;
-    }
-    if (row.origin === "user" && !keepStatus) {
-      await cleanupControlledTab(session, tabId);
-      await releaseTabFromSessionGroup(tabId);
-      session.tabs.delete(tabId);
-      session.finalizedTabs.delete(tabId);
-      releasedTabIds.push(tabId);
-      continue;
-    }
+    const desiredStatus: FinalizeDesiredStatus = keepStatus ?? (row.origin === "agent" ? "close" : "release");
     try {
-      if (keepStatus === "deliverable") {
-        await cleanupControlledTab(session, tabId);
-        await moveTabToDeliverableGroup(session, tabId);
-        const dto = toTabDto(await chrome.tabs.get(tabId), row);
+      if (desiredStatus === "close") {
+        await closeAgentTabWithDialogPolicy(sessionParams.session_id, session, tabId, "finalizeTabs");
+        await tabGroupManager.removeManagedTab(tabId);
         session.tabs.delete(tabId);
-        session.finalizedTabs.set(tabId, { ...row });
+        session.finalizedTabs.delete(tabId);
+        closedTabIds.push(tabId);
+        actions.push(finalizeAction(tabId, row.origin, desiredStatus, "closed"));
+        continue;
+      }
+      if (desiredStatus === "release") {
+        await cleanupControlledTab(session, tabId);
+        await tabGroupManager.releaseManagedTab(tabId);
+        session.tabs.delete(tabId);
+        session.finalizedTabs.delete(tabId);
+        releasedTabIds.push(tabId);
+        actions.push(finalizeAction(tabId, row.origin, desiredStatus, "released"));
+        continue;
+      }
+      if (desiredStatus === "deliverable") {
+        await cleanupControlledTab(session, tabId);
+        const tab = await chrome.tabs.get(tabId);
+        const groupId = await moveTabToDeliverableGroup(sessionParams.session_id, session, tabId, row.origin);
+        const finalizedRow: SessionTab = { ...row, status: "deliverable" };
+        const dto = toTabDto({ ...tab, groupId }, finalizedRow);
+        session.tabs.delete(tabId);
+        session.finalizedTabs.set(tabId, finalizedRow);
         keptTabs.push(dto);
         deliverableTabs.push(dto);
+        actions.push(finalizeAction(tabId, row.origin, desiredStatus, "kept_deliverable"));
       } else {
-        if (keepStatus === "handoff") {
+        if (desiredStatus === "handoff") {
           await cleanupControlledTab(session, tabId);
+          const tab = await chrome.tabs.get(tabId);
+          await tabGroupManager.setManagedTabStatus(tabId, "handoff");
+          const handoffRow: SessionTab = { ...row, status: "handoff" };
+          row.status = "handoff";
+          keptTabs.push(toTabDto(tab, handoffRow));
+          actions.push(finalizeAction(tabId, row.origin, desiredStatus, "kept_handoff"));
+        } else {
+          keptTabs.push(toTabDto(await chrome.tabs.get(tabId), row));
         }
-        keptTabs.push(toTabDto(await chrome.tabs.get(tabId), row));
       }
-    } catch {
-      session.tabs.delete(tabId);
-      session.attachedTabIds.delete(tabId);
+    } catch (error) {
+      if (isTabGoneError(error)) {
+        session.tabs.delete(tabId);
+        session.finalizedTabs.delete(tabId);
+        session.attachedTabIds.delete(tabId);
+        await tabGroupManager.removeManagedTab(tabId);
+        actions.push(finalizeAction(tabId, row.origin, desiredStatus, "tab_gone"));
+      } else {
+        const failure = finalizeFailure(tabId, desiredStatus, "failed", error);
+        failures.push(failure);
+        actions.push(finalizeAction(tabId, row.origin, desiredStatus, "failed", failure.errorCode, failure.errorMessage));
+        appendDebugLog("warn", "tabs.finalize.partial_failure", {
+          sessionId: sessionParams.session_id,
+          tabId,
+          desiredStatus,
+          errorCode: failure.errorCode,
+          errorMessage: failure.errorMessage,
+        });
+      }
     }
   }
-  if (session.tabs.size === 0) session.groupId = undefined;
-  await persistSessionState();
+  let finalTabs: FinalizeTabsResult["finalTabs"];
+  try {
+    syncSessionGroupMirrors(session);
+    session.activeTabId = await resolveSessionActiveTabId(session);
+    finalTabs = await reconcileFinalizeTabs(session);
+    await persistSessionState();
+  } catch (error) {
+    const fatal = finalizeFailure(undefined, undefined, "failed", error, "finalize_reconciliation_failed");
+    failures.push(fatal);
+    await persistSessionState();
+    return {
+      status: "fatal",
+      actions,
+      closedTabIds,
+      releasedTabIds,
+      keptTabs,
+      deliverableTabs,
+      finalTabs: null,
+      failures,
+      errorCode: fatal.errorCode,
+      errorMessage: fatal.errorMessage,
+      diagnostics: {
+        reconciledFromChrome: false,
+        reconciliationSource: "chrome.tabs",
+      },
+    };
+  }
   appendDebugLog("info", "tabs.finalized", {
     sessionId: sessionParams.session_id,
+    status: failures.length > 0 ? "partial" : "ok",
     closed: closedTabIds.length,
     released: releasedTabIds.length,
     kept: keptTabs.length,
     deliverable: deliverableTabs.length,
   });
+  schedulePendingExtensionUpdateCheck("tabs_finalized");
 
-  return { closedTabIds, releasedTabIds, keptTabs, deliverableTabs };
+  return {
+    status: failures.length > 0 ? "partial" : "ok",
+    actions,
+    closedTabIds,
+    releasedTabIds,
+    keptTabs,
+    deliverableTabs,
+    finalTabs,
+    failures,
+    diagnostics: {
+      reconciledFromChrome: true,
+      reconciliationSource: "chrome.tabs",
+    },
+  };
 }
 
 async function nameSession(sessionParams: SessionParams, params: unknown): Promise<void> {
@@ -834,15 +925,42 @@ async function nameSession(sessionParams: SessionParams, params: unknown): Promi
   session.currentTurnId = sessionParams.turn_id;
   const label = isRecord(params) && typeof params.label === "string" ? params.label : undefined;
   session.label = label;
-  if (label && session.groupId !== undefined) {
-    await chrome.tabGroups.update(session.groupId, { title: label, color: "blue" });
-  }
+  await tabGroupManager.renameSession(sessionParams.session_id, label);
   await persistSessionState();
 }
 
 async function markTurnEnded(sessionParams: SessionParams): Promise<void> {
   const session = sessionFor(sessionParams.session_id);
   session.currentTurnId = sessionParams.turn_id;
+}
+
+async function yieldControl(sessionParams: SessionParams): Promise<void> {
+  const session = sessionFor(sessionParams.session_id);
+  session.currentTurnId = sessionParams.turn_id;
+  session.controlState = "human_takeover";
+  await hideSessionTakeover(session);
+  await persistSessionState();
+  appendDebugLog("info", "control.yield", { sessionId: sessionParams.session_id });
+}
+
+async function resumeControl(sessionParams: SessionParams): Promise<TabDto | null> {
+  const session = sessionFor(sessionParams.session_id);
+  session.currentTurnId = sessionParams.turn_id;
+  const tabId = await resolveSessionActiveTabId(session);
+  if (tabId === undefined) return null;
+  const row = session.tabs.get(tabId);
+  if (!row || row.status !== "active") return null;
+  session.activeTabId = tabId;
+  delete session.controlState;
+  await overlayCoordinator.activate(tabId, sessionParams, row.lastCursor);
+  await persistSessionState();
+  appendDebugLog("info", "control.resume_session", { sessionId: sessionParams.session_id, tabId });
+  return toTabDto(await chrome.tabs.get(tabId), row, {
+    owned: true,
+    claimRequired: false,
+    commandable: true,
+    logicalActive: true,
+  });
 }
 
 async function getUserHistory(params: unknown): Promise<HistoryItemDto[]> {
@@ -863,10 +981,97 @@ async function getUserHistory(params: unknown): Promise<HistoryItemDto[]> {
     }));
 }
 
+async function setBrowserViewport(sessionParams: SessionParams, params: unknown): Promise<unknown> {
+  const { tabId } = await requireCurrentSessionTabForBrowserCommand(sessionParams, "browser viewport set");
+  const width = requiredPositiveInteger(params, "width", 1, 16_384);
+  const height = requiredPositiveInteger(params, "height", 1, 16_384);
+  const deviceScaleFactor = optionalFiniteNumber(params, "deviceScaleFactor", 1, 0.1, 8);
+  const mobile = isRecord(params) && params.mobile === true;
+  const session = sessionFor(sessionParams.session_id);
+  await ensureDebuggerAttached(session, tabId);
+  await chrome.debugger.sendCommand({ tabId }, "Emulation.setDeviceMetricsOverride", {
+    width,
+    height,
+    deviceScaleFactor,
+    mobile,
+  });
+  appendDebugLog("info", "browser.viewport.set", { sessionId: sessionParams.session_id, tabId, width, height });
+  return { width, height, deviceScaleFactor, mobile, tabId };
+}
+
+async function resetBrowserViewport(sessionParams: SessionParams): Promise<unknown> {
+  const { tabId } = await requireCurrentSessionTabForBrowserCommand(sessionParams, "browser viewport reset");
+  const session = sessionFor(sessionParams.session_id);
+  await ensureDebuggerAttached(session, tabId);
+  await chrome.debugger.sendCommand({ tabId }, "Emulation.clearDeviceMetricsOverride", {});
+  appendDebugLog("info", "browser.viewport.reset", { sessionId: sessionParams.session_id, tabId });
+  return { reset: true, tabId };
+}
+
+async function setBrowserVisibility(sessionParams: SessionParams, params: unknown): Promise<unknown> {
+  const { tab } = await requireCurrentSessionTabForBrowserCommand(sessionParams, "browser visibility set");
+  const visible = requiredBoolean(params, "visible");
+  const focus = isRecord(params) ? params.focused !== false : true;
+  const windowId = requireTabWindowId(tab);
+  const updateProperties: ChromeWindowUpdateInfo = visible
+    ? { state: "normal", focused: focus }
+    : { state: "minimized" };
+  const windowInfo = await chrome.windows.update(windowId, updateProperties) ?? await chrome.windows.get(windowId);
+  appendDebugLog("info", "browser.visibility.set", {
+    sessionId: sessionParams.session_id,
+    windowId,
+    visible,
+    focused: windowInfo.focused === true,
+    state: windowInfo.state,
+  });
+  return browserVisibilityDto(windowInfo);
+}
+
+async function getBrowserVisibility(sessionParams: SessionParams): Promise<unknown> {
+  const { tab } = await requireCurrentSessionTabForBrowserCommand(sessionParams, "browser visibility get");
+  const windowInfo = await chrome.windows.get(requireTabWindowId(tab));
+  return browserVisibilityDto(windowInfo);
+}
+
+async function requireCurrentSessionTabForBrowserCommand(
+  sessionParams: SessionParams,
+  operation: string,
+): Promise<{ tabId: number; tab: ChromeTab; row: SessionTab }> {
+  const session = sessionFor(sessionParams.session_id);
+  session.currentTurnId = sessionParams.turn_id;
+  ensureSessionAcceptsAction(session, operation);
+  const tabId = await resolveSessionActiveTabId(session);
+  if (tabId === undefined) throw new Error(`${operation} requires an active session tab`);
+  const row = session.tabs.get(tabId);
+  if (!row || row.status !== "active") throw new Error(`tab ${tabId} is not actively controlled`);
+  session.activeTabId = tabId;
+  await persistSessionState();
+  return { tabId, row, tab: await chrome.tabs.get(tabId) };
+}
+
+function browserVisibilityDto(windowInfo: ChromeWindow): {
+  visible: boolean;
+  focused: boolean;
+  windowId?: number;
+  state?: ChromeWindow["state"];
+} {
+  return {
+    visible: windowInfo.state !== "minimized",
+    focused: windowInfo.focused === true,
+    windowId: windowInfo.id,
+    state: windowInfo.state,
+  };
+}
+
+type ChromeWindowUpdateInfo = {
+  state?: ChromeWindow["state"];
+  focused?: boolean;
+};
+
 async function executeCdp(params: unknown): Promise<unknown> {
   const tabId = requireTabId(params);
   const session = requireSession(params);
-  requireSessionTab(params);
+  const row = requireSessionTab(params);
   await ensureDebuggerAttached(session, tabId);
   if (!isRecord(params) || typeof params.method !== "string") {
     throw new Error("executeCdp requires method");
@@ -874,8 +1079,9 @@ async function executeCdp(params: unknown): Promise<unknown> {
   const method = params.method;
   const timeoutMs = timeoutMsFromParams(params);
   const sessionParams = requireSessionParams(params);
+  const suppressAgentOverlayForCapture = params.suppressAgentOverlayForCapture === true && method === "Page.captureScreenshot";
   appendDebugLog("debug", "cdp.execute", { method, tabId, timeoutMs });
-  await overlayCoordinator.activate(tabId, sessionParams);
+  await overlayCoordinator.activate(tabId, sessionParams, row.lastCursor);
   const inputBypass = inputBypassFromCdp(params);
   if (inputBypass) {
     await overlayCoordinator.allowCdpInput(tabId, sessionParams, inputBypass);
@@ -884,16 +1090,23 @@ async function executeCdp(params: unknown): Promise<unknown> {
   if (cursorEvent?.kind === "press") {
     await overlayCoordinator.sendCursorEvent(tabId, sessionParams, cursorEvent);
   }
-  const result = await withTimeout(
+  const sendCommand = () => withTimeout(
     chrome.debugger.sendCommand({ tabId }, method, params.commandParams),
     timeoutMs,
     `executeCdp ${method} timed out after ${timeoutMs}ms`,
   );
+  const result = suppressAgentOverlayForCapture
+    ? await overlayCoordinator.withCaptureSuppressed(tabId, sendCommand)
+    : await sendCommand();
   if (cursorEvent && cursorEvent.kind !== "press") {
     await overlayCoordinator.sendCursorEvent(tabId, sessionParams, cursorEvent);
     if (cursorEvent.kind === "release" && cursorEvent.clickCount > 0) {
       await overlayCoordinator.sendCursorEvent(tabId, sessionParams, { ...cursorEvent, kind: "click" });
     }
+  }
+  if (typeof cursorEvent?.x === "number" && typeof cursorEvent.y === "number") {
+    row.lastCursor = { x: cursorEvent.x, y: cursorEvent.y };
+    await persistSessionState();
   }
   return result;
 }
@@ -901,10 +1114,14 @@ async function executeCdp(params: unknown): Promise<unknown> {
 async function moveMouse(params: unknown): Promise<unknown> {
   const tabId = requireTabId(params);
   const sessionParams = requireSessionParams(params);
-  requireSessionTab(params);
+  const row = requireSessionTab(params);
   const x = requiredNumber(params, "x");
   const y = requiredNumber(params, "y");
   const result = await overlayCoordinator.moveMouse(tabId, sessionParams, x, y);
+  if (isRecord(result) && result.visible === true) {
+    row.lastCursor = { x, y, sequence: typeof result.sequence === "number" ? result.sequence : undefined };
+    await persistSessionState();
+  }
   appendDebugLog("debug", "cursor.move", { tabId, result });
   return result;
 }
@@ -1008,11 +1225,22 @@ function requireSession(params: unknown): BrowserSession {
 
 function requireSessionTab(params: unknown): SessionTab {
   const tabId = requireTabId(params);
-  const session = requireSession(params);
+  const sessionParams = requireSessionParams(params);
+  const session = sessionFor(sessionParams.session_id);
+  session.currentTurnId = sessionParams.turn_id;
+  ensureSessionAcceptsAction(session, "tab command");
   const row = session.tabs.get(tabId);
   if (!row) throw new Error(`tab ${tabId} is not owned by this open-browser-use session`);
   if (row.status !== "active") throw new Error(`tab ${tabId} is ${row.status}, not actively controlled`);
+  session.activeTabId = tabId;
+  void persistSessionState().catch(() => undefined);
   return row;
+}
+
+function ensureSessionAcceptsAction(session: BrowserSession, operation: string): void {
+  if (session.controlState === "human_takeover") {
+    throw new Error(`${operation} rejected because browser control is yielded to the human; call resumeControl first`);
+  }
 }
 
 function requireTabId(params: unknown): number {
@@ -1029,6 +1257,28 @@ function requiredNumber(params: unknown, key: string): number {
   return params[key];
 }
 
+function requiredBoolean(params: unknown, key: string): boolean {
+  if (!isRecord(params) || typeof params[key] !== "boolean") throw new Error(`${key} must be a boolean`);
+  return params[key];
+}
+
+function requiredPositiveInteger(params: unknown, key: string, min: number, max: number): number {
+  const value = requiredNumber(params, key);
+  if (!Number.isInteger(value) || value < min || value > max) {
+    throw new Error(`${key} must be an integer between ${min} and ${max}`);
+  }
+  return value;
+}
+
+function optionalFiniteNumber(params: unknown, key: string, fallback: number, min: number, max: number): number {
+  const value = isRecord(params) ? params[key] : undefined;
+  if (value === undefined) return fallback;
+  if (typeof value !== "number" || !Number.isFinite(value) || value < min || value > max) {
+    throw new Error(`${key} must be a number between ${min} and ${max}`);
+  }
+  return value;
+}
+
 function requireCreatedTabId(tab: ChromeTab): number {
   if (!Number.isInteger(tab.id)) throw new Error("created tab did not include an id");
   return tab.id!;
@@ -1037,13 +1287,13 @@ function requireCreatedTabId(tab: ChromeTab): number {
 function sessionFor(sessionId: string): BrowserSession {
   let session = sessions.get(sessionId);
   if (!session) {
-    session = { currentTurnId: "", tabs: new Map(), finalizedTabs: new Map(), attachedTabIds: new Set() };
+    session = createBrowserSession();
     sessions.set(sessionId, session);
   }
   return session;
 }
 
-function toTabDto(tab: ChromeTab, row?: SessionTab): TabDto {
+function toTabDto(tab: ChromeTab, row?: SessionTab, state: Partial<TabDto> = {}): TabDto {
   if (!Number.isInteger(tab.id)) throw new Error("tab did not include an id");
   return {
     tabId: tab.id!,
@@ -1055,44 +1305,32 @@ function toTabDto(tab: ChromeTab, row?: SessionTab): TabDto {
     pinned: tab.pinned,
     origin: row?.origin ?? "agent",
     status: row?.status ?? "active",
+    owned: row !== undefined,
+    claimRequired: row === undefined,
+    commandable: row?.status === "active",
+    ...state,
   };
 }
 
-async function addTabToSessionGroup(session: BrowserSession, tabId: number): Promise<void> {
-  const groupId = await groupTab(tabId, session.groupId);
-  session.groupId = groupId;
-  if (session.label) {
-    await chrome.tabGroups.update(groupId, { title: session.label, color: "blue" });
-  }
+async function addTabToSessionGroup(
+  sessionId: string,
+  session: BrowserSession,
+  tabId: number,
+  origin: TabOrigin,
+): Promise<void> {
+  const tab = await chrome.tabs.get(tabId);
+  const windowId = requireTabWindowId(tab);
+  session.groupId = await tabGroupManager.ensureSessionGroup(sessionId, windowId, tabId, origin, session.label);
 }
 
-async function moveTabToDeliverableGroup(session: BrowserSession, tabId: number): Promise<void> {
-  await releaseTabFromSessionGroup(tabId);
-  const groupId = await groupTab(tabId, session.deliverableGroupId);
-  session.deliverableGroupId = groupId;
-  await initI18n();
-  const title = session.label
-    ? msg("deliverablesGroupTitle", [session.label])
-    : msg("defaultDeliverablesGroupTitle");
-  await chrome.tabGroups.update(groupId, { title, color: "green" });
-}
-
-async function groupTab(tabId: number, groupId: number | undefined): Promise<number> {
-  const options = groupId === undefined ? { tabIds: tabId } : { tabIds: tabId, groupId };
-  try {
-    return await chrome.tabs.group(options);
-  } catch (error) {
-    if (groupId === undefined) throw error;
-    return await chrome.tabs.group({ tabIds: tabId });
-  }
-}
-
-async function releaseTabFromSessionGroup(tabId: number): Promise<void> {
-  try {
-    await chrome.tabs.ungroup(tabId);
-  } catch {
-    // The tab may already be ungrouped or closed.
-  }
+async function moveTabToDeliverableGroup(
+  sessionId: string,
+  session: BrowserSession,
+  tabId: number,
+  origin: TabOrigin,
+): Promise<number> {
+  session.deliverableGroupId = await tabGroupManager.moveTabToDeliverableGroup(sessionId, tabId, origin);
+  return session.deliverableGroupId;
 }
 
 async function cleanupControlledTab(session: BrowserSession, tabId: number): Promise<void> {
@@ -1104,6 +1342,156 @@ async function cleanupControlledTab(session: BrowserSession, tabId: number): Pro
     // Ignore detach races during finalization.
   }
   session.attachedTabIds.delete(tabId);
+}
+
+async function closeAgentTabWithDialogPolicy(
+  sessionId: string,
+  session: BrowserSession,
+  tabId: number,
+  operation: string,
+): Promise<void> {
+  await hideCursor(tabId);
+  const wasAttached = session.attachedTabIds.has(tabId);
+  let attachedForClose = false;
+  let closeCompleted = false;
+  if (!wasAttached) {
+    try {
+      await chrome.debugger.attach({ tabId }, "1.3");
+      session.attachedTabIds.add(tabId);
+      attachedForClose = true;
+    } catch (error) {
+      if (!await tabExists(tabId)) return;
+      throw new Error(`dialog-aware close could not attach debugger for tab ${tabId}: ${errorMessage(error)}`);
+    }
+  }
+
+  let closeCommand: Promise<unknown> | undefined;
+  const decisionPromise = new Promise<never>((_, reject) => {
+    pendingDialogAwareCloses.set(tabId, { sessionId, operation, reject });
+  });
+  try {
+    await chrome.debugger.sendCommand({ tabId }, "Page.enable", {});
+    closeCommand = chrome.debugger.sendCommand({ tabId }, "Page.close", {});
+    await Promise.race([
+      closeCommand.catch((error) => {
+        if (isTabGoneError(error)) return undefined;
+        throw error;
+      }),
+      decisionPromise,
+    ]);
+    closeCompleted = true;
+  } catch (error) {
+    if (isTabGoneError(error)) {
+      closeCompleted = true;
+      return;
+    }
+    throw error;
+  } finally {
+    pendingDialogAwareCloses.delete(tabId);
+    if (closeCommand) void closeCommand.catch(() => {});
+    if (closeCompleted) {
+      session.attachedTabIds.delete(tabId);
+    } else if (attachedForClose) {
+      try {
+        await chrome.debugger.detach({ tabId });
+      } catch {
+        // Ignore detach races after a failed close attempt.
+      }
+      session.attachedTabIds.delete(tabId);
+    }
+  }
+}
+
+async function tabExists(tabId: number): Promise<boolean> {
+  try {
+    await chrome.tabs.get(tabId);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function isTabGoneError(error: unknown): boolean {
+  return /No tab|Cannot find|closed|does not exist|unknown tab/i.test(errorMessage(error));
+}
+
+async function reconcileFinalizeTabs(session: BrowserSession): Promise<FinalizeTabsFinalTabs> {
+  const handoff: TabDto[] = [];
+  const deliverable: TabDto[] = [];
+  let changed = false;
+
+  for (const [tabId, row] of [...session.tabs]) {
+    try {
+      const tab = await chrome.tabs.get(tabId);
+      if (row.status === "handoff") handoff.push(toTabDto(tab, row));
+    } catch (error) {
+      if (!isTabGoneError(error)) throw error;
+      session.tabs.delete(tabId);
+      session.attachedTabIds.delete(tabId);
+      await tabGroupManager.removeManagedTab(tabId);
+      changed = true;
+    }
+  }
+
+  for (const [tabId, row] of [...session.finalizedTabs]) {
+    try {
+      deliverable.push(toTabDto(await chrome.tabs.get(tabId), row));
+    } catch (error) {
+      if (!isTabGoneError(error)) throw error;
+      session.finalizedTabs.delete(tabId);
+      await tabGroupManager.removeManagedTab(tabId);
+      changed = true;
+    }
+  }
+
+  if (changed) syncSessionGroupMirrors(session);
+  return {
+    handoff,
+    deliverable,
+    activeTabId: session.activeTabId ?? null,
+  };
+}
+
+function finalizeAction(
+  tabId: number,
+  origin: "agent" | "user",
+  desiredStatus: FinalizeDesiredStatus,
+  outcome: FinalizeTabOutcome,
+  errorCode?: string,
+  errorMessage?: string,
+): FinalizeTabAction {
+  return {
+    tabId,
+    origin,
+    desiredStatus,
+    outcome,
+    ...(errorCode !== undefined ? { errorCode } : {}),
+    ...(errorMessage !== undefined ? { errorMessage } : {}),
+  };
+}
+
+function finalizeFailure(
+  tabId: number | undefined,
+  desiredStatus: FinalizeDesiredStatus | undefined,
+  outcome: Extract<FinalizeTabOutcome, "failed" | "not_attempted">,
+  error: unknown,
+  fallbackCode = "failed_to_finalize",
+): FinalizeTabFailure {
+  const errorCode = finalizeErrorCode(error, fallbackCode);
+  return {
+    ...(tabId !== undefined ? { tabId } : {}),
+    ...(desiredStatus !== undefined ? { desiredStatus } : {}),
+    outcome,
+    errorCode,
+    errorMessage: errorMessage(error),
+  };
+}
+
+function finalizeErrorCode(error: unknown, fallbackCode: string): string {
+  const message = errorMessage(error);
+  if (/dialog_requires_decision/i.test(message)) return "dialog_requires_decision";
+  if (/disallowed|forbidden|denied/i.test(message)) return "command_disallowed";
+  return fallbackCode;
 }
 
 async function hideSessionTakeover(session: BrowserSession): Promise<void> {
@@ -1148,16 +1536,34 @@ function enqueueDownloadOwner(url: string, owner: DownloadOwner): void {
   downloadOwnersByUrl.set(url, queue);
 }
 
-function takeDownloadOwner(url: string): DownloadOwner | undefined {
+function takeDownloadOwner(item: ChromeDownloadItem): DownloadOwner | undefined {
+  const url = item.url;
+  if (typeof url !== "string") return undefined;
   const queue = downloadOwnersByUrl.get(url);
   if (!queue || queue.length === 0) return undefined;
-  const owner = queue.shift();
+  const matchingFilenameIndex = matchingDownloadOwnerIndex(queue, item);
+  const [owner] = queue.splice(matchingFilenameIndex >= 0 ? matchingFilenameIndex : 0, 1);
   if (queue.length === 0) {
     downloadOwnersByUrl.delete(url);
   } else {
     downloadOwnersByUrl.set(url, queue);
   }
   return owner;
+}
+
+function matchingDownloadOwnerIndex(queue: DownloadOwner[], item: ChromeDownloadItem): number {
+  if (typeof item.filename !== "string") return -1;
+  const filename = downloadBasename(item.filename);
+  return queue.findIndex((owner) => {
+    if (typeof owner.suggestedFilename !== "string") return false;
+    return downloadBasename(owner.suggestedFilename) === filename;
+  });
+}
+
+function downloadBasename(filename: string): string {
+  const normalized = filename.replace(/\\/g, "/");
+  const index = normalized.lastIndexOf("/");
+  return index >= 0 ? normalized.slice(index + 1) : normalized;
 }
 
 async function handleTabRemoved(tabId: number): Promise<void> {
@@ -1167,8 +1573,9 @@ async function handleTabRemoved(tabId: number): Promise<void> {
     if (session.tabs.delete(tabId)) changed = true;
     if (session.finalizedTabs.delete(tabId)) changed = true;
     if (session.attachedTabIds.delete(tabId)) changed = true;
-    if (session.tabs.size === 0) session.groupId = undefined;
   }
+  await tabGroupManager.removeManagedTab(tabId);
+  for (const session of sessions.values()) syncSessionGroupMirrors(session);
   for (const [url, owners] of downloadOwnersByUrl) {
     const remaining = owners.filter((owner) => owner.tabId !== tabId);
     if (remaining.length === 0) {
@@ -1182,11 +1589,69 @@ async function handleTabRemoved(tabId: number): Promise<void> {
   }
   if (changed) await persistSessionState();
   appendDebugLog("info", "tab.removed", { tabId });
+  schedulePendingExtensionUpdateCheck("tab_removed");
 }
 
-function parseFinalizeKeep(params: unknown): Map<number, SessionTab["status"]> {
+async function handleTabReplaced(addedTabId: number, removedTabId: number): Promise<void> {
+  let changed = false;
+  for (const session of sessions.values()) {
+    const activeRow = session.tabs.get(removedTabId);
+    if (activeRow) {
+      session.tabs.delete(removedTabId);
+      session.tabs.set(addedTabId, { ...activeRow, tabId: addedTabId });
+      if (session.activeTabId === removedTabId) session.activeTabId = addedTabId;
+      changed = true;
+    }
+    const finalizedRow = session.finalizedTabs.get(removedTabId);
+    if (finalizedRow) {
+      session.finalizedTabs.delete(removedTabId);
+      session.finalizedTabs.set(addedTabId, { ...finalizedRow, tabId: addedTabId });
+      changed = true;
+    }
+    if (session.attachedTabIds.delete(removedTabId)) changed = true;
+  }
+  await overlayCoordinator.replaceTabId(removedTabId, addedTabId);
+  await tabGroupManager.replaceManagedTab(removedTabId, addedTabId);
+  for (const session of sessions.values()) syncSessionGroupMirrors(session);
+  if (changed) await persistSessionState();
+  await handleForegroundTabChanged(addedTabId, "tab_replaced");
+  appendDebugLog("info", "tab.replaced", { addedTabId, removedTabId });
+}
+
+async function handleWindowFocusChanged(windowId: number): Promise<void> {
+  if (!Number.isInteger(windowId) || windowId < 0) {
+    await overlayCoordinator.syncForeground();
+    return;
+  }
+  let activeTab: ChromeTab | undefined;
+  try {
+    activeTab = (await chrome.tabs.query({ active: true, windowId }))[0];
+  } catch {
+    activeTab = undefined;
+  }
+  await handleForegroundTabChanged(activeTab?.id, "window_focus_changed");
+}
+
+async function handleForegroundTabChanged(tabId: number | undefined, reason: string): Promise<void> {
+  if (Number.isInteger(tabId)) {
+    const owner = findSessionForTab(tabId!);
+    const row = owner?.session.tabs.get(tabId!);
+    if (owner && row?.status === "active" && owner.session.activeTabId !== tabId) {
+      owner.session.activeTabId = tabId;
+      await persistSessionState();
+      appendDebugLog("debug", "tab.logical_active.foreground", {
+        sessionId: owner.sessionId,
+        tabId,
+        reason,
+      });
+    }
+  }
+  await overlayCoordinator.syncForeground();
+}
+
+function parseFinalizeKeep(params: unknown): Map<number, Extract<SessionTab["status"], "handoff" | "deliverable">> {
   const rows = isRecord(params) && Array.isArray(params.keep) ? params.keep : [];
-  const keep = new Map<number, SessionTab["status"]>();
+  const keep = new Map<number, Extract<SessionTab["status"], "handoff" | "deliverable">>();
   for (const row of rows) {
     if (!isRecord(row)) throw new Error("finalizeTabs.keep entries must be objects");
     const tabId = requireTabId(row);
@@ -1201,26 +1666,14 @@ function parseFinalizeKeep(params: unknown): Map<number, SessionTab["status"]> {
 }
 
 async function stopActiveBrowserControl(): Promise<void> {
-  const controlledTabIds = new Set<number>();
-  for (const tabId of overlayCoordinator.activeTabIds()) controlledTabIds.add(tabId);
-  for (const session of sessions.values()) {
-    for (const tabId of session.tabs.keys()) controlledTabIds.add(tabId);
-    for (const tabId of session.attachedTabIds) controlledTabIds.add(tabId);
-  }
-  for (const tabId of controlledTabIds) {
-    await hideCursor(tabId);
-  }
-  for (const session of sessions.values()) {
-    for (const tabId of [...session.attachedTabIds]) {
-      try {
-        await chrome.debugger.detach({ tabId });
-      } catch {
-        // Ignore detach races; Stop is best-effort cleanup before disconnecting.
-      }
-    }
-  }
-  sessions.clear();
-  await persistSessionState();
+  await cleanupAllSessionTabs("stop");
+}
+
+async function cleanUpBrowserTabs(): Promise<CleanupBrowserTabsResult> {
+  const result = await cleanupAllSessionTabs("stop");
+  appendDebugLog("info", "browser_tabs.cleaned", result);
+  schedulePendingExtensionUpdateCheck("browser_tabs_cleaned");
+  return result;
 }
 
 async function hideCursor(tabId: number): Promise<void> {
@@ -1229,8 +1682,12 @@ async function hideCursor(tabId: number): Promise<void> {
 
 async function releaseActiveTakeoverForUnavailableHost(reason: string): Promise<void> {
   appendDebugLog("warn", "takeover.release.unavailable_host", { reason });
+  await cleanupAllSessionTabs("unavailable");
+  await maybeApplyPendingExtensionUpdate("unavailable_host");
+}
+
+async function cleanupAllSessionTabs(mode: SessionCleanupMode): Promise<CleanupBrowserTabsResult> {
   const controlledTabIds = new Set<number>();
-  let changed = false;
   for (const tabId of overlayCoordinator.activeTabIds()) controlledTabIds.add(tabId);
   for (const session of sessions.values()) {
     for (const tabId of session.tabs.keys()) controlledTabIds.add(tabId);
@@ -1239,18 +1696,64 @@ async function releaseActiveTakeoverForUnavailableHost(reason: string): Promise<
   for (const tabId of controlledTabIds) {
     await hideCursor(tabId);
   }
-  for (const session of sessions.values()) {
-    for (const tabId of [...session.attachedTabIds]) {
-      try {
-        await chrome.debugger.detach({ tabId });
-      } catch {
-        // Ignore detach races during unavailable-host recovery.
-      }
-      session.attachedTabIds.delete(tabId);
-      changed = true;
-    }
+  const result: CleanupBrowserTabsResult = {
+    closedTabs: 0,
+    releasedTabs: 0,
+    keptDeliverables: countDeliverableTabs(),
+  };
+  let changed = false;
+  for (const [sessionId, session] of sessions) {
+    const sessionResult = await cleanupSessionTabs(sessionId, session, mode);
+    result.closedTabs += sessionResult.closedTabs;
+    result.releasedTabs += sessionResult.releasedTabs;
+    result.keptDeliverables += sessionResult.keptDeliverables;
+    changed = sessionResult.changed || changed;
   }
+  pruneEmptySessions();
   if (changed) await persistSessionState();
+  return result;
+}
+
+async function cleanupSessionTabs(
+  sessionId: string,
+  session: BrowserSession,
+  mode: SessionCleanupMode,
+): Promise<CleanupBrowserTabsResult & { changed: boolean }> {
+  const result = {
+    closedTabs: 0,
+    releasedTabs: 0,
+    keptDeliverables: 0,
+    changed: false,
+  };
+  for (const [tabId, row] of [...session.tabs]) {
+    if (row.status !== "active") continue;
+    if (mode === "stop" && row.origin === "agent") {
+      await closeAgentTabWithDialogPolicy(sessionId, session, tabId, "cleanupBrowserTabs");
+      await tabGroupManager.removeManagedTab(tabId);
+      session.tabs.delete(tabId);
+      session.finalizedTabs.delete(tabId);
+      result.changed = true;
+      result.closedTabs += 1;
+      continue;
+    }
+    await cleanupControlledTab(session, tabId);
+    await tabGroupManager.releaseManagedTab(tabId);
+    session.tabs.delete(tabId);
+    session.finalizedTabs.delete(tabId);
+    result.releasedTabs += 1;
+    result.changed = true;
+  }
+  for (const tabId of [...session.attachedTabIds]) {
+    try {
+      await chrome.debugger.detach({ tabId });
+    } catch {
+      // Ignore detach races during cleanup.
+    }
+    session.attachedTabIds.delete(tabId);
+    result.changed = true;
+  }
+  syncSessionGroupMirrors(session);
+  return result;
 }
 
 function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
@@ -1271,13 +1774,23 @@ async function getStatus(): Promise<HostStatus> {
   if ((status.state === "disconnected" || status.state === "error") && reconnectTimer === undefined) {
     void connectNative();
   }
-  return statusWithDeliverables(status);
+  return statusWithDeliverables(statusWithPendingUpdate(status));
 }
 
 function statusWithDeliverables(current: HostStatus): HostStatus {
   const deliverableTabs = countDeliverableTabs();
   if (deliverableTabs === 0) return current;
   return { ...current, deliverableTabs };
+}
+
+function statusWithPendingUpdate(current: HostStatus): HostStatus {
+  const next = { ...current };
+  if (pendingExtensionUpdate) {
+    next.pendingExtensionUpdate = pendingExtensionUpdate;
+  } else {
+    delete next.pendingExtensionUpdate;
+  }
+  return next;
 }
 
 function countDeliverableTabs(): number {
@@ -1290,12 +1803,43 @@ function countDeliverableTabs(): number {
   return count;
 }
 
+function syncSessionGroupMirrors(session: BrowserSession): void {
+  session.groupId = undefined;
+  session.deliverableGroupId = undefined;
+  for (const tabId of session.tabs.keys()) {
+    const groupId = tabGroupManager.groupIdForTab(tabId);
+    if (groupId !== undefined) {
+      session.groupId = groupId;
+      break;
+    }
+  }
+  for (const tabId of session.finalizedTabs.keys()) {
+    const groupId = tabGroupManager.groupIdForTab(tabId);
+    if (groupId !== undefined) {
+      session.deliverableGroupId = groupId;
+      break;
+    }
+  }
+}
+
+function pruneEmptySessions(): void {
+  for (const [sessionId, session] of sessions) {
+    if (session.tabs.size === 0 && session.finalizedTabs.size === 0 && session.attachedTabIds.size === 0) {
+      sessions.delete(sessionId);
+    }
+  }
+}
+
 async function bootstrapBackground(): Promise<void> {
   await restoreDebugLogs();
+  await restorePendingExtensionUpdate();
   appendDebugLog("info", "background.bootstrap");
+  await tabGroupManager.load();
   await restoreSessionState();
+  await tabGroupManager.bootstrapCleanup();
   await releaseOrphanedTakeoverStateOnBootstrap();
   await bootstrapNativeConnection();
+  schedulePendingExtensionUpdateCheck("background_bootstrap");
 }
 
 async function bootstrapNativeConnection(): Promise<void> {
@@ -1328,24 +1872,25 @@ async function restoreDebugLogs(): Promise<void> {
   }
 }
 
+async function restorePendingExtensionUpdate(): Promise<void> {
+  try {
+    const stored = await extensionUpdateStorage().get<Record<string, unknown>>(PENDING_UPDATE_KEY);
+    pendingExtensionUpdate = parsePendingExtensionUpdate(stored[PENDING_UPDATE_KEY]);
+  } catch {
+    pendingExtensionUpdate = undefined;
+  }
+}
+
 async function restoreSessionState(): Promise<void> {
   const stored = await chrome.storage.local.get<Record<string, unknown>>(SESSION_STATE_KEY);
-  const state = stored[SESSION_STATE_KEY];
-  if (!isRecord(state) || state.version !== 1 || !Array.isArray(state.sessions)) return;
+  const state = parsePersistedBrowserSessionState(stored[SESSION_STATE_KEY]);
+  if (!state) return;
 
   let changed = false;
   for (const row of state.sessions) {
-    if (!isRecord(row) || typeof row.session_id !== "string" || !Array.isArray(row.tabs)) {
-      changed = true;
-      continue;
-    }
     let session: BrowserSession | undefined;
     for (const tabRow of row.tabs) {
-      const durableTab = parseDurableSessionTab(tabRow);
-      if (!durableTab) {
-        changed = true;
-        continue;
-      }
+      const durableTab = tabRow;
       let tab: ChromeTab;
       try {
         tab = await chrome.tabs.get(durableTab.tabId);
@@ -1355,13 +1900,17 @@ async function restoreSessionState(): Promise<void> {
       }
       session ??= sessionFor(row.session_id);
       session.label = typeof row.label === "string" ? row.label : undefined;
-      if (durableTab.status === "handoff") {
-        session.tabs.set(durableTab.tabId, durableTab);
-        if (isUsableGroupId(tab.groupId)) session.groupId ??= tab.groupId;
-      } else {
+      if (row.controlState === "human_takeover") session.controlState = "human_takeover";
+      if (Number.isInteger(row.activeTabId)) session.activeTabId = row.activeTabId as number;
+      if (durableTab.status === "deliverable") {
         session.finalizedTabs.set(durableTab.tabId, durableTab);
-        if (isUsableGroupId(tab.groupId)) session.deliverableGroupId ??= tab.groupId;
+      } else {
+        session.tabs.set(durableTab.tabId, durableTab);
       }
+      await tabGroupManager.restoreDurableTab(row.session_id, session, tab, durableTab);
+    }
+    if (session && session.activeTabId !== undefined && !session.tabs.has(session.activeTabId)) {
+      session.activeTabId = await resolveSessionActiveTabId(session);
     }
   }
   if (changed) await persistSessionState();
@@ -1381,54 +1930,18 @@ async function releaseOrphanedTakeoverStateOnBootstrap(): Promise<void> {
 }
 
 async function persistSessionState(): Promise<void> {
-  const sessionRows: PersistedBrowserSession[] = [];
-  for (const [sessionId, session] of [...sessions].sort(([a], [b]) => a.localeCompare(b))) {
-    const tabs = durableSessionTabs(session).sort((a, b) => a.tabId - b.tabId);
-    if (tabs.length === 0) continue;
-    sessionRows.push({
-      session_id: sessionId,
-      label: session.label,
-      groupId: session.groupId,
-      deliverableGroupId: session.deliverableGroupId,
-      tabs,
-    });
-  }
   await chrome.storage.local.set({
-    [SESSION_STATE_KEY]: {
-      version: 1,
-      sessions: sessionRows,
-    } satisfies PersistedBrowserSessionState,
+    [SESSION_STATE_KEY]: serializeBrowserSessions(sessions),
   });
 }
 
-function durableSessionTabs(session: BrowserSession): PersistedSessionTab[] {
-  const rows: PersistedSessionTab[] = [];
-  for (const row of session.tabs.values()) {
-    if (row.status === "handoff" || row.status === "deliverable") {
-      rows.push({ tabId: row.tabId, origin: row.origin, status: row.status });
-    }
-  }
-  for (const row of session.finalizedTabs.values()) {
-    if (row.status === "handoff" || row.status === "deliverable") {
-      rows.push({ tabId: row.tabId, origin: row.origin, status: row.status });
-    }
-  }
-  return rows;
-}
-
-function parseDurableSessionTab(value: unknown): SessionTab | undefined {
+function parsePendingExtensionUpdate(value: unknown): PendingExtensionUpdate | undefined {
   if (!isRecord(value)) return undefined;
-  const tabId = value.tabId;
-  const origin = value.origin;
-  const status = value.status;
-  if (typeof tabId !== "number" || !Number.isInteger(tabId)) return undefined;
-  if (origin !== "agent" && origin !== "user") return undefined;
-  if (status !== "handoff" && status !== "deliverable") return undefined;
-  return { tabId, origin, status };
-}
-
-function isUsableGroupId(value: unknown): value is number {
-  return typeof value === "number" && Number.isInteger(value) && value >= 0;
+  if (value.state !== "waiting_for_idle") return undefined;
+  const pendingSince = optionalNumber(value.pendingSince);
+  if (pendingSince === undefined) return undefined;
+  const version = typeof value.version === "string" && value.version.length > 0 ? value.version : undefined;
+  return { pendingSince, state: "waiting_for_idle", ...(version ? { version } : {}) };
 }
 
 async function restorePendingReconnect(storedStatus: HostStatus): Promise<boolean> {
@@ -1448,14 +1961,103 @@ async function restorePendingReconnect(storedStatus: HostStatus): Promise<boolea
 }
 
 async function setStatus(next: HostStatus): Promise<void> {
-  status = next;
+  status = statusWithPendingUpdate(next);
   appendDebugLog(statusLogLevel(next), "status.changed", {
-    state: next.state,
-    diagnosis: next.diagnosis,
-    message: next.message,
-    retryDelayMs: next.retryDelayMs,
+    state: status.state,
+    diagnosis: status.diagnosis,
+    message: status.message,
+    retryDelayMs: status.retryDelayMs,
+    pendingExtensionUpdate: status.pendingExtensionUpdate?.version ?? status.pendingExtensionUpdate?.state,
   });
-  await chrome.storage.local.set({ [STATUS_KEY]: next });
+  await chrome.storage.local.set({ [STATUS_KEY]: status });
+  if (pendingExtensionUpdate && !applyingPendingExtensionUpdate) {
+    schedulePendingExtensionUpdateCheck("status_changed");
+  }
+}
+
+async function handleUpdateAvailable(details: { version?: string }): Promise<void> {
+  pendingExtensionUpdate = {
+    version: typeof details.version === "string" && details.version.length > 0 ? details.version : undefined,
+    pendingSince: Date.now(),
+    state: "waiting_for_idle",
+  };
+  appendDebugLog("info", "extension.update.pending", { version: pendingExtensionUpdate.version });
+  await persistPendingExtensionUpdate();
+  await setStatus({ ...status, updatedAt: Date.now() });
+  publishExtensionStatus();
+  await maybeApplyPendingExtensionUpdate("update_available");
+}
+
+function schedulePendingExtensionUpdateCheck(trigger: PendingExtensionUpdateTrigger): void {
+  if (!pendingExtensionUpdate) return;
+  pendingExtensionUpdateCheckTrigger = trigger;
+  if (pendingExtensionUpdateCheckTimer) return;
+  pendingExtensionUpdateCheckTimer = scheduleTimer(() => {
+    pendingExtensionUpdateCheckTimer = undefined;
+    const queuedTrigger = pendingExtensionUpdateCheckTrigger ?? trigger;
+    pendingExtensionUpdateCheckTrigger = undefined;
+    void maybeApplyPendingExtensionUpdate(queuedTrigger);
+  }, 0);
+}
+
+async function maybeApplyPendingExtensionUpdate(trigger: PendingExtensionUpdateTrigger): Promise<void> {
+  if (!pendingExtensionUpdate) return;
+  applyingPendingExtensionUpdate = true;
+  try {
+    const active = browserControlActivitySnapshot();
+    if (active.active) {
+      appendDebugLog("debug", "extension.update.waiting_for_idle", { trigger, reasons: active.reasons });
+      await setStatus({ ...status, updatedAt: Date.now() });
+      publishExtensionStatus();
+      return;
+    }
+    const version = pendingExtensionUpdate.version;
+    appendDebugLog("info", "extension.update.reload", { trigger, version });
+    pendingExtensionUpdate = undefined;
+    await persistPendingExtensionUpdate();
+    await setStatus({ ...status, updatedAt: Date.now() });
+    publishExtensionStatus();
+    chrome.runtime.reload();
+  } finally {
+    applyingPendingExtensionUpdate = false;
+  }
+}
+
+function browserControlActivitySnapshot(): { active: boolean; reasons: string[] } {
+  const reasons: string[] = [];
+  if (overlayCoordinator.activeTabIds().length > 0) reasons.push("active_takeover");
+  if (overlayCoordinator.hasPendingActivity()) reasons.push("overlay_pending");
+  if (debuggerAttachLocks.size > 0) reasons.push("debugger_attach_lock");
+  if (nativeHostBridge.hasPendingRequests()) reasons.push("native_request_pending");
+  if (status.state === "connecting" || helloTimer !== undefined) reasons.push("native_hello_pending");
+  if (reconnectTimer !== undefined) reasons.push("native_reconnect_pending");
+  for (const session of sessions.values()) {
+    if ([...session.tabs.values()].some((row) => row.status === "active")) reasons.push("active_session_tab");
+    if (session.attachedTabIds.size > 0) reasons.push("debugger_attached");
+  }
+  return { active: reasons.length > 0, reasons: [...new Set(reasons)] };
+}
+
+async function persistPendingExtensionUpdate(): Promise<void> {
+  await extensionUpdateStorage().set({ [PENDING_UPDATE_KEY]: pendingExtensionUpdate ?? null });
+}
+
+function extensionUpdateStorage(): {
+  get<T extends Record<string, unknown>>(keys: string[] | string): Promise<T>;
+  set(items: Record<string, unknown>): Promise<void>;
+} {
+  return chrome.storage.session ?? chrome.storage.local;
+}
+
+function publishExtensionStatus(): void {
+  if (!port) return;
+  try {
+    sendNotification("onExtensionStatus", {
+      pending_update: pendingExtensionUpdate ?? null,
+    });
+  } catch (error) {
+    appendDebugLog("warn", "extension.status.publish_failed", { message: errorMessage(error) });
+  }
 }
 
 async function extensionInstanceId(): Promise<string> {
@@ -1467,10 +2069,23 @@ async function extensionInstanceId(): Promise<string> {
   return id;
 }
 
-function rejectPending(message: string): void {
-  if (pending.size > 0) appendDebugLog("warn", "native.pending.rejected", { count: pending.size, message });
-  for (const waiter of pending.values()) waiter.reject(new Error(message));
-  pending.clear();
+function browserProfileMetadata(extensionInstance: string): {
+  profileIdHash: string;
+  profileRuntimeBinding: "webextension";
+} {
+  return {
+    profileIdHash: `obu-${stablePublicHash(`${chrome.runtime.id ?? "unknown"}:${extensionInstance}`)}`,
+    profileRuntimeBinding: "webextension",
+  };
+}
+
+function stablePublicHash(input: string): string {
+  let hash = 0x811c9dc5;
+  for (let index = 0; index < input.length; index += 1) {
+    hash ^= input.charCodeAt(index);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash.toString(16).padStart(8, "0");
 }
 
 function withTimeout<T>(promise: Promise<T>, timeoutMs: number, message = "native host request timed out"): Promise<T> {
@@ -1523,15 +2138,14 @@ function scheduleHeartbeat(): void {
     if (status.state !== "connected" || !port) return;
     void withTimeout(sendRequest("ping"), HEARTBEAT_TIMEOUT_MS, "native host heartbeat timed out").then(
       () => scheduleHeartbeat(),
-      (error) => {
+      async (error) => {
         const message = errorMessage(error);
         appendDebugLog("warn", "native.heartbeat.failed", { message });
         const failedPort = port;
         port = null;
         failedPort?.disconnect();
-        rejectPending(message);
-        void releaseActiveTakeoverForUnavailableHost("native_host_heartbeat_timeout");
-        void setStatus({
+        nativeHostBridge.rejectPending(message);
+        await setStatus({
           state: "disconnected",
           message,
           diagnosis: message === "native host heartbeat timed out"
@@ -1539,6 +2153,7 @@ function scheduleHeartbeat(): void {
             : diagnoseNativeHostFailure(message, "native_host_disconnected"),
           updatedAt: Date.now(),
         });
+        await releaseActiveTakeoverForUnavailableHost("native_host_heartbeat_timeout");
         scheduleReconnect();
       },
     );
@@ -1742,55 +2357,10 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-type SessionParams = {
-  session_id: string;
-  turn_id: string;
-};
-
-type CursorArrivalWaiter = {
-  tabId: number;
+type PendingDialogAwareClose = {
   sessionId: string;
-  turnId: string;
-  timer: ReturnType<typeof setTimeout>;
-  resolve(value: boolean): void;
-};
-
-type CursorVisualEvent = {
-  kind: "press" | "release" | "click";
-  x?: number;
-  y?: number;
-  button?: string;
-  clickCount: number;
-};
-
-type CdpInputBypass = {
-  durationMs: number;
-  reason: string;
-  eventFamilies: InputBypassEventFamily[];
-};
-
-type InputBypassEventFamily = "pointer" | "wheel" | "touch" | "keyboard" | "text";
-
-type ActiveTakeover = {
-  sessionId: string;
-  turnId: string;
-  lockInputs: boolean;
-};
-
-type BrowserSession = {
-  currentTurnId: string;
-  tabs: Map<number, SessionTab>;
-  finalizedTabs: Map<number, SessionTab>;
-  attachedTabIds: Set<number>;
-  groupId?: number;
-  deliverableGroupId?: number;
-  label?: string;
-};
-
-type SessionTab = {
-  tabId: number;
-  origin: "agent" | "user";
-  status: "active" | "handoff" | "deliverable";
+  operation: string;
+  reject(error: Error): void;
 };
 
 type TabDto = {
@@ -1800,9 +2370,13 @@ type TabDto = {
   url?: string;
   title?: string;
   active?: boolean;
+  logicalActive?: boolean;
   pinned?: boolean;
   origin: "agent" | "user";
   status: "active" | "handoff" | "deliverable";
+  owned?: boolean;
+  claimRequired?: boolean;
+  commandable?: boolean;
 };
 
 type SessionTabsResult = {
@@ -1810,11 +2384,55 @@ type SessionTabsResult = {
   deliverableTabs: TabDto[];
 };
 
+type FinalizeDesiredStatus = "close" | "release" | "handoff" | "deliverable";
+
+type FinalizeTabOutcome =
+  | "closed"
+  | "released"
+  | "kept_handoff"
+  | "kept_deliverable"
+  | "tab_gone"
+  | "failed"
+  | "not_attempted";
+
+type FinalizeTabAction = {
+  tabId: number;
+  origin: "agent" | "user";
+  desiredStatus: FinalizeDesiredStatus;
+  outcome: FinalizeTabOutcome;
+  errorCode?: string;
+  errorMessage?: string;
+};
+
+type FinalizeTabFailure = {
+  tabId?: number;
+  desiredStatus?: FinalizeDesiredStatus;
+  outcome: Extract<FinalizeTabOutcome, "failed" | "not_attempted">;
+  errorCode: string;
+  errorMessage: string;
+};
+
+type FinalizeTabsFinalTabs = {
+  handoff: TabDto[];
+  deliverable: TabDto[];
+  activeTabId: number | null;
+};
+
 type FinalizeTabsResult = {
+  status: "ok" | "partial" | "fatal";
+  actions: FinalizeTabAction[];
   closedTabIds: number[];
   releasedTabIds: number[];
   keptTabs: TabDto[];
   deliverableTabs: TabDto[];
+  finalTabs: FinalizeTabsFinalTabs | null;
+  failures: FinalizeTabFailure[];
+  diagnostics: {
+    reconciledFromChrome: boolean;
+    reconciliationSource?: "chrome.tabs";
+  };
+  errorCode?: string;
+  errorMessage?: string;
 };
 
 type HistoryItemDto = {
@@ -1829,25 +2447,15 @@ type HistoryItemDto = {
 type DownloadOwner = {
   sessionId: string;
   tabId?: number;
+  suggestedFilename?: string;
 };
 
-type PersistedBrowserSessionState = {
-  version: 1;
-  sessions: PersistedBrowserSession[];
-};
+type SessionCleanupMode = "stop" | "unavailable";
 
-type PersistedBrowserSession = {
-  session_id: string;
-  label?: string;
-  groupId?: number;
-  deliverableGroupId?: number;
-  tabs: PersistedSessionTab[];
-};
-
-type PersistedSessionTab = {
-  tabId: number;
-  origin: "agent" | "user";
-  status: "handoff" | "deliverable";
+type CleanupBrowserTabsResult = {
+  closedTabs: number;
+  releasedTabs: number;
+  keptDeliverables: number;
 };
 
 export {};

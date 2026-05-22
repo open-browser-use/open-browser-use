@@ -8,6 +8,10 @@ const builtCursor = await readFile(path.join(packageRoot, "dist", "cursor.js"), 
 assert.doesNotMatch(builtCursor, /\bexport\s*\{\s*\}/);
 assert.match(builtCursor, /(?:^|\n)\(\(\) => \{/);
 assert.doesNotMatch(builtCursor, /__OBU_CURSOR_MESSAGE__/);
+assert.match(builtCursor, /waterValuesBuffer/);
+assert.match(builtCursor, /prepareWaterRippleFrames/);
+assert.doesNotMatch(builtCursor, /const values = new Float32Array/);
+assert.doesNotMatch(builtCursor, /const points = \\[\\]/);
 
 class EventTarget {
   listeners = [];
@@ -43,15 +47,29 @@ class EventTarget {
 class FakeElement {
   style = {};
   dataset = {};
+  attributes = new Map();
   children = [];
   parent = null;
   shadowChildren = [];
+  id = "";
 
   append(...children) {
     for (const child of children) {
       child.parent = this;
       this.children.push(child);
     }
+  }
+
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+  }
+
+  getAttribute(name) {
+    return this.attributes.get(name) ?? null;
+  }
+
+  removeAttribute(name) {
+    this.attributes.delete(name);
   }
 
   attachShadow() {
@@ -92,6 +110,7 @@ globalThis.addEventListener = (...args) => windowEvents.addEventListener(...args
 globalThis.removeEventListener = (...args) => windowEvents.removeEventListener(...args);
 globalThis.innerWidth = 1024;
 globalThis.innerHeight = 768;
+globalThis.visualViewport = { width: 900, height: 700 };
 globalThis.matchMedia = () => ({ matches: true });
 globalThis.requestAnimationFrame = (callback) => {
   const id = timerId++;
@@ -133,17 +152,55 @@ let responses = runtimeMessages.emit({
 assert.deepEqual(responses, [{ ok: true, active: true, lockInputs: true }]);
 assert.equal(documentElement.children.length, 1);
 let host = documentElement.children[0];
+assert.equal(host.id, "obu-agent-overlay-root");
+assert.equal(host.getAttribute("aria-hidden"), "true");
+assert.equal(host.getAttribute("data-obu-overlay-root"), "true");
 assert.equal(host.style.position, "fixed");
-assert.equal(host.shadowChildren.length, 4);
-assert.match(host.shadowChildren[0].textContent, /obu-takeover-particles/);
-const overlay = host.shadowChildren[1];
+assert.equal(host.shadowChildren.length, 3);
+const overlay = host.shadowChildren[0];
+const centeredCursor = host.shadowChildren[2];
+assert.equal(centeredCursor.style.transform, "translate3d(450px, 350px, 0)");
 assert.equal(overlay.style.opacity, "1");
-assert.match(overlay.style.background, /radial-gradient/);
 assert.match(overlay.style.background, /linear-gradient/);
+assert.doesNotMatch(overlay.style.background, /conic-gradient/);
+assert.doesNotMatch(overlay.style.background, /polygon/);
+assert.equal(overlay.style.mixBlendMode, "screen");
 assert.equal(overlay.style.backdropFilter, undefined);
 assert.equal(overlay.style.webkitBackdropFilter, undefined);
 assert.equal(overlay.style.pointerEvents, "none");
-assert.equal(overlay.style.animation, "none");
+assert.equal(overlay.style.imageRendering, undefined);
+assert.equal(overlay.style.animation, undefined);
+
+responses = runtimeMessages.emit({ type: "OBU_CAPTURE_SUPPRESSION", active: true, token: "shot-1" });
+assert.deepEqual(responses, [{ ok: true, suppressed: true }]);
+assert.equal(host.style.visibility, "hidden");
+assert.equal(host.getAttribute("data-obu-capture-suppressed"), "true");
+responses = runtimeMessages.emit({ type: "OBU_CAPTURE_SUPPRESSION", active: true, token: "shot-2" });
+assert.deepEqual(responses, [{ ok: true, suppressed: true }]);
+responses = runtimeMessages.emit({ type: "OBU_CAPTURE_SUPPRESSION", active: false, token: "shot-1" });
+assert.deepEqual(responses, [{ ok: true, suppressed: true }]);
+assert.equal(host.style.visibility, "hidden");
+responses = runtimeMessages.emit({ type: "OBU_CAPTURE_SUPPRESSION", active: false, token: "shot-2" });
+assert.deepEqual(responses, [{ ok: true, suppressed: false }]);
+assert.equal(host.style.visibility, "");
+assert.equal(host.getAttribute("data-obu-capture-suppressed"), null);
+responses = runtimeMessages.emit({ type: "OBU_CAPTURE_SUPPRESSION", active: true, token: "stale-shot" });
+assert.deepEqual(responses, [{ ok: true, suppressed: true }]);
+assert.equal(host.style.visibility, "hidden");
+responses = runtimeMessages.emit({ type: "OBU_CURSOR_HIDE" });
+assert.deepEqual(responses, [{ ok: true }]);
+assert.equal(documentElement.children.length, 0);
+responses = runtimeMessages.emit({
+  type: "OBU_TAKEOVER_STATE",
+  active: true,
+  lockInputs: true,
+  sessionId: "session",
+  turnId: "turn",
+});
+assert.deepEqual(responses, [{ ok: true, active: true, lockInputs: true }]);
+host = documentElement.children[0];
+assert.equal(host.style.visibility, "");
+assert.equal(host.getAttribute("data-obu-capture-suppressed"), null);
 
 const blocked = fakeDomEvent();
 documentEvents.emitDom("click", blocked);
@@ -206,18 +263,18 @@ assert.equal(keyboardBypassed.stopped, false);
 responses = runtimeMessages.emit({ type: "OBU_CURSOR_MOVE", x: 10.2, y: 20.8, sequence: 1, sessionId: "session", turnId: "turn" });
 assert.deepEqual(responses, [{ ok: true, sequence: 1 }]);
 host = documentElement.children[0];
-const cursor = host.shadowChildren[3];
+const cursor = host.shadowChildren[2];
 assert.equal(cursor.style.transform, "translate3d(10px, 21px, 0)");
 assert.match(cursor.children[0].style.transform, /rotate\(-44\.00deg\)/);
 await waitFor(() => sentRuntimeMessages.some((message) => message.type === "OBU_CURSOR_ARRIVED" && message.sequence === 1));
 
 responses = runtimeMessages.emit({ type: "OBU_CURSOR_EVENT", kind: "release", x: 10, y: 21, button: "left" });
 assert.deepEqual(responses, [{ ok: true, kind: "release", sequence: undefined }]);
-assert.equal(host.shadowChildren[2].children.length, 0);
+assert.equal(host.shadowChildren[1].children.length, 0);
 
 responses = runtimeMessages.emit({ type: "OBU_CURSOR_EVENT", kind: "click", x: 10, y: 21, button: "left" });
 assert.deepEqual(responses, [{ ok: true, kind: "click", sequence: undefined }]);
-assert.equal(host.shadowChildren[2].children.length, 1);
+assert.equal(host.shadowChildren[1].children.length, 1);
 
 responses = runtimeMessages.emit({ type: "OBU_CURSOR_HIDE" });
 assert.deepEqual(responses, [{ ok: true }]);
@@ -240,7 +297,7 @@ assert.equal(documentElement.children.length, 0);
 
 runtimeMessages.emit({ type: "OBU_CURSOR_MOVE", x: 1, y: 2, sequence: 2 });
 assert.equal(documentElement.children.length, 1);
-assert.equal(documentElement.children[0].shadowChildren[3].style.transform, "translate3d(1px, 2px, 0)");
+assert.equal(documentElement.children[0].shadowChildren[2].style.transform, "translate3d(1px, 2px, 0)");
 
 function fakeDomEvent() {
   return {

@@ -82,6 +82,31 @@
   "resumeButton": {
     "message": "Возобновить"
   },
+  "cleanupButton": {
+    "message": "Очистить вкладки браузера"
+  },
+  "cleanupResult": {
+    "message": "Закрыто $closed$, освобождено $released$, сохранено результатов: $kept$.",
+    "placeholders": {
+      "closed": {
+        "content": "$1"
+      },
+      "released": {
+        "content": "$2"
+      },
+      "kept": {
+        "content": "$3"
+      }
+    }
+  },
+  "cleanupFailed": {
+    "message": "Не удалось очистить: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
   "debugLogsLabel": {
     "message": "Журналы отладки"
   },

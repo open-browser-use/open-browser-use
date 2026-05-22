@@ -51,6 +51,9 @@ jobs:
       - name: Rust tests
         run: cargo test -p obu-wire -p obu-node-repl -p obu-host --lib --tests --no-fail-fast
 
+      - name: MCP client compatibility smoke
+        run: pnpm smoke:mcp-client-compat
+
       - name: Install cargo-dist
         env:
           CARGO_DIST_NO_MODIFY_PATH: "1"
@@ -97,6 +100,7 @@ jobs:
       - name: Curl artifact smoke
         run: |
           sh -n scripts/install.sh
+          node scripts/install-refresh-safety-smoke.mjs
           node scripts/make-curl-artifact.mjs
           node scripts/curl-install-smoke.mjs
           node scripts/setup-local-spine-smoke.mjs
@@ -220,6 +224,7 @@ jobs:
       - name: Make curl artifact
         run: |
           sh -n scripts/install.sh
+          node scripts/install-refresh-safety-smoke.mjs
           node scripts/make-curl-artifact.mjs --payload "dist/payload/${{ matrix.target }}"
 
       - name: Upload target curl artifact

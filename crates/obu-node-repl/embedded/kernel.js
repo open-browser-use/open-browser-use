@@ -1523,6 +1523,27 @@ function formatErrorMessage(error) {
   return String(error);
 }
 
+function serializeErrorDetail(error) {
+  const detail = {
+    message: formatErrorMessage(error),
+  };
+  if (error && typeof error === "object") {
+    if (typeof error.name === "string" && error.name.length > 0) {
+      detail.name = error.name;
+    }
+    if (typeof error.code === "number" || typeof error.code === "string") {
+      detail.code = error.code;
+    }
+    if (Object.prototype.hasOwnProperty.call(error, "data")) {
+      detail.data = serializeResultValue(error.data);
+    }
+    if (error.productError && typeof error.productError === "object") {
+      detail.product_error = serializeResultValue(error.productError);
+    }
+  }
+  return serializeResultValue(detail);
+}
+
 function sendFatalExecResultSync(kind, error) {
   if (!activeExecId) {
     return;
@@ -1533,6 +1554,7 @@ function sendFatalExecResultSync(kind, error) {
     ok: false,
     output: "",
     error: `obu-node-repl kernel ${kind}: ${formatErrorMessage(error)}; kernel reset. Catch or handle async errors (including Promise rejections and EventEmitter 'error' events) to avoid kernel termination.`,
+    error_detail: serializeErrorDetail(error),
   };
   try {
     fs.writeSync(process.stdout.fd, `${JSON.stringify(payload)}\n`);
@@ -2329,6 +2351,7 @@ async function handleExec(message) {
       result: null,
       duration_ms: Math.round(performance.now() - execState.startedAt),
       error: error && error.message ? error.message : String(error),
+      error_detail: serializeErrorDetail(error),
       response_meta: currentResponseMeta,
     });
   } finally {

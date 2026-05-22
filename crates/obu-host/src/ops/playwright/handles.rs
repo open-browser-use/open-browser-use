@@ -257,9 +257,16 @@ pub(crate) fn missing_file_chooser_handle(registry: &ServiceRegistry, id: &str) 
     }
 }
 
-pub(crate) fn download_progress_completed_for_guid(params: &Value, guid: &str) -> bool {
+pub(crate) fn download_progress_terminal_for_guid(params: &Value, guid: &str) -> bool {
     params.get("guid").and_then(Value::as_str) == Some(guid)
-        && params.get("state").and_then(Value::as_str) == Some("completed")
+        && matches!(
+            params.get("state").and_then(Value::as_str),
+            Some("completed" | "canceled")
+        )
+}
+
+pub(crate) fn download_progress_is_canceled(params: &Value) -> bool {
+    params.get("state").and_then(Value::as_str) == Some("canceled")
 }
 
 pub(crate) fn download_progress_file_path(params: &Value) -> Option<String> {
@@ -373,11 +380,15 @@ mod tests {
             &json!({ "guid": "download-guid", "frameId": "frame-2" }),
             &frame_ids,
         ));
-        assert!(download_progress_completed_for_guid(
+        assert!(download_progress_terminal_for_guid(
             &json!({ "guid": "download-guid", "state": "completed" }),
             "download-guid",
         ));
-        assert!(!download_progress_completed_for_guid(
+        assert!(download_progress_terminal_for_guid(
+            &json!({ "guid": "download-guid", "state": "canceled" }),
+            "download-guid",
+        ));
+        assert!(!download_progress_terminal_for_guid(
             &json!({ "guid": "download-guid", "state": "inProgress" }),
             "download-guid",
         ));

@@ -2,17 +2,158 @@
 #![allow(dead_code)]
 
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+use bytes::Bytes;
+use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
-use tokio::net::TcpListener;
+use tokio::net::{TcpListener, UnixListener};
+use tokio::sync::Mutex;
+use tokio_util::codec::Framed;
+
+use obu_wire::frame::FrameCodec;
 
 #[path = "common/node_repl_mcp.rs"]
 mod node_repl_harness;
 use node_repl_harness::{
     NodeReplHandle, NodeReplOpts, prepare_built_sdk_module_root, spawn_node_repl,
 };
+
+#[tokio::test]
+async fn fake_webextension_node_repl_preserves_shopping_state_across_cells() {
+    let fake = spawn_fake_webextension_runtime().await;
+    let sdk = prepare_built_sdk_module_root();
+    let mcp: NodeReplHandle = spawn_node_repl(&NodeReplOpts {
+        envs: vec![
+            (
+                "OBU_RUNTIME_DIR".to_string(),
+                fake.runtime_dir.path().display().to_string(),
+            ),
+            (
+                "OBU_NODE_REPL_MODULE_DIRS".to_string(),
+                sdk.root.display().to_string(),
+            ),
+            ("OBU_TRUSTED_MODULE_SHA256S".to_string(), sdk.hash.clone()),
+        ],
+    })
+    .await;
+
+    let first = eval_json(
+        &mcp,
+        "fake shopping search",
+        r##"
+        if (!globalThis.browser) {
+          globalThis.browser = await agent.browsers.get("chrome");
+        }
+        await browser.name("Fake shopping");
+        if (!globalThis.tab) {
+          globalThis.tab =
+            (await browser.tabs.current()) ??
+            (await browser.tabs.create("https://shop.test/"));
+        }
+        await tab.locator("#search").fill("keyboard");
+        await tab.cua.move(450, 350);
+        const probe = await tab.dev.cdp("Runtime.evaluate", {
+          expression: "window.__fakeShoppingState",
+          returnByValue: true
+        });
+        await browser.turnEnded();
+        JSON.stringify({
+          backend: browser.info.type,
+          tabId: tab.id,
+          search: probe.result.value.searchInput,
+          createdTabs: probe.result.value.createdTabs
+        })
+        "##,
+    )
+    .await;
+    assert_eq!(first["backend"], json!("webextension"));
+    assert_eq!(first["search"], json!("keyboard"));
+    assert_eq!(first["createdTabs"], json!(1));
+
+    let second = eval_json(
+        &mcp,
+        "fake shopping select",
+        r##"
+        const beforeSelectTabId = tab.id;
+        await tab.locator("[data-product='keyboard']").click();
+        const selectProbe = await tab.dev.cdp("Runtime.evaluate", {
+          expression: "window.__fakeShoppingState",
+          returnByValue: true
+        });
+        await browser.turnEnded();
+        JSON.stringify({
+          sameTab: tab.id === beforeSelectTabId,
+          tabId: tab.id,
+          selectedProduct: selectProbe.result.value.selectedProduct,
+          searchInput: selectProbe.result.value.searchInput,
+          createdTabs: selectProbe.result.value.createdTabs
+        })
+        "##,
+    )
+    .await;
+    assert_eq!(second["sameTab"], json!(true));
+    assert_eq!(second["tabId"], first["tabId"]);
+    assert_eq!(second["searchInput"], json!("keyboard"));
+    assert_eq!(second["selectedProduct"], json!("keyboard"));
+    assert_eq!(second["createdTabs"], json!(1));
+
+    let third = eval_json(
+        &mcp,
+        "fake shopping cart and resume",
+        r##"
+        await tab.locator("#add-to-cart").click();
+        await browser.yieldControl();
+        globalThis.tab = await browser.resumeControl();
+        const cartProbe = await tab.dev.cdp("Runtime.evaluate", {
+          expression: "window.__fakeShoppingState",
+          returnByValue: true
+        });
+        await browser.turnEnded();
+        JSON.stringify({
+          tabId: tab.id,
+          searchInput: cartProbe.result.value.searchInput,
+          selectedProduct: cartProbe.result.value.selectedProduct,
+          cartCount: cartProbe.result.value.cartCount,
+          yielded: cartProbe.result.value.yielded,
+          resumed: cartProbe.result.value.resumed,
+          createdTabs: cartProbe.result.value.createdTabs,
+          initialCursor: cartProbe.result.value.initialCursorBeforeFirstMove
+        })
+        "##,
+    )
+    .await;
+    assert_eq!(third["tabId"], first["tabId"]);
+    assert_eq!(third["searchInput"], json!("keyboard"));
+    assert_eq!(third["selectedProduct"], json!("keyboard"));
+    assert_eq!(third["cartCount"], json!(1));
+    assert_eq!(third["yielded"], json!(true));
+    assert_eq!(third["resumed"], json!(true));
+    assert_eq!(third["createdTabs"], json!(1));
+    assert_eq!(third["initialCursor"], json!({ "x": 450, "y": 350 }));
+
+    let state = fake.state.lock().await;
+    assert_eq!(
+        state.created_tabs, 1,
+        "state continuity must not create duplicate task tabs"
+    );
+    assert_eq!(state.turn_ended_calls, 3);
+    assert_eq!(state.yield_control_calls, 1);
+    assert_eq!(state.resume_control_calls, 1);
+    assert_eq!(
+        state
+            .methods
+            .iter()
+            .filter(|method| method.as_str() == "createTab")
+            .count(),
+        1,
+        "only the first cell may create the task tab"
+    );
+
+    let _ = mcp.shutdown().await;
+}
 
 #[tokio::test]
 #[ignore = "requires Chromium with the unpacked extension loaded and dev native-host manifest installed"]
@@ -478,7 +619,7 @@ async fn end_to_end_webextension_create_click_and_user_surfaces() {
         const listedAfterClaim = await refreshed.tabs.list();
         JSON.stringify({
             tabId: String(tabId),
-            deliverableStatus: finalized.deliverable_tabs?.[0]?.status,
+            deliverableStatus: finalized.deliverableTabs[0]?.status,
             listedAfterFinalize: listedAfterFinalize.some((row) => row.id === tabId),
             deliverableCount: lifecycle.deliverable_tabs ?? -1,
             deliverableSummaryTabId: deliverableSummary?.tab_id,
@@ -523,14 +664,471 @@ async fn end_to_end_webextension_create_click_and_user_surfaces() {
     let _ = mcp.shutdown().await;
 }
 
+#[tokio::test]
+#[ignore = "requires Chromium with the unpacked extension loaded and dev native-host manifest installed"]
+async fn webextension_dirty_form_beforeunload_survives_reattach_and_finish_turn() {
+    let runtime_dir =
+        PathBuf::from(std::env::var("OBU_RUNTIME_DIR").expect("OBU_RUNTIME_DIR must be set"));
+    let descriptor = wait_for_descriptor(&runtime_dir).await;
+    let descriptor_json: Value =
+        serde_json::from_slice(&std::fs::read(&descriptor).unwrap()).unwrap();
+    assert_eq!(descriptor_json["type"], "webextension");
+
+    let (dirty_url, clean_url) = spawn_dirty_form_fixture().await;
+    let sdk = prepare_built_sdk_module_root();
+    let mcp: NodeReplHandle = spawn_node_repl(&NodeReplOpts {
+        envs: vec![
+            (
+                "OBU_RUNTIME_DIR".to_string(),
+                runtime_dir.display().to_string(),
+            ),
+            (
+                "OBU_NODE_REPL_MODULE_DIRS".to_string(),
+                sdk.root.display().to_string(),
+            ),
+            ("OBU_TRUSTED_MODULE_SHA256S".to_string(), sdk.hash.clone()),
+        ],
+    })
+    .await;
+
+    let dirty_url_json = serde_json::to_string(&dirty_url).unwrap();
+    let clean_url_json = serde_json::to_string(&clean_url).unwrap();
+    let script = r##"
+        const dirtyUrl = __DIRTY_URL__;
+        const cleanUrl = __CLEAN_URL__;
+        const browser = await agent.browsers.get("chrome");
+
+        async function makeDirty(tab) {
+            await tab.goto(dirtyUrl, { timeout: 10_000 });
+            await tab.waitForLoadState("load", { timeout: 10_000 });
+            await tab.locator("#dirty").click({ timeout: 10_000 });
+            await tab.cua.type("changed", { timeout: 10_000 });
+            const probe = await tab.dev.cdp("Runtime.evaluate", {
+                expression: `({
+                    href: location.href,
+                    dirty: window.__dirty === true,
+                    value: document.querySelector("#dirty")?.value ?? ""
+                })`,
+                returnByValue: true
+            });
+            if (!probe.result.value.dirty || probe.result.value.value !== "changed") {
+                throw new Error(`dirty form fixture did not become dirty: ${JSON.stringify(probe.result.value)}`);
+            }
+            return probe.result.value;
+        }
+
+        const tab = await browser.tabs.create();
+        await tab.attach({ timeout: 10_000 });
+        await makeDirty(tab);
+        await tab.detach({ timeout: 10_000 });
+        await tab.attach({ timeout: 10_000 });
+        await tab.goto(cleanUrl, { timeout: 10_000 });
+        await tab.waitForLoadState("load", { timeout: 10_000 });
+        const reattachGotoUrl = await tab.url({ timeout: 10_000 });
+
+        await makeDirty(tab);
+        const finalizeTabId = String(tab.id);
+        const finalized = await browser.finishTurn({
+            keep: [],
+            timeout: 10_000,
+            turnTimeout: 10_000
+        });
+        const listedAfterFinishTurn = await browser.tabs.list();
+        const refreshed = await agent.browsers.get("chrome");
+        const recentDialogs = refreshed.info.metadata?.diagnostics?.dialogs?.recent ?? [];
+        const beforeunload = recentDialogs.filter((row) => row.dialog_type === "beforeunload");
+        const closedTabIds = finalized.closedTabIds;
+
+        JSON.stringify({
+            reattachGotoUrl,
+            finalizeTabId,
+            finishTurnClosed: closedTabIds.map(String),
+            finishTurnResultKeys: Object.keys(finalized),
+            finalizeStillListed: listedAfterFinishTurn.some((row) => String(row.id) === finalizeTabId),
+            beforeunloadCount: beforeunload.length,
+            beforeunloadOperations: beforeunload.map((row) => row.operation),
+            beforeunloadOutcomes: beforeunload.map((row) => row.outcome),
+            beforeunloadActions: beforeunload.map((row) => row.default_action)
+        })
+    "##
+    .replace("__DIRTY_URL__", &dirty_url_json)
+    .replace("__CLEAN_URL__", &clean_url_json);
+    let raw: Value = mcp
+        .call_tool("js", json!({ "source": script, "timeout_ms": 60_000 }))
+        .await
+        .expect("dirty form reattach dialog policy js tool call");
+    let payload: Value = parse_js_json_result(&raw, "dirty form reattach dialog policy");
+    assert_eq!(
+        payload["reattachGotoUrl"],
+        json!(clean_url),
+        "reattached dirty-form goto must land on the clean page"
+    );
+    assert_eq!(
+        payload["finalizeStillListed"],
+        json!(false),
+        "finishTurn({{ keep: [] }}) must close the omitted dirty-form tab"
+    );
+    let finalize_tab_id = payload["finalizeTabId"].as_str().unwrap();
+    assert!(
+        payload["finishTurnClosed"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|tab_id| tab_id.as_str() == Some(finalize_tab_id)),
+        "finishTurn result must report the dirty-form tab as closed; got {payload}"
+    );
+    assert!(
+        payload["beforeunloadCount"].as_u64().unwrap_or_default() >= 1,
+        "expected at least the reattach navigation beforeunload diagnostic; headless Chrome may not emit close dialogs; got {payload}"
+    );
+    assert!(
+        payload["beforeunloadOperations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|operation| operation.as_str() == Some("Page.navigate")),
+        "expected the reattach navigation beforeunload diagnostic; got {payload}"
+    );
+    assert!(
+        payload["beforeunloadActions"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|action| action.as_str() == Some("accept")),
+        "beforeunload dialogs must be accepted by policy; got {payload}"
+    );
+    assert!(
+        payload["beforeunloadOutcomes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|outcome| outcome.as_str() == Some("continued")),
+        "beforeunload dialogs must allow operations to continue; got {payload}"
+    );
+
+    let _ = mcp.shutdown().await;
+}
+
 async fn eval_json(mcp: &NodeReplHandle, label: &str, source: &str) -> Value {
     eprintln!("p3 webextension e2e: {label}");
     let raw: Value = mcp
         .call_tool("js", json!({ "source": source, "timeout_ms": 15_000 }))
         .await
         .unwrap_or_else(|error| panic!("{label} js tool call: {error}"));
-    serde_json::from_str(raw["result"].as_str().expect("js result is a string"))
+    parse_js_json_result(&raw, label)
+}
+
+fn parse_js_json_result(raw: &Value, label: &str) -> Value {
+    let result = raw
+        .get("result")
+        .unwrap_or_else(|| panic!("{label} missing js result; got {raw}"));
+    let value = result.get("value").unwrap_or(result);
+    let result = value
+        .as_str()
+        .unwrap_or_else(|| panic!("{label} expected string js result; got {raw}"));
+    serde_json::from_str(result)
         .unwrap_or_else(|error| panic!("{label} decode payload: {error}; raw={raw}"))
+}
+
+struct FakeWebExtensionRuntime {
+    runtime_dir: tempfile::TempDir,
+    state: Arc<Mutex<FakeShoppingState>>,
+}
+
+#[derive(Debug)]
+struct FakeShoppingState {
+    next_tab_id: u64,
+    tab_id: Option<u64>,
+    created_tabs: u64,
+    turn_ended_calls: u64,
+    yield_control_calls: u64,
+    resume_control_calls: u64,
+    search_input: String,
+    selected_product: Option<String>,
+    cart_count: u64,
+    yielded: bool,
+    resumed: bool,
+    initial_cursor_before_first_move: Option<(i64, i64)>,
+    methods: Vec<String>,
+}
+
+impl Default for FakeShoppingState {
+    fn default() -> Self {
+        Self {
+            next_tab_id: 41,
+            tab_id: None,
+            created_tabs: 0,
+            turn_ended_calls: 0,
+            yield_control_calls: 0,
+            resume_control_calls: 0,
+            search_input: String::new(),
+            selected_product: None,
+            cart_count: 0,
+            yielded: false,
+            resumed: false,
+            initial_cursor_before_first_move: None,
+            methods: Vec::new(),
+        }
+    }
+}
+
+async fn spawn_fake_webextension_runtime() -> FakeWebExtensionRuntime {
+    let runtime_dir = tempfile::tempdir().expect("fake runtime dir");
+    let descriptor_dir = runtime_dir.path().join("webextension");
+    std::fs::create_dir_all(&descriptor_dir).expect("create fake descriptor dir");
+    set_owner_only_dir(runtime_dir.path());
+    set_owner_only_dir(&descriptor_dir);
+
+    let socket_path = runtime_dir.path().join("fake-webextension.sock");
+    let listener = UnixListener::bind(&socket_path).expect("bind fake webextension socket");
+    set_owner_only_file(&socket_path);
+    let token = "fake-token";
+    let state = Arc::new(Mutex::new(FakeShoppingState::default()));
+    let server_state = state.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((stream, _)) = listener.accept().await else {
+                break;
+            };
+            let state = server_state.clone();
+            tokio::spawn(handle_fake_webextension_connection(
+                stream,
+                state,
+                token.to_string(),
+            ));
+        }
+    });
+
+    let descriptor_path = descriptor_dir.join("chrome.json");
+    std::fs::write(
+        &descriptor_path,
+        serde_json::to_vec_pretty(&json!({
+            "schema_version": 1,
+            "type": "webextension",
+            "name": "chrome",
+            "socketPath": socket_path.display().to_string(),
+            "sdk_auth_token": token,
+            "pid": std::process::id(),
+            "startedAt": "1000"
+        }))
+        .expect("serialize fake descriptor"),
+    )
+    .expect("write fake descriptor");
+    set_owner_only_file(&descriptor_path);
+
+    FakeWebExtensionRuntime { runtime_dir, state }
+}
+
+async fn handle_fake_webextension_connection(
+    stream: tokio::net::UnixStream,
+    state: Arc<Mutex<FakeShoppingState>>,
+    token: String,
+) {
+    let mut framed = Framed::new(stream, FrameCodec);
+    let mut authenticated = false;
+    while let Some(frame) = framed.next().await {
+        let Ok(bytes) = frame else {
+            break;
+        };
+        let Ok(request) = serde_json::from_slice::<Value>(&bytes) else {
+            break;
+        };
+        let id = request.get("id").cloned().unwrap_or(Value::Null);
+        let method = request.get("method").and_then(Value::as_str).unwrap_or("");
+        let params = request.get("params").cloned().unwrap_or_else(|| json!({}));
+        let response = if method == "auth" {
+            let accepted = params
+                .get("capability_token")
+                .and_then(Value::as_str)
+                .map(|actual| actual == token)
+                .unwrap_or(false);
+            authenticated = accepted;
+            if accepted {
+                rpc_ok(id, json!({ "authenticated": true }))
+            } else {
+                rpc_error(id, -1100, "auth rejected")
+            }
+        } else if !authenticated {
+            rpc_error(id, -1100, "auth required")
+        } else {
+            fake_webextension_response(id, method, params, &state).await
+        };
+        if framed.send(response).await.is_err() {
+            break;
+        }
+    }
+}
+
+async fn fake_webextension_response(
+    id: Value,
+    method: &str,
+    params: Value,
+    state: &Arc<Mutex<FakeShoppingState>>,
+) -> Bytes {
+    let mut state = state.lock().await;
+    state.methods.push(method.to_string());
+    match method {
+        "getInfo" => rpc_ok(
+            id,
+            json!({
+                "type": "webextension",
+                "name": "chrome",
+                "capabilities": {
+                    "backend": "webextension",
+                    "supported_methods": [
+                        "getInfo",
+                        "getCurrentTab",
+                        "createTab",
+                        "nameSession",
+                        "turnEnded",
+                        "yieldControl",
+                        "resumeControl",
+                        "tab_url",
+                        "tab_title",
+                        "executeCdp",
+                        "playwright_locator_fill",
+                        "playwright_locator_click",
+                        "cua_move"
+                    ]
+                }
+            }),
+        ),
+        "nameSession" => rpc_ok(id, json!({})),
+        "getCurrentTab" => rpc_ok(
+            id,
+            state
+                .tab_id
+                .map(|tab_id| fake_tab(tab_id))
+                .unwrap_or(Value::Null),
+        ),
+        "createTab" => {
+            let tab_id = state.next_tab_id;
+            state.next_tab_id += 1;
+            state.tab_id = Some(tab_id);
+            state.created_tabs += 1;
+            rpc_ok(id, fake_tab(tab_id))
+        }
+        "tab_url" => rpc_ok(id, json!("https://shop.test/")),
+        "tab_title" => rpc_ok(id, json!("Fake Shop")),
+        "playwright_locator_fill" => {
+            if params.get("selector").and_then(Value::as_str) == Some("#search") {
+                state.search_input = params
+                    .get("value")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default()
+                    .to_string();
+            }
+            rpc_ok(id, Value::Null)
+        }
+        "playwright_locator_click" => {
+            match params
+                .get("selector")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+            {
+                "[data-product='keyboard']" => {
+                    state.selected_product = Some("keyboard".to_string())
+                }
+                "#add-to-cart" if state.selected_product.as_deref() == Some("keyboard") => {
+                    state.cart_count += 1;
+                }
+                _ => {}
+            }
+            rpc_ok(id, Value::Null)
+        }
+        "cua_move" => {
+            if state.initial_cursor_before_first_move.is_none() {
+                let x = params.get("x").and_then(Value::as_i64).unwrap_or_default();
+                let y = params.get("y").and_then(Value::as_i64).unwrap_or_default();
+                state.initial_cursor_before_first_move = Some((x, y));
+            }
+            rpc_ok(id, Value::Null)
+        }
+        "executeCdp" => rpc_ok(
+            id,
+            json!({
+                "result": {
+                    "value": {
+                        "searchInput": state.search_input,
+                        "selectedProduct": state.selected_product,
+                        "cartCount": state.cart_count,
+                        "yielded": state.yielded,
+                        "resumed": state.resumed,
+                        "createdTabs": state.created_tabs,
+                        "initialCursorBeforeFirstMove": state.initial_cursor_before_first_move.map(|(x, y)| json!({ "x": x, "y": y }))
+                    }
+                }
+            }),
+        ),
+        "turnEnded" => {
+            state.turn_ended_calls += 1;
+            rpc_ok(id, json!({}))
+        }
+        "yieldControl" => {
+            state.yield_control_calls += 1;
+            state.yielded = true;
+            rpc_ok(id, json!({}))
+        }
+        "resumeControl" => {
+            state.resume_control_calls += 1;
+            state.resumed = true;
+            let tab = state.tab_id.map(fake_tab).unwrap_or(Value::Null);
+            rpc_ok(id, tab)
+        }
+        _ => rpc_error(id, -32601, &format!("method not found: {method}")),
+    }
+}
+
+fn fake_tab(tab_id: u64) -> Value {
+    json!({
+        "tab_id": tab_id.to_string(),
+        "url": "https://shop.test/",
+        "title": "Fake Shop",
+        "origin": "agent",
+        "status": "active",
+        "commandable": true,
+        "logicalActive": true
+    })
+}
+
+fn rpc_ok(id: Value, result: Value) -> Bytes {
+    Bytes::from(
+        serde_json::to_vec(&json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "result": result
+        }))
+        .expect("serialize fake rpc response"),
+    )
+}
+
+fn rpc_error(id: Value, code: i64, message: &str) -> Bytes {
+    Bytes::from(
+        serde_json::to_vec(&json!({
+            "jsonrpc": "2.0",
+            "id": id,
+            "error": { "code": code, "message": message }
+        }))
+        .expect("serialize fake rpc error"),
+    )
+}
+
+fn set_owner_only_dir(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
+            .expect("set owner-only dir permissions");
+    }
+}
+
+fn set_owner_only_file(path: &Path) {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o600))
+            .expect("set owner-only file permissions");
+    }
 }
 
 async fn spawn_fixture_server(download_name: String) -> String {
@@ -611,6 +1209,64 @@ async fn spawn_fixture_server(download_name: String) -> String {
         }
     });
     format!("http://{addr}/")
+}
+
+async fn spawn_dirty_form_fixture() -> (String, String) {
+    let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else {
+                break;
+            };
+            tokio::spawn(async move {
+                let mut buffer = [0u8; 1024];
+                let read = stream.read(&mut buffer).await.unwrap_or(0);
+                let request = String::from_utf8_lossy(&buffer[..read]);
+                let path = request
+                    .lines()
+                    .next()
+                    .and_then(|line| line.split_whitespace().nth(1))
+                    .unwrap_or("/");
+                let body = if path.starts_with("/clean") {
+                    "<!doctype html><title>clean</title><main id=\"clean\">clean page</main>"
+                        .to_string()
+                } else {
+                    r#"<!doctype html>
+<html>
+  <head><title>dirty-form</title></head>
+  <body>
+    <label for="dirty">Dirty value</label>
+    <input id="dirty" autofocus>
+    <script>
+      window.__dirty = false;
+      const input = document.getElementById("dirty");
+      input.addEventListener("input", () => {
+        window.__dirty = true;
+      });
+      window.addEventListener("beforeunload", (event) => {
+        if (!window.__dirty) return;
+        event.preventDefault();
+        event.returnValue = "";
+      });
+    </script>
+  </body>
+</html>"#
+                        .to_string()
+                };
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\ncontent-type: text/html\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            });
+        }
+    });
+    (
+        format!("http://{addr}/dirty"),
+        format!("http://{addr}/clean"),
+    )
 }
 
 async fn wait_for_descriptor(runtime: &Path) -> PathBuf {

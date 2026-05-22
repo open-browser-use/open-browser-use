@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, rm, stat, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import test from "node:test";
 
 import {
+  ensureRuntimeDir,
   platformDefaultRuntimeDir,
   readUserConfigResult,
   resolveRuntimeLayout,
@@ -149,4 +150,25 @@ test("runtime directory validator rejects symlinks and group-readable modes", as
   const fileResult = await validateRuntimeDir(file);
   assert.equal(fileResult.ok, false);
   assert.match(fileResult.message ?? "", /not a directory/);
+});
+
+test("ensureRuntimeDir rejects a symlink without chmodding its target", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX symlink permissions are not meaningful on Windows");
+    return;
+  }
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-layout-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+
+  const target = path.join(root, "target");
+  await mkdir(target, { mode: 0o700 });
+  await chmod(target, 0o755);
+  const link = path.join(root, "runtime-link");
+  await symlink(target, link);
+
+  const result = await ensureRuntimeDir(link);
+
+  assert.equal(result.ok, false);
+  assert.match(result.message ?? "", /symlink/);
+  assert.equal((await stat(target)).mode & 0o777, 0o755);
 });

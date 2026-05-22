@@ -4,6 +4,7 @@ use std::collections::HashMap;
 use std::hash::Hash;
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 use futures_util::{SinkExt, StreamExt};
@@ -32,7 +33,7 @@ pub struct CdpEvent {
 
 /// Request/response correlated CDP transport.
 pub struct CdpTransport {
-    next_id: Mutex<u64>,
+    next_id: AtomicU64,
     pending: StdMutex<HashMap<u64, oneshot::Sender<Result<Value, CdpError>>>>,
     write: Mutex<futures_util::stream::SplitSink<WsStream, Message>>,
     events: broadcast::Sender<CdpEvent>,
@@ -67,7 +68,7 @@ impl CdpTransport {
         let (write, mut read) = ws.split();
         let (events, _) = broadcast::channel(1024);
         let transport = Arc::new(Self {
-            next_id: Mutex::new(1),
+            next_id: AtomicU64::new(1),
             pending: StdMutex::new(HashMap::new()),
             write: Mutex::new(write),
             events: events.clone(),
@@ -151,12 +152,7 @@ impl CdpTransport {
         params: Value,
         session_id: Option<&str>,
     ) -> Result<Value, CdpError> {
-        let id = {
-            let mut next = self.next_id.lock().await;
-            let id = *next;
-            *next += 1;
-            id
-        };
+        let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let mut payload = json!({
             "id": id,
             "method": method,
@@ -201,11 +197,15 @@ impl CdpTransport {
 
 #[cfg(test)]
 mod tests {
-    use super::PendingRemovalGuard;
+    use super::{CdpError, CdpTransport, PendingRemovalGuard};
     use crate::backends::scope_client_timeout;
+    use futures_util::StreamExt;
+    use serde_json::json;
     use std::collections::HashMap;
     use std::sync::Mutex;
     use std::time::Duration;
+    use tokio::net::TcpListener;
+    use tokio_tungstenite::tungstenite::Message;
 
     #[test]
     fn pending_guard_removes_entry_on_drop() {
@@ -228,5 +228,42 @@ mod tests {
         .await;
 
         assert_eq!(timeout, Some(Duration::from_secs(60)));
+    }
+
+    #[tokio::test]
+    async fn send_command_honors_scoped_timeout() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        let (request_received_tx, request_received_rx) = tokio::sync::oneshot::channel();
+        tokio::spawn(async move {
+            let (stream, _) = listener.accept().await.unwrap();
+            let mut ws = tokio_tungstenite::accept_async(stream).await.unwrap();
+            let request = ws.next().await.unwrap().unwrap();
+            match request {
+                Message::Text(_) | Message::Binary(_) => {}
+                other => panic!("unexpected websocket message: {other:?}"),
+            }
+            let _ = request_received_tx.send(());
+            futures_util::future::pending::<()>().await;
+        });
+
+        let transport = CdpTransport::connect(&format!("ws://{addr}/devtools/browser/fake"))
+            .await
+            .unwrap();
+        let request = tokio::spawn(async move {
+            scope_client_timeout(Some(25), async {
+                transport
+                    .send_command("Runtime.evaluate", json!({}), None)
+                    .await
+            })
+            .await
+        });
+
+        request_received_rx.await.unwrap();
+        let error = request.await.unwrap().unwrap_err();
+        let CdpError::Timeout(actual) = error else {
+            panic!("expected scoped timeout, got {error:?}");
+        };
+        assert_eq!(actual, Duration::from_millis(25));
     }
 }

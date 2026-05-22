@@ -82,6 +82,31 @@
   "resumeButton": {
     "message": "Retomar"
   },
+  "cleanupButton": {
+    "message": "Limpar abas do navegador"
+  },
+  "cleanupResult": {
+    "message": "$closed$ fechadas, $released$ liberadas, $kept$ entregáveis mantidos.",
+    "placeholders": {
+      "closed": {
+        "content": "$1"
+      },
+      "released": {
+        "content": "$2"
+      },
+      "kept": {
+        "content": "$3"
+      }
+    }
+  },
+  "cleanupFailed": {
+    "message": "Falha na limpeza: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
   "debugLogsLabel": {
     "message": "Logs de depuração"
   },

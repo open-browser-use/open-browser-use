@@ -56,10 +56,128 @@ async fn browser_status_reports_missing_sdk_and_no_backend() {
 
     assert_eq!(status["sdk_bootstrap"], json!("missing"));
     assert_eq!(status["backends"], json!([]));
+    assert_eq!(status["product_error"]["code"], json!("setup_missing"));
+    assert_eq!(
+        status["product_error"]["next_action"]["kind"],
+        json!("run_verify")
+    );
     let verify_hint = status["verify_hint"].as_str().unwrap();
     assert!(verify_hint.contains("obu verify --repair"));
-    assert!(verify_hint.contains("exact extension channel/id"));
-    assert_eq!(status["doctor_hint"], status["verify_hint"]);
+    assert_eq!(status["doctor_hint"], json!("obu doctor browser --repair"));
+}
+
+#[tokio::test]
+async fn browser_status_reports_available_sdk_without_backend_as_popup_boundary() {
+    let mut options = ManagerOptions::for_tests();
+    options.module_dirs.push(
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests")
+            .join("fixtures")
+            .join("sdk-good"),
+    );
+    options.trust_all = true;
+    let manager = JsRuntimeManager::new(options).await.unwrap();
+
+    let status = manager.browser_status().await.unwrap();
+
+    assert_eq!(status["sdk_bootstrap"], json!("available"));
+    assert_eq!(status["backends"], json!([]));
+    assert_eq!(
+        status["product_error"]["code"],
+        json!("browser_popup_boundary")
+    );
+    assert_eq!(
+        status["product_error"]["next_action"]["kind"],
+        json!("open_popup")
+    );
+    assert_eq!(
+        status["product_error"]["next_action"]["command"],
+        json!(
+            "obu verify --agent=<agent-id> --browser=<browser> --channel=<extension-channel> --extension-id=<extension-id>"
+        )
+    );
+}
+
+#[tokio::test]
+async fn browser_status_reports_sdk_trusted_by_path() {
+    let sdk_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("sdk-good");
+    let mut options = ManagerOptions::for_tests();
+    options.module_dirs.push(sdk_dir.clone());
+    options.trusted_code_paths.push(sdk_dir);
+    let manager = JsRuntimeManager::new(options).await.unwrap();
+
+    let status = manager.browser_status().await.unwrap();
+
+    assert_eq!(status["sdk_bootstrap"], json!("available"));
+    assert_eq!(
+        status["sdk_bootstrap_detail"]["trusted_by"],
+        json!({
+            "trust_all": false,
+            "path": true,
+            "hash": false,
+        })
+    );
+}
+
+#[tokio::test]
+async fn browser_status_reports_sdk_trusted_by_hash() {
+    let sdk_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("sdk-good");
+    let sdk = obu_node_repl::sdk_discovery::discover_at(&sdk_dir).unwrap();
+    let mut options = ManagerOptions::for_tests();
+    options.module_dirs.push(sdk_dir);
+    options.trusted_module_sha256s.push(sdk.hash);
+    let manager = JsRuntimeManager::new(options).await.unwrap();
+
+    let status = manager.browser_status().await.unwrap();
+
+    assert_eq!(status["sdk_bootstrap"], json!("available"));
+    assert_eq!(
+        status["sdk_bootstrap_detail"]["trusted_by"],
+        json!({
+            "trust_all": false,
+            "path": false,
+            "hash": true,
+        })
+    );
+}
+
+#[tokio::test]
+async fn js_result_preserves_structured_error_detail_for_mcp_output() {
+    let manager = JsRuntimeManager::new(ManagerOptions::for_tests())
+        .await
+        .unwrap();
+
+    let result = manager
+        .exec(
+            r#"
+const error = new Error("dialog_requires_decision");
+error.name = "ObuError";
+error.code = -1203;
+error.data = { code: "dialog_requires_decision", tab_id: "42", dialog_type: "confirm" };
+error.productError = { code: "dialog_requires_decision", title: "Native dialog requires a decision" };
+throw error;
+"#,
+            None,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(result.error.as_deref(), Some("dialog_requires_decision"));
+    assert_eq!(result.error_detail.as_ref().unwrap()["code"], json!(-1203));
+    assert_eq!(
+        result.error_detail.as_ref().unwrap()["data"]["code"],
+        json!("dialog_requires_decision")
+    );
+    assert_eq!(
+        result.error_detail.as_ref().unwrap()["product_error"]["code"],
+        json!("dialog_requires_decision")
+    );
 }
 
 #[tokio::test]
@@ -243,6 +361,19 @@ async fn js_reset_refreshes_runtime_descriptor_inventory() {
                     "extension_id": "ext-id",
                     "extension_version": "0.1.0",
                     "extension_instance_id": "instance-id"
+                },
+                "diagnostics": {
+                    "dialogs": {
+                        "recent": [
+                            {
+                                "code": "dialog_handled",
+                                "tab_id": "42",
+                                "dialog_type": "beforeunload",
+                                "default_action": "accept",
+                                "outcome": "continued"
+                            }
+                        ]
+                    }
                 }
             },
             "capabilities": {}
@@ -290,6 +421,19 @@ async fn js_reset_refreshes_runtime_descriptor_inventory() {
                     "extension_id": "ext-id",
                     "extension_version": "0.1.0",
                     "extension_instance_id": "instance-id"
+                },
+                "diagnostics": {
+                    "dialogs": {
+                        "recent": [
+                            {
+                                "code": "dialog_handled",
+                                "tab_id": "42",
+                                "dialog_type": "beforeunload",
+                                "default_action": "accept",
+                                "outcome": "continued"
+                            }
+                        ]
+                    }
                 }
             },
             "capabilities": {}
@@ -364,6 +508,26 @@ async fn browser_status_refreshes_live_kernel_descriptor_inventory() {
                     "extension_id": "ext-id",
                     "extension_version": "0.1.0",
                     "extension_instance_id": "instance-id"
+                },
+                "diagnostics": {
+                    "dialogs": {
+                        "recent": [
+                            {
+                                "code": "dialog_handled",
+                                "tab_id": "42",
+                                "dialog_type": "beforeunload",
+                                "default_action": "accept",
+                                "outcome": "continued"
+                            }
+                        ]
+                    },
+                    "extension": {
+                        "pending_update": {
+                            "state": "waiting_for_idle",
+                            "version": "0.2.0",
+                            "pendingSince": 123
+                        }
+                    }
                 }
             },
             "capabilities": {}
@@ -373,6 +537,26 @@ async fn browser_status_refreshes_live_kernel_descriptor_inventory() {
 
     let status = manager.browser_status().await.unwrap();
     assert_eq!(status["backends"][0]["type"], json!("webextension"));
+    assert_eq!(
+        status["backends"][0]["metadata"]["browser_kind"],
+        json!("chrome")
+    );
+    assert_eq!(
+        status["backends"][0]["metadata"]["extension_id"],
+        json!("ext-id")
+    );
+    assert_eq!(
+        status["backends"][0]["metadata"]["diagnostics"]["dialogs"]["recent"][0]["dialog_type"],
+        json!("beforeunload")
+    );
+    assert_eq!(
+        status["advisories"][0]["code"],
+        json!("pending_extension_update")
+    );
+    assert_eq!(
+        status["advisories"][0]["pending_update"]["version"],
+        json!("0.2.0")
+    );
     server.join().unwrap();
 
     let after = manager
@@ -392,6 +576,59 @@ async fn browser_status_refreshes_live_kernel_descriptor_inventory() {
 
 #[cfg(unix)]
 #[tokio::test]
+async fn browser_status_prioritizes_missing_sdk_over_stale_descriptor_diagnostics() {
+    let _env_guard = ENV_LOCK.lock().await;
+    let runtime_dir = tempfile::tempdir().unwrap();
+    make_runtime_root_owner_only(runtime_dir.path());
+    let _runtime = EnvVarGuard::set("OBU_RUNTIME_DIR", &runtime_dir.path().to_string_lossy());
+    let _backends = EnvVarGuard::remove("OBU_BACKENDS");
+    let _extra = EnvVarGuard::remove("OBU_EXTRA_BACKENDS");
+    let _module_dirs = EnvVarGuard::remove("OBU_NODE_REPL_MODULE_DIRS");
+    let _trust = EnvVarGuard::remove("OBU_TRUST_ALL_CODE");
+
+    let socket_path = runtime_dir.path().join("stale.sock");
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    drop(listener);
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&socket_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    let descriptor_dir = runtime_dir.path().join("webextension");
+    std::fs::create_dir_all(&descriptor_dir).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&descriptor_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    write_descriptor(
+        &descriptor_dir.join("stale.json"),
+        &socket_path,
+        "secret-token",
+    );
+
+    let options = ManagerOptions::from_cli(&Cli {
+        verbosity: 0,
+        session_id: Some("descriptor-session".into()),
+        working_dir: None,
+        command: cli::Command::Mcp {
+            transport: cli::McpTransport::Stdio,
+        },
+    })
+    .unwrap();
+
+    assert!(options.backends.is_empty());
+    assert_eq!(options.backend_discovery_diagnostics.len(), 1);
+    let manager = JsRuntimeManager::new(options).await.unwrap();
+    let status = manager.browser_status().await.unwrap();
+    assert_eq!(status["product_error"]["code"], json!("setup_missing"));
+    assert_eq!(
+        status["product_error"]["next_action"]["kind"],
+        json!("run_verify")
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn runtime_descriptor_discovery_reports_stale_descriptor_without_removing_it() {
     let _env_guard = ENV_LOCK.lock().await;
     let runtime_dir = tempfile::tempdir().unwrap();
@@ -399,6 +636,13 @@ async fn runtime_descriptor_discovery_reports_stale_descriptor_without_removing_
     let _runtime = EnvVarGuard::set("OBU_RUNTIME_DIR", &runtime_dir.path().to_string_lossy());
     let _backends = EnvVarGuard::remove("OBU_BACKENDS");
     let _extra = EnvVarGuard::remove("OBU_EXTRA_BACKENDS");
+    let sdk_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("sdk-good");
+    let sdk_dir = sdk_dir.to_string_lossy().to_string();
+    let _module_dirs = EnvVarGuard::set("OBU_NODE_REPL_MODULE_DIRS", &sdk_dir);
+    let _trust = EnvVarGuard::set("OBU_TRUST_ALL_CODE", "1");
 
     let socket_path = runtime_dir.path().join("stale.sock");
     let listener = UnixListener::bind(&socket_path).unwrap();
@@ -435,6 +679,11 @@ async fn runtime_descriptor_discovery_reports_stale_descriptor_without_removing_
             .contains("descriptor probe failed")
     );
     assert!(descriptor_path.exists());
+
+    let manager = JsRuntimeManager::new(options).await.unwrap();
+    let status = manager.browser_status().await.unwrap();
+    assert_eq!(status["product_error"]["code"], json!("stale_descriptor"));
+    assert_eq!(status["doctor_hint"], json!("obu doctor browser --repair"));
 }
 
 #[tokio::test]

@@ -166,7 +166,7 @@ async fn end_to_end_click_visible_screenshot() {
             downloadId: download.id,
             downloadPath,
             downloadPathIncludesName: downloadPath.includes(downloadName),
-            deliverableStatus: finalized.deliverable_tabs?.[0]?.status,
+            deliverableStatus: finalized.deliverableTabs[0]?.status,
             listedAfterFinalizeStatus: listedAfterFinalizeTab?.metadata?.status,
             deliverableCount: lifecycle.deliverable_tabs ?? -1,
             deliverableSummaryTabId: deliverableSummary?.tab_id,

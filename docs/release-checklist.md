@@ -137,6 +137,7 @@ NPM publish order for a production release:
 ```bash
 node scripts/make-curl-artifact.mjs
 sh -n scripts/install.sh
+node scripts/install-refresh-safety-smoke.mjs
 node scripts/curl-install-smoke.mjs
 node scripts/setup-local-spine-smoke.mjs
 ```
@@ -144,19 +145,35 @@ node scripts/setup-local-spine-smoke.mjs
 Verify installer support for:
 
 - checksum verification;
+- clean-prefix setup spine reaching `obu verify` `ready` for one Codex handoff;
 - manifest-driven current-platform selection through `OBU_RELEASE_BASE_URL`,
   preferring `manifest.tsv` and falling back to `manifest.json`;
 - `OBU_INSTALL_DIR`;
 - `OBU_UNMANAGED_INSTALL`;
 - `--no-modify-path`;
 - stable `bin/obu` shim pointing at `payloads/current`;
+- atomic refresh safety: failed extraction, invalid staged payloads, same-name
+  activation failure, and `payloads/current` symlink-update failure preserve the
+  previous working payload.
+- release lifecycle metadata records payload version, extension channel/id,
+  native-host manifest expectations, installer migration hook directory, and
+  payload retention policy.
+- installer migration hooks in `install-migrations.d` run before
+  `payloads/current` switches, and migration failure restores the previous
+  working payload.
+- forced same-name reinstall preserves the installed release metadata.
+- `OBU_PAYLOAD_RETENTION` pruning preserves the active payload and previous
+  rollback payload.
 - packaged `obu shellenv` output and installer Next steps without writing
   arbitrary current-`PATH` shims.
 - packaged `obu doctor --json` payload integrity checks, `obu verify` readiness
   checks, and `obu mcp stdio` initialize/list-tools through the installed shim.
 - installed-payload `obu setup --yes --skip-agents`,
-  `obu setup --yes --agents=codex-cli --write-instructions` using a fake Codex
-  CLI, and `obu agent doctor --agent=codex-cli`.
+  `obu setup --yes --agents=codex-cli --write-instructions`, persistent Codex
+  instructions, synthetic activated WebExtension profile/descriptor evidence,
+  and installed-payload `obu verify --agent=codex-cli ... --json` returning
+  `result: "ready"` with `nextAction: null`, no legacy `nextActions`, SDK
+  bootstrap available, and one usable MCP backend.
 
 Payload metadata must include `extensionZip`, `extensionZipSha256`,
 `extensionId`, and `extensionChannel`; `node scripts/payload-self-check.mjs`
@@ -267,6 +284,18 @@ The extension must publish a WebExtension runtime descriptor, and
 The automated `setup-webext-e2e.mjs` path also wires a fake Codex CLI with
 `obu setup --yes --agents=codex-cli --write-instructions` before launching
 Chrome for Testing.
+The exact dirty-form dialog fixtures can be run without the full ignored live
+suites:
+
+```bash
+OBU_E2E_AUTO_INSTALL=1 pnpm smoke:cdp-dirty-form-live
+OBU_WEBEXT_E2E_AUTO_INSTALL=1 OBU_WEBEXT_E2E_HEADLESS=1 pnpm smoke:webext-dirty-form-live
+```
+
+These remain live browser gates because they launch Chrome or Chrome for
+Testing. The WebExtension gate also loads the extension, installs the
+native-host manifest, and runs the ignored beforeunload fixture through the MCP
+runtime.
 `obu doctor --strict` must exit nonzero on warnings as well as failures; use the
 non-strict command for interactive troubleshooting where warnings are advisory.
 Before manual testing, enable extension popup Debug logs, reproduce one browser
@@ -289,6 +318,10 @@ create new backups.
 
 MCP/browser-use compatibility gates:
 
+```bash
+pnpm smoke:mcp-client-compat
+```
+
 - `tools/list` shows `js`, `browser_status`, `js_reset`, and
   `js_add_module_dir`, and `initialize` advertises both tools and resources.
 - `browser_status` returns SDK bootstrap state, discovered backends,
@@ -298,8 +331,15 @@ MCP/browser-use compatibility gates:
   link, and `resources/read` fetches the artifact bytes.
 - A huge `console.log` or huge final result stays bounded and sets the matching
   `structuredContent.truncated` flag.
-- Codex CLI, Claude Code, and Cursor are checked for `structuredContent`,
-  concise text fallback, progress notifications, and resource-link behavior.
+- The `smoke:mcp-client-compat` client-profile smoke checks Codex CLI,
+  Claude Code, and Cursor-shaped initialize/capability profiles for
+  `tools/list` output schemas, `structuredContent`, concise text fallback,
+  progress notifications, resource links/list/readback, and stdout/final-result
+  truncation.
+- Before a production release, repeat the same fixture through the real Codex CLI,
+  Claude Code, and Cursor clients. The client-profile smoke protects wire shape;
+  it is not proof that those production clients loaded and rendered the result
+  paths correctly.
 
 ## Rollback
 

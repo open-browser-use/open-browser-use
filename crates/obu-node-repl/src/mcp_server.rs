@@ -1,13 +1,15 @@
 //! MCP server surface for `obu-node-repl`.
 //!
-//! open-browser-use exposes `js`, `browser_status`, `js_reset`, and
-//! `js_add_module_dir`. The module-directory tool is intentionally not named
+//! open-browser-use exposes `js`, `browser_status`, `agent_runtime_status`,
+//! `js_reset`, and `js_add_module_dir`. The module-directory tool is intentionally not named
 //! Codex's `js_add_node_module_dir`: OBU keeps the
 //! behavior but drops the Node-specific spelling from the public API.
 
 use std::borrow::Cow;
+use std::fs;
 use std::path::PathBuf;
 use std::sync::{Arc, LazyLock, Mutex as StdMutex};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::{Context, Result};
 use rmcp::model::{
@@ -20,6 +22,7 @@ use rmcp::service::{RequestContext, RoleServer};
 use rmcp::{ServerHandler, ServiceExt};
 use serde::Deserialize;
 use serde_json::{Value, json};
+use sha2::{Digest, Sha256};
 
 use crate::artifact_store::ArtifactStore;
 use crate::cli::Cli;
@@ -28,6 +31,8 @@ use crate::result_budget::prepare_js_result;
 
 /// Long-form `js` tool description.
 pub const JS_TOOL_DESCRIPTION: &str = include_str!("../resources/js_tool_description.md");
+
+const SERVER_NAME: &str = "open-browser-use";
 
 static JS_SCHEMA: LazyLock<Arc<rmcp::model::JsonObject>> = LazyLock::new(|| {
     Arc::new(schema_object(json!({
@@ -51,7 +56,7 @@ static JS_SCHEMA: LazyLock<Arc<rmcp::model::JsonObject>> = LazyLock::new(|| {
 static JS_OUTPUT_SCHEMA: LazyLock<Arc<rmcp::model::JsonObject>> = LazyLock::new(|| {
     Arc::new(schema_object(json!({
         "type": "object",
-        "required": ["stdout", "stderr", "result", "duration_ms", "truncated", "displays", "artifacts", "response_meta", "error"],
+        "required": ["stdout", "stderr", "result", "duration_ms", "truncated", "displays", "artifacts", "response_meta", "error", "error_detail"],
         "properties": {
             "stdout": {
                 "type": "string",
@@ -117,6 +122,13 @@ static JS_OUTPUT_SCHEMA: LazyLock<Arc<rmcp::model::JsonObject>> = LazyLock::new(
                     { "type": "string" }
                 ],
                 "description": "User-code JavaScript error, when execution failed inside the kernel."
+            },
+            "error_detail": {
+                "anyOf": [
+                    { "type": "null" },
+                    { "type": "object" }
+                ],
+                "description": "Structured user-code error detail, including SDK error code/data when available."
             }
         },
         "additionalProperties": false
@@ -126,7 +138,7 @@ static JS_OUTPUT_SCHEMA: LazyLock<Arc<rmcp::model::JsonObject>> = LazyLock::new(
 static BROWSER_STATUS_OUTPUT_SCHEMA: LazyLock<Arc<rmcp::model::JsonObject>> = LazyLock::new(|| {
     Arc::new(schema_object(json!({
         "type": "object",
-        "required": ["sdk_bootstrap", "backends", "diagnostics", "runtime_dir", "verify_hint", "doctor_hint"],
+        "required": ["sdk_bootstrap", "backends", "diagnostics", "runtime_dir", "verify_hint", "doctor_hint", "product_error", "advisories"],
         "properties": {
             "sdk_bootstrap": {
                 "type": "string",
@@ -149,6 +161,15 @@ static BROWSER_STATUS_OUTPUT_SCHEMA: LazyLock<Arc<rmcp::model::JsonObject>> = La
             },
             "doctor_hint": {
                 "type": "string"
+            },
+            "product_error": {
+                "anyOf": [
+                    { "type": "null" },
+                    { "type": "object" }
+                ]
+            },
+            "advisories": {
+                "type": "array"
             }
         },
         "additionalProperties": false
@@ -173,6 +194,35 @@ static OK_OUTPUT_SCHEMA: LazyLock<Arc<rmcp::model::JsonObject>> = LazyLock::new(
         "additionalProperties": false
     })))
 });
+
+static AGENT_RUNTIME_STATUS_SCHEMA: LazyLock<Arc<rmcp::model::JsonObject>> = LazyLock::new(|| {
+    Arc::new(schema_object(json!({
+        "type": "object",
+        "required": ["challenge_json"],
+        "properties": {
+            "challenge_json": {
+                "type": "string",
+                "description": "Path to the challenge JSON emitted by `obu verify --require-agent-runtime --agent-runtime-challenge-out`."
+            }
+        },
+        "additionalProperties": false
+    })))
+});
+
+static AGENT_RUNTIME_STATUS_OUTPUT_SCHEMA: LazyLock<Arc<rmcp::model::JsonObject>> =
+    LazyLock::new(|| {
+        Arc::new(schema_object(json!({
+            "type": "object",
+            "required": ["ok", "resultFile", "agentId", "hook"],
+            "properties": {
+                "ok": { "type": "boolean", "enum": [true] },
+                "resultFile": { "type": "string" },
+                "agentId": { "type": "string" },
+                "hook": { "type": "object" }
+            },
+            "additionalProperties": false
+        })))
+    });
 
 static ADD_MODULE_DIR_SCHEMA: LazyLock<Arc<rmcp::model::JsonObject>> = LazyLock::new(|| {
     Arc::new(schema_object(json!({
@@ -203,6 +253,14 @@ pub struct JsArgs {
 #[derive(Debug, Deserialize, Default)]
 #[serde(deny_unknown_fields)]
 pub struct JsResetArgs {}
+
+/// `agent_runtime_status` arguments.
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct AgentRuntimeStatusArgs {
+    /// Path to the CLI-issued challenge JSON.
+    pub challenge_json: String,
+}
 
 /// `js_add_module_dir` arguments.
 #[derive(Debug, Deserialize)]
@@ -247,6 +305,20 @@ impl ObuServer {
             .with_annotations(
                 ToolAnnotations::new()
                     .read_only(true)
+                    .destructive(false)
+                    .idempotent(true)
+                    .open_world(false),
+            ),
+            Tool::new(
+                "agent_runtime_status",
+                "Deliver challenge-bound browser_status evidence to the trusted OBU agent-runtime hook state for `obu verify --require-agent-runtime`.",
+                AGENT_RUNTIME_STATUS_SCHEMA.clone(),
+            )
+            .with_title("Agent Runtime Status")
+            .with_raw_output_schema(AGENT_RUNTIME_STATUS_OUTPUT_SCHEMA.clone())
+            .with_annotations(
+                ToolAnnotations::new()
+                    .read_only(false)
                     .destructive(false)
                     .idempotent(true)
                     .open_world(false),
@@ -319,6 +391,7 @@ impl ServerHandler for ObuServer {
         match name.as_ref() {
             "js" => self.call_js(arguments, meta, _context).await,
             "browser_status" => self.call_browser_status(arguments).await,
+            "agent_runtime_status" => self.call_agent_runtime_status(arguments).await,
             "js_reset" => self.call_js_reset(arguments).await,
             "js_add_module_dir" => self.call_js_add_module_dir(arguments).await,
             _ => Err(ErrorData::method_not_found::<CallToolRequestMethod>()),
@@ -436,6 +509,29 @@ impl ObuServer {
         ))
     }
 
+    async fn call_agent_runtime_status(
+        &self,
+        arguments: Option<rmcp::model::JsonObject>,
+    ) -> std::result::Result<CallToolResult, ErrorData> {
+        let args: AgentRuntimeStatusArgs = decode_args(arguments)?;
+        let challenge = read_agent_runtime_challenge(&args.challenge_json)?;
+        let status = self.runtime.browser_status().await.map_err(|error| {
+            ErrorData::internal_error(format!("failed to compute browser status: {error}"), None)
+        })?;
+        let result_file = write_agent_runtime_status(&challenge, status)?;
+        Ok(structured_result(
+            json!({
+                "ok": true,
+                "resultFile": result_file.to_string_lossy(),
+                "agentId": &challenge.agent_id,
+                "hook": &challenge.trusted_hook,
+            }),
+            "Agent runtime status delivered.",
+            Vec::new(),
+            None,
+        ))
+    }
+
     async fn call_js_reset(
         &self,
         arguments: Option<rmcp::model::JsonObject>,
@@ -488,6 +584,207 @@ pub async fn run_stdio_server_with_options(cli: Cli) -> Result<()> {
         .await
         .context("stdio MCP server exited with error")?;
     Ok(())
+}
+
+struct AgentRuntimeChallenge {
+    agent_id: String,
+    challenge: Value,
+    target: Value,
+    trusted_hook: Value,
+    nonce: String,
+}
+
+fn read_agent_runtime_challenge(
+    path: &str,
+) -> std::result::Result<AgentRuntimeChallenge, ErrorData> {
+    let raw = fs::read_to_string(path).map_err(|error| {
+        ErrorData::invalid_params(
+            format!("could not read agent runtime challenge: {error}"),
+            None,
+        )
+    })?;
+    let payload: Value = serde_json::from_str(&raw).map_err(|error| {
+        ErrorData::invalid_params(
+            format!("agent runtime challenge is not valid JSON: {error}"),
+            None,
+        )
+    })?;
+    if payload.get("schemaVersion").and_then(Value::as_i64) != Some(1)
+        || payload.get("mcpServerName").and_then(Value::as_str) != Some(SERVER_NAME)
+    {
+        return Err(ErrorData::invalid_params(
+            "agent runtime challenge has an unsupported envelope".to_string(),
+            None,
+        ));
+    }
+    let agent_id = payload
+        .get("agentId")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            ErrorData::invalid_params(
+                "agent runtime challenge is missing agentId".to_string(),
+                None,
+            )
+        })?
+        .to_string();
+    let challenge = payload.get("challenge").cloned().ok_or_else(|| {
+        ErrorData::invalid_params(
+            "agent runtime challenge is missing challenge".to_string(),
+            None,
+        )
+    })?;
+    let nonce = challenge
+        .get("nonce")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            ErrorData::invalid_params(
+                "agent runtime challenge is missing challenge.nonce".to_string(),
+                None,
+            )
+        })?
+        .to_string();
+    let target = payload.get("target").cloned().ok_or_else(|| {
+        ErrorData::invalid_params(
+            "agent runtime challenge is missing target".to_string(),
+            None,
+        )
+    })?;
+    let trusted_hook = payload.get("trustedHook").cloned().ok_or_else(|| {
+        ErrorData::invalid_params(
+            "agent runtime challenge is missing trustedHook".to_string(),
+            None,
+        )
+    })?;
+    Ok(AgentRuntimeChallenge {
+        agent_id,
+        challenge,
+        target,
+        trusted_hook,
+        nonce,
+    })
+}
+
+fn write_agent_runtime_status(
+    challenge: &AgentRuntimeChallenge,
+    status: Value,
+) -> std::result::Result<PathBuf, ErrorData> {
+    let runtime_dir = std::env::var("OBU_RUNTIME_DIR").map_err(|_| {
+        ErrorData::invalid_params(
+            "OBU_RUNTIME_DIR is required for agent runtime status".to_string(),
+            None,
+        )
+    })?;
+    let hook_id = challenge
+        .trusted_hook
+        .get("id")
+        .and_then(Value::as_str)
+        .ok_or_else(|| {
+            ErrorData::invalid_params(
+                "agent runtime challenge trustedHook is missing id".to_string(),
+                None,
+            )
+        })?;
+    if !safe_state_component(&challenge.agent_id) || !safe_state_component(hook_id) {
+        return Err(ErrorData::invalid_params(
+            "agent runtime challenge contains an unsafe state component".to_string(),
+            None,
+        ));
+    }
+    let digest = hex::encode(Sha256::digest(challenge.nonce.as_bytes()));
+    let result_file = PathBuf::from(runtime_dir)
+        .join("agent-runtime-hooks")
+        .join(&challenge.agent_id)
+        .join(hook_id)
+        .join(format!("{digest}.json"));
+    let parent = result_file.parent().ok_or_else(|| {
+        ErrorData::internal_error("agent runtime result file has no parent", None)
+    })?;
+    fs::create_dir_all(parent).map_err(|error| {
+        ErrorData::internal_error(
+            format!("could not create agent runtime hook state: {error}"),
+            None,
+        )
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(parent, fs::Permissions::from_mode(0o700)).map_err(|error| {
+            ErrorData::internal_error(
+                format!("could not secure agent runtime hook state: {error}"),
+                None,
+            )
+        })?;
+    }
+    let payload = json!({
+        "schemaVersion": 1,
+        "agentId": &challenge.agent_id,
+        "mcpServerName": SERVER_NAME,
+        "provenance": "agent_runtime_hook",
+        "hook": &challenge.trusted_hook,
+        "generatedAt": utc_now_rfc3339_millis(),
+        "challenge": &challenge.challenge,
+        "target": &challenge.target,
+        "status": status,
+    });
+    let raw = serde_json::to_vec_pretty(&payload).map_err(|error| {
+        ErrorData::internal_error(
+            format!("could not serialize agent runtime status: {error}"),
+            None,
+        )
+    })?;
+    fs::write(&result_file, raw).map_err(|error| {
+        ErrorData::internal_error(
+            format!("could not write agent runtime status: {error}"),
+            None,
+        )
+    })?;
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&result_file, fs::Permissions::from_mode(0o600)).map_err(|error| {
+            ErrorData::internal_error(
+                format!("could not secure agent runtime status: {error}"),
+                None,
+            )
+        })?;
+    }
+    Ok(result_file)
+}
+
+fn safe_state_component(value: &str) -> bool {
+    !value.is_empty()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+}
+
+fn utc_now_rfc3339_millis() -> String {
+    let duration = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default();
+    let total_secs = duration.as_secs() as i64;
+    let millis = duration.subsec_millis();
+    let (year, month, day, hour, minute, second) = unix_seconds_to_utc(total_secs);
+    format!("{year:04}-{month:02}-{day:02}T{hour:02}:{minute:02}:{second:02}.{millis:03}Z")
+}
+
+fn unix_seconds_to_utc(secs: i64) -> (i64, i64, i64, i64, i64, i64) {
+    let days = secs.div_euclid(86_400);
+    let second_of_day = secs.rem_euclid(86_400);
+    let hour = second_of_day / 3_600;
+    let minute = (second_of_day % 3_600) / 60;
+    let second = second_of_day % 60;
+    let z = days + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 }.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096).div_euclid(365);
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2).div_euclid(153);
+    let day = doy - (153 * mp + 2).div_euclid(5) + 1;
+    let month = mp + if mp < 10 { 3 } else { -9 };
+    let year = y + if month <= 2 { 1 } else { 0 };
+    (year, month, day, hour, minute, second)
 }
 
 fn decode_args<T: for<'de> Deserialize<'de>>(
@@ -567,7 +864,13 @@ mod tests {
             .collect::<Vec<_>>();
         assert_eq!(
             names,
-            ["js", "browser_status", "js_reset", "js_add_module_dir"]
+            [
+                "js",
+                "browser_status",
+                "agent_runtime_status",
+                "js_reset",
+                "js_add_module_dir"
+            ]
         );
     }
 
@@ -584,10 +887,29 @@ mod tests {
         let js_result = decode_args::<JsArgs>(Some(js_args));
         assert!(js_result.is_err());
 
+        let mut runtime_args = rmcp::model::JsonObject::new();
+        runtime_args.insert("challenge_json".to_string(), json!("/tmp/challenge.json"));
+        runtime_args.insert("unexpected".to_string(), json!(true));
+        let runtime_result = decode_args::<AgentRuntimeStatusArgs>(Some(runtime_args));
+        assert!(runtime_result.is_err());
+
         let mut add_dir_args = rmcp::model::JsonObject::new();
         add_dir_args.insert("path".to_string(), json!("/tmp"));
         add_dir_args.insert("unexpected".to_string(), json!(true));
         let add_dir_result = decode_args::<JsAddModuleDirArgs>(Some(add_dir_args));
         assert!(add_dir_result.is_err());
+    }
+
+    #[test]
+    fn browser_status_output_schema_declares_advisories() {
+        let schema = Value::Object((**BROWSER_STATUS_OUTPUT_SCHEMA).clone());
+        assert_eq!(schema["properties"]["advisories"]["type"], json!("array"));
+        assert!(
+            schema["required"]
+                .as_array()
+                .unwrap()
+                .contains(&json!("advisories"))
+        );
+        assert_eq!(schema["additionalProperties"], json!(false));
     }
 }

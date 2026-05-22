@@ -1,10 +1,12 @@
 import { afterEach, describe, expect, it } from "vitest";
 import { Browser } from "../src/browser.js";
 import { BrowserTabs } from "../src/browser_tabs.js";
+import { UserTabRef } from "../src/browser_user.js";
 import { display } from "../src/display.js";
 import { Download } from "../src/download.js";
 import { FileChooser } from "../src/file-chooser.js";
 import { Guards, METHOD_CLASSIFICATION } from "../src/guards.js";
+import { Image } from "../src/image.js";
 import { Locator } from "../src/locator.js";
 import { Tab } from "../src/tab.js";
 import { ObuError, ERR_DISALLOWED } from "../src/errors.js";
@@ -26,9 +28,32 @@ class FakeTransport {
         title: "A",
         origin: "agent",
         status: "deliverable",
+        active: true,
+        logicalActive: true,
+        windowId: 3,
+        groupId: 4,
+        pinned: false,
       },
       { id: "tab-b" },
     ]);
+    this.responses.set(M.GET_CURRENT_TAB, {
+      tab_id: "tab-a",
+      url: "https://a.test/",
+      title: "A",
+      origin: "agent",
+      status: "active",
+      commandable: true,
+      logicalActive: true,
+    });
+    this.responses.set(M.GET_SELECTED_TAB, {
+      tab_id: "selected-user",
+      url: "https://selected.test/",
+      title: "Selected",
+      origin: "user",
+      status: "active",
+      commandable: false,
+      claimRequired: true,
+    });
     this.responses.set(M.CREATE_TAB, {
       id: "created-tab",
       url: "https://new.test/",
@@ -40,12 +65,65 @@ class FakeTransport {
     this.responses.set(M.TAB_TITLE, "Example");
     this.responses.set(M.TAB_SCREENSHOT, { data: "base64png", mime_type: "image/png" });
     this.responses.set(M.TAB_CONTENT_EXPORT, { data: "html64", data_base64: "html64", mime_type: "text/html" });
+    this.responses.set(M.BROWSER_TABS_CONTENT, {
+      results: [
+        { url: "https://a.test/", finalUrl: "https://a.test/", status: "ok", text: "A" },
+        { url: "https://b.test/", status: "error", errorCode: "fetch_failed", errorMessage: "boom" },
+      ],
+    });
+    this.responses.set(M.BROWSER_VIEWPORT_SET, {
+      width: 640,
+      height: 480,
+      deviceScaleFactor: 2,
+      mobile: false,
+      tabId: 1,
+    });
+    this.responses.set(M.BROWSER_VIEWPORT_RESET, { reset: true, tabId: 1 });
+    this.responses.set(M.BROWSER_VISIBILITY_SET, {
+      visible: true,
+      focused: true,
+      windowId: 1,
+      state: "normal",
+    });
+    this.responses.set(M.BROWSER_VISIBILITY_GET, {
+      visible: true,
+      focused: true,
+      windowId: 1,
+      state: "normal",
+    });
+    this.responses.set(M.PLAYWRIGHT_DOM_SNAPSHOT, {
+      domSnapshot: "role: document\n  button: Save",
+      source: "playwright_dom_snapshot",
+    });
     this.responses.set(M.PLAYWRIGHT_LOCATOR_IS_VISIBLE, true);
     this.responses.set(M.PLAYWRIGHT_LOCATOR_COUNT, 2);
     this.responses.set(M.PLAYWRIGHT_LOCATOR_GET_ATTRIBUTE, "button");
+    this.responses.set(M.PLAYWRIGHT_LOCATOR_READ_ALL, [
+      {
+        attributes: { "data-kind": "primary", role: "button" },
+        inner_text: "Save",
+        text_content: " Save ",
+      },
+      {
+        attributes: { "data-kind": "secondary", role: "button" },
+        inner_text: "Cancel",
+        text_content: " Cancel ",
+      },
+    ]);
     this.responses.set(M.PLAYWRIGHT_LOCATOR_BOUNDING_BOX, { x: 1, y: 2, width: 3, height: 4 });
     this.responses.set(M.PLAYWRIGHT_SCREENSHOT, { data: "cropped64" });
     this.responses.set(M.PLAYWRIGHT_DOWNLOAD_PATH, { path: "/tmp/download.txt" });
+    this.responses.set(M.FINALIZE_TABS, {
+      status: "ok",
+      actions: [],
+      closedTabIds: [],
+      releasedTabIds: [],
+      keptTabs: [],
+      deliverableTabs: [],
+      finalTabs: { handoff: [], deliverable: [], activeTabId: null },
+      failures: [],
+      diagnostics: { reconciledFromChrome: true, reconciliationSource: "chrome.tabs" },
+    });
   }
 
   async sendRequest<T>(method: string, params: Record<string, unknown>, timeout?: number): Promise<T> {
@@ -104,14 +182,17 @@ describe("SDK wire-shape contracts", () => {
       await tab.forward({ timeout: 103 });
       await expect(tab.url({ timeout: 104 })).resolves.toBe("https://example.test/");
       await expect(tab.title({ timeout: 105 })).resolves.toBe("Example");
-      await expect(tab.screenshot({ timeout: 106 })).resolves.toEqual({ data_base64: "base64png", mime_type: "image/png" });
+      const screenshot = await tab.screenshot({ timeout: 106 });
+      expect(screenshot).toBeInstanceOf(Image);
+      expect(screenshot).toMatchObject({ data_base64: "base64png", mime_type: "image/png" });
+      expect(screenshot.toBase64()).toBe("base64png");
       await expect(tab.screenshot({
         type: "jpeg",
         quality: 60,
         fullPage: false,
         clip: { x: 1, y: 2, width: 300, height: 200, scale: 0.5 },
         timeout: 106,
-      })).resolves.toEqual({ data_base64: "base64png", mime_type: "image/png" });
+      })).resolves.toMatchObject({ data_base64: "base64png", mime_type: "image/png" });
       await tab.attach({ timeout: 107 });
       await tab.detach({ timeout: 108 });
       await tab.close({ timeout: 109 });
@@ -148,6 +229,25 @@ describe("SDK wire-shape contracts", () => {
       { method: M.TAB_WAIT_FOR_URL, params: { tab_id: "tab-1", url: "https://example.test/done", ...meta }, timeout: 109 },
       { method: M.TAB_WAIT_FOR_URL, params: { tab_id: "tab-1", url: "https://example.test/alias", ...meta }, timeout: 110 },
       { method: M.TAB_WAIT_FOR_LOAD_STATE, params: { tab_id: "tab-1", state: "domcontentloaded", ...meta }, timeout: 111 },
+    ]);
+  });
+
+  it("Tab.domSnapshot sends the public DOM snapshot method and returns the stable string shape", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    const tab = new Tab(asTransport(transport), new Guards(), "tab-a");
+
+    try {
+      await expect(tab.domSnapshot({ timeout: 444 })).resolves.toEqual({
+        domSnapshot: "role: document\n  button: Save",
+        source: "playwright_dom_snapshot",
+      });
+    } finally {
+      restoreMeta();
+    }
+
+    expect(transport.calls).toEqual([
+      { method: M.PLAYWRIGHT_DOM_SNAPSHOT, params: { tab_id: "tab-a", ...meta }, timeout: 444 },
     ]);
   });
 
@@ -200,6 +300,8 @@ describe("SDK wire-shape contracts", () => {
 
     try {
       const listed = await tabs.list();
+      const current = await tabs.current();
+      const selected = await tabs.selected();
       const created = await tabs.create({ url: "https://new.test/" });
       const direct = tabs.get("manual-tab");
 
@@ -210,6 +312,20 @@ describe("SDK wire-shape contracts", () => {
         title: "A",
         origin: "agent",
         status: "deliverable",
+        active: true,
+        logicalActive: true,
+        windowId: 3,
+        groupId: 4,
+        pinned: false,
+      });
+      expect(current?.id).toBe("tab-a");
+      expect(current?.metadata).toMatchObject({ commandable: true, logicalActive: true });
+      expect(selected).toBeInstanceOf(UserTabRef);
+      expect(selected?.id).toBe("selected-user");
+      expect(selected?.metadata).toMatchObject({
+        claimRequired: true,
+        commandable: false,
+        url: "https://selected.test/",
       });
       expect(created.id).toBe("created-tab");
       expect(created.metadata).toMatchObject({
@@ -226,8 +342,52 @@ describe("SDK wire-shape contracts", () => {
 
     expect(transport.calls).toEqual([
       { method: M.GET_TABS, params: { ...meta }, timeout: undefined },
+      { method: M.GET_CURRENT_TAB, params: { ...meta }, timeout: undefined },
+      { method: M.GET_SELECTED_TAB, params: { ...meta }, timeout: undefined },
       { method: M.CREATE_TAB, params: { url: "https://new.test/", ...meta }, timeout: undefined },
     ]);
+  });
+
+  it("BrowserTabs enforces current/selected ownership and malformed response boundaries", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    const tabs = new BrowserTabs(asTransport(transport), new Guards());
+
+    try {
+      transport.responses.set(M.GET_CURRENT_TAB, null);
+      await expect(tabs.current()).resolves.toBeUndefined();
+
+      transport.responses.set(M.GET_SELECTED_TAB, {
+        tab_id: "selected-agent",
+        url: "https://agent.test/",
+        origin: "agent",
+        status: "active",
+        commandable: true,
+        logical_active: true,
+        window_id: 5,
+        claim_required: false,
+      });
+      const commandableSelected = await tabs.selected();
+      expect(commandableSelected).toBeInstanceOf(Tab);
+      expect(commandableSelected?.id).toBe("selected-agent");
+      expect(commandableSelected?.metadata).toMatchObject({
+        commandable: true,
+        logicalActive: true,
+        windowId: 5,
+        claimRequired: false,
+      });
+
+      transport.responses.set(M.GET_SELECTED_TAB, null);
+      await expect(tabs.selected()).resolves.toBeUndefined();
+
+      transport.responses.set(M.GET_CURRENT_TAB, { url: "https://missing-id.test/" });
+      await expect(tabs.current()).rejects.toThrow("getCurrentTab response missing tab_id");
+
+      transport.responses.set(M.GET_SELECTED_TAB, { url: "https://missing-id.test/" });
+      await expect(tabs.selected()).rejects.toThrow("getSelectedTab response missing tab_id");
+    } finally {
+      restoreMeta();
+    }
   });
 
   it("BrowserTabs creates about:blank by default and rejects malformed options", async () => {
@@ -249,12 +409,82 @@ describe("SDK wire-shape contracts", () => {
     ]);
   });
 
+  it("BrowserTabs.content validates URLs, preserves ordering, and returns partial results", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    const tabs = new BrowserTabs(asTransport(transport), new Guards());
+
+    try {
+      await expect(tabs.content({ urls: ["https://a.test/", "https://b.test/"], contentType: "html", timeout: 777 }))
+        .resolves
+        .toEqual({
+          results: [
+            { url: "https://a.test/", finalUrl: "https://a.test/", status: "ok", text: "A" },
+            { url: "https://b.test/", status: "error", errorCode: "fetch_failed", errorMessage: "boom" },
+          ],
+        });
+      await expect(tabs.content({ urls: [""] })).rejects.toThrow("urls must be non-empty strings");
+    } finally {
+      restoreMeta();
+    }
+
+    expect(transport.calls).toEqual([
+      {
+        method: M.BROWSER_TABS_CONTENT,
+        params: { urls: ["https://a.test/", "https://b.test/"], contentType: "html", timeout: 777, ...meta },
+        timeout: 2554,
+      },
+    ]);
+  });
+
+  it("BrowserTabs.content turns local guard denials into per-URL failures", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    const guards = new Guards({
+      checkNavigation(url) {
+        if (url === "https://b.test/") throw new Error("blocked by test policy");
+      },
+    });
+    const tabs = new BrowserTabs(asTransport(transport), guards);
+
+    try {
+      await expect(tabs.content({
+        urls: ["https://a.test/", "https://b.test/"],
+        timeout: 500,
+        requestTimeout: 5000,
+      })).resolves.toEqual({
+        results: [
+          { url: "https://a.test/", finalUrl: "https://a.test/", status: "ok", text: "A" },
+          {
+            url: "https://b.test/",
+            status: "error",
+            errorCode: "disallowed_command",
+            errorMessage: "Error: blocked by test policy",
+          },
+        ],
+      });
+    } finally {
+      restoreMeta();
+    }
+
+    expect(transport.calls).toEqual([
+      {
+        method: M.BROWSER_TABS_CONTENT,
+        params: { urls: ["https://a.test/"], timeout: 500, ...meta },
+        timeout: 5000,
+      },
+    ]);
+  });
+
   it("Browser delegates lifecycle naming, turn end, and finalization calls", async () => {
     const restoreMeta = setRequestMeta();
     const transport = new FakeTransport();
     transport.responses.set(M.CLEAR_LIFECYCLE_DIAGNOSTICS, {
       cleared: { stale_sessions: 1, stale_tabs: 2, stale_file_choosers: 0, stale_downloads: 0 },
       diagnostics: { lifecycle: { stale_sessions: 0, stale_tabs: 0 } },
+    });
+    transport.responses.set(M.RESUME_CONTROL, {
+      tab: { tab_id: "tab-active", url: "https://example.com/", commandable: true },
     });
     const browser = new Browser(
       asTransport(transport),
@@ -266,6 +496,10 @@ describe("SDK wire-shape contracts", () => {
     try {
       await browser.name("Research");
       await browser.turnEnded({ timeout: 200 });
+      await browser.yieldControl({ timeout: 199 });
+      const resumed = await browser.resumeControl({ timeout: 198 });
+      expect(resumed?.id).toBe("tab-active");
+      expect(resumed?.metadata.commandable).toBe(true);
       await browser.finalizeTabs({
         keep: [
           { tabId: "tab-handoff", status: "handoff" },
@@ -284,6 +518,8 @@ describe("SDK wire-shape contracts", () => {
     expect(transport.calls).toEqual([
       { method: M.NAME_SESSION, params: { label: "Research", ...meta }, timeout: undefined },
       { method: M.TURN_ENDED, params: { ...meta }, timeout: 200 },
+      { method: M.YIELD_CONTROL, params: { ...meta }, timeout: 199 },
+      { method: M.RESUME_CONTROL, params: { ...meta }, timeout: 198 },
       {
         method: M.FINALIZE_TABS,
         params: {
@@ -297,6 +533,265 @@ describe("SDK wire-shape contracts", () => {
       },
       { method: M.CLEAR_LIFECYCLE_DIAGNOSTICS, params: { ...meta }, timeout: 202 },
     ]);
+  });
+
+  it("Browser resumeControl accepts wrapped, bare, and empty tab response shapes", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    const browser = new Browser(
+      asTransport(transport),
+      { type: "webextension", name: "chrome", capabilities: {} },
+      { type: "webextension", name: "chrome", socketPath: "/tmp/webext", metadata: {} },
+      new Guards(),
+    );
+
+    try {
+      transport.responses.set(M.RESUME_CONTROL, {
+        tab_id: "bare-active",
+        url: "https://bare.test/",
+        logical_active: true,
+        commandable: true,
+      });
+      const bare = await browser.resumeControl({ timeout: 301 });
+      expect(bare?.id).toBe("bare-active");
+      expect(bare?.metadata).toMatchObject({
+        url: "https://bare.test/",
+        logicalActive: true,
+        commandable: true,
+      });
+
+      transport.responses.set(M.RESUME_CONTROL, { tab: null });
+      await expect(browser.resumeControl({ timeout: 302 })).resolves.toBeUndefined();
+
+      transport.responses.set(M.RESUME_CONTROL, null);
+      await expect(browser.resumeControl({ timeout: 303 })).resolves.toBeUndefined();
+
+      transport.responses.set(M.RESUME_CONTROL, { tab: { url: "https://missing-id.test/" } });
+      await expect(browser.resumeControl({ timeout: 304 })).rejects.toThrow(
+        "resumeControl response missing tab_id",
+      );
+    } finally {
+      restoreMeta();
+    }
+
+    expect(transport.calls).toEqual([
+      { method: M.RESUME_CONTROL, params: { ...meta }, timeout: 301 },
+      { method: M.RESUME_CONTROL, params: { ...meta }, timeout: 302 },
+      { method: M.RESUME_CONTROL, params: { ...meta }, timeout: 303 },
+      { method: M.RESUME_CONTROL, params: { ...meta }, timeout: 304 },
+    ]);
+  });
+
+  it("Browser.finalizeTabs exposes structured partial diagnostics and successful results", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    transport.responses.set(M.FINALIZE_TABS, {
+      status: "partial",
+      actions: [
+        {
+          tabId: 7,
+          origin: "agent",
+          desiredStatus: "handoff",
+          outcome: "failed",
+          errorCode: "failed_to_finalize",
+          errorMessage: "synthetic failure",
+        },
+        {
+          tabId: 8,
+          origin: "agent",
+          desiredStatus: "deliverable",
+          outcome: "kept_deliverable",
+        },
+      ],
+      closedTabIds: [9],
+      releasedTabIds: [],
+      keptTabs: [{ id: "8", status: "deliverable", url: "https://deliverable.test/" }],
+      deliverableTabs: [{ id: "8", status: "deliverable", url: "https://deliverable.test/" }],
+      finalTabs: {
+        handoff: [],
+        deliverable: [{ id: "8", status: "deliverable", url: "https://deliverable.test/" }],
+        activeTabId: null,
+      },
+      failures: [
+        {
+          tabId: 7,
+          desiredStatus: "handoff",
+          outcome: "failed",
+          errorCode: "failed_to_finalize",
+          errorMessage: "synthetic failure",
+        },
+      ],
+      diagnostics: { reconciledFromChrome: true, reconciliationSource: "chrome.tabs" },
+    });
+    const browser = new Browser(
+      asTransport(transport),
+      { type: "webextension", name: "chrome", capabilities: {} },
+      { type: "webextension", name: "chrome", socketPath: "/tmp/webext", metadata: {} },
+      new Guards(),
+    );
+
+    try {
+      const result = await browser.finalizeTabs({
+        keep: [
+          { tabId: 7, status: "handoff" },
+          { tabId: 8, status: "deliverable" },
+        ],
+      });
+
+      expect(result.status).toBe("partial");
+      if (result.status === "fatal") throw new Error("expected partial finalize result");
+      expect(result.closedTabIds).toEqual(["9"]);
+      expect(result.deliverableTabs[0]?.id).toBe("8");
+      expect(result.finalTabs.deliverable[0]?.id).toBe("8");
+      expect(result.actions.map((action) => [action.tabId, action.desiredStatus, action.outcome])).toEqual([
+        ["7", "handoff", "failed"],
+        ["8", "deliverable", "kept_deliverable"],
+      ]);
+      expect(result.failures).toEqual([
+        {
+          tabId: "7",
+          desiredStatus: "handoff",
+          outcome: "failed",
+          errorCode: "failed_to_finalize",
+          errorMessage: "synthetic failure",
+        },
+      ]);
+      expect(result.diagnostics).toEqual({ reconciledFromChrome: true, reconciliationSource: "chrome.tabs" });
+    } finally {
+      restoreMeta();
+    }
+  });
+
+  it("Browser.finalizeTabs normalizes legacy wire aliases to the strict public shape", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    transport.responses.set(M.FINALIZE_TABS, {
+      status: "ok",
+      actions: [
+        {
+          tab_id: "target-7",
+          origin: "agent",
+          desired_status: "handoff",
+          outcome: "kept_handoff",
+        },
+      ],
+      closed_tab_ids: ["closed-target"],
+      released_tab_ids: ["released-target"],
+      kept_tabs: [{ id: "target-7", status: "handoff", url: "https://handoff.test/" }],
+      deliverable_tabs: [],
+      final_tabs: {
+        handoff: [{ id: "target-7", status: "handoff", url: "https://handoff.test/" }],
+        deliverable: [],
+        active_tab_id: "target-7",
+      },
+      failures: [],
+      diagnostics: { reconciled_from_chrome: true, reconciliation_source: "chrome.tabs" },
+    });
+    const browser = new Browser(
+      asTransport(transport),
+      { type: "webextension", name: "chrome", capabilities: {} },
+      { type: "webextension", name: "chrome", socketPath: "/tmp/webext", metadata: {} },
+      new Guards(),
+    );
+
+    try {
+      await expect(browser.finalizeTabs()).resolves.toEqual({
+        status: "ok",
+        actions: [
+          {
+            tabId: "target-7",
+            origin: "agent",
+            desiredStatus: "handoff",
+            outcome: "kept_handoff",
+          },
+        ],
+        closedTabIds: ["closed-target"],
+        releasedTabIds: ["released-target"],
+        keptTabs: [{ id: "target-7", status: "handoff", url: "https://handoff.test/" }],
+        deliverableTabs: [],
+        finalTabs: {
+          handoff: [{ id: "target-7", status: "handoff", url: "https://handoff.test/" }],
+          deliverable: [],
+          activeTabId: "target-7",
+        },
+        failures: [],
+        diagnostics: { reconciledFromChrome: true, reconciliationSource: "chrome.tabs" },
+      });
+    } finally {
+      restoreMeta();
+    }
+  });
+
+  it("Browser.finalizeTabs exposes fatal reconciliation results without success aliases", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    transport.responses.set(M.FINALIZE_TABS, {
+      status: "partial",
+      actions: [
+        {
+          tabId: 42,
+          origin: "agent",
+          desiredStatus: "close",
+          outcome: "failed",
+          errorCode: "close_failed",
+          errorMessage: "could not close tab",
+        },
+      ],
+      closedTabIds: [7],
+      releasedTabIds: [],
+      keptTabs: [],
+      deliverableTabs: [],
+      finalTabs: null,
+      failures: [
+        {
+          outcome: "failed",
+          errorCode: "finalize_reconciliation_failed",
+          errorMessage: "chrome.tabs reconciliation failed",
+        },
+      ],
+      errorCode: "finalize_reconciliation_failed",
+      errorMessage: "chrome.tabs reconciliation failed",
+      diagnostics: { reconciledFromChrome: false, reconciliationSource: "chrome.tabs" },
+    });
+    const browser = new Browser(
+      asTransport(transport),
+      { type: "webextension", name: "chrome", capabilities: {} },
+      { type: "webextension", name: "chrome", socketPath: "/tmp/webext", metadata: {} },
+      new Guards(),
+    );
+
+    try {
+      await expect(browser.finalizeTabs()).resolves.toEqual({
+        status: "fatal",
+        actions: [
+          {
+            tabId: "42",
+            origin: "agent",
+            desiredStatus: "close",
+            outcome: "failed",
+            errorCode: "close_failed",
+            errorMessage: "could not close tab",
+          },
+        ],
+        closedTabIds: ["7"],
+        releasedTabIds: [],
+        keptTabs: [],
+        deliverableTabs: [],
+        finalTabs: null,
+        failures: [
+          {
+            outcome: "failed",
+            errorCode: "finalize_reconciliation_failed",
+            errorMessage: "chrome.tabs reconciliation failed",
+          },
+        ],
+        errorCode: "finalize_reconciliation_failed",
+        errorMessage: "chrome.tabs reconciliation failed",
+        diagnostics: { reconciledFromChrome: false, reconciliationSource: "chrome.tabs" },
+      });
+    } finally {
+      restoreMeta();
+    }
   });
 
   it("Browser exposes backend method capabilities", () => {
@@ -329,6 +824,185 @@ describe("SDK wire-shape contracts", () => {
     expect(browser.supports(M.PLAYWRIGHT_LOCATOR_CLICK)).toBe(true);
     expect(browser.supports(M.DOM_CUA_CLICK)).toBe(false);
     expect(browser.supports(M.TAB_URL)).toBe(false);
+  });
+
+  it("Browser exposes non-sensitive profile metadata without raw profile paths", async () => {
+    const transport = new FakeTransport();
+    transport.responses.set(M.GET_INFO, {
+      type: "webextension",
+      name: "chrome",
+      metadata: {
+        profileIdHash: "profile-hash",
+        profileIsLastUsed: true,
+        profileOrdering: 1,
+        profileRuntimeBinding: "webextension",
+        diagnostics: {
+          profilePathRedacted: "/Users/<redacted>/Library/Application Support/Chrome/Profile 1",
+        },
+        backend: {
+          extension_id: "ext-id",
+          browser_kind: "chrome",
+        },
+      },
+      capabilities: {},
+    });
+    const browser = new Browser(
+      asTransport(transport),
+      {
+        type: "webextension",
+        name: "chrome",
+        metadata: {
+          profileIdHash: "profile-hash",
+          profileRuntimeBinding: "webextension",
+          diagnostics: {
+            profilePathRedacted: "/Users/<redacted>/Library/Application Support/Chrome/Profile 1",
+          },
+          backend: { extension_id: "ext-id", browser_kind: "chrome" },
+        },
+        capabilities: {},
+      },
+      { type: "webextension", name: "chrome", socketPath: "/tmp/webext", metadata: {} },
+      new Guards(),
+    );
+
+    expect(browser.metadata.profileIdHash).toBe("profile-hash");
+    expect(browser.profileMetadata).toEqual({
+      profileIdHash: "profile-hash",
+      profileRuntimeBinding: "webextension",
+      diagnostics: {
+        profilePathRedacted: "/Users/<redacted>/Library/Application Support/Chrome/Profile 1",
+      },
+    });
+    expect(browser.metadata.profilePath).toBeUndefined();
+    expect(browser.metadata.profileDisplayName).toBeUndefined();
+    await expect(browser.ensureReady({ timeout: 501 })).resolves.toMatchObject({
+      profileMetadata: {
+        profileIdHash: "profile-hash",
+        profileIsLastUsed: true,
+        profileOrdering: 1,
+        profileRuntimeBinding: "webextension",
+      },
+    });
+  });
+
+  it("Browser exposes viewport and visibility objects only when capabilities advertise them", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    const withoutCapabilities = new Browser(
+      asTransport(transport),
+      {
+        type: "webextension",
+        name: "chrome",
+        capabilities: {
+          supported_methods: [
+            M.BROWSER_VIEWPORT_SET,
+            M.BROWSER_VIEWPORT_RESET,
+            M.BROWSER_VISIBILITY_SET,
+            M.BROWSER_VISIBILITY_GET,
+          ],
+          unsupported_methods: [],
+        },
+      },
+      { type: "webextension", name: "chrome", socketPath: "/tmp/webext", metadata: {} },
+      new Guards(),
+    );
+    expect(withoutCapabilities.viewport).toBeUndefined();
+    expect(withoutCapabilities.visibility).toBeUndefined();
+
+    const browser = new Browser(
+      asTransport(transport),
+      {
+        type: "webextension",
+        name: "chrome",
+        capabilities: {
+          viewport: { set: true, reset: true },
+          visibility: { set: true, get: true },
+          experimentalFoo: { version: 1 },
+          disabledFoo: false,
+          supported_methods: [
+            M.BROWSER_VIEWPORT_SET,
+            M.BROWSER_VIEWPORT_RESET,
+            M.BROWSER_VISIBILITY_SET,
+            M.BROWSER_VISIBILITY_GET,
+          ],
+          unsupported_methods: [],
+        },
+      },
+      { type: "webextension", name: "chrome", socketPath: "/tmp/webext", metadata: {} },
+      new Guards(),
+    );
+
+    try {
+      expect(browser.viewport).toBeDefined();
+      expect(browser.visibility).toBeDefined();
+      expect(browser.capabilityRegistry.has("viewport")).toBe(true);
+      expect(browser.capabilityRegistry.has("visibility")).toBe(true);
+      expect(browser.capabilityRegistry.has("experimentalFoo")).toBe(true);
+      expect(browser.capabilityRegistry.has("disabledFoo")).toBe(false);
+      expect(browser.capabilityRegistry.get("viewport")).toBe(browser.viewport);
+      expect(browser.capabilityRegistry.get("visibility")).toBe(browser.visibility);
+      expect(browser.capabilityRegistry.get("experimentalFoo")).toEqual({
+        name: "experimentalFoo",
+        raw: { version: 1 },
+        supported: true,
+      });
+      expect(browser.capabilityRegistry.list()).toEqual([
+        { name: "disabledFoo", raw: false, supported: false },
+        { name: "experimentalFoo", raw: { version: 1 }, supported: true },
+        { name: "viewport", raw: { set: true, reset: true }, supported: true, instance: browser.viewport },
+        { name: "visibility", raw: { set: true, get: true }, supported: true, instance: browser.visibility },
+      ]);
+      expect(() => browser.capabilityRegistry.get("missing")).toThrow("unsupported browser capability: missing");
+      await expect(browser.viewport!.set({
+        width: 640,
+        height: 480,
+        deviceScaleFactor: 2,
+        mobile: false,
+        timeout: 333,
+      })).resolves.toEqual({
+        width: 640,
+        height: 480,
+        deviceScaleFactor: 2,
+        mobile: false,
+        tabId: 1,
+      });
+      await expect(browser.viewport!.reset({ timeout: 334 })).resolves.toEqual({ reset: true, tabId: 1 });
+      await expect(browser.visibility!.set({ visible: true, focused: true, timeout: 335 })).resolves.toEqual({
+        visible: true,
+        focused: true,
+        windowId: 1,
+        state: "normal",
+      });
+      await expect(browser.visibility!.get({ timeout: 336 })).resolves.toEqual({
+        visible: true,
+        focused: true,
+        windowId: 1,
+        state: "normal",
+      });
+      await expect(browser.viewport!.set({ width: 0, height: 480 })).rejects.toThrow("width must be an integer");
+      await expect(browser.visibility!.set({ visible: "yes" as unknown as boolean })).rejects.toThrow(
+        "visible must be a boolean",
+      );
+    } finally {
+      restoreMeta();
+    }
+
+    expect(transport.calls).toEqual([
+      {
+        method: M.BROWSER_VIEWPORT_SET,
+        params: { width: 640, height: 480, deviceScaleFactor: 2, mobile: false, ...meta },
+        timeout: 333,
+      },
+      { method: M.BROWSER_VIEWPORT_RESET, params: { ...meta }, timeout: 334 },
+      {
+        method: M.BROWSER_VISIBILITY_SET,
+        params: { visible: true, focused: true, ...meta },
+        timeout: 335,
+      },
+      { method: M.BROWSER_VISIBILITY_GET, params: { ...meta }, timeout: 336 },
+    ]);
+    expect(METHOD_CLASSIFICATION[M.BROWSER_VIEWPORT_SET]).toBe("internal-lifecycle");
+    expect(METHOD_CLASSIFICATION[M.BROWSER_VISIBILITY_GET]).toBe("internal-lifecycle");
   });
 
   it("Browser deliverables refreshes lifecycle diagnostics and claims durable tabs", async () => {
@@ -422,7 +1096,10 @@ describe("SDK wire-shape contracts", () => {
       await expect(button.getAttribute("role")).resolves.toBe("button");
       await button.selectOption([{ value: "a" }, { label: "B" }]);
       await button.check({ timeout: 122 });
-      await expect(button.screenshot({ timeout: 123 })).resolves.toEqual({ data_base64: "cropped64", mime_type: "image/png" });
+      const elementShot = await button.screenshot({ timeout: 123 });
+      expect(elementShot).toBeInstanceOf(Image);
+      expect(elementShot).toMatchObject({ data_base64: "cropped64", mime_type: "image/png" });
+      expect(elementShot.toBase64()).toBe("cropped64");
       await tab.frameLocator("iframe").getByText("Inside").fill("text", { timeout: 124 });
     } finally {
       restoreMeta();
@@ -469,7 +1146,7 @@ describe("SDK wire-shape contracts", () => {
           navigation_timeout_ms: 1500,
           ...meta,
         },
-        timeout: 1500,
+        timeout: 1620,
       },
       {
         method: M.PLAYWRIGHT_LOCATOR_WAIT_FOR,
@@ -544,6 +1221,93 @@ describe("SDK wire-shape contracts", () => {
           ...meta,
         },
         timeout: 124,
+      },
+    ]);
+  });
+
+  it("coordinate CUA navigation waits compose action and navigation request timeouts", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    const tab = new Tab(asTransport(transport), new Guards(), "tab-1");
+
+    try {
+      await tab.cua.click(10, 20, {
+        button: "left",
+        timeout: 200,
+        waitForNavigation: { waitUntil: "load", timeout: 800 },
+      });
+      await tab.cua.dblclick(30, 40, {
+        timeout: 300,
+        waitForNavigation: true,
+      });
+    } finally {
+      restoreMeta();
+    }
+
+    expect(transport.calls).toEqual([
+      {
+        method: M.CUA_CLICK,
+        params: {
+          tab_id: "tab-1",
+          x: 10,
+          y: 20,
+          button: "left",
+          modifiers: undefined,
+          wait_for_navigation: true,
+          navigation_wait_until: "load",
+          navigation_timeout_ms: 800,
+          ...meta,
+        },
+        timeout: 1000,
+      },
+      {
+        method: M.CUA_DBLCLICK,
+        params: {
+          tab_id: "tab-1",
+          x: 30,
+          y: 40,
+          button: undefined,
+          modifiers: undefined,
+          wait_for_navigation: true,
+          navigation_timeout_ms: 300,
+          ...meta,
+        },
+        timeout: 600,
+      },
+    ]);
+  });
+
+  it("Locator.all batches first leaf reads through one read_all request and reuses the cache", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    const tab = new Tab(asTransport(transport), new Guards(), "tab-a");
+
+    try {
+      const items = await tab.locator(".item").all({ timeout: 555 });
+      expect(items).toHaveLength(2);
+      expect(await items[1]!.textContent()).toBe(" Cancel ");
+      expect(await items[0]!.innerText()).toBe("Save");
+      expect(await items[0]!.getAttribute("data-kind")).toBe("primary");
+      expect(await items[0]!.getAttribute("role")).toBe("button");
+      expect(await items[1]!.getAttribute("missing")).toBeNull();
+      expect(() => items[0]!.and(tab.locator(".enabled"))).not.toThrow();
+      expect(() => items[0]!.and(new Tab(asTransport(transport), new Guards(), "other-tab").locator(".enabled"))).toThrow(
+        "Locators must belong to the same tab",
+      );
+    } finally {
+      restoreMeta();
+    }
+
+    expect(transport.calls).toEqual([
+      {
+        method: M.PLAYWRIGHT_LOCATOR_COUNT,
+        params: { command: M.PLAYWRIGHT_LOCATOR_COUNT, tab_id: "tab-a", selector: ".item", timeout_ms: 30_000, ...meta },
+        timeout: 30_000,
+      },
+      {
+        method: M.PLAYWRIGHT_LOCATOR_READ_ALL,
+        params: { command: M.PLAYWRIGHT_LOCATOR_READ_ALL, tab_id: "tab-a", selector: ".item", timeout_ms: 555, ...meta },
+        timeout: 555,
       },
     ]);
   });
@@ -658,7 +1422,7 @@ describe("SDK wire-shape contracts", () => {
           target: { tabId: "tab-1" },
           method: "Runtime.evaluate",
           commandParams: {
-            expression: expect.stringContaining("document.querySelectorAll"),
+            expression: expect.stringMatching(/obu-agent-overlay-root[\s\S]*document\.querySelectorAll/),
             awaitPromise: true,
             returnByValue: true,
           },
@@ -738,6 +1502,7 @@ describe("SDK wire-shape contracts", () => {
 
   it("display forwards arbitrary values or fails clearly when runtime global is missing", () => {
     const value = { kind: "json", nested: ["image-shaped", { mime: "image/png" }] };
+    const image = new Image("iVBORw0KGgo=", "image/png");
     const seen: unknown[] = [];
     (globalThis as { display?: (value: unknown) => unknown }).display = (next) => {
       seen.push(next);
@@ -745,7 +1510,13 @@ describe("SDK wire-shape contracts", () => {
     };
 
     expect(display(value)).toBe("display-result");
-    expect(seen).toEqual([value]);
+    expect(display(image)).toBe("display-result");
+    expect(image.toBase64()).toBe("iVBORw0KGgo=");
+    expect(JSON.stringify(image)).toBe(JSON.stringify({ data_base64: "iVBORw0KGgo=", mime_type: "image/png" }));
+    expect(seen).toEqual([
+      value,
+      { __obuImage: true, mime_type: "image/png", data: "iVBORw0KGgo=" },
+    ]);
 
     delete (globalThis as { display?: unknown }).display;
     expect(() => display("missing")).toThrow("global display() is not available");
@@ -776,6 +1547,28 @@ describe("SDK wire-shape contracts", () => {
 
   it("classifies every inbound wire method for structured guards", () => {
     expect(Object.keys(METHOD_CLASSIFICATION).sort()).toEqual([...M.ALL_INBOUND_METHODS].sort());
+  });
+
+  it("default guards do not call a remote policy service", async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchCalls: unknown[] = [];
+    globalThis.fetch = ((...args: unknown[]) => {
+      fetchCalls.push(args);
+      throw new Error("remote policy call is not allowed by default");
+    }) as typeof fetch;
+    try {
+      const guards = new Guards();
+      await guards.ensureCommandAllowed({ command: M.TAB_GOTO, url: "https://example.test/" });
+      await guards.ensureCommandAllowed(
+        { command: M.PLAYWRIGHT_LOCATOR_CLICK, tab_id: "tab-1" },
+        { currentUrl: "https://example.test/" },
+      );
+      await guards.ensureCommandAllowed({ command: M.PLAYWRIGHT_WAIT_FOR_DOWNLOAD, tab_id: "tab-1" });
+      await guards.ensureCommandAllowed({ command: M.PLAYWRIGHT_FILE_CHOOSER_SET_FILES, tab_id: "tab-1", paths: ["/tmp/a.txt"] });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+    expect(fetchCalls).toEqual([]);
   });
 
   it("structured guards block navigation before transport state changes", async () => {
@@ -944,7 +1737,7 @@ describe("SDK wire-shape contracts", () => {
     const transport = new FakeTransport();
     transport.responses.set(M.TAB_CLIPBOARD_READ_TEXT, { text: "copied" });
     transport.responses.set(M.TAB_CLIPBOARD_READ, { items: [] });
-    transport.responses.set(M.DOM_CUA_GET_VISIBLE_DOM, { nodes: [] });
+    transport.responses.set(M.DOM_CUA_GET_VISIBLE_DOM, { nodes: [], text: "[1] <button> Save" });
     const events: unknown[] = [];
     const tab = new Tab(
       asTransport(transport),
@@ -963,7 +1756,9 @@ describe("SDK wire-shape contracts", () => {
       await tab.clipboard.writeText("next", { timeout: 44 });
       await expect(tab.clipboard.read({ timeout: 45 })).resolves.toEqual([]);
       await tab.clipboard.write([{ entries: [{ mimeType: "text/plain", text: "plain" }] }], { timeout: 46 });
-      await expect(tab.dom_cua.get_visible_dom({ timeout: 47 })).resolves.toEqual({ nodes: [] });
+      await expect(tab.dom_cua.get_visible_dom({ timeout: 47 })).resolves.toMatchObject({ nodes: [] });
+      await expect(tab.dom_cua.get_visible_dom({ timeout: 48, format: "text" })).resolves.toBe("[1] <button> Save");
+      await expect(tab.dom_cua.text({ timeout: 49 })).resolves.toBe("[1] <button> Save");
     } finally {
       restoreMeta();
     }
@@ -974,6 +1769,8 @@ describe("SDK wire-shape contracts", () => {
       { tabId: "tab-1", url: "https://example.test/", command: M.TAB_CLIPBOARD_WRITE_TEXT },
       { tabId: "tab-1", url: "https://example.test/", command: M.TAB_CLIPBOARD_READ },
       { tabId: "tab-1", url: "https://example.test/", command: M.TAB_CLIPBOARD_WRITE },
+      { tabId: "tab-1", url: "https://example.test/", command: M.DOM_CUA_GET_VISIBLE_DOM },
+      { tabId: "tab-1", url: "https://example.test/", command: M.DOM_CUA_GET_VISIBLE_DOM },
       { tabId: "tab-1", url: "https://example.test/", command: M.DOM_CUA_GET_VISIBLE_DOM },
     ]);
     expect(transport.calls).toEqual([
@@ -1040,6 +1837,26 @@ describe("SDK wire-shape contracts", () => {
         method: M.DOM_CUA_GET_VISIBLE_DOM,
         params: { tab_id: "tab-1", ...meta },
         timeout: 47,
+      },
+      {
+        method: M.TAB_URL,
+        params: { tab_id: "tab-1", ...meta },
+        timeout: 48,
+      },
+      {
+        method: M.DOM_CUA_GET_VISIBLE_DOM,
+        params: { tab_id: "tab-1", format: "text", ...meta },
+        timeout: 48,
+      },
+      {
+        method: M.TAB_URL,
+        params: { tab_id: "tab-1", ...meta },
+        timeout: 49,
+      },
+      {
+        method: M.DOM_CUA_GET_VISIBLE_DOM,
+        params: { tab_id: "tab-1", format: "text", ...meta },
+        timeout: 49,
       },
     ]);
   });

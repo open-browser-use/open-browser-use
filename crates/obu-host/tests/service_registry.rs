@@ -220,6 +220,7 @@ fn session_lifecycle_tracks_turn_label_and_reconciles_missing_tabs() {
     assert_eq!(session.session_id, "session");
     assert_eq!(session.current_turn_id.as_deref(), Some("turn-1"));
     assert_eq!(session.label.as_deref(), Some("Research"));
+    assert!(session.active_tab_id.is_none());
 
     let active_tab = TabId::new("active");
     let deliverable_tab = TabId::new("deliverable");
@@ -251,6 +252,25 @@ fn session_lifecycle_tracks_turn_label_and_reconciles_missing_tabs() {
         .unwrap();
     registry.mark_playwright_injected(&active_tab).unwrap();
     registry
+        .set_active_tab("session", active_tab.clone(), Some("turn-2"))
+        .unwrap();
+    assert_eq!(
+        registry
+            .get_session("session")
+            .unwrap()
+            .unwrap()
+            .active_tab_id,
+        Some(active_tab.clone())
+    );
+    assert_eq!(
+        registry
+            .current_tab_for_session("session")
+            .unwrap()
+            .unwrap()
+            .id,
+        active_tab
+    );
+    registry
         .insert_file_chooser(
             FileChooserId("chooser-active".into()),
             FileChooserState {
@@ -275,6 +295,12 @@ fn session_lifecycle_tracks_turn_label_and_reconciles_missing_tabs() {
     assert_eq!(stale[0].id, active_tab);
     assert!(registry.get(&active_tab).unwrap().is_none());
     assert!(registry.get(&deliverable_tab).unwrap().is_some());
+    assert!(
+        registry
+            .current_tab_for_session("session")
+            .unwrap()
+            .is_none()
+    );
     assert!(
         registry
             .describe_missing_tab(&active_tab)
@@ -344,6 +370,96 @@ fn session_lifecycle_tracks_turn_label_and_reconciles_missing_tabs() {
     );
     assert_eq!(deliverable_summaries[0].url, "https://deliverable.example");
     assert_eq!(deliverable_summaries[0].title, "Deliverable");
+}
+
+#[test]
+fn current_tab_for_session_falls_back_only_to_active_owned_tabs() {
+    let registry = ServiceRegistry::default();
+    let insert_tab = |id: &str, status: TabStatus| {
+        registry
+            .insert(TabRecord {
+                id: TabId::new(id),
+                session_id: Some("session".into()),
+                target_id: format!("target-{id}"),
+                url: format!("https://{id}.example"),
+                title: id.into(),
+                origin: TabOrigin::Agent,
+                status,
+                attached: false,
+                cdp_session_id: None,
+            })
+            .unwrap();
+    };
+    insert_tab("handoff", TabStatus::Handoff);
+    insert_tab("deliverable", TabStatus::Deliverable);
+    insert_tab("active-b", TabStatus::Active);
+    insert_tab("active-a", TabStatus::Active);
+
+    registry
+        .set_active_tab("session", "handoff", Some("turn-1"))
+        .unwrap();
+    assert_eq!(
+        registry
+            .current_tab_for_session("session")
+            .unwrap()
+            .unwrap()
+            .id,
+        TabId::new("active-a")
+    );
+    assert_eq!(
+        registry
+            .get_session("session")
+            .unwrap()
+            .unwrap()
+            .active_tab_id,
+        Some(TabId::new("active-a"))
+    );
+
+    registry
+        .set_active_tab("session", "missing", Some("turn-2"))
+        .unwrap();
+    assert_eq!(
+        registry
+            .current_tab_for_session("session")
+            .unwrap()
+            .unwrap()
+            .id,
+        TabId::new("active-a")
+    );
+    assert_eq!(
+        registry
+            .get_session("session")
+            .unwrap()
+            .unwrap()
+            .active_tab_id,
+        Some(TabId::new("active-a"))
+    );
+
+    registry.remove(&TabId::new("active-a")).unwrap();
+    assert_eq!(
+        registry
+            .current_tab_for_session("session")
+            .unwrap()
+            .unwrap()
+            .id,
+        TabId::new("active-b")
+    );
+
+    registry.remove(&TabId::new("active-b")).unwrap();
+    assert!(
+        registry
+            .current_tab_for_session("session")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        registry
+            .get_session("session")
+            .unwrap()
+            .unwrap()
+            .active_tab_id
+            .is_none()
+    );
 }
 
 #[test]

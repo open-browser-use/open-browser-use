@@ -82,6 +82,31 @@
   "resumeButton": {
     "message": "Wznów"
   },
+  "cleanupButton": {
+    "message": "Wyczyść karty przeglądarki"
+  },
+  "cleanupResult": {
+    "message": "Zamknięto $closed$, zwolniono $released$, zachowano $kept$ przekazania.",
+    "placeholders": {
+      "closed": {
+        "content": "$1"
+      },
+      "released": {
+        "content": "$2"
+      },
+      "kept": {
+        "content": "$3"
+      }
+    }
+  },
+  "cleanupFailed": {
+    "message": "Czyszczenie nie powiodło się: $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
   "debugLogsLabel": {
     "message": "Dzienniki debugowania"
   },

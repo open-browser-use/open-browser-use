@@ -65,22 +65,47 @@
     "message": "设置"
   },
   "agentSetupLabel": {
-    "message": "Agent 设置"
+    "message": "连接另一个 Agent"
   },
   "agentHandoffTitle": {
-    "message": "Agent 交接"
+    "message": "设置提示词"
   },
   "copyForAgent": {
-    "message": "复制给 Agent"
+    "message": "复制提示词"
   },
   "copyAgentSetupHandoff": {
-    "message": "复制 Agent 设置交接内容"
+    "message": "复制设置提示词"
   },
   "stopButton": {
     "message": "我来接管"
   },
   "resumeButton": {
     "message": "继续"
+  },
+  "cleanupButton": {
+    "message": "清理浏览器标签页"
+  },
+  "cleanupResult": {
+    "message": "已关闭 $closed$ 个，已释放 $released$ 个，保留 $kept$ 个可交付标签页。",
+    "placeholders": {
+      "closed": {
+        "content": "$1"
+      },
+      "released": {
+        "content": "$2"
+      },
+      "kept": {
+        "content": "$3"
+      }
+    }
+  },
+  "cleanupFailed": {
+    "message": "清理失败：$error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
   },
   "debugLogsLabel": {
     "message": "调试日志"
@@ -118,10 +143,10 @@
     "message": "已清除"
   },
   "copyAgentUnavailable": {
-    "message": "Agent 设置交接内容不可用"
+    "message": "设置提示词不可用"
   },
   "copyAgentSuccess": {
-    "message": "已复制。粘贴给 Agent，设置完成后回到这里点击“继续”。"
+    "message": "已复制。粘贴到要连接的 Agent。设置完成后回到这里点击“继续”。"
   },
   "copying": {
     "message": "正在复制"
@@ -136,7 +161,7 @@
     "message": "无法复制。请检查剪贴板权限，然后重试。"
   },
   "agentSetupDefaultText": {
-    "message": "复制这段交接内容给 Agent，并在配对期间保持此弹窗打开。"
+    "message": "粘贴到要连接的 Agent。配对完成前请保持此弹窗打开。"
   },
   "statusConnected": {
     "message": "已连接"

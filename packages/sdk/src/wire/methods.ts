@@ -8,6 +8,8 @@ export const PING = "ping" as const;
 export const GET_INFO = "getInfo" as const;
 
 export const GET_TABS = "getTabs" as const;
+export const GET_CURRENT_TAB = "getCurrentTab" as const;
+export const GET_SELECTED_TAB = "getSelectedTab" as const;
 export const CREATE_TAB = "createTab" as const;
 export const FINALIZE_TABS = "finalizeTabs" as const;
 export const CLAIM_USER_TAB = "claimUserTab" as const;
@@ -21,7 +23,15 @@ export const MOVE_MOUSE = "moveMouse" as const;
 
 export const GET_USER_HISTORY = "getUserHistory" as const;
 
+export const BROWSER_TABS_CONTENT = "browser_tabs_content" as const;
+export const BROWSER_VIEWPORT_SET = "browser_viewport_set" as const;
+export const BROWSER_VIEWPORT_RESET = "browser_viewport_reset" as const;
+export const BROWSER_VISIBILITY_SET = "browser_visibility_set" as const;
+export const BROWSER_VISIBILITY_GET = "browser_visibility_get" as const;
+
 export const TURN_ENDED = "turnEnded" as const;
+export const YIELD_CONTROL = "yieldControl" as const;
+export const RESUME_CONTROL = "resumeControl" as const;
 export const CLEAR_LIFECYCLE_DIAGNOSTICS = "clearLifecycleDiagnostics" as const;
 export const EXECUTE_UNHANDLED_COMMAND = "executeUnhandledCommand" as const;
 
@@ -93,6 +103,8 @@ export const ALL_INBOUND_METHODS = [
   PING,
   GET_INFO,
   GET_TABS,
+  GET_CURRENT_TAB,
+  GET_SELECTED_TAB,
   CREATE_TAB,
   FINALIZE_TABS,
   CLAIM_USER_TAB,
@@ -103,7 +115,14 @@ export const ALL_INBOUND_METHODS = [
   EXECUTE_CDP,
   MOVE_MOUSE,
   GET_USER_HISTORY,
+  BROWSER_TABS_CONTENT,
+  BROWSER_VIEWPORT_SET,
+  BROWSER_VIEWPORT_RESET,
+  BROWSER_VISIBILITY_SET,
+  BROWSER_VISIBILITY_GET,
   TURN_ENDED,
+  YIELD_CONTROL,
+  RESUME_CONTROL,
   CLEAR_LIFECYCLE_DIAGNOSTICS,
   EXECUTE_UNHANDLED_COMMAND,
   PLAYWRIGHT_LOCATOR_CLICK,

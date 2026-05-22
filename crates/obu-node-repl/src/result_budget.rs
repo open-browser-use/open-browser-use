@@ -84,6 +84,7 @@ pub fn prepare_js_result(
     let text_summary = result_text_summary(result.duration_ms, &truncated, artifacts_json.len());
     let response_meta = result.response_meta.clone();
     let error = result.error.clone();
+    let error_detail = result.error_detail.clone();
     let structured = json!({
         "stdout": stdout,
         "stderr": stderr,
@@ -94,6 +95,7 @@ pub fn prepare_js_result(
         "artifacts": artifacts_json,
         "response_meta": response_meta,
         "error": error,
+        "error_detail": error_detail,
     });
 
     Ok(PreparedJsResult {
@@ -420,6 +422,7 @@ mod tests {
             }],
             response_meta: None,
             error: None,
+            error_detail: None,
         };
 
         let prepared = prepare_js_result(raw, &artifacts).unwrap();
@@ -452,6 +455,7 @@ mod tests {
             }],
             response_meta: None,
             error: None,
+            error_detail: None,
         };
 
         let prepared = prepare_js_result(raw, &artifacts).unwrap();
@@ -482,6 +486,7 @@ mod tests {
             displays: Vec::new(),
             response_meta: None,
             error: None,
+            error_detail: None,
         };
 
         let prepared = prepare_js_result(raw, &artifacts).unwrap();

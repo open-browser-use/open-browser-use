@@ -82,6 +82,31 @@
   "resumeButton": {
     "message": "Reprendre"
   },
+  "cleanupButton": {
+    "message": "Nettoyer les onglets du navigateur"
+  },
+  "cleanupResult": {
+    "message": "$closed$ fermés, $released$ libérés, $kept$ livrables conservés.",
+    "placeholders": {
+      "closed": {
+        "content": "$1"
+      },
+      "released": {
+        "content": "$2"
+      },
+      "kept": {
+        "content": "$3"
+      }
+    }
+  },
+  "cleanupFailed": {
+    "message": "Nettoyage impossible : $error$",
+    "placeholders": {
+      "error": {
+        "content": "$1"
+      }
+    }
+  },
   "debugLogsLabel": {
     "message": "Journaux de débogage"
   },

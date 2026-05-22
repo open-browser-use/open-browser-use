@@ -1,5 +1,6 @@
 import { Agent } from "./agent.js";
 import { ObuError, ERR_PEER_AUTH } from "./errors.js";
+import type { Guards } from "./guards.js";
 import type { BackendDiscoveryDiagnostic, DiscoveredBackend } from "./browsers.js";
 import type { BrowserInfo } from "./types.js";
 import { GET_INFO } from "./wire/methods.js";
@@ -14,6 +15,7 @@ export type ConnectedBackend = {
 
 export type SetupObuRuntimeOptions = {
   globals?: Record<string, unknown>;
+  guards?: Guards;
   /** Test-only injection; production runtime reads `import.meta.__obuNativePipe`. */
   pipeBridge?: NativePipeBridge;
 };
@@ -43,7 +45,8 @@ export async function setupObuRuntime(
     return { backend, transport, info };
   };
 
-  const agent = new Agent({ listBackends, listBackendDiagnostics, connectBackend });
+  const agentOptions = opts.guards ? { guards: opts.guards } : {};
+  const agent = new Agent({ listBackends, listBackendDiagnostics, connectBackend }, agentOptions);
   if (opts.globals) opts.globals.agent = agent;
   return { agent };
 }

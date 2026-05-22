@@ -16,20 +16,19 @@ pub async fn ensure_playwright_injected(backend: &CdpBackend, tab_id: &str) -> R
     let id = TabId::new(tab_id);
     let session_id = require_session(backend, tab_id)?;
     if backend.registry().is_playwright_injected(&id)? {
-        let probe = backend
-            .transport()
-            .send_command(
-                "Runtime.evaluate",
-                json!({
-                    "expression": format!(
-                        "!!window.{INJECTED_GLOBAL} && !!window.{RUNTIME_GLOBAL}"
-                    ),
-                    "returnByValue": true,
-                }),
-                Some(&session_id),
-            )
-            .await
-            .map_err(HostError::from)?;
+        let probe = super::dialogs::send_command_with_dialog_policy(
+            backend,
+            tab_id,
+            &session_id,
+            "Runtime.evaluate",
+            json!({
+                "expression": format!(
+                    "!!window.{INJECTED_GLOBAL} && !!window.{RUNTIME_GLOBAL}"
+                ),
+                "returnByValue": true,
+            }),
+        )
+        .await?;
         if probe
             .get("result")
             .and_then(|result| result.get("value"))
@@ -42,19 +41,18 @@ pub async fn ensure_playwright_injected(backend: &CdpBackend, tab_id: &str) -> R
     }
 
     let expression = mount_expression();
-    let result = backend
-        .transport()
-        .send_command(
-            "Runtime.evaluate",
-            json!({
-                "expression": expression,
-                "returnByValue": true,
-                "awaitPromise": false,
-            }),
-            Some(&session_id),
-        )
-        .await
-        .map_err(HostError::from)?;
+    let result = super::dialogs::send_command_with_dialog_policy(
+        backend,
+        tab_id,
+        &session_id,
+        "Runtime.evaluate",
+        json!({
+            "expression": expression,
+            "returnByValue": true,
+            "awaitPromise": false,
+        }),
+    )
+    .await?;
     if let Some(details) = result.get("exceptionDetails") {
         return Err(HostError::CdpFailure(format!(
             "playwright-injected mount failed: {details}"

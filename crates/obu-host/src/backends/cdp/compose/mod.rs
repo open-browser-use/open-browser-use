@@ -67,3 +67,57 @@ fn timeout_ms(params: &Value) -> Option<u64> {
         .or_else(|| params.get("client_timeout_ms"))
         .and_then(Value::as_u64)
 }
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+
+    #[test]
+    fn required_str_returns_named_string_param() {
+        let params = json!({ "tab_id": "tab-1" });
+
+        assert_eq!(required_str(&params, "tab_id").unwrap(), "tab-1");
+    }
+
+    #[test]
+    fn required_str_rejects_missing_or_non_string_param() {
+        let missing = json!({});
+        let non_string = json!({ "tab_id": 42 });
+
+        assert!(
+            required_str(&missing, "tab_id")
+                .unwrap_err()
+                .to_string()
+                .contains("missing tab_id")
+        );
+        assert!(
+            required_str(&non_string, "tab_id")
+                .unwrap_err()
+                .to_string()
+                .contains("missing tab_id")
+        );
+    }
+
+    #[test]
+    fn timeout_ms_prefers_explicit_timeout_order() {
+        assert_eq!(
+            timeout_ms(&json!({
+                "timeout_ms": 100,
+                "timeout": 200,
+                "client_timeout_ms": 300
+            })),
+            Some(100)
+        );
+        assert_eq!(
+            timeout_ms(&json!({
+                "timeout": 200,
+                "client_timeout_ms": 300
+            })),
+            Some(200)
+        );
+        assert_eq!(timeout_ms(&json!({ "client_timeout_ms": 300 })), Some(300));
+        assert_eq!(timeout_ms(&json!({ "timeout_ms": "slow" })), None);
+    }
+}

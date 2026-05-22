@@ -406,6 +406,21 @@ h2 {
   background: var(--amber);
 }
 
+.status-actions {
+  display: grid;
+  gap: var(--space-2);
+  margin-top: var(--space-4);
+}
+
+.status-actions .detail {
+  min-height: 0;
+  margin-top: 0;
+}
+
+.status-actions .detail:empty {
+  display: none;
+}
+
 .setup-panel,
 .debug {
   display: grid;
@@ -418,11 +433,34 @@ h2 {
   padding-bottom: 0;
 }
 
+.setup-panel[data-prompt-expanded="false"] {
+  padding-bottom: var(--space-5);
+}
+
 .panel-head {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
   gap: var(--space-5);
+}
+
+.setup-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--space-2);
+}
+
+.prompt-toggle {
+  flex: 0 0 auto;
+  color: var(--ink-soft);
+}
+
+.prompt-toggle svg {
+  transition: transform 150ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.setup-panel[data-prompt-expanded="false"] .prompt-toggle svg {
+  transform: rotate(-90deg);
 }
 
 .handoff-copy {
@@ -499,6 +537,7 @@ h2 {
 
 .stop,
 .resume,
+.cleanup-button,
 .setup-copy,
 .debug-actions button {
   width: 100%;
@@ -515,6 +554,14 @@ h2 {
     box-shadow 150ms cubic-bezier(0.22, 1, 0.36, 1),
     color 150ms cubic-bezier(0.22, 1, 0.36, 1),
     transform 150ms cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+.cleanup-button {
+  min-height: 2rem;
+  border-color: var(--line-strong);
+  background: var(--panel);
+  color: var(--ink);
+  font-size: var(--type-small);
 }
 
 .stop {
@@ -552,6 +599,7 @@ h2 {
 }
 
 .stop:not(:disabled):hover,
+.cleanup-button:not(:disabled):hover,
 .debug-actions button:not(:disabled):hover {
   background: var(--panel-muted);
   border-color: var(--line-strong);
@@ -654,6 +702,7 @@ h2 {
 
 .stop:not(:disabled):active,
 .resume:not(:disabled):active,
+.cleanup-button:not(:disabled):active,
 .setup-copy:not(:disabled):active,
 .debug-actions button:not(:disabled):active {
   transform: translateY(1px);
@@ -661,6 +710,7 @@ h2 {
 
 .stop:focus-visible,
 .resume:focus-visible,
+.cleanup-button:focus-visible,
 .setup-copy:focus-visible,
 .debug-actions button:focus-visible {
   outline: 0;
@@ -669,6 +719,7 @@ h2 {
 
 .stop:disabled,
 .resume:disabled,
+.cleanup-button:disabled,
 .setup-copy:disabled,
 .debug-actions button:disabled {
   cursor: default;
@@ -691,9 +742,11 @@ h2 {
 
   .stop,
   .resume,
+  .cleanup-button,
   .setup-copy,
   .handoff-surface,
   .icon-button,
+  .prompt-toggle svg,
   .debug-actions button {
     transition: none;
   }

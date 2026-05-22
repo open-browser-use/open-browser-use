@@ -2,9 +2,19 @@
 
 use std::io;
 
+use serde_json::Value;
 use thiserror::Error;
 
 use obu_wire::frame::FrameError;
+
+/// Structured native-dialog decision requirement.
+#[derive(Debug, Clone)]
+pub struct DialogRequiresDecision {
+    /// Human-readable error message.
+    pub message: String,
+    /// Stable JSON-RPC `error.data` payload.
+    pub data: Value,
+}
 
 /// Unified host error.
 #[derive(Debug, Error)]
@@ -37,6 +47,10 @@ pub enum HostError {
     #[error("tab not attached: {0}")]
     TabNotAttached(String),
 
+    /// Native browser dialog needs an explicit decision.
+    #[error("{0}")]
+    DialogRequiresDecision(DialogRequiresDecision),
+
     /// Feature is not implemented yet.
     #[error("backend not implemented: {0}")]
     NotImplemented(String),
@@ -52,3 +66,9 @@ pub enum HostError {
 
 /// `obu-host` result type.
 pub type Result<T> = std::result::Result<T, HostError>;
+
+impl std::fmt::Display for DialogRequiresDecision {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(&self.message)
+    }
+}

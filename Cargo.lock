@@ -999,6 +999,7 @@ dependencies = [
  "obu-wire",
  "predicates",
  "rmcp",
+ "rustix",
  "serde",
  "serde_json",
  "sha2",
@@ -1018,6 +1019,7 @@ version = "0.1.6"
 dependencies = [
  "bytes",
  "futures-util",
+ "rustix",
  "serde",
  "serde_json",
  "tempfile",

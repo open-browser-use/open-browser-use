@@ -59,6 +59,13 @@ pub async fn list_tabs(backend: &CdpBackend) -> Result<Value> {
         .and_then(Value::as_array)
         .ok_or_else(|| HostError::Protocol("Target.getTargets missing targetInfos".into()))?;
 
+    let existing_by_target: HashMap<String, TabRecord> = backend
+        .registry()
+        .list()?
+        .into_iter()
+        .map(|record| (record.target_id.clone(), record))
+        .collect();
+
     let mut out = Vec::new();
     for target in targets {
         if target.get("type").and_then(Value::as_str) != Some("page") {
@@ -81,26 +88,57 @@ pub async fn list_tabs(backend: &CdpBackend) -> Result<Value> {
             .get("attached")
             .and_then(Value::as_bool)
             .unwrap_or(false);
-        let record = upsert_target_record(backend, target_id, &url, &title, attached)?;
+        let record = upsert_target_record(
+            backend,
+            existing_by_target.get(target_id).cloned(),
+            target_id,
+            &url,
+            &title,
+            attached,
+        )?;
         out.push(tab_record_to_value(&record));
     }
     Ok(Value::Array(out))
+}
+
+/// Return the host-owned logical current tab for a session.
+pub async fn current_tab(backend: &CdpBackend, ctx: &BackendRequestContext) -> Result<Value> {
+    let session_id = require_session_id(ctx, "getCurrentTab")?;
+    backend
+        .registry()
+        .touch_session(session_id, ctx.turn_id.as_deref())?;
+    Ok(backend
+        .registry()
+        .current_tab_for_session(session_id)?
+        .map(|record| tab_record_to_value_with_logical_active(&record, true))
+        .unwrap_or(Value::Null))
+}
+
+/// CDP cannot reliably observe a browser-visible selected tab, so expose only the
+/// session-owned logical current tab through this discovery path.
+pub async fn selected_tab(backend: &CdpBackend, ctx: &BackendRequestContext) -> Result<Value> {
+    current_tab(backend, ctx).await
 }
 
 /// Close a tab and remove host-side state for it.
 pub async fn close_tab(backend: &CdpBackend, tab_id: &str) -> Result<Value> {
     let id = TabId::new(tab_id);
     let record = crate::backends::cdp::attach::require_active_record(backend, tab_id)?;
+    if !record.attached || record.cdp_session_id.is_none() {
+        crate::backends::cdp::attach::attach(backend, tab_id).await?;
+    }
+    let session_id = crate::backends::cdp::attach::require_session(backend, tab_id)?;
 
-    backend
-        .transport()
-        .send_command(
-            "Target.closeTarget",
-            json!({ "targetId": record.target_id }),
-            None,
-        )
-        .await
-        .map_err(HostError::from)?;
+    let operation = async {
+        backend
+            .transport()
+            .send_command("Page.close", json!({}), Some(&session_id))
+            .await
+            .map_err(HostError::from)
+    };
+    let context =
+        crate::backends::cdp::dialogs::context_for_tab(backend, tab_id, &session_id, "tab_close");
+    crate::backends::cdp::dialogs::run_with_dialog_policy(backend, context, operation).await?;
     backend.registry().clear_playwright_injected(&id)?;
     let _ = backend.registry().remove(&id)?;
     Ok(Value::Null)
@@ -135,6 +173,9 @@ pub async fn claim_user_tab(
     record.origin = TabOrigin::User;
     record.status = TabStatus::Active;
     backend.registry().insert(record.clone())?;
+    backend
+        .registry()
+        .set_active_tab(session_id, record.id.clone(), ctx.turn_id.as_deref())?;
     Ok(tab_record_to_value(&record))
 }
 
@@ -213,6 +254,7 @@ pub async fn finalize_tabs(
             },
         }
     }
+    let _ = backend.registry().current_tab_for_session(session_id)?;
 
     Ok(json!({
         "closed_tab_ids": closed_tab_ids,
@@ -224,18 +266,13 @@ pub async fn finalize_tabs(
 
 fn upsert_target_record(
     backend: &CdpBackend,
+    existing: Option<TabRecord>,
     target_id: &str,
     url: &str,
     title: &str,
     attached: bool,
 ) -> Result<TabRecord> {
-    if let Some(record) = backend
-        .registry()
-        .list()?
-        .into_iter()
-        .find(|record| record.target_id == target_id)
-    {
-        let mut record = record;
+    if let Some(mut record) = existing {
         record.url = url.to_string();
         record.title = title.to_string();
         record.attached = attached;
@@ -309,6 +346,10 @@ fn parse_finalize_keep(params: &Value) -> Result<HashMap<String, TabStatus>> {
 }
 
 fn tab_record_to_value(record: &TabRecord) -> Value {
+    tab_record_to_value_with_logical_active(record, false)
+}
+
+fn tab_record_to_value_with_logical_active(record: &TabRecord, logical_active: bool) -> Value {
     json!({
         "id": record.id.0.clone(),
         "tab_id": record.id.0.clone(),
@@ -325,5 +366,9 @@ fn tab_record_to_value(record: &TabRecord) -> Value {
             TabStatus::Deliverable => "deliverable",
         },
         "attached": record.attached,
+        "owned": record.session_id.is_some(),
+        "claimRequired": record.session_id.is_none(),
+        "commandable": record.session_id.is_some() && record.status == TabStatus::Active,
+        "logicalActive": logical_active,
     })
 }

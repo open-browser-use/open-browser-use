@@ -3,6 +3,7 @@ use std::time::SystemTime;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use tokio::sync::Notify;
 
 use obu_host::{
     backends::{
@@ -51,6 +52,61 @@ async fn webext_backend_normalizes_extension_tab_dtos() {
     assert_eq!(calls[0].1["session_id"], "session");
     assert_eq!(calls[0].1["turn_id"], "turn");
     assert_eq!(calls[0].1["timeoutMs"], 1234);
+}
+
+#[tokio::test]
+async fn webext_backend_exposes_current_and_selected_with_ownership_boundary() {
+    let transport = Arc::new(FakeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+
+    backend
+        .create_tab_with_context(&ctx, Some("https://example.com".into()))
+        .await
+        .unwrap();
+    let current = backend.current_tab_with_context(&ctx).await.unwrap();
+    assert_eq!(current["tab_id"], "42");
+    assert_eq!(current["commandable"], true);
+    assert_eq!(current["logicalActive"], true);
+    assert_eq!(
+        backend
+            .registry()
+            .current_tab_for_session("session")
+            .unwrap()
+            .unwrap()
+            .id,
+        TabId::new("42")
+    );
+
+    let selected = backend.selected_tab_with_context(&ctx).await.unwrap();
+    assert_eq!(selected["tab_id"], "7");
+    assert_eq!(selected["commandable"], false);
+    assert_eq!(selected["claimRequired"], true);
+    assert!(
+        backend.registry().get(&TabId::new("7")).unwrap().is_none(),
+        "selected human tab discovery must not create session ownership"
+    );
+
+    backend
+        .yield_control_with_context(&ctx, json!({}))
+        .await
+        .unwrap();
+    let resumed = backend
+        .resume_control_with_context(&ctx, json!({}))
+        .await
+        .unwrap();
+    assert_eq!(resumed["tab_id"], "42");
+    assert_eq!(resumed["commandable"], true);
+
+    let calls = transport.calls.lock().unwrap();
+    assert!(calls.iter().any(|(method, _)| method == "getCurrentTab"));
+    assert!(calls.iter().any(|(method, _)| method == "getSelectedTab"));
+    assert!(calls.iter().any(|(method, _)| method == "yieldControl"));
+    assert!(calls.iter().any(|(method, _)| method == "resumeControl"));
 }
 
 #[tokio::test]
@@ -107,6 +163,40 @@ async fn webext_backend_reconciles_session_tabs_missing_after_get_tabs() {
             .describe_missing_file_chooser(&FileChooserId("chooser-stale".into()))
             .unwrap()
             .contains("not returned by WebExtension getTabs")
+    );
+}
+
+#[tokio::test]
+async fn webext_backend_marks_tab_screenshot_as_overlay_suppressed() {
+    let transport = Arc::new(FakeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+
+    backend
+        .create_tab_with_context(&ctx, Some("https://example.com".into()))
+        .await
+        .unwrap();
+    let screenshot = backend
+        .tab_command_with_context(&ctx, methods::TAB_SCREENSHOT, json!({ "tab_id": "42" }))
+        .await
+        .unwrap();
+
+    assert_eq!(screenshot["mime_type"], "image/png");
+    assert_eq!(screenshot["data_base64"], "base64png");
+    let calls = transport.calls.lock().unwrap();
+    let screenshot_call = calls
+        .iter()
+        .find(|(method, params)| {
+            method == "executeCdp" && params["method"] == "Page.captureScreenshot"
+        })
+        .expect("expected Page.captureScreenshot executeCdp call");
+    assert_eq!(
+        screenshot_call.1["suppressAgentOverlayForCapture"],
+        Value::Bool(true)
     );
 }
 
@@ -292,14 +382,14 @@ async fn webext_backend_normalizes_user_tabs_history_and_finalize() {
         .await
         .unwrap();
     assert_eq!(finalized["closed_tab_ids"][0], "42");
+    assert_eq!(finalized["closed_tab_ids"][1], "8");
     assert_eq!(finalized["released_tab_ids"][0], "9");
     assert_eq!(finalized["kept_tabs"][0]["id"], "7");
-    assert_eq!(finalized["deliverable_tabs"][0]["id"], "8");
+    assert_eq!(finalized["deliverable_tabs"].as_array().unwrap().len(), 0);
     assert!(backend.registry().get(&TabId::new("42")).unwrap().is_none());
     let handoff_record = backend.registry().get(&TabId::new("7")).unwrap().unwrap();
     assert_eq!(handoff_record.status, TabStatus::Handoff);
-    let deliverable_record = backend.registry().get(&TabId::new("8")).unwrap().unwrap();
-    assert_eq!(deliverable_record.status, TabStatus::Deliverable);
+    assert!(backend.registry().get(&TabId::new("8")).unwrap().is_none());
     assert!(
         backend
             .registry()
@@ -312,7 +402,7 @@ async fn webext_backend_normalizes_user_tabs_history_and_finalize() {
             .registry()
             .describe_missing_download(&DownloadId("download-deliverable".into()))
             .unwrap()
-            .contains("detached, closed, or finalized")
+            .contains("closed or released")
     );
 
     let calls = transport.calls.lock().unwrap();
@@ -540,7 +630,14 @@ async fn webext_backend_cua_click_waits_for_navigation_when_requested() {
         .filter(|(method, _)| method == "executeCdp")
         .map(|(_, params)| params["method"].as_str().unwrap().to_string())
         .collect::<Vec<_>>();
-    assert_eq!(execute_methods[0], "Runtime.evaluate");
+    assert_eq!(execute_methods[0], "Page.enable");
+    assert_eq!(
+        execute_methods
+            .iter()
+            .find(|method| method.as_str() == "Runtime.evaluate")
+            .map(String::as_str),
+        Some("Runtime.evaluate")
+    );
     assert!(execute_methods.contains(&"Input.dispatchMouseEvent".to_string()));
     assert_eq!(execute_methods.last().unwrap(), "Runtime.evaluate");
 }
@@ -610,9 +707,12 @@ async fn webext_backend_scroll_uses_script_fallback_without_cdp_input() {
         .filter(|(method, _)| method == "executeCdp")
         .map(|(_, params)| params)
         .collect::<Vec<_>>();
-    assert_eq!(execute.len(), 1);
-    assert_eq!(execute[0]["method"], "Runtime.evaluate");
-    let expression = execute[0]["commandParams"]["expression"].as_str().unwrap();
+    let runtime = execute
+        .iter()
+        .find(|params| params["method"] == "Runtime.evaluate")
+        .expect("expected Runtime.evaluate call");
+    assert_eq!(execute.len(), 2);
+    let expression = runtime["commandParams"]["expression"].as_str().unwrap();
     assert!(expression.contains("document.elementFromPoint(x, y)"));
     assert!(expression.contains("node.scrollBy"));
     assert!(expression.contains("window.scrollBy"));
@@ -1153,6 +1253,28 @@ async fn webext_backend_dom_cua_uses_backend_node_ids() {
         .unwrap();
     assert_eq!(dom["nodes"][0]["node_id"], "101");
     assert_eq!(dom["nodes"][0]["tag"], "button");
+    assert!(
+        dom["nodes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|node| node["node_id"] != "102" && node["node_id"] != "103")
+    );
+    let dom_text = backend
+        .cua_command_with_context(
+            &ctx,
+            "dom_cua_get_visible_dom",
+            json!({ "tab_id": "42", "format": "text" }),
+        )
+        .await
+        .unwrap();
+    assert!(
+        dom_text["text"]
+            .as_str()
+            .unwrap()
+            .contains(r#"[101] <button aria-label="Submit"> Submit"#)
+    );
+    assert!(!dom_text["text"].as_str().unwrap().contains("Overlay"));
 
     backend
         .cua_command_with_context(
@@ -1393,6 +1515,472 @@ async fn webext_backend_broadcasts_extension_notifications() {
     assert_eq!(event.params["session_id"], "session");
     assert_eq!(event.params["source"]["tabId"], 42);
     assert!(events.try_recv().is_err());
+}
+
+#[tokio::test]
+async fn webext_backend_exposes_extension_status_diagnostics() {
+    let backend = WebExtensionBackend::dev_chrome(json!({}));
+
+    backend.handle_notification(
+        "onExtensionStatus",
+        json!({
+            "pending_update": {
+                "state": "waiting_for_idle",
+                "version": "0.2.0",
+                "pendingSince": 123
+            }
+        }),
+    );
+
+    assert_eq!(
+        backend.diagnostics()["extension"]["pending_update"]["version"],
+        "0.2.0"
+    );
+}
+
+#[tokio::test]
+async fn webext_backend_accepts_alert_dialog_and_continues_operation() {
+    let transport = Arc::new(DialogBlockingTransport::new("Page.navigate"));
+    let backend =
+        Arc::new(WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone()));
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+    backend
+        .create_tab_with_context(&ctx, Some("https://example.com".into()))
+        .await
+        .unwrap();
+
+    let task_backend = backend.clone();
+    let task_ctx = ctx.clone();
+    let task = tokio::spawn(async move {
+        task_backend
+            .tab_command_with_context(
+                &task_ctx,
+                methods::TAB_GOTO,
+                json!({ "tab_id": "42", "url": "https://next.example" }),
+            )
+            .await
+    });
+    transport.wait_until_blocked().await;
+    backend.handle_notification(
+        "onCDPEvent",
+        json!({
+            "session_id": "session",
+            "source": { "tabId": 42 },
+            "method": "Page.javascriptDialogOpening",
+            "params": {
+                "type": "alert",
+                "message": "Saved"
+            }
+        }),
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if transport
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(method, params)| {
+                    method == "executeCdp"
+                        && params["method"] == "Page.handleJavaScriptDialog"
+                        && params["commandParams"]["accept"] == true
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("alert dialog should be accepted before navigation is released");
+    transport.release_blocked();
+
+    task.await.unwrap().unwrap();
+    let diagnostics = backend.diagnostics();
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["code"],
+        "dialog_handled"
+    );
+    assert_eq!(diagnostics["dialogs"]["recent"][0]["dialog_type"], "alert");
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["default_action"],
+        "accept"
+    );
+    assert_eq!(diagnostics["dialogs"]["recent"][0]["outcome"], "continued");
+    let calls = transport.calls.lock().unwrap();
+    assert!(calls.iter().any(|(method, params)| {
+        method == "executeCdp"
+            && params["method"] == "Page.handleJavaScriptDialog"
+            && params["commandParams"]["accept"] == true
+    }));
+}
+
+#[tokio::test]
+async fn webext_backend_records_extension_handled_beforeunload_without_duplicate_handle() {
+    let transport = Arc::new(DialogBlockingTransport::new("Page.navigate"));
+    let backend =
+        Arc::new(WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone()));
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+    backend
+        .create_tab_with_context(&ctx, Some("https://example.com".into()))
+        .await
+        .unwrap();
+
+    let task_backend = backend.clone();
+    let task_ctx = ctx.clone();
+    let task = tokio::spawn(async move {
+        task_backend
+            .tab_command_with_context(
+                &task_ctx,
+                methods::TAB_GOTO,
+                json!({ "tab_id": "42", "url": "https://next.example" }),
+            )
+            .await
+    });
+    transport.wait_until_blocked().await;
+    backend.handle_notification(
+        "onCDPEvent",
+        json!({
+            "session_id": "session",
+            "source": { "tabId": 42 },
+            "method": "Page.javascriptDialogOpening",
+            "params": {
+                "type": "beforeunload",
+                "message": "Leave site?"
+            },
+            "handledByExtension": {
+                "defaultAction": "accept",
+                "accept": true
+            }
+        }),
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    transport.release_blocked();
+
+    task.await.unwrap().unwrap();
+    let diagnostics = backend.diagnostics();
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["code"],
+        "dialog_handled"
+    );
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["dialog_type"],
+        "beforeunload"
+    );
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["default_action"],
+        "accept"
+    );
+    assert_eq!(diagnostics["dialogs"]["recent"][0]["outcome"], "continued");
+    let calls = transport.calls.lock().unwrap();
+    assert!(!calls.iter().any(|(method, params)| {
+        method == "executeCdp" && params["method"] == "Page.handleJavaScriptDialog"
+    }));
+}
+
+#[tokio::test]
+async fn webext_backend_dismisses_confirm_dialog_and_returns_structured_error() {
+    let transport = Arc::new(DialogBlockingTransport::new("Page.navigate"));
+    let backend =
+        Arc::new(WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone()));
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+    backend
+        .create_tab_with_context(&ctx, Some("https://example.com".into()))
+        .await
+        .unwrap();
+
+    let task_backend = backend.clone();
+    let task_ctx = ctx.clone();
+    let task = tokio::spawn(async move {
+        task_backend
+            .tab_command_with_context(
+                &task_ctx,
+                methods::TAB_GOTO,
+                json!({ "tab_id": "42", "url": "https://next.example" }),
+            )
+            .await
+    });
+    transport.wait_until_blocked().await;
+    backend.handle_notification(
+        "onCDPEvent",
+        json!({
+            "session_id": "session",
+            "source": { "tabId": 42 },
+            "method": "Page.javascriptDialogOpening",
+            "params": {
+                "type": "confirm",
+                "message": "Discard changes?"
+            }
+        }),
+    );
+
+    let error = task.await.unwrap().unwrap_err();
+    let HostError::DialogRequiresDecision(dialog) = error else {
+        panic!("expected dialog_requires_decision error");
+    };
+    assert_eq!(dialog.data["code"], "dialog_requires_decision");
+    assert_eq!(dialog.data["tab_id"], "42");
+    assert_eq!(dialog.data["session_id"], "session");
+    assert_eq!(dialog.data["dialog_type"], "confirm");
+    assert_eq!(dialog.data["message"], "Discard changes?");
+    assert_eq!(dialog.data["default_action"], "dismiss");
+    assert_eq!(dialog.data["accept"], false);
+    let diagnostics = backend.diagnostics();
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["code"],
+        "dialog_requires_decision"
+    );
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["dialog_type"],
+        "confirm"
+    );
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["default_action"],
+        "dismiss"
+    );
+    assert_eq!(diagnostics["dialogs"]["recent"][0]["outcome"], "failed");
+    let calls = transport.calls.lock().unwrap();
+    assert!(calls.iter().any(|(method, params)| {
+        method == "executeCdp"
+            && params["method"] == "Page.handleJavaScriptDialog"
+            && params["commandParams"]["accept"] == false
+    }));
+}
+
+#[tokio::test]
+async fn webext_backend_runtime_evaluate_accepts_alert_dialog() {
+    let transport = Arc::new(DialogBlockingTransport::new("Runtime.evaluate"));
+    let backend =
+        Arc::new(WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone()));
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+    backend
+        .create_tab_with_context(&ctx, Some("https://example.com".into()))
+        .await
+        .unwrap();
+
+    let task_backend = backend.clone();
+    let task_ctx = ctx.clone();
+    let task = tokio::spawn(async move {
+        task_backend
+            .execute_cdp_with_context(
+                &task_ctx,
+                "42",
+                "Runtime.evaluate",
+                json!({ "expression": "alert('x'); 1+1", "returnByValue": true }),
+            )
+            .await
+    });
+    transport.wait_until_blocked().await;
+    backend.handle_notification(
+        "onCDPEvent",
+        json!({
+            "session_id": "session",
+            "source": { "tabId": 42 },
+            "method": "Page.javascriptDialogOpening",
+            "params": {
+                "type": "alert",
+                "message": "x"
+            }
+        }),
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if transport
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(method, params)| {
+                    method == "executeCdp"
+                        && params["method"] == "Page.handleJavaScriptDialog"
+                        && params["commandParams"]["accept"] == true
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("alert dialog should be accepted before Runtime.evaluate is released");
+    transport.release_blocked();
+
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn webext_backend_runtime_evaluate_accepts_beforeunload_dialog() {
+    let transport = Arc::new(DialogBlockingTransport::new("Runtime.evaluate"));
+    let backend =
+        Arc::new(WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone()));
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+    backend
+        .create_tab_with_context(&ctx, Some("https://example.com".into()))
+        .await
+        .unwrap();
+
+    let task_backend = backend.clone();
+    let task_ctx = ctx.clone();
+    let task = tokio::spawn(async move {
+        task_backend
+            .execute_cdp_with_context(
+                &task_ctx,
+                "42",
+                "Runtime.evaluate",
+                json!({ "expression": "1+1", "returnByValue": true }),
+            )
+            .await
+    });
+    transport.wait_until_blocked().await;
+    backend.handle_notification(
+        "onCDPEvent",
+        json!({
+            "session_id": "session",
+            "source": { "tabId": 42 },
+            "method": "Page.javascriptDialogOpening",
+            "params": {
+                "type": "beforeunload",
+                "message": "Leave site?"
+            }
+        }),
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if transport
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(method, params)| {
+                    method == "executeCdp"
+                        && params["method"] == "Page.handleJavaScriptDialog"
+                        && params["commandParams"]["accept"] == true
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("beforeunload dialog should be accepted before Runtime.evaluate is released");
+    transport.release_blocked();
+
+    task.await.unwrap().unwrap();
+}
+
+#[tokio::test]
+async fn webext_backend_runtime_evaluate_dismisses_confirm_dialog_with_structured_error() {
+    assert_webext_runtime_evaluate_dialog_requires_decision("confirm").await;
+}
+
+#[tokio::test]
+async fn webext_backend_runtime_evaluate_dismisses_prompt_dialog_with_structured_error() {
+    assert_webext_runtime_evaluate_dialog_requires_decision("prompt").await;
+}
+
+#[tokio::test]
+async fn webext_backend_finalize_accepts_beforeunload_dialog_for_omitted_agent_tab() {
+    let transport = Arc::new(DialogBlockingTransport::new("Page.close"));
+    let backend =
+        Arc::new(WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone()));
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+    backend
+        .create_tab_with_context(&ctx, Some("https://example.com".into()))
+        .await
+        .unwrap();
+
+    let task_backend = backend.clone();
+    let task_ctx = ctx.clone();
+    let task = tokio::spawn(async move {
+        task_backend
+            .finalize_tabs_with_context(&task_ctx, json!({ "keep": [] }))
+            .await
+    });
+    transport.wait_until_blocked().await;
+    backend.handle_notification(
+        "onCDPEvent",
+        json!({
+            "session_id": "session",
+            "source": { "tabId": 42 },
+            "method": "Page.javascriptDialogOpening",
+            "params": {
+                "type": "beforeunload",
+                "message": "Leave site?"
+            }
+        }),
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(1), async {
+        loop {
+            if transport
+                .calls
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|(method, params)| {
+                    method == "executeCdp"
+                        && params["method"] == "Page.handleJavaScriptDialog"
+                        && params["commandParams"]["accept"] == true
+                })
+            {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1)).await;
+        }
+    })
+    .await
+    .expect("beforeunload dialog should be accepted before finalize close is released");
+    transport.release_blocked();
+
+    let finalized = task.await.unwrap().unwrap();
+    assert_eq!(finalized["closed_tab_ids"], json!(["42"]));
+    assert!(backend.registry().get(&TabId::new("42")).unwrap().is_none());
+    let diagnostics = backend.diagnostics();
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["dialog_type"],
+        "beforeunload"
+    );
+    assert_eq!(
+        diagnostics["dialogs"]["recent"][0]["default_action"],
+        "accept"
+    );
+    assert_eq!(diagnostics["dialogs"]["recent"][0]["outcome"], "continued");
+    let calls = transport.calls.lock().unwrap();
+    assert!(
+        calls
+            .iter()
+            .any(|(method, params)| { method == "executeCdp" && params["method"] == "Page.close" })
+    );
+    assert!(calls.iter().any(|(method, params)| {
+        method == "executeCdp"
+            && params["method"] == "Page.handleJavaScriptDialog"
+            && params["commandParams"]["accept"] == true
+    }));
+    assert!(calls.iter().any(|(method, _)| method == "finalizeTabs"));
 }
 
 #[tokio::test]
@@ -1817,6 +2405,97 @@ struct FakeTransport {
     calls: Mutex<Vec<(String, Value)>>,
 }
 
+struct DialogBlockingTransport {
+    calls: Mutex<Vec<(String, Value)>>,
+    blocked_method: String,
+    has_blocked: Mutex<bool>,
+    blocked: Notify,
+    release: Notify,
+}
+
+impl DialogBlockingTransport {
+    fn new(blocked_method: impl Into<String>) -> Self {
+        Self {
+            calls: Mutex::new(Vec::new()),
+            blocked_method: blocked_method.into(),
+            has_blocked: Mutex::new(false),
+            blocked: Notify::new(),
+            release: Notify::new(),
+        }
+    }
+
+    async fn wait_until_blocked(&self) {
+        if *self.has_blocked.lock().unwrap() {
+            return;
+        }
+        tokio::time::timeout(std::time::Duration::from_secs(1), self.blocked.notified())
+            .await
+            .expect("dialog test command should block");
+    }
+
+    fn release_blocked(&self) {
+        self.release.notify_waiters();
+    }
+}
+
+async fn assert_webext_runtime_evaluate_dialog_requires_decision(dialog_type: &'static str) {
+    let transport = Arc::new(DialogBlockingTransport::new("Runtime.evaluate"));
+    let backend =
+        Arc::new(WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone()));
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+    backend
+        .create_tab_with_context(&ctx, Some("https://example.com".into()))
+        .await
+        .unwrap();
+
+    let task_backend = backend.clone();
+    let task_ctx = ctx.clone();
+    let task = tokio::spawn(async move {
+        task_backend
+            .execute_cdp_with_context(
+                &task_ctx,
+                "42",
+                "Runtime.evaluate",
+                json!({ "expression": "1+1", "returnByValue": true }),
+            )
+            .await
+    });
+    transport.wait_until_blocked().await;
+    backend.handle_notification(
+        "onCDPEvent",
+        json!({
+            "session_id": "session",
+            "source": { "tabId": 42 },
+            "method": "Page.javascriptDialogOpening",
+            "params": {
+                "type": dialog_type,
+                "message": "Needs a choice"
+            }
+        }),
+    );
+
+    let error = task.await.unwrap().unwrap_err();
+    let HostError::DialogRequiresDecision(dialog) = error else {
+        panic!("expected dialog_requires_decision error");
+    };
+    assert_eq!(dialog.data["code"], "dialog_requires_decision");
+    assert_eq!(dialog.data["tab_id"], "42");
+    assert_eq!(dialog.data["session_id"], "session");
+    assert_eq!(dialog.data["operation"], "Runtime.evaluate");
+    assert_eq!(dialog.data["dialog_type"], dialog_type);
+    assert_eq!(dialog.data["default_action"], "dismiss");
+    let calls = transport.calls.lock().unwrap();
+    assert!(calls.iter().any(|(method, params)| {
+        method == "executeCdp"
+            && params["method"] == "Page.handleJavaScriptDialog"
+            && params["commandParams"]["accept"] == false
+    }));
+}
+
 #[derive(Default)]
 struct GetTabsWithDeliverableTransport {
     calls: Mutex<Vec<(String, Value)>>,
@@ -1845,8 +2524,39 @@ impl ExtensionTransport for FakeTransport {
             }),
             "getTabs" => json!({
                 "tabs": [
-                    { "tabId": 42, "url": "https://example.com", "title": "Example" }
+                    {
+                        "tabId": 42,
+                        "url": "https://example.com",
+                        "title": "Example",
+                        "active": true,
+                        "windowId": 1,
+                        "groupId": 2,
+                        "pinned": false,
+                        "logicalActive": true
+                    }
                 ]
+            }),
+            "getCurrentTab" => json!({
+                "tab": {
+                    "tabId": 42,
+                    "url": "https://example.com",
+                    "title": "Example",
+                    "origin": "agent",
+                    "status": "active",
+                    "commandable": true,
+                    "logicalActive": true
+                }
+            }),
+            "getSelectedTab" => json!({
+                "tab": {
+                    "tabId": 7,
+                    "url": "https://selected.example",
+                    "title": "Selected",
+                    "origin": "user",
+                    "status": "active",
+                    "commandable": false,
+                    "claimRequired": true
+                }
             }),
             "getUserTabs" => json!({
                 "tabs": [
@@ -1872,7 +2582,56 @@ impl ExtensionTransport for FakeTransport {
                     { "tabId": 8, "url": "https://deliverable.example", "title": "Deliverable", "status": "deliverable" }
                 ]
             }),
+            "yieldControl" => json!({}),
+            "resumeControl" => json!({
+                "tab": {
+                    "tabId": 42,
+                    "url": "https://example.com",
+                    "title": "Example",
+                    "origin": "agent",
+                    "status": "active",
+                    "commandable": true,
+                    "logicalActive": true
+                }
+            }),
             "executeCdp" => fake_cdp_response(&params),
+            _ => Value::Null,
+        })
+    }
+}
+
+#[async_trait]
+impl ExtensionTransport for DialogBlockingTransport {
+    async fn request(&self, method: &str, params: Value) -> Result<Value> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((method.to_string(), params.clone()));
+        if method == "createTab" {
+            return Ok(json!({
+                "tab": {
+                    "tabId": 42,
+                    "url": params.get("url").cloned().unwrap_or(Value::Null),
+                    "title": "Example"
+                }
+            }));
+        }
+        if method == "executeCdp"
+            && params["method"] == self.blocked_method
+            && !*self.has_blocked.lock().unwrap()
+        {
+            *self.has_blocked.lock().unwrap() = true;
+            self.blocked.notify_waiters();
+            self.release.notified().await;
+        }
+        Ok(match method {
+            "executeCdp" => fake_cdp_response(&params),
+            "finalizeTabs" => json!({
+                "closedTabIds": [],
+                "releasedTabIds": [],
+                "keptTabs": [],
+                "deliverableTabs": []
+            }),
             _ => Value::Null,
         })
     }
@@ -1969,6 +2728,7 @@ fn fake_cdp_response(params: &Value) -> Value {
             };
             json!({ "result": { "value": value } })
         }
+        "Page.enable" | "Page.close" | "Page.handleJavaScriptDialog" => json!({}),
         "Page.captureScreenshot" => json!({ "data": "base64png" }),
         "Page.printToPDF" => json!({ "data": "base64pdf" }),
         "Page.getLayoutMetrics" => json!({
@@ -1984,6 +2744,18 @@ fn fake_cdp_response(params: &Value) -> Value {
                 "nodeName": "HTML",
                 "backendNodeId": 100,
                 "children": [
+                    {
+                        "nodeName": "DIV",
+                        "backendNodeId": 102,
+                        "attributes": ["id", "obu-agent-overlay-root"],
+                        "children": [
+                            {
+                                "nodeName": "BUTTON",
+                                "backendNodeId": 103,
+                                "attributes": ["aria-label", "Overlay"]
+                            }
+                        ]
+                    },
                     {
                         "nodeName": "BUTTON",
                         "backendNodeId": 101,

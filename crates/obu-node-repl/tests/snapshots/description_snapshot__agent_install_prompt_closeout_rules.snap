@@ -1,0 +1,7 @@
+---
+source: crates/obu-node-repl/tests/description_snapshot.rs
+assertion_line: 50
+expression: excerpt
+---
+- For setup probes, prefer `await browser.turnEnded()` after the probe so the
+- Do not use `await browser.finishTurn({ keep: [] })` unless you intentionally

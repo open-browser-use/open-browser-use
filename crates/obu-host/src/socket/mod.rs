@@ -77,3 +77,45 @@ pub fn default_socket_path(session_id: &str) -> PathBuf {
         PathBuf::from(format!(r"\\.\pipe\obu-{session_id}"))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn default_socket_path_contains_obu_namespace_and_session_id() {
+        let path = default_socket_path("session-123");
+        let rendered = path.to_string_lossy();
+
+        #[cfg(any(target_os = "linux", target_os = "macos"))]
+        assert!(rendered.ends_with("/obu/session-123.sock"), "{rendered}");
+
+        #[cfg(windows)]
+        assert_eq!(rendered, r"\\.\pipe\obu-session-123");
+    }
+
+    #[test]
+    fn peer_credentials_are_cloneable_and_matchable() {
+        let unix = PeerCred::Unix {
+            uid: 1,
+            gid: 2,
+            pid: 3,
+        };
+        let audit = PeerCred::AuditToken { token: [7; 8] };
+        let windows = PeerCred::Windows {
+            sid: "S-1-5-21".into(),
+            pid: 4,
+        };
+
+        assert!(matches!(
+            unix.clone(),
+            PeerCred::Unix {
+                uid: 1,
+                gid: 2,
+                pid: 3
+            }
+        ));
+        assert!(matches!(audit.clone(), PeerCred::AuditToken { token } if token == [7; 8]));
+        assert!(matches!(windows.clone(), PeerCred::Windows { sid, pid: 4 } if sid == "S-1-5-21"));
+    }
+}

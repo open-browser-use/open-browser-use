@@ -781,15 +781,40 @@ where
         backend,
         ctx,
         tab_id,
-        r#"(injected) => {
+        r##"(injected) => {
+  const overlaySelector = "#obu-agent-overlay-root,[data-obu-overlay-root]";
+  const overlays = Array.from(document.querySelectorAll(overlaySelector));
+  const previous = overlays.map((overlay) => ({
+    overlay,
+    display: overlay.style.display,
+    hidden: overlay.hidden,
+    ariaHidden: overlay.getAttribute("aria-hidden")
+  }));
+  for (const overlay of overlays) {
+    overlay.setAttribute("aria-hidden", "true");
+    overlay.hidden = true;
+    overlay.style.display = "none";
+  }
+  try {
   const root = document.body || document.documentElement;
   return root ? injected.incrementalAriaSnapshot(root, { mode: "ai", track: "open-browser-use-dom-snapshot" }).full : "";
-}"#,
+  } finally {
+    for (const row of previous) {
+      row.overlay.style.display = row.display;
+      row.overlay.hidden = row.hidden;
+      if (row.ariaHidden === null) {
+        row.overlay.removeAttribute("aria-hidden");
+      } else {
+        row.overlay.setAttribute("aria-hidden", row.ariaHidden);
+      }
+    }
+  }
+}"##,
         Value::Null,
         timeout_ms(&params),
     )
     .await?;
-    Ok(json!({ "dom_snapshot": value }))
+    Ok(json!({ "domSnapshot": value, "source": "playwright_dom_snapshot" }))
 }
 
 pub(crate) async fn wait_for_selector_state<B>(
@@ -960,6 +985,7 @@ fn is_fatal(error: &HostError) -> bool {
         | HostError::Protocol(_)
         | HostError::TabNotAttached(_)
         | HostError::PageClosed(_)
+        | HostError::DialogRequiresDecision(_)
         | HostError::Timeout(_) => true,
         HostError::CdpFailure(message) => {
             message.contains("strict mode violation:")
@@ -1188,6 +1214,50 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn retry_loop_retries_transient_errors_until_success() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_for_retry = attempts.clone();
+
+        let result = with_retry(200, move || {
+            let attempts = attempts_for_retry.clone();
+            async move {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                if attempt == 0 {
+                    Err(HostError::CdpFailure("Element is not visible".into()))
+                } else {
+                    Ok(json!("ready"))
+                }
+            }
+        })
+        .await
+        .unwrap();
+
+        assert_eq!(result, json!("ready"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 2);
+    }
+
+    #[tokio::test]
+    async fn retry_loop_does_not_retry_fatal_selector_errors() {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_for_retry = attempts.clone();
+
+        let error = with_retry(200, move || {
+            let attempts = attempts_for_retry.clone();
+            async move {
+                attempts.fetch_add(1, Ordering::SeqCst);
+                Err(HostError::CdpFailure(
+                    "strict mode violation: locator resolved to two elements".into(),
+                ))
+            }
+        })
+        .await
+        .unwrap_err();
+
+        assert!(error.to_string().contains("strict mode violation"));
+        assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
     async fn set_checked_skips_click_when_state_already_matches() {
         let backend = FakeRuntimeBackend::new(vec![json!({
             "checked": true,
@@ -1212,6 +1282,67 @@ mod tests {
         .unwrap();
 
         assert_eq!(clicked.load(Ordering::SeqCst), 0);
+    }
+
+    #[tokio::test]
+    async fn dom_snapshot_hides_obu_overlay_before_snapshotting() {
+        let backend = FakeCommandBackend::new(vec![json!("snapshot")], false);
+
+        let result = dom_snapshot(
+            &backend,
+            &BackendRequestContext::default(),
+            json!({ "tab_id": "tab-1", "timeout_ms": 1 }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(
+            result,
+            json!({ "domSnapshot": "snapshot", "source": "playwright_dom_snapshot" })
+        );
+        let expressions = backend.expressions.lock().unwrap();
+        let expression = expressions.first().expect("snapshot expression captured");
+        assert!(expression.contains("#obu-agent-overlay-root,[data-obu-overlay-root]"));
+        assert!(expression.contains("overlay.style.display"));
+        assert!(expression.contains("none"));
+        assert!(expression.contains("overlay.hidden = true"));
+        assert!(expression.contains("incrementalAriaSnapshot"));
+        assert!(expression.contains("finally"));
+    }
+
+    #[tokio::test]
+    async fn read_all_captures_text_and_attributes_for_collection() {
+        let rows = json!([
+            {
+                "attributes": { "data-kind": "primary" },
+                "inner_text": "Save",
+                "text_content": " Save "
+            },
+            null
+        ]);
+        let backend = FakeCommandBackend::new(vec![rows.clone()], false);
+
+        let result = read_all(
+            &backend,
+            &BackendRequestContext::default(),
+            json!({
+                "tab_id": "tab-1",
+                "selector": ".item",
+                "relative_selector": ".label",
+                "timeout_ms": 1
+            }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result, rows);
+        let expressions = backend.expressions.lock().unwrap();
+        let expression = expressions.first().expect("read_all expression captured");
+        assert!(expression.contains("evaluateOnSelectorAll"));
+        assert!(expression.contains(r#""relativeSelector":".label""#));
+        assert!(expression.contains("Object.fromEntries"));
+        assert!(expression.contains("inner_text"));
+        assert!(expression.contains("text_content"));
     }
 
     #[tokio::test]

@@ -13,6 +13,35 @@ describe("selectBackend", () => {
     expect(selectBackend([cdp, webext], "chrome")).toBe(webext);
   });
 
+  it("treats chrome as WebExtension-only by default", () => {
+    expect(() => selectBackend([cdp], "chrome")).toThrow(/no backend available for chrome/);
+  });
+
+  it("does not silently fall back to CDP for Chromium-family browser names", () => {
+    const chrome = webextension("/tmp/obu/chrome.sock", "20", "chrome");
+    expect(() => selectBackend([chrome, cdp], "edge")).toThrow(/no backend available for edge/);
+  });
+
+  it("allows an explicit WebExtension assertion that matches the default", () => {
+    const webext = webextension("/tmp/obu/chrome.sock", "10");
+    expect(selectBackend([cdp, webext], "chrome", [], { requireBackend: "webextension" })).toBe(webext);
+  });
+
+  it("keeps the CDP escape hatch visibly explicit", () => {
+    expect(selectBackend([cdp], "chrome", [], { backend: "cdp" })).toBe(cdp);
+    expect(selectBackend([cdp], "cdp")).toBe(cdp);
+  });
+
+  it("applies backend assertions before the dedicated CDP shortcut", () => {
+    expect(() => selectBackend([cdp], "cdp", [], { requireBackend: "webextension" })).toThrow(
+      /no backend available for cdp/,
+    );
+    expect(() => selectBackend([cdp], "cdp", [], { backend: "webextension" })).toThrow(
+      /no backend available for cdp/,
+    );
+    expect(selectBackend([cdp], "cdp", [], { backend: "cdp" })).toBe(cdp);
+  });
+
   it("chooses the newest same-family WebExtension descriptor", () => {
     const older = webextension("/tmp/obu/a.sock", "10");
     const newer = webextension("/tmp/obu/b.sock", "20");
@@ -45,9 +74,11 @@ describe("selectBackend", () => {
     },
   );
 
-  it("falls back to CDP when a requested Chromium-family WebExtension is absent", () => {
+  it("fails fast when a requested Chromium-family WebExtension is absent", () => {
     const chrome = webextension("/tmp/obu/chrome.sock", "20", "chrome");
-    expect(selectBackend([chrome, cdp], "edge")).toBe(cdp);
+    const fail = () => selectBackend([chrome, cdp], "edge");
+    expect(fail).toThrow(/no backend available for edge/);
+    expect(fail).toThrow(/Ignored available backends: webextension:chrome/);
   });
 
   it("includes backend discovery diagnostics when no backend matches", () => {
@@ -60,6 +91,22 @@ describe("selectBackend", () => {
       ]);
     expect(fail).toThrow(/Run obu verify for readiness/);
     expect(fail).toThrow(/Ignored backend descriptors: .*future\.json: unsupported schema_version 999/);
+  });
+
+  it("includes ignored available backend diagnostics and verify hints when CDP is present but not continuity-safe", () => {
+    try {
+      selectBackend([cdp], "chrome");
+      throw new Error("expected selectBackend to fail");
+    } catch (error) {
+      expect(error).toMatchObject({
+        data: expect.objectContaining({
+          code: "no_backend",
+          requested_backend: "chrome",
+          ignored_backends: expect.arrayContaining([expect.stringContaining("cdp:cdp")]),
+          verify_hint: expect.stringContaining("obu verify"),
+        }),
+      });
+    }
   });
 });
 

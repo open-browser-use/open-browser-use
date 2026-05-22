@@ -48,6 +48,12 @@
           <span id="status-dot" class="dot" aria-hidden="true"></span>
         </div>
         <p id="detail-text" class="detail"></p>
+        <div class="status-actions">
+          <button id="cleanup-button" class="cleanup-button" type="button" data-i18n="cleanupButton">
+            Clean up browser tabs
+          </button>
+          <p id="cleanup-result" class="detail" aria-live="polite"></p>
+        </div>
         <div class="signal-rail" aria-hidden="true">
           <span></span>
           <span></span>
@@ -62,7 +68,24 @@
             <p id="setup-label" class="label" data-i18n="setupLabel">Setup</p>
             <h2 data-i18n="agentHandoffTitle">Agent handoff</h2>
           </div>
-          <button id="copy-agent-button" class="setup-copy" type="button" data-i18n="copyForAgent">Copy for Agent</button>
+          <div class="setup-actions">
+            <button
+              id="prompt-toggle-button"
+              class="prompt-toggle icon-button"
+              type="button"
+              aria-label="Agent handoff"
+              aria-controls="agent-handoff"
+              aria-expanded="true"
+              title="Agent handoff"
+              data-i18n-aria-label="agentHandoffTitle"
+              data-i18n-title="agentHandoffTitle"
+            >
+              <svg aria-hidden="true" viewBox="0 0 24 24" width="15" height="15">
+                <path d="m6 9 6 6 6-6" />
+              </svg>
+            </button>
+            <button id="copy-agent-button" class="setup-copy" type="button" data-i18n="copyForAgent">Copy for Agent</button>
+          </div>
         </div>
         <div class="handoff-copy">
           <p id="setup-text" class="detail"></p>

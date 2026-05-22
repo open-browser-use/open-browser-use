@@ -76,6 +76,10 @@ pub fn unsupported_methods(kind: BackendKind) -> &'static [&'static str] {
             methods::TAB_CLIPBOARD_WRITE_TEXT,
             methods::TAB_CLIPBOARD_READ,
             methods::TAB_CLIPBOARD_WRITE,
+            methods::BROWSER_VIEWPORT_SET,
+            methods::BROWSER_VIEWPORT_RESET,
+            methods::BROWSER_VISIBILITY_SET,
+            methods::BROWSER_VISIBILITY_GET,
         ],
         BackendKind::WebExtension => &[],
     }
@@ -94,7 +98,7 @@ pub fn capabilities_for_kind(kind: BackendKind) -> Value {
         .copied()
         .filter(|method| !unsupported.contains(method))
         .collect::<Vec<_>>();
-    json!({
+    let mut capabilities = json!({
         "backend": kind.as_str(),
         "supported_methods": supported,
         "unsupported_methods": unsupported,
@@ -105,9 +109,22 @@ pub fn capabilities_for_kind(kind: BackendKind) -> Value {
             "tab_content_export": true,
             "executeCdp": true,
             "playwright_locator_read_all": true,
-            "dom_cua_get_visible_dom": true
+            "dom_cua_get_visible_dom": !unsupported.contains(&methods::DOM_CUA_GET_VISIBLE_DOM)
         },
-    })
+    });
+    if kind == BackendKind::WebExtension
+        && let Some(object) = capabilities.as_object_mut()
+    {
+        object.insert(
+            "viewport".into(),
+            json!({ "set": true, "reset": true, "scope": "active_session_tab" }),
+        );
+        object.insert(
+            "visibility".into(),
+            json!({ "set": true, "get": true, "scope": "active_session_window" }),
+        );
+    }
+    capabilities
 }
 
 /// JSON-RPC methods that are serviced by a browser backend.
@@ -211,6 +228,16 @@ pub trait BrowserBackend: Send + Sync {
         self.list_tabs().await
     }
 
+    /// Return the session-owned logical current tab, if any.
+    async fn current_tab_with_context(&self, _ctx: &BackendRequestContext) -> Result<Value> {
+        Ok(Value::Null)
+    }
+
+    /// Return the browser-visible selected tab, if safely representable.
+    async fn selected_tab_with_context(&self, ctx: &BackendRequestContext) -> Result<Value> {
+        self.current_tab_with_context(ctx).await
+    }
+
     /// List claimable user-visible tabs.
     async fn list_user_tabs_with_context(&self, ctx: &BackendRequestContext) -> Result<Value> {
         self.list_tabs_with_context(ctx).await
@@ -259,6 +286,34 @@ pub trait BrowserBackend: Send + Sync {
         _params: Value,
     ) -> Result<Value> {
         Ok(Value::Null)
+    }
+
+    /// Yield active input control to the human while preserving session state.
+    async fn yield_control_with_context(
+        &self,
+        _ctx: &BackendRequestContext,
+        _params: Value,
+    ) -> Result<Value> {
+        Ok(Value::Null)
+    }
+
+    /// Resume active input control for a previously yielded session.
+    async fn resume_control_with_context(
+        &self,
+        _ctx: &BackendRequestContext,
+        _params: Value,
+    ) -> Result<Value> {
+        Ok(Value::Null)
+    }
+
+    /// Browser-level capability method.
+    async fn browser_command_with_context(
+        &self,
+        _ctx: &BackendRequestContext,
+        method: &str,
+        _params: Value,
+    ) -> Result<Value> {
+        Err(HostError::NotImplemented(method.into()))
     }
 
     /// Coordinate-level CUA command.

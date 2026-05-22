@@ -1,4 +1,4 @@
-import { randomBytes } from "node:crypto";
+import { createHash, randomBytes } from "node:crypto";
 import { constants } from "node:fs";
 import { access, chmod, lstat, mkdir, readdir, readFile, stat, writeFile } from "node:fs/promises";
 import net from "node:net";
@@ -14,11 +14,13 @@ import { doctorBrowser } from "./doctor-browser.js";
 import { type ExtensionChannel, type ExtensionIdSource } from "./extension-channel.js";
 import { browserProfileRoot, nativeMessagingHostDir, type BrowserKind } from "./browser-paths.js";
 import { nativeHostWrapperContent, nativeHostWrapperPath, supportedNativeHostBrowsers } from "./native-host.js";
+import { PRODUCT_ERROR_SCHEMA } from "./product_errors.generated.js";
 import { executableExists, packageVersion, type RuntimeLayout } from "./runtime-layout.js";
 
 const HOST_NAME = "dev.obu.host";
 const SERVER_NAME = "open-browser-use";
 const DEFAULT_MCP_PROBE_TIMEOUT_MS = 8_000;
+const TRUSTED_AGENT_RUNTIME_FRESHNESS_MS = 60_000;
 
 export type VerificationTarget = "cli" | "agent_runtime";
 export type VerifyResult = "ready" | "needs_browser_popup" | "needs_repair" | "needs_manual_action";
@@ -106,9 +108,19 @@ export type VerifyCheck = {
   blocks?: Array<"cli" | "agent_runtime">;
   details?: Record<string, unknown>;
   actionCandidate?: ActionCandidate;
+  productError?: ProductErrorCode;
 };
 
 type VerifyNextAction = Omit<ActionCandidate, "result" | "priority">;
+
+type ProductErrorCode = (typeof PRODUCT_ERROR_SCHEMA)[number]["code"];
+
+type ProductErrorSummary = {
+  code: ProductErrorCode;
+  title: string;
+  summary: string;
+  nextAction: VerifyNextAction | null;
+};
 
 type ProfileCandidate = {
   path: string;
@@ -155,6 +167,7 @@ type AgentRuntimeStatus =
     provenance: "agent_runtime_hook";
     reason: string;
     hook: TrustedRuntimeHook & { trusted: true };
+    generatedAt?: string;
     targetBound?: boolean;
     challengeBound?: boolean;
   }
@@ -221,6 +234,7 @@ type McpRuntimeStatus = {
   backends: NormalizedBackend[];
   reason?: string;
   details?: Record<string, unknown>;
+  productError?: ProductErrorCode;
 };
 
 export type VerifyReport = {
@@ -238,6 +252,7 @@ export type VerifyReport = {
     cli: McpRuntimeStatus;
     agentRuntime: McpRuntimeStatus;
   };
+  productError: ProductErrorSummary | null;
   nextAction: VerifyNextAction | null;
   checks: VerifyCheck[];
 };
@@ -283,6 +298,7 @@ type RuntimeDescriptorProbe =
     reason: string;
     message: string;
     result: "needs_repair" | "needs_browser_popup";
+    productError: ProductErrorCode;
     details?: Record<string, unknown>;
   };
 
@@ -308,6 +324,7 @@ type TrustedRuntimeResult =
     reason: string;
     message: string;
     mcpRuntime: McpRuntimeStatus;
+    productError?: ProductErrorCode;
     details?: Record<string, unknown>;
   }
   | {
@@ -425,6 +442,7 @@ export async function verifyOpenBrowserUse(options: VerifyOptions): Promise<Veri
 
   const readiness = computeReadiness(verificationTarget, checks);
   const { result, nextAction } = selectResultAndAction(verificationTarget, readiness, checks);
+  const productError = selectProductError(result, nextAction, checks, descriptorProbe);
 
   const browser: VerifyBrowser = {
     kind: options.browser,
@@ -469,6 +487,7 @@ export async function verifyOpenBrowserUse(options: VerifyOptions): Promise<Veri
       cli: mcpCli,
       agentRuntime: agentRuntime.mcpRuntime,
     },
+    productError,
     nextAction,
     checks,
   };
@@ -496,6 +515,7 @@ export function formatVerifyReport(report: VerifyReport): string {
     const rerun = report.nextAction?.rerun;
     return [
       "Browser popup required.",
+      ...formatProductErrorLine(report.productError),
       "Local setup is correct, but no active WebExtension descriptor exists yet.",
       report.nextAction?.message ?? "Open the open-browser-use extension popup. Click Resume if enabled.",
       ...(rerun ? ["If it already shows Connected, wait briefly and rerun:", `  ${rerun}`] : []),
@@ -505,6 +525,7 @@ export function formatVerifyReport(report: VerifyReport): string {
   if (report.result === "needs_repair") {
     return [
       "Repair required.",
+      ...formatProductErrorLine(report.productError),
       report.nextAction?.message ?? "A deterministic open-browser-use repair is available.",
       ...formatVerifyNextActionDetails(report.nextAction),
     ].join("\n");
@@ -512,9 +533,15 @@ export function formatVerifyReport(report: VerifyReport): string {
 
   return [
     "Manual action required.",
+    ...formatProductErrorLine(report.productError),
     report.nextAction?.message ?? "The selected target needs manual action before open-browser-use can verify readiness.",
     ...formatVerifyNextActionDetails(report.nextAction),
   ].join("\n");
+}
+
+function formatProductErrorLine(productError: ProductErrorSummary | null): string[] {
+  if (!productError) return [];
+  return [`State: ${productError.title} (${productError.code}).`];
 }
 
 function formatVerifyNextActionDetails(action: VerifyNextAction | null): string[] {
@@ -558,6 +585,7 @@ async function checkCliInstall(options: VerifyOptions, target: VerifyTarget): Pr
       message,
       target,
       evidence: expectedEvidence("cli_version"),
+      productError: "setup_missing",
       actionCandidate: {
         result: "needs_manual_action",
         kind: "install_cli",
@@ -627,6 +655,7 @@ async function checkNativeHost(options: VerifyOptions, homeDir: string, target: 
         target,
         evidence: expectedEvidence("native_host_manifest"),
         details: { path: manifestPath },
+        productError: "native_host_broken",
         actionCandidate: repairAction(command, "Repair the native host manifest for the selected browser and extension."),
       }),
     };
@@ -676,6 +705,7 @@ async function checkNativeHost(options: VerifyOptions, homeDir: string, target: 
         target,
         evidence: expectedEvidence("native_host_manifest"),
         details: { path: manifestPath, expectedWrapperPath, issues },
+        productError: "native_host_broken",
         actionCandidate: repairAction(command, "Repair the native host manifest for the selected browser and extension."),
       }),
     };
@@ -732,6 +762,7 @@ async function resolveBrowserProfile(
           target,
           evidence: expectedEvidence("profile_discovery"),
           details: { root },
+          productError: "setup_missing",
           actionCandidate: selectProfileAction(options, null, "Select or create the browser profile to verify."),
         }),
       ],
@@ -764,6 +795,7 @@ async function resolveBrowserProfile(
           target,
           evidence: expectedEvidence("profile_discovery"),
           details: { root },
+          productError: "setup_missing",
           actionCandidate: selectProfileAction(options, null, "Select or create the browser profile to verify."),
         }),
       ],
@@ -806,6 +838,7 @@ async function resolveBrowserProfile(
           target,
           evidence: expectedEvidence("profile_discovery"),
           details: { candidates, suggestedPath: suggested },
+          productError: "setup_missing",
           actionCandidate: selectProfileAction(options, suggested, "Select the browser profile to verify before continuing."),
         }),
       ],
@@ -837,6 +870,7 @@ async function resolveBrowserProfile(
           target,
           evidence: expectedEvidence("profile_discovery"),
           details: { candidates, suggestedPath: suggested },
+          productError: "setup_missing",
           actionCandidate: selectProfileAction(options, suggested, "Choose the intended browser profile before installing the extension."),
         }),
       ],
@@ -903,6 +937,7 @@ async function resolveExplicitProfile(
           target: { ...target, profile: profilePath },
           evidence: expectedEvidence("profile_discovery"),
           details: { candidate },
+          productError: "setup_missing",
           actionCandidate: selectProfileAction(options, profilePath, "Select a readable browser profile to verify."),
         }),
       ],
@@ -1025,6 +1060,7 @@ function browserExtensionCheck(options: VerifyOptions, resolution: ProfileResolu
       message: `extension ${options.extensionId} is not installed in the resolved profile`,
       target: { ...target, profile },
       evidence: expectedEvidence("profile_preferences"),
+      productError: "setup_missing",
       actionCandidate: {
         result: "needs_manual_action",
         kind: "install_extension",
@@ -1044,6 +1080,7 @@ function browserExtensionCheck(options: VerifyOptions, resolution: ProfileResolu
       message: `extension ${options.extensionId} is installed but disabled in the resolved profile`,
       target: { ...target, profile },
       evidence: expectedEvidence("profile_preferences"),
+      productError: "setup_missing",
       actionCandidate: {
         result: "needs_manual_action",
         kind: "enable_extension",
@@ -1104,6 +1141,7 @@ function runtimeChecksFromProbe(
       target: runtimeTarget,
       evidence: runtimeEvidence("runtime_descriptor_probe"),
       details: { source: "runtime_descriptor_probe" },
+      productError: descriptor.productError,
       actionCandidate: candidate,
     }),
     failCheck({
@@ -1114,6 +1152,7 @@ function runtimeChecksFromProbe(
       target: runtimeTarget,
       evidence: runtimeEvidence("runtime_descriptor_probe"),
       actionCandidate: candidate,
+      productError: descriptor.productError,
       ...(descriptor.details ? { details: descriptor.details } : {}),
     }),
   ];
@@ -1132,6 +1171,7 @@ function normalizeAgentMcpCheck(
       message: "agent MCP configuration was not checked",
       target: { agent: options.agent },
       evidence: expectedEvidence("agent_config_read"),
+      productError: "setup_missing",
       actionCandidate: configureAgentAction(options, "Configure the selected agent with the open-browser-use MCP server."),
     });
   }
@@ -1173,6 +1213,7 @@ function normalizeAgentMcpCheck(
     message: doctorCheck.message,
     target: { agent: options.agent },
     evidence: expectedEvidence("agent_config_read"),
+    productError: "setup_missing",
     actionCandidate: conflict
       ? {
         result: "needs_manual_action",
@@ -1258,6 +1299,7 @@ function normalizeMcpRuntimeCheck(
     message: runtime.reason ?? "direct MCP probe did not find a usable backend",
     target,
     evidence: expectedEvidence("direct_mcp_probe"),
+    productError: productErrorForMcpRuntime(runtime, popupBoundary),
     actionCandidate: popupBoundary
       ? openPopupAction(options, target.profile ?? null)
       : repairAction(repairCommand(options), "Repair the open-browser-use MCP runtime and browser backend setup."),
@@ -1354,6 +1396,7 @@ async function evaluateAgentRuntime(
           source: "agent_runtime_status_file",
         },
         blocks: ["agent_runtime"],
+        productError: "setup_missing",
         actionCandidate: hook
           ? collectAgentRuntimeAction(options, hook, options.agentRuntimeChallengeOut, "Collect agent-runtime status through the trusted OBU hook.")
           : agentRuntimeHookUnavailableAction(options, "This build cannot prove readiness from inside the selected running agent process."),
@@ -1384,6 +1427,7 @@ async function evaluateAgentRuntime(
           source: "agent_runtime_hook_registry",
         },
         blocks: ["agent_runtime"],
+        productError: "setup_missing",
         actionCandidate: agentRuntimeHookUnavailableAction(options, "This build cannot prove readiness from inside the selected running agent process."),
       }),
     };
@@ -1414,13 +1458,17 @@ async function evaluateAgentRuntime(
         }),
       };
     }
-    return {
-      runtimeStatus: {
+    const runtimeStatus = isRecord(trustedResult.details?.runtimeStatus)
+      ? { ...trustedResult.details.runtimeStatus, reason: trustedResult.reason } as AgentRuntimeStatus
+      : {
         status: "not_checked",
         provenance: "not_applicable",
         reason: trustedResult.reason,
         ...(hook ? { trustedHook: hook } : {}),
-      },
+      } satisfies AgentRuntimeStatus;
+    const evidenceProvenance: EvidenceProvenance = runtimeStatus.provenance === "agent_runtime_hook" ? "agent_runtime_hook" : "not_applicable";
+    return {
+      runtimeStatus,
       mcpRuntime: trustedResult.status === "fail" ? trustedResult.mcpRuntime : notCheckedAgentRuntimeMcp(trustedResult.reason),
       check: failCheck({
         id: "agent-runtime-status",
@@ -1430,10 +1478,11 @@ async function evaluateAgentRuntime(
         target: { ...target, agent: options.agent },
         evidence: {
           scope: "agent_runtime",
-          provenance: "not_applicable",
-          source: "agent_runtime_hook_registry",
+          provenance: evidenceProvenance,
+          source: evidenceProvenance === "agent_runtime_hook" ? "agent_runtime_hook" : "agent_runtime_hook_registry",
         },
         blocks: ["agent_runtime"],
+        productError: trustedResult.status === "fail" ? trustedResult.productError ?? "setup_missing" : "setup_missing",
         actionCandidate: collectAgentRuntimeAction(options, hook, options.agentRuntimeChallengeJson, "Collect agent-runtime status through the trusted OBU hook."),
         ...(trustedResult.details ? { details: trustedResult.details } : {}),
       }),
@@ -1464,6 +1513,7 @@ async function evaluateAgentRuntime(
         source: "agent_runtime_hook_registry",
       },
       blocks: ["agent_runtime"],
+      productError: "setup_missing",
       actionCandidate: collectAgentRuntimeAction(options, hook, challengePath, "Collect agent-runtime status through the trusted OBU hook."),
     }),
   };
@@ -1482,6 +1532,7 @@ async function probeDirectMcpRuntime(options: VerifyOptions): Promise<McpRuntime
       backends: [],
       reason: `MCP command is not executable: ${options.server.command}`,
       details: { command: options.server.command, args: options.server.args },
+      productError: "setup_missing",
     };
   }
 
@@ -1495,6 +1546,7 @@ async function probeDirectMcpRuntime(options: VerifyOptions): Promise<McpRuntime
     const backends = rawBackends.map((backend) => normalizeBackend(backend, options));
     const usable = backends.filter((backend) => backend.extensionIdentity.verified);
     const sdkBootstrap = typeof rawStatus.sdk_bootstrap === "string" ? rawStatus.sdk_bootstrap : "missing";
+    const productError = productErrorFromBrowserStatus(rawStatus, sdkBootstrap, usable.length);
     return {
       source: "direct_mcp_probe",
       provenance: "expected_obu_invocation",
@@ -1506,8 +1558,10 @@ async function probeDirectMcpRuntime(options: VerifyOptions): Promise<McpRuntime
       backends: usable,
       ...(sdkBootstrap !== "available" ? { reason: `sdk bootstrap is ${sdkBootstrap}` } : usable.length === 0 ? { reason: "direct MCP probe found zero usable browser backends" } : {}),
       details: { raw: rawStatus },
+      ...(productError ? { productError } : {}),
     };
   } catch (error) {
+    const productError: ProductErrorCode = error instanceof McpProbeTimeoutError ? "timeout" : "transport_closed";
     return {
       source: "direct_mcp_probe",
       provenance: "expected_obu_invocation",
@@ -1519,8 +1573,30 @@ async function probeDirectMcpRuntime(options: VerifyOptions): Promise<McpRuntime
       backends: [],
       reason: `direct MCP probe failed: ${error instanceof Error ? error.message : String(error)}`,
       details: { command: options.server.command, args: options.server.args },
+      productError,
     };
   }
+}
+
+class McpProbeTimeoutError extends Error {
+  constructor(timeoutMs: number) {
+    super(`timed out after ${timeoutMs}ms`);
+    this.name = "McpProbeTimeoutError";
+  }
+}
+
+function productErrorFromBrowserStatus(
+  status: Record<string, any>,
+  sdkBootstrap: string,
+  backendCount: number,
+): ProductErrorCode | undefined {
+  const productError = isRecord(status.product_error) && typeof status.product_error.code === "string"
+    ? status.product_error.code
+    : undefined;
+  if (productError && isProductErrorCode(productError)) return productError;
+  if (sdkBootstrap !== "available") return "setup_missing";
+  if (backendCount === 0) return "no_backend";
+  return undefined;
 }
 
 function runMcpBrowserStatusProbe(
@@ -1536,7 +1612,7 @@ function runMcpBrowserStatusProbe(
     let settled = false;
     const pending = new Map<number, (value: RpcResponse) => void>();
     const timer = setTimeout(() => {
-      finish(new Error(`timed out after ${timeoutMs}ms`));
+      finish(new McpProbeTimeoutError(timeoutMs));
     }, Math.max(1, timeoutMs));
     const finish = (result: Error | Record<string, any>) => {
       if (settled) return;
@@ -1619,6 +1695,7 @@ async function probeRuntimeDescriptor(options: VerifyOptions, target: VerifyTarg
         reason: "descriptor_dir_missing",
         message: `runtime descriptor directory missing at ${descriptorDir}`,
         result: "needs_repair",
+        productError: "setup_missing",
         details: { path: descriptorDir },
       };
     }
@@ -1628,6 +1705,7 @@ async function probeRuntimeDescriptor(options: VerifyOptions, target: VerifyTarg
       reason: "descriptor_dir_unreadable",
       message: `runtime descriptor directory cannot be read: ${descriptorDir}`,
       result: "needs_repair",
+      productError: "setup_missing",
       details: { path: descriptorDir, error: dirStats.message },
     };
   }
@@ -1638,6 +1716,7 @@ async function probeRuntimeDescriptor(options: VerifyOptions, target: VerifyTarg
       reason: "descriptor_dir_invalid",
       message: `runtime descriptor path is not an owner-only directory: ${descriptorDir}`,
       result: "needs_repair",
+      productError: "setup_missing",
       details: { path: descriptorDir },
     };
   }
@@ -1649,6 +1728,7 @@ async function probeRuntimeDescriptor(options: VerifyOptions, target: VerifyTarg
       reason: "descriptor_dir_permissions",
       message: ownerIssue,
       result: "needs_repair",
+      productError: "setup_missing",
       details: { path: descriptorDir },
     };
   }
@@ -1661,6 +1741,7 @@ async function probeRuntimeDescriptor(options: VerifyOptions, target: VerifyTarg
       reason: "descriptor_missing",
       message: "no active WebExtension descriptor found",
       result: "needs_browser_popup",
+      productError: "browser_popup_boundary",
       details: {
         resumeRequired: true,
         resumeAction: "open the open-browser-use extension popup; click Resume if it is enabled, otherwise wait for Connected and rerun verify",
@@ -1668,33 +1749,36 @@ async function probeRuntimeDescriptor(options: VerifyOptions, target: VerifyTarg
     };
   }
 
-  const errors: string[] = [];
+  const errors: DescriptorProbeFailure[] = [];
   for (const file of files) {
     const descriptorPath = path.join(descriptorDir, file);
     const fileIssue = await validateDescriptorFile(descriptorPath);
     if (fileIssue) {
-      errors.push(`${file}: ${fileIssue}`);
+      errors.push(descriptorProbeFailure(`${file}: ${fileIssue}`, "stale_descriptor"));
       continue;
     }
     const descriptor = await readJson(descriptorPath).catch((error) => {
-      errors.push(`${file}: invalid json (${error})`);
+      errors.push(descriptorProbeFailure(`${file}: invalid json (${error})`, "stale_descriptor"));
       return undefined;
     });
     if (!isRecord(descriptor)) continue;
     const probe = await probeOneDescriptor(descriptor, descriptorPath, file, options);
     if (probe.status === "pass") return probe;
-    errors.push(`${file}: ${probe.message}`);
+    errors.push(descriptorProbeFailure(`${file}: ${probe.message}`, probe.productError, probe.result, probe.state));
   }
+  const productError = descriptorProductError(errors);
 
   return {
     status: "fail",
-    state: errors.some((error) => /extension id|browser kind|unknown/.test(error)) ? "invalid" : "stale",
+    state: productError === "stale_descriptor" ? "stale" : "invalid",
     reason: "descriptor_unusable",
-    message: errors.length > 0 ? errors.join("; ") : "no usable WebExtension descriptor found",
-    result: errors.some((error) => /extension id|browser kind|unknown/.test(error)) ? "needs_browser_popup" : "needs_repair",
+    message: errors.length > 0 ? errors.map((error) => error.message).join("; ") : "no usable WebExtension descriptor found",
+    result: productError === "stale_descriptor" ? "needs_repair" : "needs_browser_popup",
+    productError,
     details: {
       resumeRequired: true,
-      descriptorErrors: errors,
+      descriptorErrors: errors.map((error) => error.message),
+      descriptorProductErrors: errors.map((error) => error.productError),
     },
   };
 }
@@ -1705,14 +1789,14 @@ async function probeOneDescriptor(
   descriptorFile: string,
   options: VerifyOptions,
 ): Promise<RuntimeDescriptorProbe> {
-  if (descriptor.schema_version !== 1) return descriptorFailure("schema_version must be 1");
-  if (descriptor.type !== "webextension") return descriptorFailure("type must be webextension");
-  if (typeof descriptor.socketPath !== "string") return descriptorFailure("socketPath missing");
-  if (typeof descriptor.sdk_auth_token !== "string") return descriptorFailure("sdk_auth_token missing");
+  if (descriptor.schema_version !== 1) return descriptorFailure("schema_version must be 1", "stale_descriptor");
+  if (descriptor.type !== "webextension") return descriptorFailure("type must be webextension", "stale_descriptor");
+  if (typeof descriptor.socketPath !== "string") return descriptorFailure("socketPath missing", "stale_descriptor");
+  if (typeof descriptor.sdk_auth_token !== "string") return descriptorFailure("sdk_auth_token missing", "stale_descriptor");
   const processIssue = descriptorProcessIssue(descriptor);
-  if (processIssue) return descriptorFailure(processIssue);
+  if (processIssue) return descriptorFailure(processIssue, "stale_descriptor");
   const socketIssue = await validateDescriptorSocket(descriptor.socketPath);
-  if (socketIssue) return descriptorFailure(socketIssue);
+  if (socketIssue) return descriptorFailure(socketIssue, "stale_descriptor");
   try {
     const [auth, info] = await rpcSequenceOverUnixSocket(descriptor.socketPath, [
       {
@@ -1728,18 +1812,26 @@ async function probeOneDescriptor(
         params: {},
       },
     ]);
-    if (auth?.error) return descriptorFailure("auth rejected");
-    if (info?.error) return descriptorFailure(`getInfo failed: ${JSON.stringify(info.error)}`);
-    if (info?.result?.type !== "webextension") return descriptorFailure("getInfo type mismatch");
-    if (info?.result?.name !== descriptor.name) return descriptorFailure("getInfo name mismatch");
+    if (auth?.error) return descriptorFailure("auth rejected", "stale_descriptor");
+    if (info?.error) return descriptorFailure(`getInfo failed: ${JSON.stringify(info.error)}`, "stale_descriptor");
+    if (info?.result?.type !== "webextension") return descriptorFailure("getInfo type mismatch", "stale_descriptor");
+    if (info?.result?.name !== descriptor.name) return descriptorFailure("getInfo name mismatch", "stale_descriptor");
     const metadata = mergedDescriptorMetadata(descriptor, info.result);
     const browserKind = stringFromPath(metadata, ["browser_kind"]) ?? String(descriptor.name ?? "");
     const extensionId = stringFromPath(metadata, ["extension_id"]) ?? "unknown";
     if (browserKind !== runtimeBrowserKind(options.browser)) {
-      return descriptorFailure(`descriptor browser kind ${browserKind || "unknown"} does not match ${runtimeBrowserKind(options.browser)}`);
+      return descriptorFailure(
+        `descriptor browser kind ${browserKind || "unknown"} does not match ${runtimeBrowserKind(options.browser)}`,
+        "browser_popup_boundary",
+        "needs_browser_popup",
+      );
     }
     if (extensionId !== options.extensionId) {
-      return descriptorFailure(`descriptor extension id ${extensionId} does not match ${options.extensionId}`);
+      return descriptorFailure(
+        `descriptor extension id ${extensionId} does not match ${options.extensionId}`,
+        "extension_id_mismatch",
+        "needs_browser_popup",
+      );
     }
     const profilePath = descriptorProfilePath(metadata);
     return {
@@ -1761,17 +1853,45 @@ async function probeOneDescriptor(
       },
     };
   } catch (error) {
-    return descriptorFailure(`socket probe failed: ${String(error)}`);
+    return descriptorFailure(`socket probe failed: ${String(error)}`, "stale_descriptor");
   }
 }
 
-function descriptorFailure(message: string): RuntimeDescriptorProbe {
+type DescriptorProbeFailure = {
+  message: string;
+  productError: ProductErrorCode;
+  result: "needs_repair" | "needs_browser_popup";
+  state: ComponentState;
+};
+
+function descriptorProbeFailure(
+  message: string,
+  productError: ProductErrorCode,
+  result: "needs_repair" | "needs_browser_popup" = productError === "stale_descriptor" ? "needs_repair" : "needs_browser_popup",
+  state: ComponentState = productError === "stale_descriptor" ? "stale" : "invalid",
+): DescriptorProbeFailure {
+  return { message, productError, result, state };
+}
+
+function descriptorProductError(errors: DescriptorProbeFailure[]): ProductErrorCode {
+  return errors.find((error) => error.productError === "extension_id_mismatch")?.productError
+    ?? errors.find((error) => error.productError === "browser_popup_boundary")?.productError
+    ?? errors[0]?.productError
+    ?? "stale_descriptor";
+}
+
+function descriptorFailure(
+  message: string,
+  productError: ProductErrorCode,
+  result: "needs_repair" | "needs_browser_popup" = productError === "stale_descriptor" ? "needs_repair" : "needs_browser_popup",
+): RuntimeDescriptorProbe {
   return {
     status: "fail",
-    state: "invalid",
+    state: productError === "stale_descriptor" ? "stale" : "invalid",
     reason: "descriptor_invalid",
     message,
-    result: "needs_repair",
+    result,
+    productError,
   };
 }
 
@@ -1970,6 +2090,53 @@ function selectResultAndAction(
   return { result, nextAction };
 }
 
+function selectProductError(
+  result: VerifyResult,
+  nextAction: VerifyNextAction | null,
+  checks: VerifyCheck[],
+  descriptor: RuntimeDescriptorProbe,
+): ProductErrorSummary | null {
+  if (result === "ready") return null;
+  const failed = checks.filter((check) => check.status === "fail");
+  const explicit = failed.find((check) => nextAction && check.actionCandidate?.kind === nextAction.kind && check.productError)?.productError
+    ?? failed.find((check) => check.productError)?.productError;
+  if (explicit) return productErrorSummary(explicit, nextAction);
+  if (descriptor.status === "fail") return productErrorSummary(descriptor.productError, nextAction);
+  if (nextAction && ["install_cli", "configure_agent", "select_profile", "install_extension", "enable_extension"].includes(nextAction.kind)) {
+    return productErrorSummary("setup_missing", nextAction);
+  }
+  if (nextAction?.kind === "open_popup") {
+    return productErrorSummary("browser_popup_boundary", nextAction);
+  }
+  return productErrorSummary("setup_missing", nextAction);
+}
+
+function productErrorSummary(code: ProductErrorCode, nextAction: VerifyNextAction | null): ProductErrorSummary {
+  const descriptor = PRODUCT_ERROR_BY_CODE.get(code)!;
+  return {
+    code,
+    title: descriptor.title,
+    summary: descriptor.summary,
+    nextAction,
+  };
+}
+
+function productErrorForMcpRuntime(runtime: McpRuntimeStatus, popupBoundary: boolean): ProductErrorCode {
+  if (popupBoundary) return "browser_popup_boundary";
+  if (runtime.productError) return runtime.productError;
+  if (runtime.sdkBootstrap !== "available") return "setup_missing";
+  if ((runtime.backendCount ?? 0) === 0) return "no_backend";
+  return "transport_closed";
+}
+
+const PRODUCT_ERROR_BY_CODE = new Map<ProductErrorCode, (typeof PRODUCT_ERROR_SCHEMA)[number]>(
+  PRODUCT_ERROR_SCHEMA.map((entry) => [entry.code, entry]),
+);
+
+function isProductErrorCode(code: string): code is ProductErrorCode {
+  return PRODUCT_ERROR_BY_CODE.has(code as ProductErrorCode);
+}
+
 function agentMcpSummary(
   options: VerifyOptions,
   doctorCheck: AgentDoctorCheck | undefined,
@@ -2105,20 +2272,31 @@ async function readTrustedRuntimeHookResult(options: VerifyOptions, hook: Truste
   }
   const challenge = await readAgentRuntimeChallenge(options, hook);
   if (challenge.status === "fail") return challenge;
+  const resultFile = trustedRuntimeHookResultFile(options.layout.runtimeDir, options.agent, hook, challenge.nonce);
+  const payload = await readJson(resultFile).catch(() => undefined);
+  if (payload !== undefined) {
+    return validateTrustedRuntimeHookPayload(options, hook, challenge, payload, resultFile);
+  }
 
   return {
     status: "pending",
     reason: "agent_runtime_challenge_pending",
     message: "agent-runtime challenge is valid, but no trusted hook transport has delivered status for this CLI process",
-    details: { challengePath: options.agentRuntimeChallengeJson, trustedHook: hook },
+    details: { challengePath: options.agentRuntimeChallengeJson, resultFile, trustedHook: hook },
   };
 }
+
+type ValidAgentRuntimeChallenge = {
+  status: "pass";
+  nonce: string;
+  issuedAt?: string;
+};
 
 async function readAgentRuntimeChallenge(
   options: VerifyOptions,
   hook: TrustedRuntimeHook,
 ): Promise<
-  | { status: "pass"; nonce: string; issuedAt?: string }
+  | ValidAgentRuntimeChallenge
   | Extract<TrustedRuntimeResult, { status: "fail" }>
 > {
   const challengePath = options.agentRuntimeChallengeJson!;
@@ -2165,6 +2343,188 @@ async function readAgentRuntimeChallenge(
   };
 }
 
+function validateTrustedRuntimeHookPayload(
+  options: VerifyOptions,
+  hook: TrustedRuntimeHook,
+  challenge: ValidAgentRuntimeChallenge,
+  payload: unknown,
+  resultFile: string,
+): TrustedRuntimeResult {
+  if (!isRecord(payload)) {
+    return trustedRuntimePayloadFailure(options, hook, "agent_runtime_status_invalid", "trusted agent-runtime hook result JSON is not an object", {
+      resultFile,
+      challengeBound: false,
+      targetBound: false,
+    });
+  }
+
+  const envelopeHook = isRecord(payload.hook) ? payload.hook : {};
+  if (envelopeHook.id !== hook.id || envelopeHook.transport !== hook.transport) {
+    return trustedRuntimePayloadFailure(options, hook, "agent_runtime_hook_mismatch", "trusted agent-runtime hook result came from a different hook", {
+      resultFile,
+      hook: envelopeHook,
+      challengeBound: false,
+      targetBound: false,
+    });
+  }
+
+  const envelopeChallenge = isRecord(payload.challenge) ? payload.challenge : {};
+  const challengeBound = envelopeChallenge.nonce === challenge.nonce;
+  const targetBound = targetMatches(payload.target, options);
+  const generatedAt = typeof payload.generatedAt === "string" ? payload.generatedAt : undefined;
+  const generatedAtMs = generatedAt ? Date.parse(generatedAt) : NaN;
+  const ageMs = Number.isFinite(generatedAtMs) ? Date.now() - generatedAtMs : NaN;
+  const runtimeStatus = hookStatusBase(hook, generatedAt, targetBound, challengeBound);
+
+  if (payload.schemaVersion !== 1 || payload.agentId !== options.agent || payload.mcpServerName !== SERVER_NAME || payload.provenance !== "agent_runtime_hook") {
+    return trustedRuntimePayloadFailure(options, hook, "agent_runtime_status_invalid", "trusted agent-runtime hook result envelope is invalid", {
+      resultFile,
+      challengeBound,
+      targetBound,
+      runtimeStatus,
+    });
+  }
+  if (!challengeBound) {
+    return trustedRuntimePayloadFailure(options, hook, "challenge_mismatch", "trusted agent-runtime hook result does not match this challenge", {
+      resultFile,
+      challengeBound,
+      targetBound,
+      runtimeStatus,
+    });
+  }
+  if (!targetBound) {
+    return trustedRuntimePayloadFailure(options, hook, "target_mismatch", "trusted agent-runtime hook result does not match this verification target", {
+      resultFile,
+      challengeBound,
+      targetBound,
+      runtimeStatus,
+    });
+  }
+  if (!generatedAt || !Number.isFinite(generatedAtMs)) {
+    return trustedRuntimePayloadFailure(options, hook, "generated_at_invalid", "trusted agent-runtime hook result has no valid generatedAt timestamp", {
+      resultFile,
+      challengeBound,
+      targetBound,
+      runtimeStatus,
+    });
+  }
+  if (ageMs < 0 || ageMs > TRUSTED_AGENT_RUNTIME_FRESHNESS_MS) {
+    return trustedRuntimePayloadFailure(options, hook, "stale_status", "trusted agent-runtime hook result is stale", {
+      resultFile,
+      challengeBound,
+      targetBound,
+      ageMs,
+      freshnessMs: TRUSTED_AGENT_RUNTIME_FRESHNESS_MS,
+      runtimeStatus,
+    });
+  }
+
+  const rawStatus = isRecord(payload.status) ? payload.status : {};
+  const rawBackends = Array.isArray(rawStatus.backends) ? rawStatus.backends : [];
+  const backends = rawBackends.map((backend) => normalizeBackend(backend, options));
+  const usable = backends.filter((backend) => backend.extensionIdentity.verified);
+  const sdkBootstrap = typeof rawStatus.sdk_bootstrap === "string" ? rawStatus.sdk_bootstrap : "missing";
+  const productError = productErrorFromBrowserStatus(rawStatus, sdkBootstrap, usable.length);
+  const mcpRuntime: McpRuntimeStatus = {
+    source: "agent_runtime",
+    provenance: "agent_runtime_hook",
+    probeCommandSource: "agent_runtime_hook",
+    mcpConfigured: true,
+    mcpStarts: null,
+    sdkBootstrap,
+    backendCount: usable.length,
+    backends: usable,
+    ...(sdkBootstrap !== "available" ? { reason: `sdk bootstrap is ${sdkBootstrap}` } : usable.length === 0 ? { reason: "trusted agent-runtime hook found zero usable browser backends" } : {}),
+    details: { raw: rawStatus, resultFile, trustedHook: hook },
+    ...(productError ? { productError } : {}),
+  };
+
+  if (sdkBootstrap !== "available") {
+    return {
+    status: "fail",
+    reason: "sdk_bootstrap_missing",
+    message: `trusted agent-runtime hook reported sdk bootstrap is ${sdkBootstrap}`,
+    mcpRuntime,
+    productError: "setup_missing",
+    details: { resultFile, runtimeStatus, raw: rawStatus },
+  };
+  }
+  if (usable.length === 0) {
+    return {
+      status: "fail",
+    reason: "zero_backends",
+    message: "trusted agent-runtime hook reported zero usable browser backends",
+    mcpRuntime,
+    productError: "no_backend",
+    details: { resultFile, runtimeStatus, raw: rawStatus },
+  };
+  }
+
+  return {
+    status: "pass",
+    runtimeStatus: {
+      status: "pass",
+      provenance: "agent_runtime_hook",
+      hook: { ...hook, trusted: true },
+      generatedAt,
+      targetBound: true,
+      challengeBound: true,
+    },
+    mcpRuntime,
+    details: { resultFile, generatedAt, trustedHook: hook },
+  };
+}
+
+function hookStatusBase(
+  hook: TrustedRuntimeHook,
+  generatedAt: string | undefined,
+  targetBound: boolean,
+  challengeBound: boolean,
+): Omit<Extract<AgentRuntimeStatus, { status: "fail" }>, "reason"> {
+  return {
+    status: "fail",
+    provenance: "agent_runtime_hook",
+    hook: { ...hook, trusted: true },
+    ...(generatedAt ? { generatedAt } : {}),
+    targetBound,
+    challengeBound,
+  };
+}
+
+function trustedRuntimePayloadFailure(
+  options: VerifyOptions,
+  hook: TrustedRuntimeHook,
+  reason: string,
+  message: string,
+  details: Record<string, unknown>,
+): Extract<TrustedRuntimeResult, { status: "fail" }> {
+  const runtimeStatus = isRecord(details.runtimeStatus)
+    ? details.runtimeStatus as Omit<Extract<AgentRuntimeStatus, { status: "fail" }>, "reason">
+    : hookStatusBase(
+      hook,
+      typeof details.generatedAt === "string" ? details.generatedAt : undefined,
+      details.targetBound === true,
+      details.challengeBound === true,
+    );
+  return {
+    status: "fail",
+    reason,
+    message,
+    mcpRuntime: notCheckedAgentRuntimeMcp(reason),
+    details: {
+      ...details,
+      runtimeStatus: { ...runtimeStatus, reason },
+      target: {
+        agent: options.agent,
+        browser: options.browser,
+        channel: options.channel,
+        extensionId: options.extensionId,
+        ...(options.profile ? { profile: options.profile } : {}),
+      },
+    },
+  };
+}
+
 function trustedHookFailure(reason: string, message: string, details?: Record<string, unknown>): Extract<TrustedRuntimeResult, { status: "fail" }> {
   return {
     status: "fail",
@@ -2173,6 +2533,11 @@ function trustedHookFailure(reason: string, message: string, details?: Record<st
     mcpRuntime: notCheckedAgentRuntimeMcp(reason),
     ...(details ? { details } : {}),
   };
+}
+
+function trustedRuntimeHookResultFile(runtimeDir: string, agent: AgentId, hook: TrustedRuntimeHook, nonce: string): string {
+  const digest = createHash("sha256").update(nonce).digest("hex");
+  return path.join(runtimeDir, "agent-runtime-hooks", agent, hook.id, `${digest}.json`);
 }
 
 function targetMatches(value: unknown, options: VerifyOptions): boolean {
@@ -2188,8 +2553,15 @@ type TrustedRuntimeHook = {
   transport: "agent_connector" | "agent_owned_ipc" | "in_process_adapter";
 };
 
-function trustedRuntimeHook(_agent: AgentId): TrustedRuntimeHook | undefined {
-  return undefined;
+const TRUSTED_RUNTIME_HOOKS: Partial<Record<AgentId, TrustedRuntimeHook>> = {
+  "codex-cli": {
+    id: "codex-cli-runtime-status",
+    transport: "agent_owned_ipc",
+  },
+};
+
+function trustedRuntimeHook(agent: AgentId): TrustedRuntimeHook | undefined {
+  return TRUSTED_RUNTIME_HOOKS[agent];
 }
 
 function passCheck(input: {
@@ -2263,6 +2635,7 @@ function failCheck(input: {
   details?: Record<string, unknown>;
   blocks?: Array<"cli" | "agent_runtime">;
   actionCandidate?: ActionCandidate;
+  productError?: ProductErrorCode;
 }): VerifyCheck {
   return {
     id: input.id,
@@ -2275,6 +2648,7 @@ function failCheck(input: {
     blocks: input.blocks ?? ["cli"],
     ...(input.details && Object.keys(input.details).length > 0 ? { details: input.details } : {}),
     ...(input.actionCandidate ? { actionCandidate: input.actionCandidate } : {}),
+    ...(input.productError ? { productError: input.productError } : {}),
   };
 }
 
@@ -2525,7 +2899,7 @@ function encodeFrame(payload: Record<string, unknown>): Buffer {
 function mergedDescriptorMetadata(descriptor: Record<string, unknown>, infoResult: Record<string, any>): Record<string, unknown> {
   const descriptorMetadata = isRecord(descriptor.metadata) ? descriptor.metadata : {};
   const infoBackend = isRecord(infoResult.metadata?.backend) ? infoResult.metadata.backend : {};
-  return { ...infoBackend, ...descriptorMetadata };
+  return { ...descriptorMetadata, ...infoBackend };
 }
 
 function descriptorProfilePath(metadata: Record<string, unknown>): string | undefined {

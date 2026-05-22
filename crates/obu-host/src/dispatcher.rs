@@ -1,20 +1,25 @@
 //! JSON-RPC dispatcher for one authenticated SDK peer.
 
+use std::collections::HashMap;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use bytes::Bytes;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::io::{AsyncRead, AsyncWrite};
-use tokio::sync::{Semaphore, mpsc};
+use tokio::sync::{Mutex, Semaphore, mpsc};
 use tokio_util::codec::Framed;
 use tokio_util::sync::CancellationToken;
+use url::Url;
 
 use obu_wire::{
     ErrorCode, ErrorObject, FrameCodec, Request, Response, RpcMessage,
     envelope::Id,
-    error::{ERR_CDP_FAILURE, ERR_OVERLOADED, ERR_PAGE_CLOSED, ERR_TAB_NOT_ATTACHED},
+    error::{
+        ERR_CDP_FAILURE, ERR_DIALOG_REQUIRES_DECISION, ERR_OVERLOADED, ERR_PAGE_CLOSED,
+        ERR_TAB_NOT_ATTACHED,
+    },
     error::{ERR_IO, ERR_NO_BACKEND, ERR_NOT_IMPLEMENTED, ERR_PEER_AUTH, ERR_PROTOCOL},
 };
 
@@ -39,6 +44,8 @@ struct DispatcherInner {
     host_version: String,
     backend: Arc<dyn BrowserBackend>,
     policy: Arc<dyn HostPolicy>,
+    session_operation_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
+    tab_operation_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
 
 impl Dispatcher {
@@ -49,6 +56,8 @@ impl Dispatcher {
                 host_version,
                 backend,
                 policy: Arc::new(PermissivePolicy),
+                session_operation_locks: Mutex::new(HashMap::new()),
+                tab_operation_locks: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -64,6 +73,8 @@ impl Dispatcher {
                 host_version,
                 backend,
                 policy,
+                session_operation_locks: Mutex::new(HashMap::new()),
+                tab_operation_locks: Mutex::new(HashMap::new()),
             }),
         }
     }
@@ -258,18 +269,29 @@ impl Dispatcher {
     async fn route_request(&self, req: Request) -> Response {
         let ctx = request_context(&req.params);
         if !self.inner.backend.supports_method(&req.method) {
+            let backend = self.inner.backend.kind().as_str();
             return Response::err(
                 req.id,
-                ErrorObject::new(
-                    ErrorCode::Server(ERR_NOT_IMPLEMENTED),
-                    format!(
-                        "backend {} does not support method {}",
-                        self.inner.backend.kind().as_str(),
-                        req.method
-                    ),
-                ),
+                unsupported_backend_capability_error(backend, &req.method),
             );
         }
+        let session_lock = match session_mutation_key(&req.method, &ctx) {
+            Some(session_id) => Some(self.session_operation_lock(&session_id).await),
+            None => None,
+        };
+        let _session_guard = match &session_lock {
+            Some(lock) => Some(lock.lock().await),
+            None => None,
+        };
+        if let Some(tab_id) = tab_mutation_key(&req.method, &req.params) {
+            let lock = self.tab_operation_lock(&tab_id).await;
+            let _guard = lock.lock().await;
+            return self.route_supported_request(req, ctx).await;
+        }
+        self.route_supported_request(req, ctx).await
+    }
+
+    async fn route_supported_request(&self, req: Request, ctx: BackendRequestContext) -> Response {
         if let Err(error) = self.enforce_policy(&ctx, &req).await {
             return Response::err(req.id, error);
         }
@@ -314,6 +336,18 @@ impl Dispatcher {
                 .list_tabs_with_context(&ctx)
                 .await
                 .map_err(host_err_to_rpc),
+            methods::GET_CURRENT_TAB => self
+                .inner
+                .backend
+                .current_tab_with_context(&ctx)
+                .await
+                .map_err(host_err_to_rpc),
+            methods::GET_SELECTED_TAB => self
+                .inner
+                .backend
+                .selected_tab_with_context(&ctx)
+                .await
+                .map_err(host_err_to_rpc),
             methods::GET_USER_TABS => self
                 .inner
                 .backend
@@ -347,6 +381,18 @@ impl Dispatcher {
                 .turn_ended_with_context(&ctx, req.params)
                 .await
                 .map_err(host_err_to_rpc),
+            methods::YIELD_CONTROL => self
+                .inner
+                .backend
+                .yield_control_with_context(&ctx, req.params)
+                .await
+                .map_err(host_err_to_rpc),
+            methods::RESUME_CONTROL => self
+                .inner
+                .backend
+                .resume_control_with_context(&ctx, req.params)
+                .await
+                .map_err(host_err_to_rpc),
             methods::CLEAR_LIFECYCLE_DIAGNOSTICS => self
                 .inner
                 .backend
@@ -356,6 +402,16 @@ impl Dispatcher {
                 .inner
                 .backend
                 .get_user_history_with_context(&ctx, req.params)
+                .await
+                .map_err(host_err_to_rpc),
+            methods::BROWSER_TABS_CONTENT => self.fetch_browser_tabs_content(&req.params).await,
+            methods::BROWSER_VIEWPORT_SET
+            | methods::BROWSER_VIEWPORT_RESET
+            | methods::BROWSER_VISIBILITY_SET
+            | methods::BROWSER_VISIBILITY_GET => self
+                .inner
+                .backend
+                .browser_command_with_context(&ctx, &req.method, req.params)
                 .await
                 .map_err(host_err_to_rpc),
             methods::EXECUTE_CDP => {
@@ -469,6 +525,22 @@ impl Dispatcher {
         }
     }
 
+    async fn tab_operation_lock(&self, tab_id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.inner.tab_operation_locks.lock().await;
+        locks
+            .entry(tab_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
+    async fn session_operation_lock(&self, session_id: &str) -> Arc<Mutex<()>> {
+        let mut locks = self.inner.session_operation_locks.lock().await;
+        locks
+            .entry(session_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    }
+
     async fn enforce_policy(
         &self,
         ctx: &BackendRequestContext,
@@ -566,17 +638,244 @@ impl Dispatcher {
     }
 
     fn get_info(&self) -> Value {
+        let backend_metadata = self.inner.backend.metadata();
+        let mut metadata = json!({
+            "host_version": self.inner.host_version,
+            "backend": backend_metadata,
+            "diagnostics": self.inner.backend.diagnostics(),
+        });
+        expose_public_profile_metadata(&mut metadata);
         json!({
             "type": self.inner.backend.kind().as_str(),
             "name": self.inner.backend.id(),
-            "metadata": {
-                "host_version": self.inner.host_version,
-                "backend": self.inner.backend.metadata(),
-                "diagnostics": self.inner.backend.diagnostics(),
-            },
+            "metadata": metadata,
             "capabilities": self.inner.backend.capabilities(),
         })
     }
+
+    async fn fetch_browser_tabs_content(
+        &self,
+        params: &Value,
+    ) -> std::result::Result<Value, ErrorObject> {
+        let urls = params_urls(params)?;
+        let content_type = params
+            .get("contentType")
+            .or_else(|| params.get("content_type"))
+            .and_then(Value::as_str)
+            .unwrap_or("text");
+        if !matches!(content_type, "text" | "html" | "json") {
+            return Ok(json!({
+                "results": urls.into_iter().map(|url| json!({
+                    "url": url,
+                    "status": "error",
+                    "errorCode": "unsupported_content_type",
+                    "errorMessage": format!("unsupported contentType: {content_type}")
+                })).collect::<Vec<_>>()
+            }));
+        }
+
+        let timeout = params
+            .get("timeout")
+            .and_then(Value::as_u64)
+            .map(Duration::from_millis)
+            .unwrap_or_else(|| Duration::from_secs(30));
+        let client = reqwest::Client::builder()
+            .redirect(reqwest::redirect::Policy::none())
+            .timeout(timeout)
+            .build()
+            .map_err(|error| {
+                ErrorObject::new(
+                    ErrorCode::InternalError,
+                    format!("failed to build content HTTP client: {error}"),
+                )
+            })?;
+        let policy_ctx = PolicyContext {
+            command: methods::BROWSER_TABS_CONTENT,
+            kind: MethodPolicyKind::TargetUrl,
+            tab_id: None,
+            params,
+        };
+        let mut results = Vec::with_capacity(urls.len());
+        for url in urls {
+            results.push(
+                fetch_one_content_url(&client, &*self.inner.policy, &policy_ctx, url, timeout)
+                    .await,
+            );
+        }
+        Ok(json!({ "results": results }))
+    }
+}
+
+async fn fetch_one_content_url(
+    client: &reqwest::Client,
+    policy: &dyn HostPolicy,
+    policy_ctx: &PolicyContext<'_>,
+    original_url: String,
+    timeout: Duration,
+) -> Value {
+    let mut current = match Url::parse(&original_url) {
+        Ok(url) if matches!(url.scheme(), "http" | "https") => url,
+        Ok(_) => {
+            return json!({
+                "url": original_url,
+                "status": "error",
+                "errorCode": "unsupported_url_scheme",
+                "errorMessage": "only http and https URLs are supported"
+            });
+        }
+        Err(error) => {
+            return json!({
+                "url": original_url,
+                "status": "error",
+                "errorCode": "invalid_url",
+                "errorMessage": error.to_string()
+            });
+        }
+    };
+    let mut redirects = Vec::new();
+    let deadline = Instant::now() + timeout;
+    if let Err(error) = policy.check_navigation(current.as_str(), policy_ctx) {
+        return json!({
+            "url": original_url,
+            "finalUrl": current.as_str(),
+            "status": "error",
+            "redirects": redirects,
+            "errorCode": "navigation_disallowed",
+            "errorMessage": error.message
+        });
+    }
+    for _ in 0..10 {
+        let Some(remaining) = remaining_content_fetch_budget(deadline) else {
+            return content_fetch_timeout_error(&original_url, &current, &redirects);
+        };
+        let response = match client.get(current.clone()).timeout(remaining).send().await {
+            Ok(response) => response,
+            Err(error) => {
+                let message = if error.is_timeout() {
+                    "per-URL timeout exceeded".to_string()
+                } else {
+                    error.to_string()
+                };
+                return json!({
+                    "url": original_url,
+                    "finalUrl": current.as_str(),
+                    "status": "error",
+                    "redirects": redirects,
+                    "errorCode": "fetch_failed",
+                    "errorMessage": message
+                });
+            }
+        };
+        let status = response.status();
+        if status.is_redirection() {
+            let Some(location) = response.headers().get(reqwest::header::LOCATION) else {
+                return json!({
+                    "url": original_url,
+                    "finalUrl": current.as_str(),
+                    "status": "error",
+                    "redirects": redirects,
+                    "httpStatus": status.as_u16(),
+                    "errorCode": "redirect_missing_location",
+                    "errorMessage": "redirect response did not include Location"
+                });
+            };
+            let Ok(location) = location.to_str() else {
+                return json!({
+                    "url": original_url,
+                    "finalUrl": current.as_str(),
+                    "status": "error",
+                    "redirects": redirects,
+                    "httpStatus": status.as_u16(),
+                    "errorCode": "invalid_redirect",
+                    "errorMessage": "redirect Location is not valid UTF-8"
+                });
+            };
+            let next = match current.join(location) {
+                Ok(url) => url,
+                Err(error) => {
+                    return json!({
+                        "url": original_url,
+                        "finalUrl": current.as_str(),
+                        "status": "error",
+                        "redirects": redirects,
+                        "httpStatus": status.as_u16(),
+                        "errorCode": "invalid_redirect",
+                        "errorMessage": error.to_string()
+                    });
+                }
+            };
+            if let Err(error) = policy.check_navigation(next.as_str(), policy_ctx) {
+                return json!({
+                    "url": original_url,
+                    "finalUrl": current.as_str(),
+                    "status": "error",
+                    "redirects": redirects,
+                    "httpStatus": status.as_u16(),
+                    "errorCode": "navigation_disallowed",
+                    "errorMessage": error.message
+                });
+            }
+            redirects.push(next.as_str().to_string());
+            current = next;
+            continue;
+        }
+        let http_status = status.as_u16();
+        let content_type = response
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_string);
+        let Some(remaining) = remaining_content_fetch_budget(deadline) else {
+            return content_fetch_timeout_error(&original_url, &current, &redirects);
+        };
+        return match tokio::time::timeout(remaining, response.text()).await {
+            Ok(Ok(text)) => json!({
+                "url": original_url,
+                "finalUrl": current.as_str(),
+                "status": "ok",
+                "redirects": redirects,
+                "httpStatus": http_status,
+                "contentType": content_type,
+                "text": text
+            }),
+            Ok(Err(error)) => json!({
+                "url": original_url,
+                "finalUrl": current.as_str(),
+                "status": "error",
+                "redirects": redirects,
+                "httpStatus": http_status,
+                "contentType": content_type,
+                "errorCode": "read_failed",
+                "errorMessage": error.to_string()
+            }),
+            Err(_) => content_fetch_timeout_error(&original_url, &current, &redirects),
+        };
+    }
+    json!({
+        "url": original_url,
+        "finalUrl": current.as_str(),
+        "status": "error",
+        "redirects": redirects,
+        "errorCode": "too_many_redirects",
+        "errorMessage": "redirect limit exceeded"
+    })
+}
+
+fn remaining_content_fetch_budget(deadline: Instant) -> Option<Duration> {
+    deadline
+        .checked_duration_since(Instant::now())
+        .filter(|remaining| !remaining.is_zero())
+}
+
+fn content_fetch_timeout_error(original_url: &str, current: &Url, redirects: &[String]) -> Value {
+    json!({
+        "url": original_url,
+        "finalUrl": current.as_str(),
+        "status": "error",
+        "redirects": redirects,
+        "errorCode": "fetch_failed",
+        "errorMessage": "per-URL timeout exceeded"
+    })
 }
 
 fn encode_response(response: &Response) -> Result<Bytes> {
@@ -587,6 +886,52 @@ fn encode_response(response: &Response) -> Result<Bytes> {
 
 fn params_str(value: &Value, key: &str) -> Option<String> {
     value.get(key).and_then(Value::as_str).map(String::from)
+}
+
+fn params_urls(value: &Value) -> std::result::Result<Vec<String>, ErrorObject> {
+    let Some(urls) = value.get("urls").and_then(Value::as_array) else {
+        return Err(invalid_params("missing urls array"));
+    };
+    if urls.is_empty() {
+        return Err(invalid_params("urls array must not be empty"));
+    }
+    urls.iter()
+        .map(|value| {
+            value
+                .as_str()
+                .filter(|url| !url.is_empty())
+                .map(str::to_string)
+                .ok_or_else(|| invalid_params("urls entries must be non-empty strings"))
+        })
+        .collect()
+}
+
+fn expose_public_profile_metadata(metadata: &mut Value) {
+    let backend = metadata.get("backend").cloned().unwrap_or(Value::Null);
+    let Some(object) = metadata.as_object_mut() else {
+        return;
+    };
+    for key in [
+        "profileIdHash",
+        "profileIsLastUsed",
+        "profileOrdering",
+        "profileRuntimeBinding",
+    ] {
+        if let Some(value) = backend.get(key).filter(|value| !value.is_null()) {
+            object.insert(key.to_string(), value.clone());
+        }
+    }
+    if let Some(value) = backend
+        .pointer("/profile_metadata/diagnostics/profilePathRedacted")
+        .cloned()
+    {
+        let diagnostics = object
+            .entry("diagnostics".to_string())
+            .or_insert_with(|| json!({}));
+        if let Some(diagnostics) = diagnostics.as_object_mut() {
+            diagnostics.insert("profilePathRedacted".to_string(), value);
+        }
+    }
 }
 
 fn params_tab_id(value: &Value) -> Option<String> {
@@ -628,6 +973,67 @@ fn cdp_tab_id(value: &Value) -> std::result::Result<String, ErrorObject> {
     params_tab_id(value).ok_or_else(|| invalid_params("missing tab_id or target.tabId"))
 }
 
+fn tab_mutation_key(method: &str, params: &Value) -> Option<String> {
+    if !is_tab_mutating_method(method) {
+        return None;
+    }
+    params_tab_id(params)
+}
+
+fn session_mutation_key(method: &str, ctx: &BackendRequestContext) -> Option<String> {
+    if !is_session_mutating_method(method) {
+        return None;
+    }
+    ctx.session_id.clone()
+}
+
+fn is_session_mutating_method(method: &str) -> bool {
+    method == methods::CREATE_TAB
+        || method == methods::FINALIZE_TABS
+        || is_tab_mutating_method(method)
+}
+
+fn is_tab_mutating_method(method: &str) -> bool {
+    matches!(
+        method,
+        methods::ATTACH
+            | methods::DETACH
+            | methods::CLAIM_USER_TAB
+            | methods::EXECUTE_CDP
+            | methods::MOVE_MOUSE
+            | methods::CUA_CLICK
+            | methods::CUA_DBLCLICK
+            | methods::CUA_SCROLL
+            | methods::CUA_TYPE
+            | methods::CUA_KEYPRESS
+            | methods::CUA_DRAG
+            | methods::CUA_MOVE
+            | methods::CUA_DOWNLOAD_MEDIA
+            | methods::DOM_CUA_CLICK
+            | methods::DOM_CUA_DOUBLE_CLICK
+            | methods::DOM_CUA_SCROLL
+            | methods::DOM_CUA_TYPE
+            | methods::DOM_CUA_KEYPRESS
+            | methods::DOM_CUA_DOWNLOAD_MEDIA
+            | methods::PLAYWRIGHT_LOCATOR_CLICK
+            | methods::PLAYWRIGHT_LOCATOR_DBLCLICK
+            | methods::PLAYWRIGHT_LOCATOR_DOWNLOAD_MEDIA
+            | methods::PLAYWRIGHT_LOCATOR_FILL
+            | methods::PLAYWRIGHT_LOCATOR_PRESS
+            | methods::PLAYWRIGHT_LOCATOR_SELECT_OPTION
+            | methods::PLAYWRIGHT_LOCATOR_SET_CHECKED
+            | methods::PLAYWRIGHT_LOCATOR_HOVER
+            | methods::PLAYWRIGHT_FILE_CHOOSER_SET_FILES
+            | methods::TAB_GOTO
+            | methods::TAB_RELOAD
+            | methods::TAB_BACK
+            | methods::TAB_FORWARD
+            | methods::TAB_CLOSE
+            | methods::TAB_CLIPBOARD_WRITE_TEXT
+            | methods::TAB_CLIPBOARD_WRITE
+    )
+}
+
 fn request_context(params: &Value) -> BackendRequestContext {
     BackendRequestContext {
         session_id: params_str(params, "session_id"),
@@ -643,6 +1049,19 @@ fn invalid_params(message: &str) -> ErrorObject {
     ErrorObject::new(ErrorCode::InvalidParams, message)
 }
 
+fn unsupported_backend_capability_error(backend: &str, method: &str) -> ErrorObject {
+    ErrorObject::new(
+        ErrorCode::Server(ERR_NOT_IMPLEMENTED),
+        format!("backend {backend} does not support method {method}"),
+    )
+    .with_data(json!({
+        "code": "unsupported_backend_capability",
+        "backend": backend,
+        "method": method,
+        "missing_capability": format!("method:{method}"),
+    }))
+}
+
 fn host_err_to_rpc(error: HostError) -> ErrorObject {
     let code = match &error {
         HostError::Io(_) | HostError::Frame(_) => ErrorCode::Server(ERR_IO),
@@ -652,8 +1071,17 @@ fn host_err_to_rpc(error: HostError) -> ErrorObject {
         HostError::Timeout(_) => ErrorCode::Server(obu_wire::error::ERR_TIMEOUT),
         HostError::CdpFailure(_) => ErrorCode::Server(ERR_CDP_FAILURE),
         HostError::TabNotAttached(_) => ErrorCode::Server(ERR_TAB_NOT_ATTACHED),
+        HostError::DialogRequiresDecision(_) => ErrorCode::Server(ERR_DIALOG_REQUIRES_DECISION),
         HostError::NotImplemented(_) => ErrorCode::Server(ERR_NOT_IMPLEMENTED),
         HostError::Protocol(_) => ErrorCode::Server(ERR_PROTOCOL),
     };
-    ErrorObject::new(code, error.to_string())
+    let data = match &error {
+        HostError::DialogRequiresDecision(dialog) => Some(dialog.data.clone()),
+        _ => None,
+    };
+    let error = ErrorObject::new(code, error.to_string());
+    match data {
+        Some(data) => error.with_data(data),
+        None => error,
+    }
 }

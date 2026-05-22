@@ -63,6 +63,28 @@ fn rust_and_ts_policy_classifications_match() {
     }
 }
 
+#[test]
+fn backend_capability_docs_list_agent_visible_differences() {
+    let doc_path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/current-product-architecture.md");
+    let doc =
+        std::fs::read_to_string(&doc_path).expect("current-product-architecture.md is missing");
+    for expected in [
+        "Backend differences that agents and SDK code should treat as capabilities",
+        "| Surface | CDP backend | WebExtension backend | Capability signal |",
+        "| Raw CDP access |",
+        "| DOM-CUA visible DOM and media download helpers |",
+        "| Clipboard helpers |",
+        "unsupported_backend_capability",
+        "missing_capability",
+    ] {
+        assert!(
+            doc.contains(expected),
+            "backend capability docs missing expected text: {expected}"
+        );
+    }
+}
+
 fn parse_ts_method_constants(src: &str) -> BTreeMap<String, String> {
     let mut constants = BTreeMap::new();
     for line in src.lines() {

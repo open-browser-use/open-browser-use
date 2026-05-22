@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
-import { chmod, mkdir, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, stat, symlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -232,6 +232,21 @@ test("doctorBrowser repair writes an invalid native host manifest", async (t) =>
     human: /APPLIED wrote native host manifest/,
     details: ["path", "wrapperPath"],
   });
+});
+
+test("doctorBrowser repair refuses a symlinked native host manifest without changing the target", async (t) => {
+  const fixture = await createDoctorFixture(t);
+  const target = path.join(fixture.root, "outside-manifest.json");
+  await writeFile(target, "do not change", "utf8");
+  await rm(fixture.nativeHostManifestPath, { force: true });
+  await symlink(target, fixture.nativeHostManifestPath);
+
+  const report = await doctorBrowser({ ...fixture.options, repair: true });
+  const repair = report.repairs?.find((row) => row.id === "native-host-manifest");
+
+  assert.equal(repair?.status, "failed");
+  assert.match(repair?.message ?? "", /symlink/);
+  assert.equal(await readFile(target, "utf8"), "do not change");
 });
 
 test("doctorBrowser repair skips a valid native host manifest", async (t) => {
@@ -798,6 +813,43 @@ test("doctorBrowser surfaces runtime descriptor lifecycle diagnostics", async (t
   assert.match(formatted, /lifecycle: .*stale_session_reasons=0/);
   assert.match(formatted, /deliverable tabs: 8:Deliverable \(session\)/);
   assert.match(formatted, /recover deliverables: .*browser\.deliverables\(\).*claim\(\)/);
+});
+
+test("doctorBrowser surfaces pending extension update diagnostics", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("Unix socket probing is POSIX-only");
+    return;
+  }
+  const fixture = await createDoctorFixture(t);
+  const socketPath = path.join(fixture.root, "runtime-pending-update.sock");
+  const pendingUpdate = {
+    state: "waiting_for_idle",
+    version: "0.2.0",
+    pendingSince: 123,
+  };
+  await startRuntimeDescriptorServer(t, socketPath, {
+    name: "chrome",
+    getInfoResult: {
+      type: "webextension",
+      name: "chrome",
+      metadata: {
+        diagnostics: {
+          lifecycle: {},
+          extension: { pending_update: pendingUpdate },
+        },
+      },
+    },
+  });
+  const descriptorPath = path.join(fixture.runtimeDescriptorDir, "chrome.json");
+  await writeJson(descriptorPath, validRuntimeDescriptor({ socketPath }));
+  await chmod(descriptorPath, 0o600);
+
+  const report = await doctorBrowser(fixture.options);
+  const descriptorProbe = checksById(report)["runtime-descriptor-probe"];
+
+  assert.equal(descriptorProbe?.status, "pass");
+  assert.deepEqual(descriptorProbe?.details?.pending_extension_update, pendingUpdate);
+  assert.match(formatDoctorReport(report), /pending extension update: extension update 0\.2\.0 is waiting for idle/);
 });
 
 test("doctorBrowser warns when runtime descriptor reports stale lifecycle diagnostics", async (t) => {

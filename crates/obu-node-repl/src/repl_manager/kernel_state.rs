@@ -54,6 +54,10 @@ pub struct JsExecResult {
     /// the kernel.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub error: Option<String>,
+    /// Structured JavaScript error detail when the thrown value exposed stable
+    /// fields such as `code`, `data`, or `product_error`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub error_detail: Option<Value>,
 }
 
 /// Stream truncation metadata.

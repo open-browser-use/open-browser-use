@@ -45,15 +45,48 @@ type InputBypassMessage = {
   reason?: string;
 };
 
+type CaptureSuppressionMessage = {
+  type: "OBU_CAPTURE_SUPPRESSION";
+  active: boolean;
+  token: string;
+};
+
 type CursorMessage =
   | CursorMoveMessage
   | CursorHideMessage
   | TakeoverStateMessage
   | CursorEventMessage
   | ContentPingMessage
-  | InputBypassMessage;
+  | InputBypassMessage
+  | CaptureSuppressionMessage;
 
 type Point = { x: number; y: number };
+type WaterRipple = {
+  xRatio: number;
+  yRatio: number;
+  startedAt: number;
+  duration: number;
+  amplitude: number;
+  wavelength: number;
+  speed: number;
+  phase: number;
+  decay: number;
+  scaleX: number;
+  scaleY: number;
+  driftX: number;
+  driftY: number;
+  driftSpeed: number;
+};
+type WaterRippleFrame = {
+  centerX: number;
+  centerY: number;
+  scaleX: number;
+  scaleY: number;
+  decay: number;
+  amplitude: number;
+  wavelength: number;
+  phaseOffset: number;
+};
 type InputBypassEventFamily = "pointer" | "wheel" | "touch" | "keyboard" | "text";
 
 const SHORT_MOVE_THRESHOLD = 196;
@@ -61,19 +94,18 @@ const RESTING_ROTATION_DEG = -44;
 const ARRIVAL_TIMEOUT_MS = 650;
 const INPUT_BYPASS_DEFAULT_MS = 450;
 const INPUT_BYPASS_MAX_MS = 1_000;
+const CAPTURE_SUPPRESSION_TTL_MS = 60_000;
 const CURSOR_SIZE_PX = 42;
 const CURSOR_TIP_ORIGIN_PX = 4;
 const CLICK_PULSE_SIZE_PX = 36;
-const TAKEOVER_OVERLAY_BACKGROUND = [
-  "radial-gradient(circle at 18% 24%, rgba(125, 211, 252, 0.34) 0 1px, transparent 1.9px)",
-  "radial-gradient(circle at 76% 18%, rgba(191, 219, 254, 0.24) 0 1.15px, transparent 2.3px)",
-  "radial-gradient(circle at 34% 78%, rgba(56, 189, 248, 0.22) 0 1px, transparent 2px)",
-  "radial-gradient(circle at 84% 70%, rgba(147, 197, 253, 0.2) 0 1.35px, transparent 2.4px)",
-  "linear-gradient(118deg, rgba(14, 165, 233, 0.1), rgba(37, 99, 235, 0.16) 46%, rgba(6, 182, 212, 0.1))",
-].join(", ");
-const TAKEOVER_OVERLAY_BACKGROUND_SIZE = "170px 170px, 230px 230px, 290px 290px, 360px 360px, 100% 100%";
-const TAKEOVER_OVERLAY_BACKGROUND_POSITION = "0 0, 44px 28px, 16px 78px, 92px 18px, 0 0";
+const TAKEOVER_OVERLAY_BACKGROUND =
+  "linear-gradient(118deg, rgba(14, 165, 233, 0.1), rgba(37, 99, 235, 0.14) 46%, rgba(6, 182, 212, 0.1))";
+const WATER_GRID_PX = 28;
+const WATER_FRAME_INTERVAL_MS = 56;
+const WATER_MAX_RIPPLES = 7;
+const WATER_LEVELS = [0.34, 0.52] as const;
 const REDUCED_MOTION = matchMediaSafe("(prefers-reduced-motion: reduce)");
+const OVERLAY_ROOT_ID = "obu-agent-overlay-root";
 const INSTALL_KEY = "__OBU_CURSOR_CONTENT_SCRIPT_INSTALLED__";
 const HANDLER_KEY = "__OBU_CURSOR_CONTENT_SCRIPT_HANDLE_MESSAGE__";
 const TOP_FRAME = isTopFrame();
@@ -97,15 +129,15 @@ const LOCK_EVENTS = [
 ] as const;
 
 let host: HTMLDivElement | null = null;
-let overlay: HTMLDivElement | null = null;
+let overlay: HTMLCanvasElement | null = null;
 let cursor: HTMLDivElement | null = null;
 let cursorGlyph: HTMLDivElement | null = null;
 let pulseLayer: HTMLDivElement | null = null;
 let activeTakeover = false;
 let lockInputs = false;
 let lockInstalled = false;
-let currentPoint: Point = { x: 24, y: 24 };
-let targetPoint: Point = { x: 24, y: 24 };
+let currentPoint: Point = initialCursorPoint();
+let targetPoint: Point = { ...currentPoint };
 let lastSessionId: string | undefined;
 let lastTurnId: string | undefined;
 let animationFrame: number | undefined;
@@ -118,7 +150,18 @@ let animationFrom: Point = { x: 24, y: 24 };
 let animationTo: Point = { x: 24, y: 24 };
 let animationControl: Point | undefined;
 let arrivalTimer: ReturnType<typeof setTimeout> | undefined;
+let waterFrame: number | undefined;
+let waterCanvasWidth = 0;
+let waterCanvasHeight = 0;
+let waterCanvasDpr = 1;
+let waterLastDraw = 0;
+let waterNextRippleAt = 0;
+let waterValuesBuffer = new Float32Array(0);
+const waterRipples: WaterRipple[] = [];
+const waterRippleFrames: WaterRippleFrame[] = [];
+const waterContourPointBuffer: number[] = [];
 const inputBypassUntilByFamily = new Map<InputBypassEventFamily, number>();
+const captureSuppressionTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
 const installState = globalThis as typeof globalThis & Record<string, unknown>;
 Object.defineProperty(installState, HANDLER_KEY, {
@@ -145,6 +188,11 @@ function handleCursorMessage(message: unknown, sendResponse?: (response?: unknow
   if (message.type === "OBU_INPUT_BYPASS") {
     allowInputBypass(message);
     sendResponse?.({ ok: true });
+    return;
+  }
+  if (message.type === "OBU_CAPTURE_SUPPRESSION") {
+    setCaptureSuppression(message);
+    sendResponse?.({ ok: true, suppressed: captureSuppressionTimers.size > 0 });
     return;
   }
   if (message.type === "OBU_CURSOR_HIDE") {
@@ -267,6 +315,7 @@ function hideCursor(): void {
   activeTakeover = false;
   lockInputs = false;
   inputBypassUntilByFamily.clear();
+  clearCaptureSuppressions();
   updateInputLock();
   host?.remove();
   host = null;
@@ -274,6 +323,7 @@ function hideCursor(): void {
   cursor = null;
   cursorGlyph = null;
   pulseLayer = null;
+  clearWaterOverlay();
 }
 
 function ensureCursor(): void {
@@ -288,24 +338,24 @@ function ensureCursor(): void {
   host.style.zIndex = "2147483647";
   host.style.pointerEvents = "none";
   host.style.contain = "layout style paint";
+  host.id = OVERLAY_ROOT_ID;
+  host.setAttribute("aria-hidden", "true");
+  host.setAttribute("data-obu-overlay-root", "true");
+  updateCaptureSuppression();
   const shadow = host.attachShadow({ mode: "closed" });
 
-  const style = document.createElement("style");
-  style.textContent = takeoverStyleSheet();
-
-  overlay = document.createElement("div");
+  overlay = document.createElement("canvas");
   overlay.style.position = "fixed";
   overlay.style.inset = "0";
+  overlay.style.width = "100%";
+  overlay.style.height = "100%";
   overlay.style.opacity = "0";
   overlay.style.background = TAKEOVER_OVERLAY_BACKGROUND;
-  overlay.style.backgroundSize = TAKEOVER_OVERLAY_BACKGROUND_SIZE;
-  overlay.style.backgroundPosition = TAKEOVER_OVERLAY_BACKGROUND_POSITION;
-  overlay.style.backgroundBlendMode = "screen, screen, screen, screen, normal";
-  overlay.style.boxShadow = "inset 0 0 0 1px rgba(125, 211, 252, 0.16), inset 0 0 48px rgba(37, 99, 235, 0.18)";
+  overlay.style.mixBlendMode = "screen";
+  overlay.style.boxShadow = "inset 0 0 0 1px rgba(8, 145, 178, 0.18)";
   overlay.style.transition = "opacity 160ms ease-out";
   overlay.style.pointerEvents = "none";
-  overlay.style.willChange = REDUCED_MOTION ? "opacity" : "opacity, background-position";
-  overlay.style.animation = REDUCED_MOTION ? "none" : "obu-takeover-particles 14s linear infinite";
+  overlay.style.willChange = "opacity";
 
   pulseLayer = document.createElement("div");
   pulseLayer.style.position = "fixed";
@@ -326,36 +376,332 @@ function ensureCursor(): void {
   cursorGlyph = document.createElement("div");
   cursorGlyph.style.width = `${CURSOR_SIZE_PX}px`;
   cursorGlyph.style.height = `${CURSOR_SIZE_PX}px`;
-  cursorGlyph.style.background = cursorSvgDataUrl();
+  cursorGlyph.style.background = CURSOR_SVG_DATA_URL;
   cursorGlyph.style.backgroundSize = `${CURSOR_SIZE_PX}px ${CURSOR_SIZE_PX}px`;
   cursorGlyph.style.backgroundRepeat = "no-repeat";
   cursorGlyph.style.transformOrigin = `${CURSOR_TIP_ORIGIN_PX}px ${CURSOR_TIP_ORIGIN_PX}px`;
   cursorGlyph.style.willChange = "transform";
   cursor.append(cursorGlyph);
 
-  shadow.append(style, overlay, pulseLayer, cursor);
+  shadow.append(overlay, pulseLayer, cursor);
   document.documentElement.append(host);
   updateOverlay();
   updateInputLock();
   renderCursor(currentPoint, RESTING_ROTATION_DEG, 1, 1);
 }
 
-function takeoverStyleSheet(): string {
-  return `
-    @keyframes obu-takeover-particles {
-      from {
-        background-position: ${TAKEOVER_OVERLAY_BACKGROUND_POSITION};
-      }
-      to {
-        background-position: 170px 70px, -90px 118px, 116px -96px, -128px -82px, 0 0;
-      }
-    }
-  `;
-}
-
 function updateOverlay(): void {
   if (!overlay) return;
   overlay.style.opacity = activeTakeover ? "1" : "0";
+  if (activeTakeover) scheduleWaterFrame();
+  else clearWaterOverlay();
+}
+
+function setCaptureSuppression(message: CaptureSuppressionMessage): void {
+  if (message.active) {
+    clearCaptureSuppressionToken(message.token);
+    const timer = setTimeout(() => {
+      captureSuppressionTimers.delete(message.token);
+      updateCaptureSuppression();
+    }, CAPTURE_SUPPRESSION_TTL_MS);
+    captureSuppressionTimers.set(message.token, timer);
+  } else {
+    clearCaptureSuppressionToken(message.token);
+  }
+  updateCaptureSuppression();
+}
+
+function updateCaptureSuppression(): void {
+  if (!host) return;
+  const suppressed = captureSuppressionTimers.size > 0;
+  host.style.visibility = suppressed ? "hidden" : "";
+  if (suppressed) {
+    host.setAttribute("data-obu-capture-suppressed", "true");
+  } else {
+    host.removeAttribute("data-obu-capture-suppressed");
+  }
+}
+
+function clearCaptureSuppressionToken(token: string): void {
+  const timer = captureSuppressionTimers.get(token);
+  if (timer !== undefined) clearTimeout(timer);
+  captureSuppressionTimers.delete(token);
+}
+
+function clearCaptureSuppressions(): void {
+  for (const timer of captureSuppressionTimers.values()) {
+    clearTimeout(timer);
+  }
+  captureSuppressionTimers.clear();
+  updateCaptureSuppression();
+}
+
+function scheduleWaterFrame(): void {
+  if (waterFrame !== undefined || !overlay || !activeTakeover) return;
+  if (REDUCED_MOTION) {
+    drawWaterOverlay(nowMs());
+    return;
+  }
+  waterFrame = requestFrame(drawWaterOverlay);
+}
+
+function clearWaterOverlay(): void {
+  if (waterFrame !== undefined) cancelFrame(waterFrame);
+  waterFrame = undefined;
+  waterRipples.length = 0;
+  waterNextRippleAt = 0;
+  waterLastDraw = 0;
+}
+
+function drawWaterOverlay(now: number): void {
+  waterFrame = undefined;
+  if (!overlay || !activeTakeover) return;
+
+  if (!REDUCED_MOTION && now - waterLastDraw < WATER_FRAME_INTERVAL_MS) {
+    waterFrame = requestFrame(drawWaterOverlay);
+    return;
+  }
+
+  const surface = prepareWaterCanvas();
+  if (!surface) return;
+  waterLastDraw = now;
+
+  const { ctx, width, height } = surface;
+  ctx.clearRect(0, 0, width, height);
+  updateWaterRipples(now, width, height);
+  drawWaterContours(ctx, now, width, height);
+
+  if (!REDUCED_MOTION) {
+    waterFrame = requestFrame(drawWaterOverlay);
+  }
+}
+
+function prepareWaterCanvas(): { ctx: CanvasRenderingContext2D; width: number; height: number } | undefined {
+  if (!overlay || typeof overlay.getContext !== "function") return undefined;
+  const targetWindow = windowTarget();
+  const width = Math.max(1, Math.ceil(targetWindow?.innerWidth || document.documentElement.clientWidth || 1024));
+  const height = Math.max(1, Math.ceil(targetWindow?.innerHeight || document.documentElement.clientHeight || 768));
+  const rawDpr = targetWindow?.devicePixelRatio;
+  const dpr = clamp(typeof rawDpr === "number" && Number.isFinite(rawDpr) ? rawDpr : 1, 1, 2);
+
+  if (waterCanvasWidth !== width || waterCanvasHeight !== height || waterCanvasDpr !== dpr) {
+    waterCanvasWidth = width;
+    waterCanvasHeight = height;
+    waterCanvasDpr = dpr;
+    overlay.width = Math.ceil(width * dpr);
+    overlay.height = Math.ceil(height * dpr);
+  }
+
+  const ctx = overlay.getContext("2d");
+  if (!ctx) return undefined;
+  ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+  return { ctx, width, height };
+}
+
+function updateWaterRipples(now: number, width: number, height: number): void {
+  for (let index = waterRipples.length - 1; index >= 0; index -= 1) {
+    if (now - waterRipples[index].startedAt > waterRipples[index].duration) {
+      waterRipples.splice(index, 1);
+    }
+  }
+
+  if (waterNextRippleAt === 0) {
+    for (let index = 0; index < 4; index += 1) {
+      waterRipples.push(createWaterRipple(now - index * 940, width, height));
+    }
+    waterNextRippleAt = now + randomBetween(1_250, 2_050);
+  }
+
+  if (REDUCED_MOTION) return;
+
+  while (now >= waterNextRippleAt && waterRipples.length < WATER_MAX_RIPPLES) {
+    waterRipples.push(createWaterRipple(now, width, height));
+    waterNextRippleAt = now + randomBetween(1_450, 2_600);
+  }
+
+  if (waterRipples.length >= WATER_MAX_RIPPLES && now >= waterNextRippleAt) {
+    waterNextRippleAt = now + randomBetween(1_250, 1_900);
+  }
+}
+
+function createWaterRipple(startedAt: number, width: number, height: number): WaterRipple {
+  const xBounds = waterRippleXBounds(width > height);
+  return {
+    xRatio: randomBetween(xBounds.min, xBounds.max),
+    yRatio: randomBetween(-0.08, 1.08),
+    startedAt,
+    duration: randomBetween(5_400, 10_200),
+    amplitude: randomBetween(0.52, 0.9),
+    wavelength: randomBetween(34, 74),
+    speed: randomBetween(0.95, 1.75),
+    phase: randomBetween(0, Math.PI * 2),
+    decay: randomBetween(210, 380),
+    scaleX: randomBetween(0.78, 1.22),
+    scaleY: randomBetween(0.84, 1.28),
+    driftX: randomBetween(-0.035, 0.035),
+    driftY: randomBetween(-0.03, 0.03),
+    driftSpeed: randomBetween(0.04, 0.12),
+  };
+}
+
+function waterRippleXBounds(wide: boolean): { min: number; max: number } {
+  if (wide) return { min: -0.05, max: 1.05 };
+  return { min: -0.15, max: 1.15 };
+}
+
+function drawWaterContours(ctx: CanvasRenderingContext2D, now: number, width: number, height: number): void {
+  const cols = Math.ceil(width / WATER_GRID_PX);
+  const rows = Math.ceil(height / WATER_GRID_PX);
+  const valueCount = (cols + 1) * (rows + 1);
+  if (waterValuesBuffer.length !== valueCount) waterValuesBuffer = new Float32Array(valueCount);
+  const values = waterValuesBuffer;
+  const seconds = now * 0.001;
+  const ripples = prepareWaterRippleFrames(now, seconds, width, height);
+
+  for (let row = 0; row <= rows; row += 1) {
+    for (let col = 0; col <= cols; col += 1) {
+      values[row * (cols + 1) + col] = waterHeightAt(col * WATER_GRID_PX, row * WATER_GRID_PX, seconds, ripples);
+    }
+  }
+
+  ctx.save();
+  ctx.globalCompositeOperation = "screen";
+  ctx.lineCap = "round";
+  ctx.lineJoin = "round";
+  ctx.shadowColor = "rgba(125, 211, 252, 0.18)";
+  ctx.shadowBlur = 5;
+
+  drawWaterContourLevel(ctx, values, cols, rows, WATER_LEVELS[0], "rgba(226, 246, 255, 0.18)", 0.95);
+  drawWaterContourLevel(ctx, values, cols, rows, WATER_LEVELS[1], "rgba(248, 252, 255, 0.3)", 1.15);
+  ctx.restore();
+}
+
+function drawWaterContourLevel(
+  ctx: CanvasRenderingContext2D,
+  values: Float32Array,
+  cols: number,
+  rows: number,
+  level: number,
+  strokeStyle: string,
+  lineWidth: number,
+): void {
+  ctx.beginPath();
+  ctx.strokeStyle = strokeStyle;
+  ctx.lineWidth = lineWidth;
+  ctx.setLineDash(lineWidth > 1 ? [14, 22] : [8, 18]);
+
+  for (let row = 0; row < rows; row += 1) {
+    for (let col = 0; col < cols; col += 1) {
+      const valueIndex = row * (cols + 1) + col;
+      const topLeft = values[valueIndex];
+      const topRight = values[valueIndex + 1];
+      const bottomLeft = values[valueIndex + cols + 1];
+      const bottomRight = values[valueIndex + cols + 2];
+      drawWaterContourCell(ctx, col, row, level, topLeft, topRight, bottomRight, bottomLeft);
+    }
+  }
+
+  ctx.stroke();
+}
+
+function drawWaterContourCell(
+  ctx: CanvasRenderingContext2D,
+  col: number,
+  row: number,
+  level: number,
+  topLeft: number,
+  topRight: number,
+  bottomRight: number,
+  bottomLeft: number,
+): void {
+  const x = col * WATER_GRID_PX;
+  const y = row * WATER_GRID_PX;
+  const size = WATER_GRID_PX;
+  const points = waterContourPointBuffer;
+  points.length = 0;
+  pushWaterContourPoint(points, topLeft, topRight, level, x, y, size, 0);
+  pushWaterContourPoint(points, topRight, bottomRight, level, x, y, size, 1);
+  pushWaterContourPoint(points, bottomLeft, bottomRight, level, x, y, size, 2);
+  pushWaterContourPoint(points, topLeft, bottomLeft, level, x, y, size, 3);
+  if (points.length === 4) {
+    ctx.moveTo(points[0], points[1]);
+    ctx.lineTo(points[2], points[3]);
+  } else if (points.length === 8) {
+    ctx.moveTo(points[0], points[1]);
+    ctx.lineTo(points[2], points[3]);
+    ctx.moveTo(points[4], points[5]);
+    ctx.lineTo(points[6], points[7]);
+  }
+}
+
+function pushWaterContourPoint(
+  points: number[],
+  start: number,
+  end: number,
+  level: number,
+  x: number,
+  y: number,
+  size: number,
+  edge: 0 | 1 | 2 | 3,
+): void {
+  if (!crossesLevel(start, end, level)) return;
+  const offset = interpolateLevel(start, end, level);
+  if (edge === 0) {
+    points.push(x + offset * size, y);
+  } else if (edge === 1) {
+    points.push(x + size, y + offset * size);
+  } else if (edge === 2) {
+    points.push(x + offset * size, y + size);
+  } else {
+    points.push(x, y + offset * size);
+  }
+}
+
+function crossesLevel(a: number, b: number, level: number): boolean {
+  return (a >= level && b < level) || (a < level && b >= level);
+}
+
+function interpolateLevel(a: number, b: number, level: number): number {
+  const delta = b - a;
+  if (Math.abs(delta) < 0.0001) return 0.5;
+  return clamp((level - a) / delta, 0, 1);
+}
+
+function prepareWaterRippleFrames(now: number, seconds: number, width: number, height: number): WaterRippleFrame[] {
+  waterRippleFrames.length = 0;
+  for (const ripple of waterRipples) {
+    const progress = clamp((now - ripple.startedAt) / ripple.duration, 0, 1);
+    if (progress <= 0 || progress >= 1) continue;
+    const envelope = Math.sin(Math.PI * progress) ** 0.85;
+    const phase = seconds * ripple.driftSpeed + ripple.phase;
+    waterRippleFrames.push({
+      centerX: ripple.xRatio * width + Math.sin(phase) * ripple.driftX * width,
+      centerY: ripple.yRatio * height + Math.cos(phase) * ripple.driftY * height,
+      scaleX: ripple.scaleX,
+      scaleY: ripple.scaleY,
+      decay: ripple.decay,
+      amplitude: ripple.amplitude * envelope,
+      wavelength: ripple.wavelength,
+      phaseOffset: ripple.phase - seconds * ripple.speed,
+    });
+  }
+  return waterRippleFrames;
+}
+
+function waterHeightAt(x: number, y: number, seconds: number, ripples: WaterRippleFrame[]): number {
+  let heightValue = 0;
+
+  for (const ripple of ripples) {
+    const dx = (x - ripple.centerX) * ripple.scaleX;
+    const dy = (y - ripple.centerY) * ripple.scaleY;
+    const distance = Math.hypot(dx, dy);
+    const decay = Math.exp(-distance / ripple.decay);
+    heightValue += Math.sin(distance / ripple.wavelength + ripple.phaseOffset) * ripple.amplitude * decay;
+  }
+
+  heightValue += Math.sin(x * 0.008 + y * 0.005 - seconds * 0.28) * 0.08;
+  heightValue += Math.sin(x * -0.004 + y * 0.01 + seconds * 0.18) * 0.06;
+  return heightValue;
 }
 
 function updateInputLock(): void {
@@ -431,6 +777,21 @@ function renderCursor(point: Point, rotation: number, scaleX: number, scaleY: nu
   if (!cursor || !cursorGlyph) return;
   cursor.style.transform = `translate3d(${Math.round(point.x)}px, ${Math.round(point.y)}px, 0)`;
   cursorGlyph.style.transform = `rotate(${rotation.toFixed(2)}deg) scale(${scaleX.toFixed(3)}, ${scaleY.toFixed(3)})`;
+}
+
+function initialCursorPoint(): Point {
+  const targetWindow = windowTarget();
+  const viewport = targetWindow?.visualViewport;
+  const width = typeof viewport?.width === "number" && Number.isFinite(viewport.width)
+    ? viewport.width
+    : targetWindow?.innerWidth || document.documentElement.clientWidth || 1024;
+  const height = typeof viewport?.height === "number" && Number.isFinite(viewport.height)
+    ? viewport.height
+    : targetWindow?.innerHeight || document.documentElement.clientHeight || 768;
+  return {
+    x: Math.round(width * 0.5),
+    y: Math.round(height * 0.5),
+  };
 }
 
 function addPulse(point: Point): void {
@@ -514,7 +875,7 @@ function quadraticTangent(start: Point, control: Point, end: Point, t: number): 
   };
 }
 
-function cursorSvgDataUrl(): string {
+const CURSOR_SVG_DATA_URL = (() => {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
     <g fill="#ffc400" stroke="#f2a900" stroke-width=".6" stroke-linejoin="round">
       <path d="M8.7 7.1 10.4 1.4c.2-.8 1.3-.8 1.6 0l2 5.6 3.1-2.1c.7-.5 1.5.3 1.1 1l-2.1 4.7a10.3 10.3 0 0 0-6.7-.1L6.5 6.3c-.4-.7.4-1.5 1.1-1l1.1 1.8Z"/>
@@ -527,7 +888,7 @@ function cursorSvgDataUrl(): string {
     <path d="M9.6 10.8 12.3 27 17.1 20l6.2 7.8" fill="none" stroke="#dfe7ef" stroke-width=".9" stroke-linecap="round" stroke-linejoin="round" opacity=".72"/>
   </svg>`;
   return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
-}
+})();
 
 function dist(a: Point, b: Point): number {
   return Math.hypot(b.x - a.x, b.y - a.y);
@@ -539,6 +900,10 @@ function lerp(a: number, b: number, t: number): number {
 
 function clamp(value: number, min: number, max: number): number {
   return Math.min(max, Math.max(min, value));
+}
+
+function randomBetween(min: number, max: number): number {
+  return min + Math.random() * (max - min);
 }
 
 function clampNumber(value: unknown, fallback: number, min: number, max: number): number {
@@ -603,7 +968,8 @@ function isCursorMessage(value: unknown): value is CursorMessage {
     isTakeoverState(value) ||
     isCursorEvent(value) ||
     isContentPing(value) ||
-    isInputBypass(value)
+    isInputBypass(value) ||
+    isCaptureSuppression(value)
   );
 }
 
@@ -643,6 +1009,18 @@ function isContentPing(value: unknown): value is ContentPingMessage {
 
 function isInputBypass(value: unknown): value is InputBypassMessage {
   return value !== null && typeof value === "object" && (value as { type?: unknown }).type === "OBU_INPUT_BYPASS";
+}
+
+function isCaptureSuppression(value: unknown): value is CaptureSuppressionMessage {
+  const token = isRecord(value) ? value.token : undefined;
+  return (
+    value !== null &&
+    typeof value === "object" &&
+    (value as { type?: unknown }).type === "OBU_CAPTURE_SUPPRESSION" &&
+    typeof (value as { active?: unknown }).active === "boolean" &&
+    typeof token === "string" &&
+    token.length > 0
+  );
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

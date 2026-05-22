@@ -27,12 +27,25 @@ class FakeElement {
   textContent = "";
   disabled = false;
   hidden = false;
+  attributes = new Map();
   listeners = new Map();
 
   addEventListener(type, listener) {
     const listeners = this.listeners.get(type) ?? [];
     listeners.push(listener);
     this.listeners.set(type, listeners);
+  }
+
+  setAttribute(name, value) {
+    this.attributes.set(name, String(value));
+  }
+
+  removeAttribute(name) {
+    this.attributes.delete(name);
+  }
+
+  getAttribute(name) {
+    return this.attributes.get(name) ?? null;
   }
 
   click() {
@@ -45,6 +58,7 @@ await runPopupRepairMatrix();
 await runPopupAgentCopyFailure();
 await runPopupStoreHandoff();
 await runPopupResumeFromFailureStates();
+await runPopupCleanupAction();
 await runPopupDebugLogs();
 await runPopupInitialFailure("missing status response", [undefined], "Repair setup, then reconnect.");
 await runPopupInitialFailure("runtime rejection", [new Error("status boom")], "Repair setup, then reconnect.");
@@ -54,16 +68,21 @@ function assertAgentHandoff(elements, channel = "unpacked-dev") {
   assert.match(handoff, /raw\.githubusercontent\.com\/open-browser-use\/open-browser-use\/main\/prompts\/agent-install-prompt\.md/);
   assert.doesNotMatch(handoff, /blob\/v0\.1\.2\/prompts\/agent-install-prompt\.md/);
   assert.doesNotMatch(handoff, /github\.com\/open-browser-use\/open-browser-use\/blob\/main/);
+  assert.match(handoff, /Browser: chrome/);
   assert.match(handoff, new RegExp(`Extension channel: ${channel}`));
   assert.match(handoff, new RegExp(`Extension id: ${runtimeExtensionId}`));
-  assert.match(handoff, /generic open-browser-use stdio server/);
-  assert.match(handoff, /primary BrowserUse\/browser automation tool/);
-  assert.match(handoff, /~\/\.codex\/AGENTS\.md/);
-  assert.match(handoff, /~\/\.claude\/CLAUDE\.md/);
+  assert.match(handoff, /source of truth/);
+  assert.match(handoff, /always run the official installer first for this handoff/);
+  assert.match(handoff, new RegExp(`setup --agents=<agent-id> --browser=chrome --channel=${channel} --extension-id=${runtimeExtensionId} --write-instructions --json`));
+  assert.match(handoff, new RegExp(`verify --agent=<agent-id> --browser=chrome --channel=${channel} --extension-id=${runtimeExtensionId} --json`));
   assert.match(handoff, /currently executing this prompt/);
-  assert.match(handoff, /Codex \(OBU id: codex-cli\), Cursor, or Claude Code \(OBU id: claude-code\)/);
-  assert.match(handoff, /~\/\.obu\/bin\/obu exists/);
-  assert.match(handoff, /run obu verify/);
+  assert.match(handoff, /Do not run broad setup/);
+  assert.match(handoff, /Stop when verify returns result: ready/);
+  assert.doesNotMatch(handoff, /generic open-browser-use stdio server/);
+  assert.doesNotMatch(handoff, /~\/\.codex\/AGENTS\.md/);
+  assert.doesNotMatch(handoff, /~\/\.claude\/CLAUDE\.md/);
+  assert.doesNotMatch(handoff, /~\/\.obu\/bin\/obu exists/);
+  assert.doesNotMatch(handoff, /if it is missing/);
   assert.doesNotMatch(handoff, /rerun doctor/);
   assert.doesNotMatch(handoff, /Terminal command/i);
   assert.doesNotMatch(handoff, /curl -fsSL/);
@@ -88,11 +107,14 @@ async function runPopupHappyPath() {
   assert.equal(harness.elements.dot.className, "dot connected");
   assert.equal(harness.elements.detailText.textContent, "Host 0.1.0");
   assert.equal(harness.elements.setupPanel.hidden, false);
-  assert.equal(harness.elements.setupLabel.textContent, "Agent setup");
-  assert.match(harness.elements.setupText.textContent, /Connect another Agent/);
+  assert.equal(harness.elements.setupLabel.textContent, "Pair another Agent");
+  assert.match(harness.elements.setupText.textContent, /Agent you want to connect/);
+  assert.equal(harness.elements.agentHandoff.hidden, true);
+  assert.equal(harness.elements.promptToggleButton.getAttribute("aria-expanded"), "false");
   assertAgentHandoff(harness.elements);
   assert.equal(harness.elements.stopButton.disabled, false);
   assert.equal(harness.elements.resumeButton.disabled, true);
+  assert.equal(harness.elements.cleanupButton.disabled, false);
   harness.elements.settingsButton.click();
   await waitFor(() => harness.sent.some((message) => message?.type === "OPEN_OPTIONS_PAGE"));
 
@@ -109,6 +131,8 @@ async function runPopupHappyPath() {
   assert.match(harness.elements.detailText.textContent, /Update the local host/);
   assert.equal(harness.elements.setupPanel.hidden, false);
   assert.match(harness.elements.setupText.textContent, /Agent/);
+  assert.equal(harness.elements.agentHandoff.hidden, false);
+  assert.equal(harness.elements.promptToggleButton.getAttribute("aria-expanded"), "true");
   assertAgentHandoff(harness.elements);
 
   harness.storageChanges.emit(
@@ -121,8 +145,9 @@ async function runPopupHappyPath() {
   );
   assert.equal(harness.elements.statusText.textContent, "Connected");
   assert.equal(harness.elements.setupPanel.hidden, false);
-  assert.equal(harness.elements.setupLabel.textContent, "Agent setup");
-  assert.match(harness.elements.setupText.textContent, /Connect another Agent/);
+  assert.equal(harness.elements.setupLabel.textContent, "Pair another Agent");
+  assert.match(harness.elements.setupText.textContent, /Agent you want to connect/);
+  assert.equal(harness.elements.agentHandoff.hidden, true);
 
   harness.storageChanges.emit(
     {
@@ -135,6 +160,26 @@ async function runPopupHappyPath() {
   assert.equal(harness.elements.statusText.textContent, "Connected");
   assert.match(harness.elements.detailText.textContent, /2 deliverable tabs available/);
   assert.match(harness.elements.detailText.textContent, /browser\.deliverables\(\).*claim\(\)/);
+
+  harness.storageChanges.emit(
+    {
+      [statusKey]: {
+        newValue: {
+          state: "connected",
+          hostVersion: "0.1.0",
+          pendingExtensionUpdate: {
+            state: "waiting_for_idle",
+            version: "0.2.0",
+            pendingSince: Date.now(),
+          },
+        },
+      },
+    },
+    "local",
+  );
+  assert.equal(harness.elements.statusText.textContent, "Connected");
+  assert.match(harness.elements.detailText.textContent, /Extension update 0\.2\.0 will apply after browser control is idle/);
+  assert.equal(harness.elements.setupPanel.hidden, false);
 
   harness.storageChanges.emit(
     {
@@ -162,6 +207,7 @@ async function runPopupHappyPath() {
   assert.equal(harness.elements.statusText.textContent, "Reconnecting");
   assert.equal(harness.elements.dot.className, "dot reconnecting");
   assert.equal(harness.elements.resumeButton.disabled, false);
+  assert.equal(harness.elements.cleanupButton.disabled, false);
   assert.match(harness.elements.detailText.textContent, /Retrying in 2s/);
 
   harness.storageChanges.emit(
@@ -184,10 +230,11 @@ async function runPopupHappyPath() {
   harness.elements.copyAgentButton.click();
   await waitFor(() => harness.clipboardWrites.some((text) => text.includes("prompts/agent-install-prompt.md")));
   await waitFor(() => harness.elements.copyAgentButton.textContent === "Copied");
-  assert.match(harness.clipboardWrites.at(-1), /generic open-browser-use stdio server/);
-  assert.match(harness.clipboardWrites.at(-1), /primary BrowserUse\/browser automation tool/);
-  assert.match(harness.clipboardWrites.at(-1), /~\/\.codex\/AGENTS\.md/);
-  assert.match(harness.clipboardWrites.at(-1), /~\/\.claude\/CLAUDE\.md/);
+  assert.match(harness.clipboardWrites.at(-1), /always run the official installer first for this handoff/);
+  assert.match(harness.clipboardWrites.at(-1), /setup --agents=<agent-id> --browser=chrome --channel=unpacked-dev/);
+  assert.match(harness.clipboardWrites.at(-1), /verify --agent=<agent-id> --browser=chrome --channel=unpacked-dev/);
+  assert.match(harness.clipboardWrites.at(-1), /Stop when verify returns result: ready/);
+  assert.doesNotMatch(harness.clipboardWrites.at(-1), /generic open-browser-use stdio server/);
   assert.doesNotMatch(harness.clipboardWrites.at(-1), /obu bootstrap/);
   assert.doesNotMatch(harness.clipboardWrites.at(-1), /curl -fsSL/);
   assert.match(harness.elements.setupCopyText.textContent, /Agent/);
@@ -201,16 +248,19 @@ async function runPopupHappyPath() {
     "local",
   );
   assert.equal(harness.elements.setupPanel.hidden, false);
-  assert.equal(harness.elements.setupLabel.textContent, "Agent setup");
+  assert.equal(harness.elements.setupLabel.textContent, "Pair another Agent");
   assertAgentHandoff(harness.elements);
   assert.equal(harness.elements.setupCopyText.textContent, "");
 
   const handoffWritesBefore = harness.clipboardWrites.length;
+  harness.elements.promptToggleButton.click();
+  assert.equal(harness.elements.agentHandoff.hidden, false);
+  assert.equal(harness.elements.promptToggleButton.getAttribute("aria-expanded"), "true");
   harness.elements.agentHandoff.click();
   await waitFor(() => harness.clipboardWrites.length === handoffWritesBefore + 1);
   await waitFor(() => harness.elements.copyAgentButton.textContent === "Copied");
   assert.match(harness.clipboardWrites.at(-1), /prompts\/agent-install-prompt\.md/);
-  assert.match(harness.elements.setupCopyText.textContent, /setup finishes/);
+  assert.match(harness.elements.setupCopyText.textContent, /Agent you want to connect/);
 
   harness.storageChanges.emit(
     {
@@ -313,6 +363,7 @@ async function runPopupHappyPath() {
   await waitFor(() => harness.sent.some((message) => message.type === "STOP_BROWSER_CONTROL"));
   await waitFor(() => harness.elements.statusText.textContent === "You are in control");
   assert.equal(harness.elements.resumeButton.disabled, false);
+  assert.equal(harness.elements.cleanupButton.disabled, false);
 
   harness.elements.resumeButton.click();
   await waitFor(() => harness.sent.some((message) => message.type === "RESUME_BROWSER_CONTROL"));
@@ -518,8 +569,8 @@ async function runPopupRepairMatrix() {
         assert.match(harness.elements.setupText.textContent, pattern);
       }
     } else {
-      assert.equal(harness.elements.setupLabel.textContent, "Agent setup");
-      assert.match(harness.elements.setupText.textContent, /Connect another Agent/);
+      assert.equal(harness.elements.setupLabel.textContent, "Pair another Agent");
+      assert.match(harness.elements.setupText.textContent, /Agent you want to connect/);
       assert.equal(harness.elements.setupCopyText.textContent, "");
     }
   }
@@ -604,6 +655,26 @@ async function runPopupResumeFromFailureStates() {
   await waitFor(() => failed.elements.statusText.textContent === "Connected");
 }
 
+async function runPopupCleanupAction() {
+  const harness = installPopupHarness([
+    { state: "disconnected", message: "native host disconnected" },
+    { state: "disconnected", message: "native host disconnected" },
+  ], {
+    cleanupResult: { closedTabs: 2, releasedTabs: 1, keptDeliverables: 3 },
+  });
+  await importPopup("cleanup-action");
+  await waitFor(() => harness.elements.statusText.textContent === "Reconnecting");
+  assert.equal(harness.elements.cleanupButton.disabled, false);
+  harness.elements.cleanupButton.click();
+  await waitFor(() => harness.sent.some((message) => message.type === "CLEAN_UP_BROWSER_TABS"));
+  await waitFor(() => /Closed 2, released 1, kept 3 deliverables/.test(harness.elements.cleanupResult.textContent));
+  await waitFor(() => harness.elements.cleanupButton.disabled === false);
+
+  harness.storageChanges.emit({ [statusKey]: { newValue: { state: "stopped" } } }, "local");
+  assert.equal(harness.elements.statusText.textContent, "You are in control");
+  assert.equal(harness.elements.cleanupButton.disabled, false);
+}
+
 async function runPopupInitialFailure(label, responses, expectedDetail) {
   const harness = installPopupHarness(responses);
   await importPopup(label);
@@ -662,6 +733,8 @@ function installPopupHarness(responses, options = {}) {
     dot: new FakeElement(),
     statusText: new FakeElement(),
     detailText: new FakeElement(),
+    cleanupButton: new FakeElement(),
+    cleanupResult: new FakeElement(),
     versionText: new FakeElement(),
     stopButton: new FakeElement(),
     resumeButton: new FakeElement(),
@@ -674,6 +747,7 @@ function installPopupHarness(responses, options = {}) {
     setupLabel: new FakeElement(),
     setupText: new FakeElement(),
     agentHandoff: new FakeElement(),
+    promptToggleButton: new FakeElement(),
     copyAgentButton: new FakeElement(),
     setupCopyText: new FakeElement(),
   };
@@ -681,6 +755,8 @@ function installPopupHarness(responses, options = {}) {
     ["#status-dot", elements.dot],
     ["#status-text", elements.statusText],
     ["#detail-text", elements.detailText],
+    ["#cleanup-button", elements.cleanupButton],
+    ["#cleanup-result", elements.cleanupResult],
     ["#version-text", elements.versionText],
     ["#stop-button", elements.stopButton],
     ["#resume-button", elements.resumeButton],
@@ -693,6 +769,7 @@ function installPopupHarness(responses, options = {}) {
     ["#setup-label", elements.setupLabel],
     ["#setup-text", elements.setupText],
     ["#agent-handoff", elements.agentHandoff],
+    ["#prompt-toggle-button", elements.promptToggleButton],
     ["#copy-agent-button", elements.copyAgentButton],
     ["#setup-copy-text", elements.setupCopyText],
   ]);
@@ -742,6 +819,9 @@ function installPopupHarness(responses, options = {}) {
         if (message?.type === "CLEAR_DEBUG_LOGS") {
           debugState = { ...debugState, entries: [] };
           return debugState;
+        }
+        if (message?.type === "CLEAN_UP_BROWSER_TABS") {
+          return options.cleanupResult ?? { closedTabs: 0, releasedTabs: 0, keptDeliverables: 0 };
         }
         const next = responses.shift();
         if (next instanceof Error) throw next;
