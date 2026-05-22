@@ -1,6 +1,7 @@
 //! Per-session MCP artifact storage.
 
 use std::collections::HashMap;
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex as StdMutex};
 use std::time::{Duration, SystemTime};
@@ -73,7 +74,9 @@ impl ArtifactStore {
     }
 
     fn new_with_root(root: PathBuf) -> Result<Self> {
-        create_owner_only_dir(&root)?;
+        ensure_owner_only_dir(&root).with_context(|| {
+            format!("ensure owner-only artifact session root {}", root.display())
+        })?;
         Ok(Self {
             root: Arc::new(root),
             records: Arc::new(StdMutex::new(HashMap::new())),
@@ -99,8 +102,18 @@ impl ArtifactStore {
         let path = self
             .root
             .join(format!("{id}{}", extension_for_mime(mime_type)));
-        std::fs::write(&path, bytes)
+        let mut file = std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&path)
+            .with_context(|| format!("create artifact {}", path.display()))?;
+        file.write_all(bytes)
             .with_context(|| format!("write artifact {}", path.display()))?;
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = file.set_permissions(std::fs::Permissions::from_mode(0o600));
+        }
         let uri = format!("obu-artifact://{id}");
         let summary = summary.into();
         let record = ArtifactRecord {
@@ -238,17 +251,6 @@ fn sanitize_path_component(value: &str) -> String {
     }
 }
 
-fn create_owner_only_dir(path: &Path) -> Result<()> {
-    std::fs::create_dir_all(path).with_context(|| format!("create {}", path.display()))?;
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        std::fs::set_permissions(path, std::fs::Permissions::from_mode(0o700))
-            .with_context(|| format!("chmod 0700 {}", path.display()))?;
-    }
-    Ok(())
-}
-
 fn estimated_decoded_len(data_base64: &str) -> usize {
     let padding = data_base64
         .as_bytes()
@@ -360,5 +362,31 @@ mod tests {
                 & 0o777,
             0o700
         );
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn artifact_store_rejects_symlinked_session_root_without_mutating_target() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let dir = tempfile::tempdir().unwrap();
+        let runtime_root = dir.path().join("runtime");
+        let artifact_root = runtime_root.join("mcp-artifacts");
+        let session_root = artifact_root.join("known-session");
+        let target = dir.path().join("outside-target");
+        std::fs::create_dir_all(&artifact_root).unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::set_permissions(&target, std::fs::Permissions::from_mode(0o755)).unwrap();
+        symlink(&target, &session_root).unwrap();
+
+        let error = ArtifactStore::new_under_runtime(&runtime_root, "known-session").unwrap_err();
+
+        assert!(error.to_string().contains("artifact session root"));
+        assert!(format!("{error:#}").contains("symlink"));
+        assert_eq!(
+            std::fs::metadata(&target).unwrap().permissions().mode() & 0o777,
+            0o755
+        );
+        assert!(std::fs::read_dir(&target).unwrap().next().is_none());
     }
 }
