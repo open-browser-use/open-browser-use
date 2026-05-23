@@ -32,7 +32,7 @@ use crate::dispatcher::Dispatcher;
 use crate::error::{HostError, Result};
 use crate::policy::ConfiguredHostPolicy;
 use crate::runtime_descriptor_lifecycle::{
-    RuntimeDescriptorLifecycleEventKind, plan_runtime_descriptor_drop,
+    RuntimeDescriptorDropPlan, RuntimeDescriptorLifecycleEventKind, plan_runtime_descriptor_drop,
     plan_runtime_descriptor_write,
 };
 use crate::socket::{Listener, unix::UnixSockListener};
@@ -278,7 +278,8 @@ async fn close_runtime_descriptor_registration(
     if let Some(registration) = registration.lock().await.take() {
         registration.close(reason);
     } else {
-        trace_runtime_descriptor_drop(None, reason);
+        let plan = plan_runtime_descriptor_drop(None, reason);
+        trace_runtime_descriptor_drop(None, reason, &plan);
     }
 }
 
@@ -664,10 +665,23 @@ impl RuntimeDescriptorRegistration {
     fn remove_descriptor_file(&mut self, reason: &str) {
         let descriptor_path = self.descriptor_path.as_deref();
         let plan = plan_runtime_descriptor_drop(descriptor_path, reason);
-        trace_runtime_descriptor_drop(plan.remove_path.as_deref(), reason);
-        if let Some(path) = plan.remove_path {
-            let _ = std::fs::remove_file(path);
-            self.descriptor_path = None;
+        trace_runtime_descriptor_drop(plan.remove_path.as_deref(), reason, &plan);
+        if let Some(path) = &plan.remove_path {
+            match std::fs::remove_file(path) {
+                Ok(()) => self.descriptor_path = None,
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    self.descriptor_path = None;
+                }
+                Err(error) => {
+                    tracing::warn!(
+                        descriptor_path = %path.display(),
+                        reason,
+                        error = %error,
+                        "runtime descriptor removal failed; retaining path for retry"
+                    );
+                    // Keep descriptor_path set so Drop / next cleanup retries.
+                }
+            }
         }
     }
 }
@@ -680,11 +694,14 @@ impl Drop for RuntimeDescriptorRegistration {
     }
 }
 
-fn trace_runtime_descriptor_drop(descriptor_path: Option<&Path>, reason: &str) {
-    let plan = plan_runtime_descriptor_drop(descriptor_path, reason);
+fn trace_runtime_descriptor_drop(
+    _remove_path: Option<&Path>,
+    reason: &str,
+    plan: &RuntimeDescriptorDropPlan,
+) {
     match plan.event.kind {
         RuntimeDescriptorLifecycleEventKind::Dropped => {
-            if let Some(path) = plan.event.descriptor_path {
+            if let Some(path) = &plan.event.descriptor_path {
                 tracing::debug!(
                     event = ?plan.event.kind,
                     descriptor_path = %path.display(),
@@ -773,5 +790,43 @@ mod tests {
             responder: None,
             timed_out_at_unix_ms: Some(6),
         }
+    }
+
+    #[test]
+    fn descriptor_drop_retains_path_when_remove_fails() {
+        let dir = tempfile::tempdir().unwrap(); // a directory, not a file
+        let mut reg = RuntimeDescriptorRegistration {
+            descriptor_path: Some(dir.path().to_path_buf()),
+        };
+        reg.remove_descriptor_file("test"); // remove_file on a dir => non-NotFound error
+        assert!(
+            reg.descriptor_path.is_some(),
+            "path must be retained when remove_file fails"
+        );
+    }
+
+    #[test]
+    fn descriptor_drop_clears_path_when_already_absent() {
+        let mut reg = RuntimeDescriptorRegistration {
+            descriptor_path: Some(std::path::PathBuf::from("/definitely/not/here.json")),
+        };
+        reg.remove_descriptor_file("test"); // NotFound => treat as dropped
+        assert!(
+            reg.descriptor_path.is_none(),
+            "NotFound means already gone"
+        );
+    }
+
+    #[test]
+    fn descriptor_drop_clears_path_when_remove_succeeds() {
+        let dir = tempfile::tempdir().unwrap();
+        let file_path = dir.path().join("descriptor.json");
+        std::fs::write(&file_path, b"{}").unwrap();
+        let mut reg = RuntimeDescriptorRegistration {
+            descriptor_path: Some(file_path.clone()),
+        };
+        reg.remove_descriptor_file("test");
+        assert!(reg.descriptor_path.is_none(), "successful remove must clear the path");
+        assert!(!file_path.exists(), "file must actually be removed");
     }
 }
