@@ -59,7 +59,7 @@ export type CursorTarget = OverlayCursorTarget;
 
 export type OverlayReleaseDiagnostic = {
   tabId: number;
-  state: "release_pending" | "release_failed";
+  state: "release_pending" | "release_failed" | "release_abandoned";
   failures?: number;
   sessionId: string;
   turnId: string;
@@ -134,7 +134,10 @@ export class OverlayCoordinator {
 
   async syncForeground(): Promise<void> {
     for (const [tabId, state] of [...this.overlayStates]) {
-      if (state.kind === "release_pending" || state.kind === "release_failed") {
+      if (state.kind === "release_abandoned") {
+        // Terminal state — do not re-send hide; degraded-overlay diagnostics cover it.
+        continue;
+      } else if (state.kind === "release_pending" || state.kind === "release_failed") {
         await this.hide(tabId);
       } else if (await this.isTabVisible(tabId)) {
         await this.reassert(tabId);
@@ -150,20 +153,20 @@ export class OverlayCoordinator {
     this.overlayStates.delete(removedTabId);
     this.rejectWaitersForTab(removedTabId);
     if (plan.kind === "drop") return;
-    this.overlayStates.set(
-      addedTabId,
-      previous?.kind === "release_pending" || previous?.kind === "release_failed"
-        ? releasePendingOverlayState(plan.state)
-        : activeOverlayState(plan.state),
-    );
-    if (previous?.kind === "release_pending" || previous?.kind === "release_failed") {
+    if (previous?.kind === "release_abandoned") {
+      // Carry over abandoned state to new tab — do not re-send hide.
+      this.overlayStates.set(addedTabId, previous);
+    } else if (previous?.kind === "release_pending" || previous?.kind === "release_failed") {
+      this.overlayStates.set(addedTabId, releasePendingOverlayState(plan.state));
       await this.hide(addedTabId);
     } else {
+      this.overlayStates.set(addedTabId, activeOverlayState(plan.state));
       await this.reassert(addedTabId);
     }
   }
 
   hasPendingActivity(): boolean {
+    // Note: release_abandoned is terminal — it does not count as pending activity.
     return this.cursorArrivalWaiters.size > 0
       || this.contentScriptPreparations.size > 0
       || [...this.overlayStates.values()].some((state) => state.kind === "release_pending" || state.kind === "release_failed");
@@ -172,11 +175,11 @@ export class OverlayCoordinator {
   releaseDiagnostics(): OverlayReleaseDiagnostic[] {
     const diagnostics = [];
     for (const [tabId, state] of this.overlayStates) {
-      if (state.kind !== "release_pending" && state.kind !== "release_failed") continue;
+      if (state.kind !== "release_pending" && state.kind !== "release_failed" && state.kind !== "release_abandoned") continue;
       diagnostics.push({
         tabId,
         state: state.kind,
-        ...(state.kind === "release_failed" ? { failures: state.failures } : {}),
+        ...(state.kind === "release_failed" || state.kind === "release_abandoned" ? { failures: state.failures } : {}),
         sessionId: state.takeover.sessionId,
         turnId: state.takeover.turnId,
       });
@@ -265,6 +268,11 @@ export class OverlayCoordinator {
 
   async hide(tabId: number): Promise<void> {
     const plan = planOverlayReleaseRequest(this.overlayStates.get(tabId));
+    if (plan.kind === "release_abandoned") {
+      // Retry cap exceeded — record the terminal abandoned state without sending another hide.
+      this.overlayStates.set(tabId, plan.next);
+      return;
+    }
     if (plan.kind === "send_hide") this.overlayStates.set(tabId, plan.next);
     const sent = await this.sendContentMessage(tabId, { type: "OBU_CURSOR_HIDE" }, { prepare: false });
     if (plan.kind === "noop") return;

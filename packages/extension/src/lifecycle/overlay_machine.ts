@@ -11,10 +11,13 @@ export type OverlayTakeoverState = {
   lastCursor?: OverlayCursorTarget;
 };
 
+export const OVERLAY_RELEASE_MAX_RETRIES = 5;
+
 export type OverlayLifecycleState =
   | { kind: "active"; takeover: OverlayTakeoverState }
   | { kind: "release_pending"; takeover: OverlayTakeoverState }
-  | { kind: "release_failed"; takeover: OverlayTakeoverState; failures: number };
+  | { kind: "release_failed"; takeover: OverlayTakeoverState; failures: number }
+  | { kind: "release_abandoned"; takeover: OverlayTakeoverState; failures: number };
 
 export type OverlayActivationPlan = {
   state: OverlayTakeoverState;
@@ -47,6 +50,7 @@ export type ContentScriptPreparationPlan =
 
 export type OverlayReleaseRequestPlan =
   | { kind: "noop" }
+  | { kind: "release_abandoned"; next: OverlayLifecycleState }
   | { kind: "send_hide"; next: OverlayLifecycleState };
 
 export function planOverlayActivation(input: {
@@ -91,6 +95,13 @@ export function overlayTakeoverState(state: OverlayLifecycleState | undefined): 
 
 export function planOverlayReleaseRequest(state: OverlayLifecycleState | undefined): OverlayReleaseRequestPlan {
   if (!state) return { kind: "noop" };
+  if (state.kind === "release_abandoned") return { kind: "noop" };
+  if (state.kind === "release_failed" && state.failures >= OVERLAY_RELEASE_MAX_RETRIES) {
+    return {
+      kind: "release_abandoned",
+      next: { kind: "release_abandoned", takeover: state.takeover, failures: state.failures },
+    };
+  }
   const next = state.kind === "release_pending" || state.kind === "release_failed"
     ? releaseFailedOverlayState(state.takeover, state.kind === "release_failed" ? state.failures + 1 : 1)
     : releasePendingOverlayState(state.takeover);
@@ -101,6 +112,7 @@ export function planOverlayReleaseResult(
   state: OverlayLifecycleState | undefined,
   hideAcknowledged: boolean,
 ): OverlayLifecycleState | undefined {
+  // release_abandoned is terminal — ack does not transition it; the condition below leaves it unchanged.
   if (!state || (state.kind !== "release_pending" && state.kind !== "release_failed")) return state;
   return hideAcknowledged ? undefined : state;
 }

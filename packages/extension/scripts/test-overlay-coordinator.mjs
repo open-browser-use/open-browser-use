@@ -93,3 +93,21 @@ assert.deepEqual(coordinator.releaseDiagnostics(), [{
   turnId: "turn",
 }]);
 assert.equal(coordinator.hasPendingActivity(), true);
+
+// Finding 21: release_abandoned must NOT count as pending activity
+{
+  const { releaseFailedOverlayState, OVERLAY_RELEASE_MAX_RETRIES } = await import("../dist/lifecycle/overlay_machine.js");
+  const coordinator2 = new OverlayCoordinator((trigger) => {});
+  await coordinator2.activate(10, { session_id: "session", turn_id: "turn" });
+  // exhaust retries: first call active→release_pending, then MAX calls release_pending/failed→release_failed,
+  // then one final call with release_failed(MAX) triggers transition to release_abandoned
+  for (let i = 0; i <= OVERLAY_RELEASE_MAX_RETRIES + 1; i++) {
+    failNextHide = true;
+    await coordinator2.hide(10);
+  }
+  // after MAX retries, the tab should be in release_abandoned state
+  const diag = coordinator2.releaseDiagnostics();
+  assert.ok(diag.some((d) => d.tabId === 10 && d.state === "release_abandoned"), "tab should be release_abandoned");
+  // release_abandoned must NOT be pending
+  assert.equal(coordinator2.hasPendingActivity(), false, "release_abandoned must not count as pending");
+}

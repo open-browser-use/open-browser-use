@@ -100,3 +100,27 @@ assert.deepEqual(planContentScriptPreparation({
   pingSucceeded: false,
   preparationPending: false,
 }), { kind: "inject" });
+
+{
+  // Finding 21: overlay release must be bounded
+  const { releaseFailedOverlayState, planOverlayReleaseRequest, OVERLAY_RELEASE_MAX_RETRIES } = await import("../dist/lifecycle/overlay_machine.js");
+  const takeover = { sessionId: "s", turnId: "t", lockInputs: true };
+  // verify constant is exported
+  assert.equal(typeof OVERLAY_RELEASE_MAX_RETRIES, "number");
+  // a release_failed state at MAX retries must move to release_abandoned on next plan
+  const state = releaseFailedOverlayState(takeover, OVERLAY_RELEASE_MAX_RETRIES);
+  const plan = planOverlayReleaseRequest(state);
+  assert.equal(plan.kind, "release_abandoned", "after MAX retries release must reach a terminal repair state");
+  assert.equal(plan.next.kind, "release_abandoned");
+  assert.equal(plan.next.failures, OVERLAY_RELEASE_MAX_RETRIES);
+
+  // a release_abandoned state planned again must be noop
+  const abandonedPlan = planOverlayReleaseRequest(plan.next);
+  assert.equal(abandonedPlan.kind, "noop");
+
+  // release_failed below the cap still sends hide
+  const stillTrying = planOverlayReleaseRequest(releaseFailedOverlayState(takeover, OVERLAY_RELEASE_MAX_RETRIES - 1));
+  assert.equal(stillTrying.kind, "send_hide");
+  assert.equal(stillTrying.next.kind, "release_failed");
+  assert.equal(stillTrying.next.failures, OVERLAY_RELEASE_MAX_RETRIES);
+}
