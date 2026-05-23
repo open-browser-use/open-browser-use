@@ -85,3 +85,55 @@ export function createObserveStateTrace(): StateTrace<ObserveRequestState> {
 export function createActionStateTrace(): StateTrace<ActionRuntimeState> {
   return new StateTrace("planned", ACTION_RUNTIME_TRANSITIONS);
 }
+
+export type HighLevelActionState =
+  | "planned"
+  | "observing"
+  | "planning_steps"
+  | "preflighting_steps"
+  | "running_step"
+  | "waiting_for_effect"
+  | "reconciling"
+  | "succeeded"
+  | "partial"
+  | "blocked"
+  | "failed"
+  | "cancelled";
+
+export const HIGH_LEVEL_ACTION_TRANSITIONS: Readonly<
+  Record<HighLevelActionState, readonly HighLevelActionState[]>
+> = {
+  planned: ["observing", "blocked", "failed", "cancelled"],
+  observing: ["planning_steps", "blocked", "failed", "cancelled"],
+  planning_steps: ["preflighting_steps", "blocked", "failed", "cancelled"],
+  preflighting_steps: ["running_step", "blocked", "failed", "cancelled"],
+  // running_step may finish a step and loop back to observing the next boundary
+  // (Finding 14), or proceed to wait for the dispatched primitive action's effect.
+  running_step: [
+    "waiting_for_effect",
+    "observing",
+    "partial",
+    "blocked",
+    "failed",
+    "cancelled",
+  ],
+  waiting_for_effect: ["reconciling", "partial", "failed", "cancelled"],
+  reconciling: [
+    "observing",
+    "running_step",
+    "succeeded",
+    "partial",
+    "blocked",
+    "failed",
+    "cancelled",
+  ],
+  succeeded: [],
+  partial: [],
+  blocked: [],
+  failed: [],
+  cancelled: [],
+};
+
+export function createHighLevelActionStateTrace(): StateTrace<HighLevelActionState> {
+  return new StateTrace("planned", HIGH_LEVEL_ACTION_TRANSITIONS);
+}
