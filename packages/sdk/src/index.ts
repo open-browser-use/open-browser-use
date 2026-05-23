@@ -126,6 +126,8 @@ export type {
   FillFormInput,
   SubmitAndObserveInput,
 } from "./tab-flows.js";
+export { TabRead } from "./tab-read.js";
+export type { TabReadDeps, ExtractTableInput, ExtractTableResult } from "./tab-read.js";
 export { TabDev } from "./tab-dev.js";
 export { TabDomCua } from "./tab-dom-cua.js";
 export type { DomCuaActionOptions, DomCuaActionResult, DomCuaNode, DomCuaObservationOptions, DomCuaSnapshot } from "./tab-dom-cua.js";

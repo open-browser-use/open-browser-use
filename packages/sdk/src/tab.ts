@@ -19,6 +19,7 @@ import { TabDev } from "./tab-dev.js";
 import { TabDomCua, type DomCuaActionResult } from "./tab-dom-cua.js";
 import { TabPlaywright } from "./tab-playwright.js";
 import { TabFlows } from "./tab-flows.js";
+import { TabRead } from "./tab-read.js";
 import { getSessionLifecycleContext, withSessionMeta } from "./session-meta.js";
 import { createActionStateTrace, createObserveStateTrace } from "./state-machines.js";
 import type { StateTrace, StateTraceEntry, ObserveRequestState, ActionRuntimeState } from "./state-machines.js";
@@ -276,6 +277,7 @@ export class Tab {
   readonly dev: TabDev;
   readonly dom_cua: TabDomCua;
   readonly flows: TabFlows;
+  readonly read: TabRead;
   readonly playwright: TabPlaywright;
   readonly metadata: TabMetadata;
   #localObservations = new Map<string, ObservationLifecycle>();
@@ -295,6 +297,11 @@ export class Tab {
     this.flows = new TabFlows({
       observe: (opts) => this.observe(opts),
       step: (action) => this.step(action),
+    });
+    this.read = new TabRead({
+      observe: (opts) => this.observe(opts),
+      evaluate: (expression: string) =>
+        this.evaluate(expression) as Promise<{ rows: string[][] }>,
     });
     this.clipboard = new TabClipboard(transport, guards, id, ensureCommandable);
     this.content = new TabContent(transport, guards, id, ensureCommandable);
