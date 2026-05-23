@@ -21,6 +21,8 @@ export type GuardContext = {
   params: Record<string, unknown>;
 };
 
+export type CommandabilityGuard = (method: string) => void;
+
 export const ALWAYS_ALLOWED = new Set<string>([
   ...Object.entries(METHOD_CLASSIFICATION)
     .filter(([, classification]) => classification === "always-allowed")

@@ -1,4 +1,4 @@
-import { Guards } from "./guards.js";
+import { Guards, type CommandabilityGuard } from "./guards.js";
 import { attrSelector, Locator, roleSelector, testIdSelector, textSelector } from "./locator.js";
 import type { Transport } from "./wire/transport.js";
 
@@ -10,6 +10,7 @@ export class FrameLocator {
     private readonly guards: Guards,
     private readonly tabId: string,
     private readonly frameSelector: string,
+    private readonly ensureCommandable?: CommandabilityGuard,
   ) {}
 
   locator(selector: string): Locator {
@@ -19,6 +20,7 @@ export class FrameLocator {
       this.guards,
       this.tabId,
       `${this.frameSelector} >> internal:control=enter-frame >> ${selector}`,
+      this.ensureCommandable,
     );
   }
 
@@ -29,6 +31,7 @@ export class FrameLocator {
       this.guards,
       this.tabId,
       `${this.frameSelector} >> internal:control=enter-frame >> ${selector}`,
+      this.ensureCommandable,
     );
   }
 

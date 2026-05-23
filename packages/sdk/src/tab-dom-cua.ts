@@ -31,6 +31,7 @@ export class TabDomCua {
     private readonly transport: Transport,
     guardsOrTabId: Guards | string,
     tabId?: string,
+    private readonly ensureCommandable: (method: string) => void = () => {},
   ) {
     this.guards = guardsOrTabId instanceof Guards ? guardsOrTabId : new Guards();
     this.tabId = guardsOrTabId instanceof Guards ? (tabId ?? "") : guardsOrTabId;
@@ -41,6 +42,7 @@ export class TabDomCua {
   async get_visible_dom(opts: { timeout?: number; format: "debug_text" }): Promise<string>;
   async get_visible_dom(opts: { timeout?: number; format: "compact_text" }): Promise<string>;
   async get_visible_dom(opts: { timeout?: number; format?: "json" | "text" | "debug_text" | "compact_text" } = {}): Promise<DomCuaSnapshot | string> {
+    this.ensureCommandable(M.DOM_CUA_GET_VISIBLE_DOM);
     const currentUrl = this.guards.needsCurrentUrl(M.DOM_CUA_GET_VISIBLE_DOM)
       ? await this.transport.sendRequest<string>(M.TAB_URL, withSessionMeta({ tab_id: this.tabId }), opts.timeout)
       : undefined;
@@ -105,6 +107,7 @@ export class TabDomCua {
   }
 
   async #send(method: string, params: Record<string, unknown>, timeoutMs?: number): Promise<void> {
+    this.ensureCommandable(method);
     const command = { command: method, tab_id: this.tabId, ...params };
     const currentUrl = this.guards.needsCurrentUrl(method)
       ? await this.transport.sendRequest<string>(M.TAB_URL, withSessionMeta({ tab_id: this.tabId }), timeoutMs)

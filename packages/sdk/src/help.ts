@@ -23,8 +23,8 @@ Browser:
   keep multiple Tab handles when a workflow needs more than one tab
   .user.discoverTabs() -> UserTabRef[] / .user.history() / .user.claimTab()
   .name(label) / .turnEnded() to mark a turn boundary while keeping active tabs controlled
-  .yieldControl() / .resumeControl() to let a human take over and then resume the same task tab
-  .finalizeTabs({keep?}) / .finalize() / .finishTurn({keep?}) to close, release, hand off, or preserve tabs
+  .yieldControl() / .resumeControlResult() to let a human take over and resume with structured blocked-repair diagnostics
+  .finalizeTabs({keep?}) / .finalize() / .finishTurn({keep?, endTurnOnPartial?}) to close, release, hand off, or preserve tabs
   .clearLifecycleDiagnostics()
 
 Tab:

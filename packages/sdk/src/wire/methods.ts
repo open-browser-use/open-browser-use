@@ -98,6 +98,8 @@ export const TAB_SCREENSHOT = "tab_screenshot" as const;
 export const TAB_WAIT_FOR_URL = "tab_wait_for_url" as const;
 export const TAB_WAIT_FOR_LOAD_STATE = "tab_wait_for_load_state" as const;
 export const TAB_CONTENT_EXPORT = "tab_content_export" as const;
+export const TAB_EVALUATE = "tab_evaluate" as const;
+export const TAB_SNAPSHOT_TEXT = "tab_snapshot_text" as const;
 export const TAB_URL = "tab_url" as const;
 export const TAB_TITLE = "tab_title" as const;
 
@@ -185,6 +187,8 @@ export const ALL_INBOUND_METHODS = [
   TAB_WAIT_FOR_URL,
   TAB_WAIT_FOR_LOAD_STATE,
   TAB_CONTENT_EXPORT,
+  TAB_EVALUATE,
+  TAB_SNAPSHOT_TEXT,
   TAB_URL,
   TAB_TITLE,
 ] as const satisfies readonly string[];

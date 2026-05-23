@@ -81,6 +81,8 @@ describe("BrowserUser", () => {
         title: "Open",
         origin: "user",
         status: "active",
+        commandable: false,
+        claimRequired: true,
       });
       expect(claimed.id).toBe("12");
       expect(claimed.metadata).toMatchObject({

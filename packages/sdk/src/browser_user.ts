@@ -68,10 +68,10 @@ export class BrowserUser {
   }
 
   /** @deprecated Use discoverTabs(), then claim the returned UserTabRef explicitly. */
-  async openTabs(): Promise<Tab[]> {
+  async openTabs(): Promise<UserTabRef[]> {
     await this.guards.ensureCommandAllowed({ command: M.GET_USER_TABS });
     const rows = await this.transport.sendRequest<TabWire[]>(M.GET_USER_TABS, withSessionMeta({}));
-    return rows.map((row) => tabFromWire(this.transport, this.guards, row, "getUserTabs"));
+    return rows.map((row) => this.#userTabRefFromWire(row, "getUserTabs"));
   }
 
   async history(query: BrowserHistoryQuery = {}): Promise<BrowserHistoryItem[]> {

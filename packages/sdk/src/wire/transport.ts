@@ -6,6 +6,46 @@ type Pending = {
   resolve: (value: unknown) => void;
   reject: (error: unknown) => void;
   timer: ReturnType<typeof setTimeout>;
+  method: string;
+  timeoutMs: number;
+};
+
+export type TransportRequestLifecycle =
+  | {
+      kind: "timed_out_pending_reconcile";
+      requestId: number;
+      method: string;
+      timeoutMs: number;
+      defensiveOvershootMs: number;
+      timedOutAt: number;
+      nextAction: "observe_reconcile";
+    }
+  | {
+      kind: "timed_out_late_success";
+      requestId: number;
+      method: string;
+      completedAt: number;
+      nextAction: "observe_reconcile";
+    }
+  | {
+      kind: "timed_out_late_error";
+      requestId: number;
+      method: string;
+      completedAt: number;
+      error: { code: number; message: string; data?: unknown };
+      nextAction: "inspect_error";
+    }
+  | {
+      kind: "timed_out_late_transport_closed";
+      requestId: number;
+      method: string;
+      completedAt: number;
+      reason: string;
+      nextAction: "reconnect_or_retry";
+    };
+
+export type TransportDiagnostics = {
+  request_lifecycle: TransportRequestLifecycle[];
 };
 
 type RpcResponse = {
@@ -26,6 +66,7 @@ const DEFENSIVE_OVERSHOOT_MS = Number.isFinite(parsedOvershoot) && parsedOversho
   : 5_000;
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
+const MAX_REQUEST_LIFECYCLE_DIAGNOSTICS = 64;
 
 export class Transport {
   #closed = false;
@@ -33,6 +74,7 @@ export class Transport {
   #encoder = new FrameEncoder();
   #nextId = 1;
   #pending = new Map<number, Pending>();
+  #timedOutRequests = new Map<number, TransportRequestLifecycle>();
 
   constructor(private readonly connection: NativePipeConnection) {
     this.connection.on("data", (chunk) => this.#onData(chunk));
@@ -63,14 +105,28 @@ export class Transport {
 
     const response = new Promise<R>((resolve, reject) => {
       const timer = setTimeout(() => {
+        const pending = this.#pending.get(id);
         this.#pending.delete(id);
+        this.#recordTimedOutRequest({
+          kind: "timed_out_pending_reconcile",
+          requestId: id,
+          method,
+          timeoutMs,
+          defensiveOvershootMs: DEFENSIVE_OVERSHOOT_MS,
+          timedOutAt: Date.now(),
+          nextAction: "observe_reconcile",
+        });
         reject(
           new ObuError(
             ERR_TIMEOUT,
             `defensive timeout: no response in ${timeoutMs + DEFENSIVE_OVERSHOOT_MS}ms`,
             productErrorData("timeout", {
+              method: pending?.method ?? method,
+              request_id: id,
               timeout_ms: timeoutMs,
               defensive_overshoot_ms: DEFENSIVE_OVERSHOOT_MS,
+              lifecycle_state: "timed_out_pending_reconcile",
+              next_action: "observe_reconcile",
             }),
           ),
         );
@@ -79,6 +135,8 @@ export class Transport {
         resolve: resolve as (value: unknown) => void,
         reject,
         timer,
+        method,
+        timeoutMs,
       });
     });
 
@@ -104,6 +162,12 @@ export class Transport {
     this.connection.end();
   }
 
+  diagnostics(): TransportDiagnostics {
+    return {
+      request_lifecycle: [...this.#timedOutRequests.values()],
+    };
+  }
+
   #onData(chunk: unknown): void {
     const bytes = toUint8Array(chunk);
     if (!bytes) return;
@@ -125,7 +189,10 @@ export class Transport {
       }
       if (typeof message.id !== "number") continue;
       const pending = this.#pending.get(message.id);
-      if (!pending) continue;
+      if (!pending) {
+        this.#recordLateTimedOutResponse(message.id, message);
+        continue;
+      }
       this.#pending.delete(message.id);
       clearTimeout(pending.timer);
 
@@ -160,12 +227,64 @@ export class Transport {
   #onClose(reason: string, code = ERR_TRANSPORT_CLOSED): void {
     if (this.#closed) return;
     this.#closed = true;
+    for (const [requestId, lifecycle] of this.#timedOutRequests) {
+      if (lifecycle.kind !== "timed_out_pending_reconcile") continue;
+      this.#recordTimedOutRequest({
+        kind: "timed_out_late_transport_closed",
+        requestId,
+        method: lifecycle.method,
+        completedAt: Date.now(),
+        reason,
+        nextAction: "reconnect_or_retry",
+      });
+    }
     for (const pending of this.#pending.values()) {
       clearTimeout(pending.timer);
       pending.reject(new ObuError(code, reason, productErrorForClosedTransport(code, reason)));
     }
     this.#pending.clear();
   }
+
+  #recordLateTimedOutResponse(requestId: number, message: RpcResponse): void {
+    const previous = this.#timedOutRequests.get(requestId);
+    if (!previous) return;
+    if (message.error) {
+      this.#recordTimedOutRequest({
+        kind: "timed_out_late_error",
+        requestId,
+        method: previous.method,
+        completedAt: Date.now(),
+        error: normalizeRpcError(message.error),
+        nextAction: "inspect_error",
+      });
+      return;
+    }
+    this.#recordTimedOutRequest({
+      kind: "timed_out_late_success",
+      requestId,
+      method: previous.method,
+      completedAt: Date.now(),
+      nextAction: "observe_reconcile",
+    });
+  }
+
+  #recordTimedOutRequest(lifecycle: TransportRequestLifecycle): void {
+    this.#timedOutRequests.set(lifecycle.requestId, lifecycle);
+    while (this.#timedOutRequests.size > MAX_REQUEST_LIFECYCLE_DIAGNOSTICS) {
+      const oldest = this.#timedOutRequests.keys().next().value;
+      if (typeof oldest !== "number") break;
+      this.#timedOutRequests.delete(oldest);
+    }
+  }
+}
+
+function normalizeRpcError(error: NonNullable<RpcResponse["error"]>): { code: number; message: string; data?: unknown } {
+  const normalized = {
+    code: typeof error.code === "number" ? error.code : -1,
+    message: typeof error.message === "string" ? error.message : "rpc error",
+  } as { code: number; message: string; data?: unknown };
+  if ("data" in error) normalized.data = error.data;
+  return normalized;
 }
 
 function productErrorForClosedTransport(code: number, reason: string): Record<string, unknown> | undefined {

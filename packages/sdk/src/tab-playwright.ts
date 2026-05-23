@@ -31,6 +31,7 @@ export class TabPlaywright {
     private readonly transport: Transport,
     guardsOrTabId: Guards | string,
     tabId?: string,
+    private readonly ensureCommandable: (method: string) => void = () => {},
   ) {
     this.guards = guardsOrTabId instanceof Guards ? guardsOrTabId : new Guards();
     this.tabId = guardsOrTabId instanceof Guards ? (tabId ?? "") : guardsOrTabId;
@@ -61,6 +62,7 @@ export class TabPlaywright {
   }
 
   async #ensureAllowed(method: string, params: Record<string, unknown>, timeout?: number): Promise<void> {
+    this.ensureCommandable(method);
     const currentUrl = this.guards.needsCurrentUrl(method)
       ? await this.transport.sendRequest<string>(M.TAB_URL, withSessionMeta({ tab_id: this.tabId }), timeout)
       : undefined;

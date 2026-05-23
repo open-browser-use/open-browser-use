@@ -6,7 +6,7 @@ import { Tab } from "./tab.js";
 import { tabIdFromWire, tabMetadata, type TabWire } from "./tab_wire.js";
 import type { DiscoveredBackend } from "./browsers.js";
 import type { BrowserInfo } from "./types.js";
-import type { Transport } from "./wire/transport.js";
+import type { Transport, TransportDiagnostics } from "./wire/transport.js";
 import * as M from "./wire/methods.js";
 
 export type BrowserFinalizeStatus = "handoff" | "deliverable";
@@ -106,6 +106,11 @@ type BrowserFinalizeTabsWireResult = Record<string, unknown>;
 
 export type BrowserFinishTurnOptions = BrowserFinalizeTabsOptions & {
   turnTimeout?: number;
+  endTurnOnPartial?: boolean;
+};
+
+export type BrowserFinishTurnResult = BrowserFinalizeTabsResult & {
+  turnEnded: boolean;
 };
 
 export type BrowserReadySummary = {
@@ -192,7 +197,20 @@ export type BrowserVisibilityResult = {
   state?: string;
 };
 
+export type BrowserResumeControlRepair = {
+  status: "repair_required" | "blocked";
+  reason?: string;
+  nextActiveTabId?: string | number;
+  diagnostics: unknown[];
+  cleanup: unknown[];
+};
+
+export type BrowserResumeControlResult =
+  | { status: "resumed"; tab: Tab; repair?: BrowserResumeControlRepair }
+  | { status: "blocked"; tab?: undefined; repair: BrowserResumeControlRepair };
+
 type BrowserControlTabWire = TabWire;
+type BrowserControlWire = { tab?: BrowserControlTabWire | null; repair?: unknown } | BrowserControlTabWire | null;
 
 export class Browser {
   readonly metadata: Record<string, unknown>;
@@ -255,15 +273,30 @@ export class Browser {
   }
 
   async resumeControl(opts: { timeout?: number } = {}): Promise<Tab | undefined> {
-    const response = await this.transport.sendRequest<{ tab?: BrowserControlTabWire | null } | BrowserControlTabWire | null>(
+    const result = await this.resumeControlResult(opts);
+    return result.status === "resumed" ? result.tab : undefined;
+  }
+
+  async resumeControlResult(opts: { timeout?: number } = {}): Promise<BrowserResumeControlResult> {
+    const response = await this.transport.sendRequest<BrowserControlWire>(
       M.RESUME_CONTROL,
       withSessionMeta({}),
       opts.timeout,
     );
     const row = unwrapBrowserControlTab(response);
-    if (!row) return undefined;
+    const repair = unwrapBrowserControlRepair(response);
+    if (!row) {
+      return { status: "blocked", repair: normalizeBrowserControlRepair(repair, "blocked") };
+    }
     const id = tabIdFromWire(row, "resumeControl response missing tab_id");
-    return new Tab(this.transport, this.guards, id, tabMetadata(row));
+    const result: BrowserResumeControlResult = {
+      status: "resumed",
+      tab: new Tab(this.transport, this.guards, id, tabMetadata(row)),
+    };
+    if (repair !== undefined) {
+      result.repair = normalizeBrowserControlRepair(repair, "repair_required");
+    }
+    return result;
   }
 
   async finalizeTabs(opts: BrowserFinalizeTabsOptions = {}): Promise<BrowserFinalizeTabsResult> {
@@ -284,23 +317,29 @@ export class Browser {
     return await this.finalizeTabs(opts);
   }
 
-  async finishTurn(opts: BrowserFinishTurnOptions = {}): Promise<BrowserFinalizeTabsResult> {
+  async finishTurn(opts: BrowserFinishTurnOptions = {}): Promise<BrowserFinishTurnResult> {
     const finalizeOpts: BrowserFinalizeTabsOptions = {};
     if (opts.keep !== undefined) finalizeOpts.keep = opts.keep;
     if (opts.timeout !== undefined) finalizeOpts.timeout = opts.timeout;
     const result = await this.finalizeTabs(finalizeOpts);
+    if (!shouldEndTurnAfterFinalize(result, opts)) {
+      return { ...result, turnEnded: false };
+    }
     const turnOpts: { timeout?: number } = {};
     const turnTimeout = opts.turnTimeout ?? opts.timeout;
     if (turnTimeout !== undefined) turnOpts.timeout = turnTimeout;
     await this.turnEnded(turnOpts);
-    return result;
+    return { ...result, turnEnded: true };
   }
 
   async ensureReady(opts: { timeout?: number } = {}): Promise<BrowserReadySummary> {
     const info = await this.transport.sendRequest<BrowserInfo>(M.GET_INFO, {}, opts.timeout);
     const capabilities = info.capabilities ?? {};
     const metadata = info.metadata ?? {};
-    const diagnostics = recordOrEmpty(recordOrEmpty(metadata).diagnostics);
+    const diagnostics = {
+      ...recordOrEmpty(recordOrEmpty(metadata).diagnostics),
+      ...transportDiagnostics(this.transport),
+    };
     return {
       type: info.type,
       name: info.name,
@@ -343,6 +382,14 @@ export class Browser {
       opts.timeout,
     );
   }
+}
+
+function transportDiagnostics(transport: Transport): Record<string, unknown> {
+  const diagnostics = (transport as unknown as { diagnostics?: () => TransportDiagnostics }).diagnostics?.();
+  const requestLifecycle = diagnostics?.request_lifecycle;
+  return Array.isArray(requestLifecycle) && requestLifecycle.length > 0
+    ? { sdk_requests: requestLifecycle }
+    : {};
 }
 
 export class BrowserCapabilityRegistry {
@@ -478,6 +525,12 @@ function normalizeFinalizeTabsResult(row: BrowserFinalizeTabsWireResult): Browse
     failures,
     diagnostics: normalizeFinalizeDiagnostics(row, true),
   };
+}
+
+function shouldEndTurnAfterFinalize(result: BrowserFinalizeTabsResult, opts: BrowserFinishTurnOptions): boolean {
+  if (result.status === "fatal") return false;
+  if (result.status === "partial") return opts.endTurnOnPartial === true;
+  return result.failures.length === 0;
 }
 
 function normalizeFinalizeAction(value: unknown): BrowserFinalizeTabAction {
@@ -704,13 +757,37 @@ function assertNumberInRange(value: number, key: string, min: number, max: numbe
 }
 
 function unwrapBrowserControlTab(
-  response: { tab?: BrowserControlTabWire | null } | BrowserControlTabWire | null,
+  response: BrowserControlWire,
 ): BrowserControlTabWire | null | undefined {
   if (!response) return response;
   if (Object.prototype.hasOwnProperty.call(response, "tab")) {
     return (response as { tab?: BrowserControlTabWire | null }).tab;
   }
   return response as BrowserControlTabWire;
+}
+
+function unwrapBrowserControlRepair(response: BrowserControlWire): unknown {
+  if (!response || !Object.prototype.hasOwnProperty.call(response, "repair")) return undefined;
+  return (response as { repair?: unknown }).repair;
+}
+
+function normalizeBrowserControlRepair(
+  value: unknown,
+  fallbackStatus: BrowserResumeControlRepair["status"],
+): BrowserResumeControlRepair {
+  const row = recordOrEmpty(value);
+  const status = row.status === "repair_required" || row.status === "blocked"
+    ? row.status
+    : fallbackStatus;
+  const reason = typeof row.reason === "string" ? row.reason : status === "blocked" ? "no_active_tab" : undefined;
+  const nextActiveTabId = field(row, "nextActiveTabId", "next_active_tab_id");
+  return {
+    status,
+    ...(reason !== undefined ? { reason } : {}),
+    ...(typeof nextActiveTabId === "string" || typeof nextActiveTabId === "number" ? { nextActiveTabId } : {}),
+    diagnostics: Array.isArray(row.diagnostics) ? row.diagnostics : [],
+    cleanup: Array.isArray(row.cleanup) ? row.cleanup : [],
+  };
 }
 
 function deliverableSummaries(info: BrowserInfo): Array<{

@@ -33,6 +33,9 @@ If no backend is available, `agent.browsers.get(kind)` includes ignored runtime
 descriptor diagnostics in the thrown `ERR_NO_BACKEND` message. Call
 `await agent.browsers.diagnostics()` to inspect those setup diagnostics without
 attempting a connection.
+When handing control to a human, prefer `browser.resumeControlResult()` over
+the legacy convenience `resumeControl()` when recovery matters; the structured
+result preserves blocked/no-active-tab repair diagnostics.
 
 ## Public Surface
 
@@ -53,7 +56,7 @@ Call `agent.help()` for the live API table. Main layers:
 | `browser.user.discoverTabs/history/claimTab` | `getUserTabs`, `getUserHistory`, `claimUserTab` |
 | `tab.attach/detach` | `attach`, `detach` |
 | `tab.goto/back/forward/reload/waitForURL/waitForLoadState/screenshot` | `tab_*` |
-| `tab.evaluate()` / `tab.snapshotText()` | capped `executeCdp` evaluation |
+| `tab.evaluate()` / `tab.snapshotText()` | `tab_evaluate`, `tab_snapshot_text` |
 | `tab.screenshotForModel()` | `tab_screenshot` plus MCP image emission when available |
 | `tab.waitForEvent("filechooser" \| "download")` | `playwright_wait_for_*` |
 | `tab.locator(selector)` / `locator.download_media()` | `playwright_locator_*` |
@@ -75,10 +78,11 @@ human-owned tabs return `UserTabRef` until explicitly claimed. Use
 `browser.user.openTabs()` remains as a deprecated compatibility shim and is not
 the primary discovery API.
 `browser.turnEnded()` marks a turn boundary while preserving active control;
-`browser.finishTurn(...)` first finalizes tabs and is for close/release/handoff
-or deliverable workflows. For setup verification and browser readiness probes,
-prefer `turnEnded()` so follow-up checks keep using the same WebExtension
-session.
+`browser.finishTurn(...)` first finalizes tabs and only marks the turn ended
+after clean finalization. Partial finalization keeps the turn open unless
+`endTurnOnPartial: true` is passed; fatal finalization always leaves the turn
+open. For setup verification and browser readiness probes, prefer `turnEnded()`
+so follow-up checks keep using the same WebExtension session.
 One session can keep multiple `Tab` handles and move data between them:
 
 ```js

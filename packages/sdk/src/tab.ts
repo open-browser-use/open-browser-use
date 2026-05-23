@@ -122,21 +122,22 @@ export class Tab {
     public readonly id: string,
     metadata: TabMetadata = {},
   ) {
-    this.clipboard = new TabClipboard(transport, guards, id);
-    this.content = new TabContent(transport, guards, id);
-    this.cua = new TabCua(transport, guards, id);
-    this.dev = new TabDev(transport, guards, id);
-    this.dom_cua = new TabDomCua(transport, guards, id);
-    this.playwright = new TabPlaywright(transport, guards, id);
     this.metadata = metadata;
+    const ensureCommandable = (method: string) => this.#ensureCommandable(method);
+    this.clipboard = new TabClipboard(transport, guards, id, ensureCommandable);
+    this.content = new TabContent(transport, guards, id, ensureCommandable);
+    this.cua = new TabCua(transport, guards, id, ensureCommandable);
+    this.dev = new TabDev(transport, guards, id, ensureCommandable);
+    this.dom_cua = new TabDomCua(transport, guards, id, ensureCommandable);
+    this.playwright = new TabPlaywright(transport, guards, id, ensureCommandable);
   }
 
   locator(selector: string): Locator {
-    return new Locator(this.transport, this.guards, this.id, selector);
+    return new Locator(this.transport, this.guards, this.id, selector, (method) => this.#ensureCommandable(method));
   }
 
   frameLocator(selector: string): FrameLocator {
-    return new FrameLocator(this.transport, this.guards, this.id, selector);
+    return new FrameLocator(this.transport, this.guards, this.id, selector, (method) => this.#ensureCommandable(method));
   }
 
   getByRole(role: string, opts: { name?: string | RegExp; exact?: boolean } = {}): Locator {
@@ -160,15 +161,18 @@ export class Tab {
   }
 
   async goto(url: string, opts: { timeout?: number } = {}): Promise<void> {
+    this.#ensureCommandable(M.TAB_GOTO);
     await this.guards.ensureCommandAllowed({ command: M.TAB_GOTO, tab_id: this.id, url });
     await this.transport.sendRequest(M.TAB_GOTO, withSessionMeta({ tab_id: this.id, url }), opts.timeout);
   }
 
   async attach(opts: { timeout?: number } = {}): Promise<void> {
+    this.#ensureCommandable(M.ATTACH);
     await this.transport.sendRequest(M.ATTACH, withSessionMeta({ tab_id: this.id }), opts.timeout);
   }
 
   async detach(opts: { timeout?: number } = {}): Promise<void> {
+    this.#ensureCommandable(M.DETACH);
     await this.transport.sendRequest(M.DETACH, withSessionMeta({ tab_id: this.id }), opts.timeout);
   }
 
@@ -232,6 +236,7 @@ export class Tab {
   }
 
   async url(opts: { timeout?: number } = {}): Promise<string> {
+    this.#ensureCommandable(M.TAB_URL);
     const currentUrl = await this.#currentUrlForGuard(opts.timeout);
     await this.guards.ensureCommandAllowed({ command: M.TAB_URL, tab_id: this.id }, { currentUrl });
     return currentUrl;
@@ -294,41 +299,23 @@ export class Tab {
     opts: TabEvaluateOptions = {},
   ): Promise<T | unknown> {
     const maxJsonBytes = opts.maxJsonBytes ?? 64 * 1024;
-    const response = await this.dev.cdp<{
-      result?: { value?: unknown };
-      exceptionDetails?: { text?: string; exception?: { description?: string } };
-    }>(
-      "Runtime.evaluate",
-      {
-        expression: boundedEvaluateExpression(expressionOrFn, maxJsonBytes),
-        awaitPromise: true,
-        returnByValue: true,
-      },
-      optionalTimeout(opts.timeout),
+    return this.#evaluateWithMethod<T>(
+      M.TAB_EVALUATE,
+      boundedEvaluateExpression(expressionOrFn, maxJsonBytes),
+      opts.timeout,
+      "tab.evaluate failed",
     );
-    if (response?.exceptionDetails) {
-      throw new Error(
-        response.exceptionDetails.exception?.description
-          ?? response.exceptionDetails.text
-          ?? "tab.evaluate failed",
-      );
-    }
-    const value = response?.result?.value;
-    if (isRecord(value) && "__obu_evaluate_value" in value) {
-      return value.__obu_evaluate_value as T;
-    }
-    if (isRecord(value) && "__obu_evaluate_summary" in value) {
-      return value.__obu_evaluate_summary;
-    }
-    return value as T;
   }
 
   async snapshotText(opts: TabSnapshotTextOptions = {}): Promise<TabSnapshotTextResult> {
     const maxItems = positiveInt(opts.maxItems, 20);
     const maxTextLength = positiveInt(opts.maxTextLength, 120);
-    const result = await this.evaluate<TabSnapshotTextResult>(
-      snapshotTextExpression(maxItems, maxTextLength),
-      evaluateOptions(opts.timeout, opts.maxJsonBytes ?? 32 * 1024),
+    const result = await this.#evaluateWithMethod<TabSnapshotTextResult>(
+      M.TAB_SNAPSHOT_TEXT,
+      boundedEvaluateExpression(snapshotTextExpression(maxItems, maxTextLength), opts.maxJsonBytes ?? 32 * 1024),
+      opts.timeout,
+      "tab.snapshotText failed",
+      opts.maxJsonBytes ?? 32 * 1024,
     );
     if (isTruncatedEvaluateSummary(result)) {
       throw new Error(
@@ -353,6 +340,7 @@ export class Tab {
   }
 
   async waitForTimeout(ms: number): Promise<void> {
+    this.#ensureCommandable(M.PLAYWRIGHT_WAIT_FOR_TIMEOUT);
     await this.transport.sendRequest(M.PLAYWRIGHT_WAIT_FOR_TIMEOUT, withSessionMeta({ tab_id: this.id, timeout_ms: ms }), ms + 1000);
   }
 
@@ -362,6 +350,7 @@ export class Tab {
   }
 
   async #ensureTabCommandAllowed(method: string, params: Record<string, unknown> = {}, timeout?: number): Promise<void> {
+    this.#ensureCommandable(method);
     const command = { command: method, tab_id: this.id, ...params };
     const currentUrl = this.guards.needsCurrentUrl(method)
       ? await this.#currentUrlForGuard(timeout)
@@ -373,8 +362,58 @@ export class Tab {
     return await this.transport.sendRequest<string>(M.TAB_URL, withSessionMeta({ tab_id: this.id }), timeout);
   }
 
+  async #evaluateWithMethod<T>(
+    method: string,
+    expression: string,
+    timeout: number | undefined,
+    fallbackMessage: string,
+    maxJsonBytes?: number,
+  ): Promise<T | unknown> {
+    await this.#ensureTabCommandAllowed(method, {
+      expression,
+      awaitPromise: true,
+      returnByValue: true,
+      ...(maxJsonBytes !== undefined ? { maxJsonBytes } : {}),
+    }, timeout);
+    const response = await this.transport.sendRequest<{
+      result?: { value?: unknown };
+      exceptionDetails?: { text?: string; exception?: { description?: string } };
+    }>(
+      method,
+      withSessionMeta({
+        tab_id: this.id,
+        expression,
+        awaitPromise: true,
+        returnByValue: true,
+        ...(maxJsonBytes !== undefined ? { maxJsonBytes } : {}),
+      }),
+      timeout,
+    );
+    if (response?.exceptionDetails) {
+      throw new Error(
+        response.exceptionDetails.exception?.description
+          ?? response.exceptionDetails.text
+          ?? fallbackMessage,
+      );
+    }
+    const value = response?.result?.value;
+    if (isRecord(value) && "__obu_evaluate_value" in value) {
+      return value.__obu_evaluate_value as T;
+    }
+    if (isRecord(value) && "__obu_evaluate_summary" in value) {
+      return value.__obu_evaluate_summary;
+    }
+    return value as T;
+  }
+
+  #ensureCommandable(method: string): void {
+    if (this.metadata.commandable !== false) return;
+    throw new Error(`tab ${this.id} is not commandable; claim or resume it before ${method}`);
+  }
+
   async waitForEvent(event: "filechooser" | "download", opts: { timeout?: number } = {}): Promise<FileChooser | Download> {
     if (event === "filechooser") {
+      this.#ensureCommandable(M.PLAYWRIGHT_WAIT_FOR_FILE_CHOOSER);
       const command = { command: M.PLAYWRIGHT_WAIT_FOR_FILE_CHOOSER, tab_id: this.id };
       const currentUrl = this.guards.needsCurrentUrl(M.PLAYWRIGHT_WAIT_FOR_FILE_CHOOSER)
         ? await this.#currentUrlForGuard(opts.timeout)
@@ -387,6 +426,7 @@ export class Tab {
       );
       return new FileChooser(this.transport, row.file_chooser_id ?? row.id ?? "", this.guards, this.id);
     }
+    this.#ensureCommandable(M.PLAYWRIGHT_WAIT_FOR_DOWNLOAD);
     const currentUrl = this.guards.needsCurrentUrl(M.PLAYWRIGHT_WAIT_FOR_DOWNLOAD)
       ? await this.#currentUrlForGuard(opts.timeout)
       : undefined;
@@ -516,16 +556,6 @@ function positiveInt(value: unknown, fallback: number): number {
   return typeof value === "number" && Number.isFinite(value) && value > 0
     ? Math.floor(value)
     : fallback;
-}
-
-function optionalTimeout(timeout: number | undefined): { timeout?: number } {
-  return timeout === undefined ? {} : { timeout };
-}
-
-function evaluateOptions(timeout: number | undefined, maxJsonBytes: number): TabEvaluateOptions {
-  const opts: TabEvaluateOptions = { maxJsonBytes };
-  if (timeout !== undefined) opts.timeout = timeout;
-  return opts;
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {

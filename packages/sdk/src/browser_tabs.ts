@@ -125,7 +125,11 @@ export class BrowserTabs {
   }
 
   get(tabId: string): Tab {
-    return new Tab(this.transport, this.guards, tabId);
+    return new Tab(this.transport, this.guards, tabId, {
+      owned: false,
+      commandable: false,
+      claimRequired: true,
+    });
   }
 
   private fromWire(row: TabWire, missingIdMessage = "getTabs response missing tab_id"): Tab {

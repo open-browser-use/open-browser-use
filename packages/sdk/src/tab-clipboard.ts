@@ -32,6 +32,7 @@ export class TabClipboard {
     private readonly transport: Transport,
     private readonly guards: Guards,
     private readonly tabId: string,
+    private readonly ensureCommandable: (method: string) => void = () => {},
   ) {}
 
   async readText(opts: { timeout?: number } = {}): Promise<string> {
@@ -77,6 +78,7 @@ export class TabClipboard {
   }
 
   async #ensureCommandAllowed(method: string, params: Record<string, unknown>, timeout?: number): Promise<void> {
+    this.ensureCommandable(method);
     const currentUrl = this.guards.needsCurrentUrl(method)
       ? await this.transport.sendRequest<string>(M.TAB_URL, withSessionMeta({ tab_id: this.tabId }), timeout)
       : undefined;

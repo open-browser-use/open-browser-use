@@ -43,6 +43,7 @@ export class TabCua {
     private readonly transport: Transport,
     guardsOrTabId: Guards | string,
     tabId?: string,
+    private readonly ensureCommandable: (method: string) => void = () => {},
   ) {
     this.guards = guardsOrTabId instanceof Guards ? guardsOrTabId : new Guards();
     this.tabId = guardsOrTabId instanceof Guards ? (tabId ?? "") : guardsOrTabId;
@@ -107,6 +108,7 @@ export class TabCua {
 
   async get_visible_screenshot(opts: TabCuaTimeoutOptions = {}): Promise<Image> {
     const method = M.TAB_SCREENSHOT;
+    this.ensureCommandable(method);
     const currentUrl = this.guards.needsCurrentUrl(method)
       ? await this.transport.sendRequest<string>(M.TAB_URL, withSessionMeta({ tab_id: this.tabId }), opts.timeout)
       : undefined;
@@ -128,6 +130,7 @@ export class TabCua {
   }
 
   async #send(method: string, params: Record<string, unknown>, timeoutMs?: number, requestTimeoutMs?: number): Promise<void> {
+    this.ensureCommandable(method);
     const requestTimeout = requestTimeoutMs ?? timeoutMs;
     const command = { command: method, tab_id: this.tabId, ...params };
     const currentUrl = this.guards.needsCurrentUrl(method)

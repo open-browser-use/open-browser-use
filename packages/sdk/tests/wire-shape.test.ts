@@ -18,6 +18,7 @@ const meta = { session_id: "session", turn_id: "turn" };
 class FakeTransport {
   calls: Array<{ method: string; params: Record<string, unknown>; timeout?: number }> = [];
   responses = new Map<string, unknown>();
+  requestLifecycle: unknown[] = [];
 
   constructor() {
     this.responses.set(M.GET_TABS, [
@@ -65,6 +66,12 @@ class FakeTransport {
     this.responses.set(M.TAB_TITLE, "Example");
     this.responses.set(M.TAB_SCREENSHOT, { data: "base64png", mime_type: "image/png" });
     this.responses.set(M.TAB_CONTENT_EXPORT, { data: "html64", data_base64: "html64", mime_type: "text/html" });
+    this.responses.set(M.TAB_EVALUATE, {
+      result: { value: { __obu_evaluate_value: { title: "Example" } } },
+    });
+    this.responses.set(M.TAB_SNAPSHOT_TEXT, {
+      result: { value: { __obu_evaluate_value: { title: "Example" } } },
+    });
     this.responses.set(M.BROWSER_TABS_CONTENT, {
       results: [
         { url: "https://a.test/", finalUrl: "https://a.test/", status: "ok", text: "A" },
@@ -136,6 +143,10 @@ class FakeTransport {
   async sendRequest<T>(method: string, params: Record<string, unknown>, timeout?: number): Promise<T> {
     this.calls.push({ method, params, timeout });
     return (this.responses.has(method) ? this.responses.get(method) : null) as T;
+  }
+
+  diagnostics(): { request_lifecycle: unknown[] } {
+    return { request_lifecycle: this.requestLifecycle };
   }
 }
 
@@ -411,7 +422,11 @@ describe("SDK wire-shape contracts", () => {
         status: "active",
       });
       expect(direct.id).toBe("manual-tab");
-      expect(direct.metadata).toEqual({});
+      expect(direct.metadata).toMatchObject({
+        owned: false,
+        commandable: false,
+        claimRequired: true,
+      });
     } finally {
       restoreMeta();
     }
@@ -464,6 +479,30 @@ describe("SDK wire-shape contracts", () => {
     } finally {
       restoreMeta();
     }
+  });
+
+  it("non-commandable tab handles fail locally before transport commands", async () => {
+    const transport = new FakeTransport();
+    const tab = new Tab(asTransport(transport), new Guards(), "user-tab", {
+      commandable: false,
+      claimRequired: true,
+      owned: false,
+    });
+    const direct = new BrowserTabs(asTransport(transport), new Guards()).get("manual-tab");
+
+    await expect(tab.goto("https://example.test/")).rejects.toThrow(/not commandable/);
+    await expect(tab.content.export()).rejects.toThrow(/not commandable/);
+    await expect(tab.cua.click(1, 2)).rejects.toThrow(/not commandable/);
+    await expect(tab.cua.get_visible_screenshot()).rejects.toThrow(/not commandable/);
+    await expect(tab.dom_cua.get_visible_dom()).rejects.toThrow(/not commandable/);
+    await expect(tab.dom_cua.click("node-1")).rejects.toThrow(/not commandable/);
+    await expect(tab.dev.cdp("Runtime.evaluate", { expression: "1" })).rejects.toThrow(/not commandable/);
+    await expect(tab.playwright.elementInfo({ x: 1, y: 2 })).rejects.toThrow(/not commandable/);
+    await expect(tab.clipboard.readText()).rejects.toThrow(/not commandable/);
+    await expect(tab.clipboard.writeText("text")).rejects.toThrow(/not commandable/);
+    await expect(tab.locator("button").click()).rejects.toThrow(/not commandable/);
+    await expect(direct.goto("https://example.test/")).rejects.toThrow(/not commandable/);
+    expect(transport.calls).toEqual([]);
   });
 
   it("BrowserTabs creates about:blank by default and rejects malformed options", async () => {
@@ -636,14 +675,57 @@ describe("SDK wire-shape contracts", () => {
         commandable: true,
       });
 
+      transport.responses.set(M.RESUME_CONTROL, {
+        tab: {
+          tab_id: "wrapped-active",
+          url: "https://wrapped.test/",
+          logical_active: true,
+          commandable: true,
+        },
+        repair: {
+          status: "repair_required",
+          nextActiveTabId: 7,
+          diagnostics: [{ kind: "active_tab_removed", tabId: 3 }],
+          cleanup: [{ tabId: 3, effects: ["remove_session_tab"] }],
+        },
+      });
+      const repaired = await browser.resumeControlResult({ timeout: 302 });
+      expect(repaired.status).toBe("resumed");
+      expect(repaired.tab.id).toBe("wrapped-active");
+      expect(repaired.repair).toEqual({
+        status: "repair_required",
+        nextActiveTabId: 7,
+        diagnostics: [{ kind: "active_tab_removed", tabId: 3 }],
+        cleanup: [{ tabId: 3, effects: ["remove_session_tab"] }],
+      });
+
+      transport.responses.set(M.RESUME_CONTROL, {
+        tab: null,
+        repair: {
+          status: "blocked",
+          reason: "no_active_tab",
+          diagnostics: [{ kind: "active_tab_removed", tabId: 9 }],
+          cleanup: [],
+        },
+      });
+      await expect(browser.resumeControlResult({ timeout: 303 })).resolves.toEqual({
+        status: "blocked",
+        repair: {
+          status: "blocked",
+          reason: "no_active_tab",
+          diagnostics: [{ kind: "active_tab_removed", tabId: 9 }],
+          cleanup: [],
+        },
+      });
+
       transport.responses.set(M.RESUME_CONTROL, { tab: null });
-      await expect(browser.resumeControl({ timeout: 302 })).resolves.toBeUndefined();
+      await expect(browser.resumeControl({ timeout: 304 })).resolves.toBeUndefined();
 
       transport.responses.set(M.RESUME_CONTROL, null);
-      await expect(browser.resumeControl({ timeout: 303 })).resolves.toBeUndefined();
+      await expect(browser.resumeControl({ timeout: 305 })).resolves.toBeUndefined();
 
       transport.responses.set(M.RESUME_CONTROL, { tab: { url: "https://missing-id.test/" } });
-      await expect(browser.resumeControl({ timeout: 304 })).rejects.toThrow(
+      await expect(browser.resumeControl({ timeout: 306 })).rejects.toThrow(
         "resumeControl response missing tab_id",
       );
     } finally {
@@ -655,6 +737,8 @@ describe("SDK wire-shape contracts", () => {
       { method: M.RESUME_CONTROL, params: { ...meta }, timeout: 302 },
       { method: M.RESUME_CONTROL, params: { ...meta }, timeout: 303 },
       { method: M.RESUME_CONTROL, params: { ...meta }, timeout: 304 },
+      { method: M.RESUME_CONTROL, params: { ...meta }, timeout: 305 },
+      { method: M.RESUME_CONTROL, params: { ...meta }, timeout: 306 },
     ]);
   });
 
@@ -1079,6 +1163,8 @@ describe("SDK wire-shape contracts", () => {
     ]);
     expect(METHOD_CLASSIFICATION[M.BROWSER_VIEWPORT_SET]).toBe("internal-lifecycle");
     expect(METHOD_CLASSIFICATION[M.BROWSER_VISIBILITY_GET]).toBe("internal-lifecycle");
+    expect(METHOD_CLASSIFICATION[M.TAB_EVALUATE]).toBe("current-origin");
+    expect(METHOD_CLASSIFICATION[M.TAB_SNAPSHOT_TEXT]).toBe("current-origin");
   });
 
   it("Browser deliverables refreshes lifecycle diagnostics and claims durable tabs", async () => {
@@ -1447,9 +1533,6 @@ describe("SDK wire-shape contracts", () => {
   it("Tab model-safe helpers cap evaluate, emit screenshots, and snapshot text", async () => {
     const restoreMeta = setRequestMeta();
     const transport = new FakeTransport();
-    transport.responses.set(M.EXECUTE_CDP, {
-      result: { value: { __obu_evaluate_value: { title: "Example" } } },
-    });
     const emitted: string[] = [];
     (globalThis as { nodeRepl?: { emitImage: (image: string) => Promise<void> } }).nodeRepl = {
       emitImage: async (image) => {
@@ -1476,32 +1559,25 @@ describe("SDK wire-shape contracts", () => {
     expect(emitted).toEqual(["data:image/png;base64,base64png"]);
     expect(transport.calls).toEqual([
       {
-        method: M.EXECUTE_CDP,
+        method: M.TAB_EVALUATE,
         params: {
           tab_id: "tab-1",
-          target: { tabId: "tab-1" },
-          method: "Runtime.evaluate",
-          commandParams: {
-            expression: expect.stringContaining("max_json_bytes"),
-            awaitPromise: true,
-            returnByValue: true,
-          },
+          expression: expect.stringContaining("max_json_bytes"),
+          awaitPromise: true,
+          returnByValue: true,
           ...meta,
         },
         timeout: 140,
       },
       { method: M.TAB_SCREENSHOT, params: { tab_id: "tab-1", type: "jpeg", quality: 60, fullPage: false, ...meta }, timeout: 141 },
       {
-        method: M.EXECUTE_CDP,
+        method: M.TAB_SNAPSHOT_TEXT,
         params: {
           tab_id: "tab-1",
-          target: { tabId: "tab-1" },
-          method: "Runtime.evaluate",
-          commandParams: {
-            expression: expect.stringMatching(/obu-agent-overlay-root[\s\S]*document\.querySelectorAll/),
-            awaitPromise: true,
-            returnByValue: true,
-          },
+          expression: expect.stringMatching(/obu-agent-overlay-root[\s\S]*document\.querySelectorAll[\s\S]*max_json_bytes/),
+          awaitPromise: true,
+          returnByValue: true,
+          maxJsonBytes: 32 * 1024,
           ...meta,
         },
         timeout: 142,
@@ -1511,7 +1587,7 @@ describe("SDK wire-shape contracts", () => {
 
   it("snapshotText fails clearly when page summary exceeds the evaluate budget", async () => {
     const transport = new FakeTransport();
-    transport.responses.set(M.EXECUTE_CDP, {
+    transport.responses.set(M.TAB_SNAPSHOT_TEXT, {
       result: {
         value: {
           __obu_evaluate_summary: {
@@ -1533,6 +1609,15 @@ describe("SDK wire-shape contracts", () => {
   it("Browser finishTurn and ensureReady compose lifecycle and readiness calls", async () => {
     const restoreMeta = setRequestMeta();
     const transport = new FakeTransport();
+    transport.requestLifecycle = [{
+      kind: "timed_out_pending_reconcile",
+      requestId: 9,
+      method: M.TAB_GOTO,
+      timeoutMs: 100,
+      defensiveOvershootMs: 5000,
+      timedOutAt: 123,
+      nextAction: "observe_reconcile",
+    }];
     transport.responses.set(M.GET_INFO, {
       type: "webextension",
       name: "chrome",
@@ -1550,16 +1635,27 @@ describe("SDK wire-shape contracts", () => {
     );
 
     try {
-      await browser.finishTurn({
+      await expect(browser.finishTurn({
         keep: [{ tabId: "tab-keep", status: "deliverable" }],
         timeout: 210,
         turnTimeout: 211,
+      })).resolves.toMatchObject({
+        status: "ok",
+        turnEnded: true,
       });
       await expect(browser.ensureReady({ timeout: 212 })).resolves.toMatchObject({
         type: "webextension",
         name: "chrome",
         supportedMethods: [M.GET_INFO, M.TAB_SCREENSHOT],
-        diagnostics: { lifecycle: { stale_tabs: 0 } },
+        diagnostics: {
+          lifecycle: { stale_tabs: 0 },
+          sdk_requests: [{
+            kind: "timed_out_pending_reconcile",
+            requestId: 9,
+            method: M.TAB_GOTO,
+            nextAction: "observe_reconcile",
+          }],
+        },
       });
     } finally {
       restoreMeta();
@@ -1574,6 +1670,90 @@ describe("SDK wire-shape contracts", () => {
       { method: M.TURN_ENDED, params: { ...meta }, timeout: 211 },
       { method: M.GET_INFO, params: {}, timeout: 212 },
     ]);
+  });
+
+  it("Browser.finishTurn keeps the turn open after partial or fatal finalization unless explicitly opted in", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    const browser = new Browser(
+      asTransport(transport),
+      { type: "webextension", name: "chrome", metadata: {}, capabilities: {} },
+      { type: "webextension", name: "chrome", socketPath: "/tmp/webext", metadata: {} },
+      new Guards(),
+    );
+
+    try {
+      transport.responses.set(M.FINALIZE_TABS, {
+        status: "partial",
+        actions: [],
+        closedTabIds: [],
+        releasedTabIds: [],
+        keptTabs: [],
+        deliverableTabs: [],
+        finalTabs: { handoff: [], deliverable: [], activeTabId: null },
+        failures: [
+          {
+            tabId: "tab-1",
+            desiredStatus: "close",
+            outcome: "failed",
+            errorCode: "close_failed",
+            errorMessage: "close failed",
+          },
+        ],
+        diagnostics: { reconciledFromChrome: true, reconciliationSource: "chrome.tabs" },
+      });
+      await expect(browser.finishTurn({ timeout: 210, turnTimeout: 211 })).resolves.toMatchObject({
+        status: "partial",
+        turnEnded: false,
+      });
+      expect(transport.calls).toEqual([
+        { method: M.FINALIZE_TABS, params: { keep: [], ...meta }, timeout: 210 },
+      ]);
+
+      transport.calls = [];
+      await expect(
+        browser.finishTurn({ timeout: 210, turnTimeout: 211, endTurnOnPartial: true }),
+      ).resolves.toMatchObject({
+        status: "partial",
+        turnEnded: true,
+      });
+      expect(transport.calls).toEqual([
+        { method: M.FINALIZE_TABS, params: { keep: [], ...meta }, timeout: 210 },
+        { method: M.TURN_ENDED, params: { ...meta }, timeout: 211 },
+      ]);
+
+      transport.calls = [];
+      transport.responses.set(M.FINALIZE_TABS, {
+        status: "fatal",
+        actions: [],
+        closedTabIds: [],
+        releasedTabIds: [],
+        keptTabs: [],
+        deliverableTabs: [],
+        finalTabs: null,
+        failures: [
+          {
+            outcome: "failed",
+            errorCode: "reconcile_failed",
+            errorMessage: "reconcile failed",
+          },
+        ],
+        errorCode: "reconcile_failed",
+        errorMessage: "reconcile failed",
+        diagnostics: { reconciledFromChrome: false },
+      });
+      await expect(
+        browser.finishTurn({ timeout: 210, turnTimeout: 211, endTurnOnPartial: true }),
+      ).resolves.toMatchObject({
+        status: "fatal",
+        turnEnded: false,
+      });
+      expect(transport.calls).toEqual([
+        { method: M.FINALIZE_TABS, params: { keep: [], ...meta }, timeout: 210 },
+      ]);
+    } finally {
+      restoreMeta();
+    }
   });
 
   it("display forwards arbitrary values or fails clearly when runtime global is missing", () => {
@@ -1986,6 +2166,7 @@ describe("SDK wire-shape contracts", () => {
       await expect(download.path()).resolves.toBe("/tmp/download.txt");
       await tab.locator("#download-link").download_media({ timeout: 45 });
       await tab.dom_cua.download_media("node-1");
+      await expect(tab.evaluate("1 + 1")).resolves.toEqual({ title: "Example" });
       await expect(tab.dev.cdp("Page.navigate", { url: "https://blocked.test/" })).rejects.toMatchObject({
         code: ERR_DISALLOWED,
         message: expect.stringContaining("raw cdp blocked"),
@@ -2001,6 +2182,7 @@ describe("SDK wire-shape contracts", () => {
       { kind: "download", tabId: "tab-1", url: "https://example.test/", command: M.PLAYWRIGHT_DOWNLOAD_PATH },
       { kind: "download", tabId: "tab-1", url: "https://example.test/", command: M.PLAYWRIGHT_LOCATOR_DOWNLOAD_MEDIA },
       { kind: "download", tabId: "tab-1", url: "https://example.test/", command: M.DOM_CUA_DOWNLOAD_MEDIA },
+      { kind: "current-origin", tabId: "tab-1", url: "https://example.test/", command: M.TAB_EVALUATE },
       { kind: "current-origin", tabId: "tab-1", url: "https://example.test/", command: M.EXECUTE_CDP },
       { kind: "navigation", url: "https://blocked.test/", command: M.EXECUTE_CDP },
       { kind: "raw-cdp", tabId: "tab-1", method: "Page.navigate" },
@@ -2018,6 +2200,8 @@ describe("SDK wire-shape contracts", () => {
       M.PLAYWRIGHT_LOCATOR_DOWNLOAD_MEDIA,
       M.TAB_URL,
       M.DOM_CUA_DOWNLOAD_MEDIA,
+      M.TAB_URL,
+      M.TAB_EVALUATE,
       M.TAB_URL,
     ]);
     expect(transport.calls[3]).toEqual({

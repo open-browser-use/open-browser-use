@@ -14,6 +14,8 @@ export type {
   BrowserFinishTurnOptions,
   BrowserProfileMetadata,
   BrowserReadySummary,
+  BrowserResumeControlRepair,
+  BrowserResumeControlResult,
   BrowserViewportResult,
   BrowserViewportSetOptions,
   BrowserVisibilityResult,
