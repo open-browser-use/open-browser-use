@@ -323,12 +323,7 @@ impl JsRuntimeManager {
         let mut kernel = match SpawnedKernel::spawn(spawn_opts).await {
             Ok(kernel) => kernel,
             Err(error) => {
-                *self.kernel_lifecycle.lock().await = AgentRuntimeKernelLifecycle::Failed {
-                    generation: next_generation,
-                    stage: "spawn",
-                    error_message: error.to_string(),
-                    recovered: false,
-                };
+                self.set_kernel_failed(next_generation, "spawn", error.to_string(), false).await;
                 return Err(error).context("spawn JavaScript kernel");
             }
         };
@@ -384,12 +379,7 @@ impl JsRuntimeManager {
             cancel,
         });
         if let Err(error) = self.wait_for_ready().await {
-            *self.kernel_lifecycle.lock().await = AgentRuntimeKernelLifecycle::Failed {
-                generation: next_generation,
-                stage: "ready",
-                error_message: error.to_string(),
-                recovered: false,
-            };
+            self.set_kernel_failed(next_generation, "ready", error.to_string(), false).await;
             return Err(error);
         }
         *self.state.lock().await = KernelState::Ready;
@@ -442,6 +432,7 @@ impl JsRuntimeManager {
             .lifecycle
             .try_lock()
             .map_err(|_| anyhow!("kernel is busy"))?;
+        // KernelState::Failed and KernelState::Idle both trigger a re-boot here.
         if *self.state.lock().await != KernelState::Ready {
             self.boot_locked().await?;
         }
@@ -481,14 +472,13 @@ impl JsRuntimeManager {
                 };
             }
             Err(_) => {
-                *self.kernel_lifecycle.lock().await = AgentRuntimeKernelLifecycle::Failed {
-                    generation,
-                    stage: "exec",
-                    error_message: outcome.as_ref().err().map(ToString::to_string).unwrap_or_default(),
-                    recovered: true,
-                };
                 self.kill_kernel().await;
-                *self.state.lock().await = KernelState::Idle;
+                self.set_kernel_failed(
+                    generation,
+                    "exec",
+                    outcome.as_ref().err().map(ToString::to_string).unwrap_or_default(),
+                    true,
+                ).await;
                 *self.registry.lock().await = ExecRegistry::default();
             }
         }
@@ -765,6 +755,33 @@ impl JsRuntimeManager {
             .as_ref()
             .map(|generation| generation.handshake_token.clone())?;
         handshake.lock().await.clone()
+    }
+
+    async fn set_kernel_failed(
+        &self,
+        generation: u64,
+        stage: &'static str,
+        error_message: String,
+        recovered: bool,
+    ) {
+        *self.kernel_lifecycle.lock().await = AgentRuntimeKernelLifecycle::Failed {
+            generation,
+            stage,
+            error_message,
+            recovered,
+        };
+        // Coarse state is a derived compatibility view: a recovered exec failure
+        // returns to Idle (re-bootable); spawn/ready failure parks at Failed.
+        *self.state.lock().await = if recovered {
+            KernelState::Idle
+        } else {
+            KernelState::Failed
+        };
+    }
+
+    #[cfg(test)]
+    pub(super) async fn coarse_state_for_tests(&self) -> KernelState {
+        *self.state.lock().await
     }
 
     async fn kill_kernel(&self) {
@@ -1763,8 +1780,8 @@ fn seed_sdk_trust(
 #[cfg(test)]
 mod tests {
     use super::{
-        DiscoveredBackend, JsRuntimeManager, ManagerOptions, constant_time_eq, current_uid,
-        descriptor_process_alive, product_error,
+        AgentRuntimeKernelLifecycle, DiscoveredBackend, JsRuntimeManager, KernelState,
+        ManagerOptions, constant_time_eq, current_uid, descriptor_process_alive, product_error,
     };
     use std::path::PathBuf;
 
@@ -1830,5 +1847,76 @@ mod tests {
         assert!(!descriptor_process_alive(
             &json!({ "pid": (i32::MAX as u64) + 1 })
         ));
+    }
+
+    #[allow(unsafe_code)]
+    #[tokio::test]
+    async fn boot_failure_resets_coarse_state() {
+        // RAII guard restores OBU_NODE_BINARY on drop.
+        // SAFETY: this is a test-only env-var mutation; std::env::set_var is
+        // unsafe in Rust 1.80+ because it is not thread-safe, but this test
+        // runs in isolation and the guard ensures restoration on both success
+        // and panic paths.
+        struct EnvGuard(&'static str, Option<std::ffi::OsString>);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match &self.1 {
+                    Some(v) => unsafe { std::env::set_var(self.0, v) },
+                    None => unsafe { std::env::remove_var(self.0) },
+                }
+            }
+        }
+        let prev = std::env::var_os("OBU_NODE_BINARY");
+        unsafe { std::env::set_var("OBU_NODE_BINARY", "/definitely/does/not/exist/node") };
+        let _guard = EnvGuard("OBU_NODE_BINARY", prev);
+
+        let options = ManagerOptions::for_tests();
+        let manager = JsRuntimeManager::new(options).await.unwrap();
+        let err = manager.boot().await;
+        assert!(err.is_err(), "boot should fail with unspawnable kernel");
+        assert_eq!(
+            manager.coarse_state_for_tests().await,
+            KernelState::Failed
+        );
+    }
+
+    #[tokio::test]
+    async fn set_kernel_failed_helper_writes_both_state_sources() {
+        let manager = JsRuntimeManager::new(ManagerOptions::for_tests()).await.unwrap();
+        manager.set_kernel_failed(2, "spawn", "boom".into(), false).await;
+        assert_eq!(manager.coarse_state_for_tests().await, KernelState::Failed);
+        match &*manager.kernel_lifecycle.lock().await {
+            AgentRuntimeKernelLifecycle::Failed {
+                generation,
+                stage,
+                recovered,
+                ..
+            } => {
+                assert_eq!(*generation, 2);
+                assert_eq!(*stage, "spawn");
+                assert!(!*recovered);
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+
+        // recovered=true => coarse returns to Idle (re-bootable)
+        manager.set_kernel_failed(3, "exec", "thrown".into(), true).await;
+        assert_eq!(manager.coarse_state_for_tests().await, KernelState::Idle);
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a real Node runtime"]
+    async fn exec_failure_returns_coarse_idle_and_detailed_failed() {
+        let manager = JsRuntimeManager::new(ManagerOptions::for_tests()).await.unwrap();
+        manager.boot().await.expect("boot");
+        let _ = manager.exec("throw new Error('boom')", Some(1000)).await;
+        assert_eq!(manager.coarse_state_for_tests().await, KernelState::Idle);
+        match &*manager.kernel_lifecycle.lock().await {
+            AgentRuntimeKernelLifecycle::Failed { stage, recovered, .. } => {
+                assert_eq!(*stage, "exec");
+                assert!(*recovered);
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
     }
 }
