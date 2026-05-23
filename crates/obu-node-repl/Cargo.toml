@@ -43,3 +43,4 @@ insta = { workspace = true }
 assert_cmd = { workspace = true }
 predicates = { workspace = true }
 tokio = { workspace = true, features = ["macros", "process"] }
+serial_test = "3"

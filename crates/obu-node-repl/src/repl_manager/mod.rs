@@ -757,6 +757,20 @@ impl JsRuntimeManager {
         handshake.lock().await.clone()
     }
 
+    /// Single failure transition point: atomically writes both `kernel_lifecycle`
+    /// and the coarse `state` field.
+    ///
+    /// Order: `kernel_lifecycle` is written first, then `state`.  This ensures
+    /// that any reader who observes the coarse `Failed` or `Idle` state will
+    /// also see a fully-populated `AgentRuntimeKernelLifecycle::Failed` variant.
+    ///
+    /// `recovered: true` means the kernel was killed after a bad exec and the
+    /// next call to `exec` (or `boot`) will re-boot a fresh child; the coarse
+    /// state is set to `Idle` (re-bootable).
+    ///
+    /// `recovered: false` means the spawn or ready-handshake attempt left no
+    /// usable child process; the coarse state is set to `Failed` (not
+    /// re-bootable without an explicit reset).
     async fn set_kernel_failed(
         &self,
         generation: u64,
@@ -1851,12 +1865,15 @@ mod tests {
 
     #[allow(unsafe_code)]
     #[tokio::test]
+    #[serial_test::serial]
     async fn boot_failure_resets_coarse_state() {
         // RAII guard restores OBU_NODE_BINARY on drop.
         // SAFETY: this is a test-only env-var mutation; std::env::set_var is
-        // unsafe in Rust 1.80+ because it is not thread-safe, but this test
-        // runs in isolation and the guard ensures restoration on both success
-        // and panic paths.
+        // unsafe in Rust 1.80+ because it is not thread-safe; the
+        // #[serial_test::serial] attribute serialises this test against any
+        // other serial-tagged test so concurrent threads cannot observe the
+        // mutated OBU_NODE_BINARY value.  The guard ensures restoration on
+        // both success and panic paths.
         struct EnvGuard(&'static str, Option<std::ffi::OsString>);
         impl Drop for EnvGuard {
             fn drop(&mut self) {
