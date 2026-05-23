@@ -58,3 +58,30 @@ assert.deepEqual(calls.logs.at(-1), {
 await observer.handleForegroundTabChanged(4, "tab_activated");
 assert.equal(calls.persist, 1);
 assert.equal(calls.sync, 3);
+
+// Test: human_takeover lifecycle must not allow foreground tab changes to mutate activeTabId
+const takeoverSession = {
+  currentTurnId: "",
+  activeTabId: 7,
+  lifecycle: { kind: "human_takeover", activeTabId: 7 },
+  turnLifecycle: { kind: "idle" },
+  tabs: new Map([[4, { tabId: 4, origin: "agent", status: "active" }]]),
+  finalizedTabs: new Map(),
+  attachedTabIds: new Set(),
+};
+const takeoverCalls = {
+  persist: 0,
+  sync: 0,
+};
+const takeoverObserver = new ForegroundObserver({
+  queryActiveTab: async (windowId) => ({ id: 4, active: true, windowId }),
+  findSessionForTab: (tabId) => (tabId === 4 ? { sessionId: "session", session: takeoverSession } : undefined),
+  persistSessionState: async () => { takeoverCalls.persist += 1; },
+  syncForeground: async () => { takeoverCalls.sync += 1; },
+  appendDebugLog: () => {},
+});
+await takeoverObserver.handleForegroundTabChanged(4, "tab_activated");
+assert.equal(takeoverSession.activeTabId, 7, "human_takeover must not move agent activeTabId");
+assert.equal(takeoverCalls.persist, 0, "human_takeover must not trigger persist");
+
+console.log("All tests passed.");

@@ -57,12 +57,12 @@ export class ForegroundObserver {
       ...(owner ? { owner: { sessionId: owner.sessionId, logicalActiveTabId } } : {}),
     });
     if (plan.logicalActiveUpdate && owner) {
-      owner.session.activeTabId = plan.logicalActiveUpdate.tabId;
       if (owner.session.lifecycle.kind === "active") {
+        owner.session.activeTabId = plan.logicalActiveUpdate.tabId;
         owner.session.lifecycle = activeSessionLifecycle(plan.logicalActiveUpdate.tabId);
+        await this.deps.persistSessionState();
+        this.deps.appendDebugLog("debug", "tab.logical_active.foreground", plan.logicalActiveUpdate);
       }
-      await this.deps.persistSessionState();
-      this.deps.appendDebugLog("debug", "tab.logical_active.foreground", plan.logicalActiveUpdate);
     }
     await this.deps.syncForeground();
   }
