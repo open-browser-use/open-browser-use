@@ -7,6 +7,10 @@ packages/*/.turbo
 packages/extension/.dev-native-host/
 dist/
 docs/*
+!docs/agent-browser-environment-lifecycle-goal.md
+!docs/state-machine-state-space-lifecycle-gap-analysis.md
+!docs/state-machine-architecture-review-findings.md
+!docs/state-machine-lifecycle-protocol-completeness-review.md
 !docs/chrome-web-store-review-pack.md
 !docs/runtime-descriptor.md
 !docs/install.md
