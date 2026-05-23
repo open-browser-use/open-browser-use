@@ -370,11 +370,13 @@ import { BrowserSessionController } from "../dist/browser_session_controller.js"
       kind === "finalize_partial"
         ? { kind, turnId: "t0", failures: [] }
         : { kind, repairPlanId: "p1" };
+    const errorPattern =
+      kind === "finalize_partial" ? /finalized partially/ : /session is resuming/;
     const session = sessionWithTabs([], { lifecycle });
     const harness = createHarness({ session });
     await assert.rejects(
       () => harness.controller.createSessionTab(params, "about:blank"),
-      new RegExp(kind),
+      errorPattern,
       `createSessionTab must reject while ${kind}`,
     );
     assert.equal(session.lifecycle.kind, kind, `${kind} must not be rewritten to active by createSessionTab`);
@@ -388,6 +390,8 @@ import { BrowserSessionController } from "../dist/browser_session_controller.js"
       kind === "finalize_partial"
         ? { kind, turnId: "t0", failures: [] }
         : { kind, repairPlanId: "p1" };
+    const errorPattern =
+      kind === "finalize_partial" ? /finalized partially/ : /session is resuming/;
     const session = sessionWithTabs([], { lifecycle });
     const harness = createHarness({
       session,
@@ -395,7 +399,7 @@ import { BrowserSessionController } from "../dist/browser_session_controller.js"
     });
     await assert.rejects(
       () => harness.controller.requireCurrentSessionTabForBrowserCommand(params, "browser viewport set"),
-      new RegExp(kind),
+      errorPattern,
       `requireCurrentSessionTabForBrowserCommand must reject while ${kind}`,
     );
     assert.equal(session.lifecycle.kind, kind, `${kind} must not be rewritten to active by requireCurrentSessionTabForBrowserCommand`);
@@ -409,11 +413,13 @@ import { BrowserSessionController } from "../dist/browser_session_controller.js"
       kind === "finalize_partial"
         ? { kind, turnId: "t0", failures: [] }
         : { kind, repairPlanId: "p1" };
+    const errorPattern =
+      kind === "finalize_partial" ? /finalized partially/ : /session is resuming/;
     const session = sessionWithTabs([[8, { tabId: 8, origin: "agent", status: "active" }]], { lifecycle });
     const harness = createHarness({ session });
     assert.throws(
       () => harness.controller.requireSessionTab(params, 8),
-      new RegExp(kind),
+      errorPattern,
       `requireSessionTab must reject while ${kind}`,
     );
     assert.equal(session.lifecycle.kind, kind, `${kind} must not be rewritten to active by requireSessionTab`);

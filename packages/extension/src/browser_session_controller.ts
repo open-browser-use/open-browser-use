@@ -398,14 +398,12 @@ export class BrowserSessionController {
     }
     if (session.lifecycle.kind === "finalize_partial") {
       throw new Error(
-        `${operation} rejected because session lifecycle is finalize_partial (turn ${session.lifecycle.turnId}); ` +
-          `acknowledge or repair the partial finalize before new browser actions`,
+        `${operation} rejected because turn ${session.lifecycle.turnId} finalized partially; acknowledge or repair the partial finalize before new browser actions`,
       );
     }
     if (session.lifecycle.kind === "resuming") {
       throw new Error(
-        `${operation} rejected because session lifecycle is resuming (repairPlan ${session.lifecycle.repairPlanId}); ` +
-          `wait for resume to resolve to active, blocked, repair-required, or stale`,
+        `${operation} rejected because session is resuming (repairPlan ${session.lifecycle.repairPlanId}); wait for resume to resolve to active, blocked, repair-required, or stale`,
       );
     }
     if (session.lifecycle.kind === "stale") {
