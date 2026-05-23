@@ -118,6 +118,14 @@ export { TabClipboard } from "./tab-clipboard.js";
 export { TabContent } from "./tab-content.js";
 export type { ContentExportOptions } from "./tab-content.js";
 export { TabCua } from "./tab-cua.js";
+export { TabFlows } from "./tab-flows.js";
+export type {
+  TabFlowsDeps,
+  ChooseFromMenuInput,
+  ClickByTextInput,
+  FillFormInput,
+  SubmitAndObserveInput,
+} from "./tab-flows.js";
 export { TabDev } from "./tab-dev.js";
 export { TabDomCua } from "./tab-dom-cua.js";
 export type { DomCuaActionOptions, DomCuaActionResult, DomCuaNode, DomCuaObservationOptions, DomCuaSnapshot } from "./tab-dom-cua.js";

@@ -145,6 +145,14 @@ export class TabFlows {
     result.transition("planning_steps");
     result.transition("preflighting_steps");
 
+    if (input.fields.length === 0) {
+      result.transition("running_step");
+      result.transition("waiting_for_effect");
+      result.transition("reconciling");
+      result.transition("succeeded");
+      return result;
+    }
+
     let lastStatus: ActionResult["status"] = "succeeded";
 
     for (let i = 0; i < input.fields.length; i++) {

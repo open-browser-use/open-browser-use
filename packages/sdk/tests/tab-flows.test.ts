@@ -44,8 +44,8 @@ describe("TabFlows.chooseFromMenu", () => {
       option: { text: "Option B" },
     });
 
-    // pre-trigger + post-trigger observation
-    expect(observeCalls.length).toBeGreaterThanOrEqual(2);
+    // pre-trigger + post-trigger observation + post-reconcile observation
+    expect(observeCalls.length).toBe(3);
     // both step calls must carry an observationId — the second one MUST be the post-menu observation
     expect(stepCalls.length).toBe(2);
     const optionStep = stepCalls[1];
@@ -103,6 +103,18 @@ describe("TabFlows.clickByText", () => {
     expect(stepCalls[0].kind).toBe("locator.click");
     expect((stepCalls[0].target as LocatorActionTarget).observationId).toBe("obs-1");
     expect((stepCalls[0].target as LocatorActionTarget).selector).toContain("Sign in");
+    expect(result.toJSON().status).toBe("succeeded");
+  });
+});
+
+describe("TabFlows.fillForm edge cases", () => {
+  it("handles zero fields without throwing and ends in succeeded", async () => {
+    let seq = 0;
+    const flows = new TabFlows({
+      observe: async () => { seq += 1; return fakeObservation(seq); },
+      step: async () => { throw new Error("step should not be called"); },
+    });
+    const result = await flows.fillForm({ fields: [] });
     expect(result.toJSON().status).toBe("succeeded");
   });
 });
