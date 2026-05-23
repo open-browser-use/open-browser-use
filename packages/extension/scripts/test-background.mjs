@@ -416,7 +416,7 @@ const idleUpdateReloadStart = calls.runtimeReload.length;
 runtimeUpdateAvailable.emitLatest({ version: "0.2.0" });
 await waitFor(() => calls.runtimeReload.length === idleUpdateReloadStart + 1);
 assert.equal(storage[pendingUpdateKey], null);
-assert.equal(storage[statusKey].pendingExtensionUpdate, undefined);
+assert.equal(storage[statusKey].pendingExtensionUpdate.state, "reloading");
 
 const updateDeferralCreated = await hostRequest(port, "createTab", {
   session_id: "update-deferral-session",
@@ -443,7 +443,7 @@ const finalizedForUpdate = await hostRequest(port, "finalizeTabs", {
 assert.deepEqual(finalizedForUpdate.result.closedTabIds, [updateDeferralTabId]);
 await waitFor(() => calls.runtimeReload.length === activeUpdateReloadStart + 1);
 assert.equal(storage[pendingUpdateKey], null);
-assert.equal(storage[statusKey].pendingExtensionUpdate, undefined);
+assert.equal(storage[statusKey].pendingExtensionUpdate.state, "reloading");
 
 storage[pendingUpdateKey] = {
   state: "waiting_for_idle",
@@ -470,6 +470,10 @@ port = await runNativeHostReconnectAfterConnectedCrash(port);
 const missingSession = await hostRequest(port, "createTab", { url: "https://bad.example/" });
 assert.match(missingSession.error.message, /Missing required browser session_id/);
 assert.equal(calls.tabsCreate.length, 0);
+
+const unknownMethod = await hostRequest(port, "unknownMethod", {});
+assert.equal(unknownMethod.error.code, -32601);
+assert.deepEqual(unknownMethod.error.data, { code: "method_not_found", method: "unknownMethod" });
 
 const created = await hostRequest(port, "createTab", {
   session_id: "session",
@@ -593,7 +597,7 @@ staleOldPort.emit({
 });
 const hideCountBeforeStaleDisconnect = calls.tabsSendMessage.filter((call) => call.message.type === "OBU_CURSOR_HIDE").length;
 staleOldPort.disconnect();
-await waitFor(() => storage[statusKey]?.state === "disconnected");
+await waitFor(() => storage[statusKey]?.state === "reconnect_scheduled");
 await waitFor(() => calls.tabsSendMessage.filter((call) => call.message.type === "OBU_CURSOR_HIDE").length > hideCountBeforeStaleDisconnect);
 await waitFor(() => tabs.get(1)?.groupId === -1 && tabs.get(blankCreated.result.tab.tabId)?.groupId === -1);
 assert.equal(tabs.has(1), true);
@@ -793,7 +797,7 @@ const detachCountBeforeNativeDisconnect = calls.debuggerDetach.length;
 const attachedPort = port;
 const reconnectAfterAttachedDisconnectCount = ports.length;
 attachedPort.disconnect();
-await waitFor(() => storage[statusKey]?.state === "disconnected");
+await waitFor(() => storage[statusKey]?.state === "reconnect_scheduled");
 await waitFor(() => calls.debuggerDetach.length > detachCountBeforeNativeDisconnect);
 assert.equal(calls.debuggerDetach.at(-1).tabId, 1);
 alarmEvents.emit({ name: "obu.reconnectNativeHost" });
@@ -1803,7 +1807,7 @@ const resumedPort = await waitFor(() => ports[resumePortIndex]);
 await waitFor(() => resumedPort.sent.find((message) => message.type === "hello"));
 resumedPort.emit({ type: "hello_ack", host_version: "0.1.0" });
 const resumed = await resumePromise;
-assert.equal(resumed.state, "connecting");
+assert.equal(resumed.state, "hello_pending");
 await waitFor(() => storage[statusKey]?.state === "connected");
 
 await runPendingReconnectSurvivesServiceWorkerRestart();
@@ -1857,7 +1861,7 @@ const missingHostPortCount = ports.length;
 connectNativeError = new Error("Specified native messaging host not found.");
 storage[statusKey] = { state: "disconnected", updatedAt: Date.now(), retryDelayMs: 1000, nextRetryAt: Date.now() - 1 };
 await import(`${pathToFileURL(path.join(packageRoot, "dist", "background.js")).href}?restart-missing-host=${Date.now()}`);
-await waitFor(() => storage[statusKey]?.state === "error");
+await waitFor(() => storage[statusKey]?.state === "reconnect_scheduled");
 assert.equal(storage[statusKey].diagnosis, "native_host_not_found");
 assert.match(storage[statusKey].message, /specified native messaging host not found/i);
 assert.equal(ports.length, missingHostPortCount);
@@ -1873,7 +1877,7 @@ const forbiddenPortCount = ports.length;
 connectNativeError = new Error("Access to the specified native messaging host is forbidden.");
 storage[statusKey] = { state: "disconnected", updatedAt: Date.now(), retryDelayMs: 1000, nextRetryAt: Date.now() - 1 };
 await import(`${pathToFileURL(path.join(packageRoot, "dist", "background.js")).href}?restart-forbidden-host=${Date.now()}`);
-await waitFor(() => storage[statusKey]?.state === "error");
+await waitFor(() => storage[statusKey]?.state === "reconnect_scheduled");
 assert.equal(storage[statusKey].diagnosis, "native_host_forbidden");
 assert.match(storage[statusKey].message, /access to the specified native messaging host is forbidden/i);
 assert.equal(ports.length, forbiddenPortCount);
@@ -1889,7 +1893,7 @@ const unavailablePortCount = ports.length;
 connectNativeError = new Error("browser refused native connection");
 storage[statusKey] = { state: "disconnected", updatedAt: Date.now(), retryDelayMs: 1000, nextRetryAt: Date.now() - 1 };
 await import(`${pathToFileURL(path.join(packageRoot, "dist", "background.js")).href}?restart-unavailable-host=${Date.now()}`);
-await waitFor(() => storage[statusKey]?.state === "error");
+await waitFor(() => storage[statusKey]?.state === "reconnect_scheduled");
 assert.equal(storage[statusKey].diagnosis, "native_host_unavailable");
 assert.match(storage[statusKey].message, /browser refused native connection/i);
 assert.equal(ports.length, unavailablePortCount);
@@ -1905,7 +1909,7 @@ const crashedPostMessagePortCount = ports.length;
 postMessageError = new Error("native host process failed during startup");
 storage[statusKey] = { state: "disconnected", updatedAt: Date.now(), retryDelayMs: 1000, nextRetryAt: Date.now() - 1 };
 await import(`${pathToFileURL(path.join(packageRoot, "dist", "background.js")).href}?restart-post-message-failure=${Date.now()}`);
-await waitFor(() => storage[statusKey]?.state === "error");
+await waitFor(() => storage[statusKey]?.state === "reconnect_scheduled");
 assert.equal(storage[statusKey].diagnosis, "native_host_crashed");
 assert.match(storage[statusKey].message, /native host process failed during startup/i);
 assert.equal(ports.length, crashedPostMessagePortCount + 1);
@@ -1929,7 +1933,7 @@ try {
   const helloTimeoutPort = await waitFor(() => ports[helloTimeoutPortCount]);
   await waitFor(() => helloTimeoutPort.sent.find((message) => message.type === "hello"));
   await waitFor(() => storage[statusKey]?.diagnosis === "native_host_hello_timeout");
-  assert.equal(storage[statusKey].state, "error");
+  assert.equal(storage[statusKey].state, "reconnect_scheduled");
   assert.match(storage[statusKey].message, /native host hello timed out/i);
   assert.equal(helloTimeoutPort.disconnected, true);
   assert.equal(calls.alarmsCreate.at(-1).name, "obu.reconnectNativeHost");
@@ -1950,7 +1954,7 @@ const earlyDisconnectPort = await waitFor(() => ports[earlyDisconnectPortCount])
 await waitFor(() => earlyDisconnectPort.sent.find((message) => message.type === "hello"));
 earlyDisconnectPort.disconnect();
 await waitFor(() => storage[statusKey]?.diagnosis === "native_host_crashed");
-assert.equal(storage[statusKey].state, "error");
+assert.equal(storage[statusKey].state, "reconnect_scheduled");
 assert.match(storage[statusKey].message, /native host exited before hello_ack/i);
 assert.equal(calls.alarmsCreate.at(-1).name, "obu.reconnectNativeHost");
 const earlyDisconnectRecoveryPortCount = ports.length;
@@ -1991,7 +1995,7 @@ try {
   accelerateHeartbeatTimeout = true;
   heartbeatIntervalCallback();
   await waitFor(() => storage[statusKey]?.diagnosis === "native_host_heartbeat_timeout");
-  assert.equal(storage[statusKey].state, "disconnected");
+  assert.equal(storage[statusKey].state, "reconnect_scheduled");
   assert.match(storage[statusKey].message, /native host heartbeat timed out/i);
   await waitFor(() => calls.runtimeReload.length === heartbeatUpdateReloadStart + 1);
   assert.equal(storage[pendingUpdateKey], null);
@@ -2015,7 +2019,7 @@ async function runNativeHostReconnectAfterConnectedCrash(connectedPort) {
   const crashedPort = connectedPort;
   const reconnectPortIndex = ports.length;
   crashedPort.disconnect();
-  await waitFor(() => storage[statusKey]?.state === "disconnected");
+  await waitFor(() => storage[statusKey]?.state === "reconnect_scheduled");
   assert.equal(storage[statusKey].diagnosis, "native_host_disconnected");
   await waitFor(() => storage[statusKey]?.retryDelayMs === 1000);
   assert.equal(typeof storage[statusKey].nextRetryAt, "number");

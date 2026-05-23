@@ -7,11 +7,29 @@ const EXTENSION_CHANNEL = "__OBU_EXTENSION_CHANNEL__";
 type ExtensionChannel = "unpacked-dev" | "store";
 
 type HostStatus = {
-  state: "disconnected" | "connecting" | "connected" | "version_mismatch" | "stopped" | "error";
+  state:
+    | "disconnected"
+    | "connecting"
+    | "hello_pending"
+    | "connected"
+    | "heartbeat_failed"
+    | "reconnect_scheduled"
+    | "version_mismatch"
+    | "stopping"
+    | "stopped"
+    | "cleanup_failed"
+    | "error";
   message?: string;
   diagnosis?: HostDiagnosis;
   hostVersion?: string;
   deliverableTabs?: number;
+  overlayRelease?: Array<{
+    tabId: number;
+    state: "release_pending" | "release_failed";
+    failures?: number;
+    sessionId: string;
+    turnId: string;
+  }>;
   retryDelayMs?: number;
   nextRetryAt?: number;
   pendingExtensionUpdate?: {
@@ -398,13 +416,13 @@ function renderDebug(debug: DebugLogStatus, overrideText?: string): void {
 }
 
 function canResume(status: HostStatus): boolean {
-  return ["disconnected", "error", "stopped", "version_mismatch"].includes(status.state);
+  return ["disconnected", "heartbeat_failed", "reconnect_scheduled", "error", "stopped", "cleanup_failed", "version_mismatch"].includes(status.state);
 }
 
 function statusClass(state: HostStatus["state"]): string {
   if (state === "connected") return "connected";
-  if (state === "connecting" || state === "disconnected") return "reconnecting";
-  if (state === "error" || state === "version_mismatch") return "attention";
+  if (state === "connecting" || state === "hello_pending" || state === "disconnected" || state === "reconnect_scheduled") return "reconnecting";
+  if (state === "error" || state === "cleanup_failed" || state === "version_mismatch") return "attention";
   return "";
 }
 
@@ -413,11 +431,20 @@ function statusLabel(status: HostStatus): string {
     case "connected":
       return msg("statusConnected");
     case "connecting":
+    case "hello_pending":
       return msg("statusConnecting");
+    case "reconnect_scheduled":
+      return msg("statusReconnecting");
+    case "heartbeat_failed":
+      return msg("statusReconnecting");
     case "version_mismatch":
       return msg("statusUpdateNeeded");
+    case "stopping":
+      return msg("statusStopped");
     case "stopped":
       return msg("statusStopped");
+    case "cleanup_failed":
+      return msg("statusNeedsSetup");
     case "error":
       return msg("statusNeedsSetup");
     case "disconnected":
@@ -431,19 +458,19 @@ function detailLabel(status: HostStatus): string {
       ? msg("hostVersionLabel", [status.hostVersion])
       : msg("hostReady");
   }
-  if (status.state === "connecting") {
+  if (status.state === "connecting" || status.state === "hello_pending") {
     return msg("connectingNativeHost");
   }
-  if (status.state === "disconnected") {
+  if (status.state === "disconnected" || status.state === "heartbeat_failed" || status.state === "reconnect_scheduled") {
     return msg("disconnectedDetail");
   }
   if (status.state === "version_mismatch") {
     return msg("versionMismatchDetail");
   }
-  if (status.state === "stopped") {
+  if (status.state === "stopping" || status.state === "stopped") {
     return msg("stoppedDetail");
   }
-  if (status.state === "error") {
+  if (status.state === "error" || status.state === "cleanup_failed") {
     return msg("errorDetail");
   }
   return "";
@@ -462,7 +489,9 @@ function statusDetail(status: HostStatus, advice: NativeHostAdvice): string {
 }
 
 function visibleStatusMessage(status: HostStatus): string {
-  if (status.state === "connecting" || status.state === "stopped") return knownStatusMessage(status.message);
+  if (status.state === "connecting" || status.state === "hello_pending" || status.state === "stopping" || status.state === "stopped" || status.state === "cleanup_failed") {
+    return knownStatusMessage(status.message);
+  }
   return "";
 }
 
@@ -534,7 +563,7 @@ function nativeHostAdvice(status: HostStatus): NativeHostAdvice {
         showSetup: false,
       };
     case undefined:
-      if (status.state === "error") {
+      if (status.state === "error" || status.state === "cleanup_failed") {
         return withSetup(
           msg("adviceRepairSetup"),
           msg("setupTextRepairSetup"),
@@ -577,7 +606,7 @@ function agentHandoffForChannel(channel: string, runtimeExtensionId: string | un
 }
 
 function retryLabel(status: HostStatus): string {
-  if (status.state === "connected" || status.state === "stopped" || status.state === "version_mismatch") return "";
+  if (status.state === "connected" || status.state === "stopped" || status.state === "cleanup_failed" || status.state === "version_mismatch") return "";
   const nextRetryAt = typeof status.nextRetryAt === "number" ? status.nextRetryAt : undefined;
   const retryDelayMs = typeof status.retryDelayMs === "number" ? status.retryDelayMs : undefined;
   if (nextRetryAt === undefined && retryDelayMs === undefined) return "";
@@ -588,7 +617,7 @@ function retryLabel(status: HostStatus): string {
 
 function normalizeDiagnosis(status: HostStatus): HostDiagnosis | undefined {
   if (status.state === "version_mismatch") return "version_mismatch";
-  if (status.state === "connected" || status.state === "connecting" || status.state === "stopped") return undefined;
+  if (status.state === "connected" || status.state === "connecting" || status.state === "hello_pending" || status.state === "stopping" || status.state === "stopped") return undefined;
   if (status.diagnosis) return status.diagnosis;
   const message = status.message ?? "";
   if (/specified native messaging host.*not found/i.test(message)) {
