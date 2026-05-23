@@ -2,7 +2,7 @@ import { BrowserTabs } from "./browser_tabs.js";
 import { BrowserUser } from "./browser_user.js";
 import { Guards } from "./guards.js";
 import { withSessionMeta } from "./session-meta.js";
-import { Tab } from "./tab.js";
+import { Tab, markTabRuntimeContextStale, type TabRuntimeContext } from "./tab.js";
 import { tabIdFromWire, tabMetadata, type TabWire } from "./tab_wire.js";
 import type { DiscoveredBackend } from "./browsers.js";
 import type { BrowserInfo } from "./types.js";
@@ -220,6 +220,7 @@ export class Browser {
   readonly capabilities: Record<string, unknown>;
   readonly supportedMethods: readonly string[];
   readonly unsupportedMethods: readonly string[];
+  private readonly tabRuntimeContext: TabRuntimeContext;
   readonly guards: Guards;
   readonly tabs: BrowserTabs;
   readonly user: BrowserUser;
@@ -240,9 +241,17 @@ export class Browser {
     this.capabilities = info.capabilities ?? {};
     this.supportedMethods = stringList(this.capabilities.supported_methods);
     this.unsupportedMethods = stringList(this.capabilities.unsupported_methods);
+    this.tabRuntimeContext = {
+      supportedMethods: this.supportedMethods,
+      unsupportedMethods: this.unsupportedMethods,
+      diagnostics: this.diagnostics,
+      pointerStore: new Map(),
+      observationStore: new Map(),
+      lifecycleEpoch: { value: 0, updatedAt: Date.now() },
+    };
     this.guards = guards;
-    this.tabs = new BrowserTabs(transport, guards);
-    this.user = new BrowserUser(transport, guards, (method) => this.supports(method), info.type);
+    this.tabs = new BrowserTabs(transport, guards, this.tabRuntimeContext);
+    this.user = new BrowserUser(transport, guards, (method) => this.supports(method), info.type, this.tabRuntimeContext);
     this.capabilityRegistry = new BrowserCapabilityRegistry(this.capabilities);
     if (capabilityAdvertised(this.capabilities, "viewport") && this.supports(M.BROWSER_VIEWPORT_SET)) {
       this.viewport = new BrowserViewport(transport);
@@ -270,6 +279,7 @@ export class Browser {
 
   async yieldControl(opts: { timeout?: number } = {}): Promise<void> {
     await this.transport.sendRequest(M.YIELD_CONTROL, withSessionMeta({}), opts.timeout);
+    markTabRuntimeContextStale(this.tabRuntimeContext, "human_takeover");
   }
 
   async resumeControl(opts: { timeout?: number } = {}): Promise<Tab | undefined> {
@@ -283,6 +293,7 @@ export class Browser {
       withSessionMeta({}),
       opts.timeout,
     );
+    markTabRuntimeContextStale(this.tabRuntimeContext, "resume_control_revalidation_required");
     const row = unwrapBrowserControlTab(response);
     const repair = unwrapBrowserControlRepair(response);
     if (!row) {
@@ -291,7 +302,7 @@ export class Browser {
     const id = tabIdFromWire(row, "resumeControl response missing tab_id");
     const result: BrowserResumeControlResult = {
       status: "resumed",
-      tab: new Tab(this.transport, this.guards, id, tabMetadata(row)),
+      tab: new Tab(this.transport, this.guards, id, tabMetadata(row), this.tabRuntimeContext),
     };
     if (repair !== undefined) {
       result.repair = normalizeBrowserControlRepair(repair, "repair_required");
@@ -310,7 +321,9 @@ export class Browser {
       }),
       opts.timeout,
     );
-    return normalizeFinalizeTabsResult(response);
+    const result = normalizeFinalizeTabsResult(response);
+    markTabRuntimeContextStale(this.tabRuntimeContext, "finalize_tabs");
+    return result;
   }
 
   async finalize(opts: BrowserFinalizeTabsOptions = {}): Promise<BrowserFinalizeTabsResult> {

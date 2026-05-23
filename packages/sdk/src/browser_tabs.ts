@@ -1,6 +1,6 @@
 import { Guards } from "./guards.js";
 import { withSessionMeta } from "./session-meta.js";
-import { Tab } from "./tab.js";
+import { Tab, type TabRuntimeContext } from "./tab.js";
 import { tabFromWire, tabIdFromWire, tabMetadata, type TabWire } from "./tab_wire.js";
 import { UserTabRef } from "./browser_user.js";
 import type { Transport } from "./wire/transport.js";
@@ -42,6 +42,7 @@ export class BrowserTabs {
   constructor(
     private readonly transport: Transport,
     private readonly guards: Guards,
+    private readonly runtimeContext: TabRuntimeContext = {},
   ) {}
 
   async list(opts: { timeout?: number } = {}): Promise<Tab[]> {
@@ -70,9 +71,9 @@ export class BrowserTabs {
     const id = tabIdFromWire(row, "getSelectedTab response missing tab_id");
     const metadata = tabMetadata(row);
     if (row.commandable === false || row.claimRequired === true || row.claim_required === true) {
-      return new UserTabRef(this.transport, this.guards, id, metadata);
+      return new UserTabRef(this.transport, this.guards, id, metadata, this.runtimeContext);
     }
-    return new Tab(this.transport, this.guards, id, metadata);
+    return new Tab(this.transport, this.guards, id, metadata, this.runtimeContext);
   }
 
   async create(urlOrOptions?: string | CreateTabOptions): Promise<Tab> {
@@ -129,11 +130,11 @@ export class BrowserTabs {
       owned: false,
       commandable: false,
       claimRequired: true,
-    });
+    }, this.runtimeContext);
   }
 
   private fromWire(row: TabWire, missingIdMessage = "getTabs response missing tab_id"): Tab {
-    return tabFromWire(this.transport, this.guards, row, missingIdMessage);
+    return tabFromWire(this.transport, this.guards, row, missingIdMessage, this.runtimeContext);
   }
 }
 

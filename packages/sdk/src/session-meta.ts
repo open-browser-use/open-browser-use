@@ -25,6 +25,14 @@ export function withSessionMeta<P extends Record<string, unknown>>(
   return { ...params, ...getSessionMeta() };
 }
 
+export function getSessionLifecycleContext(): { sessionId?: string; turnId?: string } {
+  const meta = getSessionMeta();
+  return {
+    ...(meta.session_id !== undefined ? { sessionId: meta.session_id } : {}),
+    ...(meta.turn_id !== undefined ? { turnId: meta.turn_id } : {}),
+  };
+}
+
 export function clearSessionMetaCacheForTests(): void {
   cachedSessionId = undefined;
 }

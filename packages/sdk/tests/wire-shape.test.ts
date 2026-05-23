@@ -742,6 +742,70 @@ describe("SDK wire-shape contracts", () => {
     ]);
   });
 
+  it("Browser preserves pointer context and marks it stale across human takeover and resume", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    transport.responses.set(M.GET_CURRENT_TAB, {
+      tab_id: "tab-active",
+      url: "https://active.test/",
+      commandable: true,
+    });
+    transport.responses.set(M.RESUME_CONTROL, {
+      tab: { tab_id: "tab-active", url: "https://active.test/", commandable: true },
+    });
+    const browser = new Browser(
+      asTransport(transport),
+      { type: "cdp", name: "cdp", capabilities: {} },
+      { type: "cdp", name: "cdp", socketPath: "/tmp/cdp", metadata: {} },
+      new Guards(),
+    );
+
+    try {
+      const active = await browser.tabs.current({ timeout: 410 });
+      expect(active).toBeDefined();
+      await active!.act.move(11, 22, { modifiers: ["Shift"], timeout: 411 });
+
+      await browser.yieldControl({ timeout: 412 });
+      const yieldedObservation = await active!.observe({ includeText: false, timeout: 413 });
+      expect(yieldedObservation.pointer).toMatchObject({
+        tabId: "tab-active",
+        x: 11,
+        y: 22,
+        phase: "stale",
+        staleReason: "human_takeover",
+        visible: false,
+      });
+
+      const resumed = await browser.resumeControl({ timeout: 414 });
+      const resumedObservation = await resumed!.observe({ includeText: false, timeout: 415 });
+      expect(resumedObservation.pointer).toMatchObject({
+        tabId: "tab-active",
+        x: 11,
+        y: 22,
+        phase: "stale",
+        staleReason: "resume_control_revalidation_required",
+        visible: false,
+      });
+    } finally {
+      restoreMeta();
+    }
+
+    expect(transport.calls).toEqual([
+      { method: M.GET_CURRENT_TAB, params: { ...meta }, timeout: 410 },
+      {
+        method: M.CUA_MOVE,
+        params: { tab_id: "tab-active", x: 11, y: 22, modifiers: ["Shift"], ...meta },
+        timeout: 411,
+      },
+      { method: M.YIELD_CONTROL, params: { ...meta }, timeout: 412 },
+      { method: M.TAB_URL, params: { tab_id: "tab-active", ...meta }, timeout: 413 },
+      { method: M.TAB_TITLE, params: { tab_id: "tab-active", ...meta }, timeout: 413 },
+      { method: M.RESUME_CONTROL, params: { ...meta }, timeout: 414 },
+      { method: M.TAB_URL, params: { tab_id: "tab-active", ...meta }, timeout: 415 },
+      { method: M.TAB_TITLE, params: { tab_id: "tab-active", ...meta }, timeout: 415 },
+    ]);
+  });
+
   it("Browser.finalizeTabs exposes structured partial diagnostics and successful results", async () => {
     const restoreMeta = setRequestMeta();
     const transport = new FakeTransport();

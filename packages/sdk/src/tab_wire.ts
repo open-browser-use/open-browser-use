@@ -1,5 +1,5 @@
 import { Guards } from "./guards.js";
-import { Tab, type TabMetadata } from "./tab.js";
+import { Tab, type TabMetadata, type TabRuntimeContext } from "./tab.js";
 import type { Transport } from "./wire/transport.js";
 
 export type TabWire = {
@@ -73,6 +73,7 @@ export function tabFromWire(
   guards: Guards,
   row: TabWire,
   missingIdMessage: string,
+  runtimeContext: TabRuntimeContext = {},
 ): Tab {
-  return new Tab(transport, guards, tabIdFromWire(row, missingIdMessage), tabMetadata(row));
+  return new Tab(transport, guards, tabIdFromWire(row, missingIdMessage), tabMetadata(row), runtimeContext);
 }

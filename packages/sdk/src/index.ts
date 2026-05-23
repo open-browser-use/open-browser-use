@@ -66,15 +66,51 @@ export type { ImageInput } from "./image.js";
 export { Locator } from "./locator.js";
 export { setupObuRuntime } from "./runtime.js";
 export type { ConnectedBackend, SetupObuRuntimeOptions } from "./runtime.js";
-export { Tab } from "./tab.js";
+export {
+  ACTION_RUNTIME_TRANSITIONS,
+  OBSERVE_REQUEST_TRANSITIONS,
+  StateTrace,
+  createActionStateTrace,
+  createObserveStateTrace,
+} from "./state-machines.js";
+export type {
+  ActionRuntimeState,
+  ObserveRequestState,
+  StateTraceEntry,
+} from "./state-machines.js";
+export { Tab, markTabRuntimeContextStale } from "./tab.js";
+export { TabAct } from "./tab-action.js";
+export type {
+  ActionEffect,
+  ActionResult,
+  ActionStatus,
+  AgentPointerState,
+  CoordinateActionTarget,
+  DomCuaActionTarget,
+  EnvAction,
+  EnvActionPolicy,
+  EnvActionTarget,
+  LocatorActionTarget,
+  TabActClickTarget,
+  TabActScrollTarget,
+} from "./tab-action.js";
 export type {
   ArtifactMode,
   ScreenshotForModelOptions,
   ScreenshotForModelResult,
   ScreenshotOptions,
+  DomCuaObservation,
+  ObservationActionFamily,
+  ObservationLifecycle,
+  ObservationSectionStatus,
   TabEvaluateOptions,
   TabMetadata,
   TabNavigationWaitOptions,
+  TabObservation,
+  TabObserveMode,
+  TabObserveOptions,
+  TabRuntimeLifecycleEpoch,
+  TabRuntimeContext,
   TabSnapshotTextOptions,
   TabSnapshotTextResult,
 } from "./tab.js";
@@ -84,7 +120,7 @@ export type { ContentExportOptions } from "./tab-content.js";
 export { TabCua } from "./tab-cua.js";
 export { TabDev } from "./tab-dev.js";
 export { TabDomCua } from "./tab-dom-cua.js";
-export type { DomCuaNode, DomCuaSnapshot } from "./tab-dom-cua.js";
+export type { DomCuaActionOptions, DomCuaActionResult, DomCuaNode, DomCuaObservationOptions, DomCuaSnapshot } from "./tab-dom-cua.js";
 export { TabPlaywright } from "./tab-playwright.js";
 export type { ElementInfo, ElementPointOptions } from "./tab-playwright.js";
 export type * from "./types.js";

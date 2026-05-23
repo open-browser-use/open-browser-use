@@ -1,6 +1,6 @@
 import { Guards } from "./guards.js";
 import { ERR_NOT_IMPLEMENTED, ObuError } from "./errors.js";
-import { Tab, type TabMetadata } from "./tab.js";
+import { Tab, type TabMetadata, type TabRuntimeContext } from "./tab.js";
 import { tabFromWire, tabIdFromWire, tabMetadata, type TabWire } from "./tab_wire.js";
 import { withSessionMeta } from "./session-meta.js";
 import type { Transport } from "./wire/transport.js";
@@ -32,6 +32,7 @@ export class UserTabRef {
     private readonly guards: Guards,
     public readonly id: string,
     metadata: TabMetadata = {},
+    private readonly runtimeContext: TabRuntimeContext = {},
   ) {
     this.tab_id = id;
     this.tabId = id;
@@ -49,7 +50,7 @@ export class UserTabRef {
       withSessionMeta({ tab_id: this.id }),
       opts.timeout,
     );
-    return tabFromWire(this.transport, this.guards, row, "claimUserTab");
+    return tabFromWire(this.transport, this.guards, row, "claimUserTab", this.runtimeContext);
   }
 }
 
@@ -59,6 +60,7 @@ export class BrowserUser {
     private readonly guards: Guards,
     private readonly supportsMethod: (method: string) => boolean = () => true,
     private readonly backendType?: string,
+    private readonly runtimeContext: TabRuntimeContext = {},
   ) {}
 
   async discoverTabs(): Promise<UserTabRef[]> {
@@ -107,12 +109,12 @@ export class BrowserUser {
       M.CLAIM_USER_TAB,
       withSessionMeta({ tab_id: id }),
     );
-    return tabFromWire(this.transport, this.guards, row, "claimUserTab");
+    return tabFromWire(this.transport, this.guards, row, "claimUserTab", this.runtimeContext);
   }
 
   #userTabRefFromWire(row: TabWire, method: string): UserTabRef {
     const id = tabIdFromWire(row, `${method} response missing tab_id`);
-    return new UserTabRef(this.transport, this.guards, id, tabMetadata(row));
+    return new UserTabRef(this.transport, this.guards, id, tabMetadata(row), this.runtimeContext);
   }
 }
 
