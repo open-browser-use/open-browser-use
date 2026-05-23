@@ -77,10 +77,94 @@
     "message": "Copy setup prompt"
   },
   "stopButton": {
-    "message": "I'll take over"
+    "message": "Take Control"
   },
   "resumeButton": {
-    "message": "Resume"
+    "message": "Reconnect Agent"
+  },
+  "stopButtonTakeControl": {
+    "message": "Take Control"
+  },
+  "stopButtonTakeControlDescription": {
+    "message": "Pause agent control so you can use this browser yourself."
+  },
+  "stopButtonTakingControl": {
+    "message": "Taking Control"
+  },
+  "stopButtonTakingControlDescription": {
+    "message": "The agent is releasing browser control."
+  },
+  "stopButtonUserControl": {
+    "message": "You Have Control"
+  },
+  "stopButtonUserControlDescription": {
+    "message": "You are using the browser directly."
+  },
+  "stopButtonUpdateNeeded": {
+    "message": "Update Needed"
+  },
+  "stopButtonUpdateNeededDescription": {
+    "message": "Update the local host before changing browser control."
+  },
+  "stopButtonSetupNeeded": {
+    "message": "Setup Needed"
+  },
+  "stopButtonSetupNeededDescription": {
+    "message": "Repair setup before taking or returning browser control."
+  },
+  "stopButtonAgentConnecting": {
+    "message": "Agent Connecting"
+  },
+  "stopButtonAgentConnectingDescription": {
+    "message": "The agent is still connecting to browser control."
+  },
+  "stopButtonAgentOffline": {
+    "message": "Agent Offline"
+  },
+  "stopButtonAgentOfflineDescription": {
+    "message": "There is no active agent control to take over."
+  },
+  "resumeButtonAgentControl": {
+    "message": "Agent Has Control"
+  },
+  "resumeButtonAgentControlDescription": {
+    "message": "The agent already controls the browser."
+  },
+  "resumeButtonWait": {
+    "message": "Wait"
+  },
+  "resumeButtonWaitDescription": {
+    "message": "Wait until browser control has fully stopped."
+  },
+  "resumeButtonReturnToAgent": {
+    "message": "Return to Agent"
+  },
+  "resumeButtonReturnToAgentDescription": {
+    "message": "Give browser control back to the agent."
+  },
+  "resumeButtonReconnectAfterUpdate": {
+    "message": "Reconnect After Update"
+  },
+  "resumeButtonReconnectAfterUpdateDescription": {
+    "message": "Reconnect after the local host has been updated."
+  },
+  "resumeButtonRetryConnection": {
+    "message": "Retry Connection"
+  },
+  "resumeButtonRetryConnectionDescription": {
+    "message": "Try to reconnect after setup is repaired."
+  },
+  "resumeButtonReconnectAgent": {
+    "message": "Reconnect Agent"
+  },
+  "resumeButtonReconnectAgentDescription": {
+    "message": "Reconnect the agent to browser control."
+  },
+  "resumeButtonConnecting": {
+    "message": "Connecting"
+  },
+  "resumeButtonConnectingDescription": {
+    "message": "The agent is connecting now."
   },
   "cleanupButton": {
     "message": "Clean up browser tabs"
@@ -219,6 +303,17 @@
     "message": "$count$ deliverable tabs available. Use browser.deliverables(), then claim() to recover them.",
     "placeholders": {
       "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "pendingExtensionUpdate": {
+    "message": "Extension update will apply after browser control is idle."
+  },
+  "pendingExtensionUpdateVersion": {
+    "message": "Extension update $version$ will apply after browser control is idle.",
+    "placeholders": {
+      "version": {
         "content": "$1"
       }
     }

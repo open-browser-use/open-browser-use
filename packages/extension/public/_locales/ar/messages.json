@@ -77,10 +77,94 @@
     "message": "نسخ تسليم إعداد Agent"
   },
   "stopButton": {
-    "message": "سأتولى التحكم"
+    "message": "تولَّ التحكم"
   },
   "resumeButton": {
-    "message": "استئناف"
+    "message": "إعادة اتصال Agent"
+  },
+  "stopButtonTakeControl": {
+    "message": "تولَّ التحكم"
+  },
+  "stopButtonTakeControlDescription": {
+    "message": "أوقف تحكم Agent مؤقتًا لتستخدم هذا المتصفح بنفسك."
+  },
+  "stopButtonTakingControl": {
+    "message": "جارٍ تولي التحكم"
+  },
+  "stopButtonTakingControlDescription": {
+    "message": "يقوم Agent بتحرير التحكم في المتصفح."
+  },
+  "stopButtonUserControl": {
+    "message": "التحكم لديك"
+  },
+  "stopButtonUserControlDescription": {
+    "message": "أنت تستخدم المتصفح مباشرة."
+  },
+  "stopButtonUpdateNeeded": {
+    "message": "يلزم تحديث"
+  },
+  "stopButtonUpdateNeededDescription": {
+    "message": "حدّث المضيف المحلي قبل تغيير التحكم في المتصفح."
+  },
+  "stopButtonSetupNeeded": {
+    "message": "يلزم الإعداد"
+  },
+  "stopButtonSetupNeededDescription": {
+    "message": "أصلح الإعداد قبل تولي التحكم في المتصفح أو إعادته."
+  },
+  "stopButtonAgentConnecting": {
+    "message": "Agent يتصل"
+  },
+  "stopButtonAgentConnectingDescription": {
+    "message": "لا يزال Agent يتصل بتحكم المتصفح."
+  },
+  "stopButtonAgentOffline": {
+    "message": "Agent غير متصل"
+  },
+  "stopButtonAgentOfflineDescription": {
+    "message": "لا يوجد تحكم نشط من Agent لتوليه."
+  },
+  "resumeButtonAgentControl": {
+    "message": "Agent يتحكم"
+  },
+  "resumeButtonAgentControlDescription": {
+    "message": "Agent يتحكم بالفعل في المتصفح."
+  },
+  "resumeButtonWait": {
+    "message": "انتظر"
+  },
+  "resumeButtonWaitDescription": {
+    "message": "انتظر حتى يتوقف تحكم المتصفح بالكامل."
+  },
+  "resumeButtonReturnToAgent": {
+    "message": "إعادة إلى Agent"
+  },
+  "resumeButtonReturnToAgentDescription": {
+    "message": "أعد التحكم في المتصفح إلى Agent."
+  },
+  "resumeButtonReconnectAfterUpdate": {
+    "message": "إعادة الاتصال بعد التحديث"
+  },
+  "resumeButtonReconnectAfterUpdateDescription": {
+    "message": "أعد الاتصال بعد تحديث المضيف المحلي."
+  },
+  "resumeButtonRetryConnection": {
+    "message": "إعادة محاولة الاتصال"
+  },
+  "resumeButtonRetryConnectionDescription": {
+    "message": "حاول إعادة الاتصال بعد إصلاح الإعداد."
+  },
+  "resumeButtonReconnectAgent": {
+    "message": "إعادة اتصال Agent"
+  },
+  "resumeButtonReconnectAgentDescription": {
+    "message": "أعد اتصال Agent بتحكم المتصفح."
+  },
+  "resumeButtonConnecting": {
+    "message": "جارٍ الاتصال"
+  },
+  "resumeButtonConnectingDescription": {
+    "message": "Agent يتصل الآن."
   },
   "cleanupButton": {
     "message": "تنظيف تبويبات المتصفح"
@@ -251,6 +335,17 @@
     "message": "عدد علامات التبويب القابلة للتسليم: $count$. استخدم browser.deliverables() ثم claim() للاستعادة.",
     "placeholders": {
       "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "pendingExtensionUpdate": {
+    "message": "سيتم تطبيق تحديث الإضافة عندما يكون تحكم المتصفح خاملاً."
+  },
+  "pendingExtensionUpdateVersion": {
+    "message": "سيتم تطبيق تحديث الإضافة $version$ عندما يكون تحكم المتصفح خاملاً.",
+    "placeholders": {
+      "version": {
         "content": "$1"
       }
     }

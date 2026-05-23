@@ -210,6 +210,47 @@ async fn stop_browser_control_invalidates_descriptor_socket_and_existing_peer() 
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
+            "method": "takeBrowserControl",
+            "params": {
+                "sessions": [
+                    { "session_id": "session", "turn_id": "popup-take-control:session:1" }
+                ]
+            },
+            "id": 6
+        }),
+    )
+    .await;
+    let takeover = read_frame(&mut stdout).await;
+    assert_eq!(takeover["result"], Value::Null);
+
+    framed
+        .send(bytes::Bytes::from(
+            serde_json::to_vec(&json!({
+                "jsonrpc": "2.0",
+                "method": "turnEnded",
+                "params": {
+                    "session_id": "session",
+                    "turn_id": "turn-after-take-control"
+                },
+                "id": 6
+            }))
+            .unwrap(),
+        ))
+        .await
+        .unwrap();
+    let blocked = read_json_frame(&mut framed).await;
+    assert!(
+        blocked["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("turnEnded blocked during human takeover"),
+        "expected human takeover to block SDK actions, got {blocked}"
+    );
+
+    write_frame(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
             "method": "stopBrowserControl",
             "params": {
                 "reason": "popup_stop",

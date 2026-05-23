@@ -77,10 +77,94 @@
     "message": "Sao chép nội dung bàn giao thiết lập Agent"
   },
   "stopButton": {
-    "message": "Tôi sẽ tiếp quản"
+    "message": "Nhận quyền điều khiển"
   },
   "resumeButton": {
-    "message": "Tiếp tục"
+    "message": "Kết nối lại Agent"
+  },
+  "stopButtonTakeControl": {
+    "message": "Nhận quyền điều khiển"
+  },
+  "stopButtonTakeControlDescription": {
+    "message": "Tạm dừng quyền điều khiển của Agent để bạn tự dùng trình duyệt này."
+  },
+  "stopButtonTakingControl": {
+    "message": "Đang nhận quyền"
+  },
+  "stopButtonTakingControlDescription": {
+    "message": "Agent đang nhả quyền điều khiển trình duyệt."
+  },
+  "stopButtonUserControl": {
+    "message": "Bạn đang điều khiển"
+  },
+  "stopButtonUserControlDescription": {
+    "message": "Bạn đang dùng trực tiếp trình duyệt."
+  },
+  "stopButtonUpdateNeeded": {
+    "message": "Cần cập nhật"
+  },
+  "stopButtonUpdateNeededDescription": {
+    "message": "Cập nhật host cục bộ trước khi đổi quyền điều khiển trình duyệt."
+  },
+  "stopButtonSetupNeeded": {
+    "message": "Cần thiết lập"
+  },
+  "stopButtonSetupNeededDescription": {
+    "message": "Sửa thiết lập trước khi nhận hoặc trả quyền điều khiển trình duyệt."
+  },
+  "stopButtonAgentConnecting": {
+    "message": "Agent đang kết nối"
+  },
+  "stopButtonAgentConnectingDescription": {
+    "message": "Agent vẫn đang kết nối tới quyền điều khiển trình duyệt."
+  },
+  "stopButtonAgentOffline": {
+    "message": "Agent ngoại tuyến"
+  },
+  "stopButtonAgentOfflineDescription": {
+    "message": "Không có quyền điều khiển Agent đang hoạt động để nhận."
+  },
+  "resumeButtonAgentControl": {
+    "message": "Agent đang điều khiển"
+  },
+  "resumeButtonAgentControlDescription": {
+    "message": "Agent đã điều khiển trình duyệt."
+  },
+  "resumeButtonWait": {
+    "message": "Chờ"
+  },
+  "resumeButtonWaitDescription": {
+    "message": "Chờ đến khi quyền điều khiển trình duyệt dừng hoàn toàn."
+  },
+  "resumeButtonReturnToAgent": {
+    "message": "Trả lại cho Agent"
+  },
+  "resumeButtonReturnToAgentDescription": {
+    "message": "Trả quyền điều khiển trình duyệt cho Agent."
+  },
+  "resumeButtonReconnectAfterUpdate": {
+    "message": "Kết nối lại sau cập nhật"
+  },
+  "resumeButtonReconnectAfterUpdateDescription": {
+    "message": "Kết nối lại sau khi host cục bộ được cập nhật."
+  },
+  "resumeButtonRetryConnection": {
+    "message": "Thử kết nối lại"
+  },
+  "resumeButtonRetryConnectionDescription": {
+    "message": "Thử kết nối lại sau khi sửa thiết lập."
+  },
+  "resumeButtonReconnectAgent": {
+    "message": "Kết nối lại Agent"
+  },
+  "resumeButtonReconnectAgentDescription": {
+    "message": "Kết nối lại Agent với quyền điều khiển trình duyệt."
+  },
+  "resumeButtonConnecting": {
+    "message": "Đang kết nối"
+  },
+  "resumeButtonConnectingDescription": {
+    "message": "Agent đang kết nối."
   },
   "cleanupButton": {
     "message": "Dọn dẹp thẻ trình duyệt"
@@ -219,6 +303,17 @@
     "message": "Có $count$ tab bàn giao. Dùng browser.deliverables(), rồi claim() để khôi phục chúng.",
     "placeholders": {
       "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "pendingExtensionUpdate": {
+    "message": "Bản cập nhật tiện ích sẽ được áp dụng khi quyền điều khiển trình duyệt rảnh."
+  },
+  "pendingExtensionUpdateVersion": {
+    "message": "Bản cập nhật tiện ích $version$ sẽ được áp dụng khi quyền điều khiển trình duyệt rảnh.",
+    "placeholders": {
+      "version": {
         "content": "$1"
       }
     }

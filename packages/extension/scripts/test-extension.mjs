@@ -1,6 +1,7 @@
 await import("./test-finalize-tabs-machine.mjs");
 await import("./test-finalize-tabs-controller.mjs");
 await import("./test-native-lifecycle-machines.mjs");
+await import("./test-agent-lifecycle-contracts.mjs");
 await import("./test-native-host-bridge.mjs");
 await import("./test-native-transport-controller.mjs");
 await import("./test-browser-session-machine.mjs");

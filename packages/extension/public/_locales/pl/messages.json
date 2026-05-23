@@ -77,10 +77,94 @@
     "message": "Kopiuj przekazanie konfiguracji Agenta"
   },
   "stopButton": {
-    "message": "Przejmuję kontrolę"
+    "message": "Przejmij kontrolę"
   },
   "resumeButton": {
-    "message": "Wznów"
+    "message": "Połącz agenta ponownie"
+  },
+  "stopButtonTakeControl": {
+    "message": "Przejmij kontrolę"
+  },
+  "stopButtonTakeControlDescription": {
+    "message": "Wstrzymaj kontrolę agenta, aby samodzielnie używać tej przeglądarki."
+  },
+  "stopButtonTakingControl": {
+    "message": "Przejmowanie kontroli"
+  },
+  "stopButtonTakingControlDescription": {
+    "message": "Agent zwalnia kontrolę nad przeglądarką."
+  },
+  "stopButtonUserControl": {
+    "message": "Masz kontrolę"
+  },
+  "stopButtonUserControlDescription": {
+    "message": "Używasz przeglądarki bezpośrednio."
+  },
+  "stopButtonUpdateNeeded": {
+    "message": "Wymagana aktualizacja"
+  },
+  "stopButtonUpdateNeededDescription": {
+    "message": "Zaktualizuj lokalnego hosta przed zmianą kontroli przeglądarki."
+  },
+  "stopButtonSetupNeeded": {
+    "message": "Wymagana konfiguracja"
+  },
+  "stopButtonSetupNeededDescription": {
+    "message": "Napraw konfigurację przed przejęciem lub oddaniem kontroli przeglądarki."
+  },
+  "stopButtonAgentConnecting": {
+    "message": "Agent się łączy"
+  },
+  "stopButtonAgentConnectingDescription": {
+    "message": "Agent nadal łączy się z kontrolą przeglądarki."
+  },
+  "stopButtonAgentOffline": {
+    "message": "Agent offline"
+  },
+  "stopButtonAgentOfflineDescription": {
+    "message": "Brak aktywnej kontroli agenta do przejęcia."
+  },
+  "resumeButtonAgentControl": {
+    "message": "Agent ma kontrolę"
+  },
+  "resumeButtonAgentControlDescription": {
+    "message": "Agent już kontroluje przeglądarkę."
+  },
+  "resumeButtonWait": {
+    "message": "Czekaj"
+  },
+  "resumeButtonWaitDescription": {
+    "message": "Poczekaj, aż kontrola przeglądarki całkowicie się zatrzyma."
+  },
+  "resumeButtonReturnToAgent": {
+    "message": "Oddaj agentowi"
+  },
+  "resumeButtonReturnToAgentDescription": {
+    "message": "Oddaj kontrolę przeglądarki agentowi."
+  },
+  "resumeButtonReconnectAfterUpdate": {
+    "message": "Połącz po aktualizacji"
+  },
+  "resumeButtonReconnectAfterUpdateDescription": {
+    "message": "Połącz ponownie po aktualizacji lokalnego hosta."
+  },
+  "resumeButtonRetryConnection": {
+    "message": "Ponów połączenie"
+  },
+  "resumeButtonRetryConnectionDescription": {
+    "message": "Spróbuj połączyć ponownie po naprawie konfiguracji."
+  },
+  "resumeButtonReconnectAgent": {
+    "message": "Połącz agenta ponownie"
+  },
+  "resumeButtonReconnectAgentDescription": {
+    "message": "Połącz agenta ponownie z kontrolą przeglądarki."
+  },
+  "resumeButtonConnecting": {
+    "message": "Łączenie"
+  },
+  "resumeButtonConnectingDescription": {
+    "message": "Agent teraz się łączy."
   },
   "cleanupButton": {
     "message": "Wyczyść karty przeglądarki"
@@ -235,6 +319,17 @@
     "message": "Dostępne są $count$ karty do przekazania. Użyj browser.deliverables(), a potem claim(), aby je odzyskać.",
     "placeholders": {
       "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "pendingExtensionUpdate": {
+    "message": "Aktualizacja rozszerzenia zostanie zastosowana, gdy kontrola przeglądarki będzie bezczynna."
+  },
+  "pendingExtensionUpdateVersion": {
+    "message": "Aktualizacja rozszerzenia $version$ zostanie zastosowana, gdy kontrola przeglądarki będzie bezczynna.",
+    "placeholders": {
+      "version": {
         "content": "$1"
       }
     }

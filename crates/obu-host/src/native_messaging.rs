@@ -218,6 +218,20 @@ async fn handle_extension_request(
             close_runtime_descriptor_registration(registration, "stop_browser_control").await;
             Response::ok(request.id, Value::Null)
         }
+        "takeBrowserControl" => match apply_extension_control_state(backend, request.params, true) {
+            Ok(()) => Response::ok(request.id, Value::Null),
+            Err(error) => Response::err(
+                request.id,
+                ErrorObject::new(ErrorCode::InvalidParams, error.to_string()),
+            ),
+        },
+        "resumeBrowserControl" => match apply_extension_control_state(backend, request.params, false) {
+            Ok(()) => Response::ok(request.id, Value::Null),
+            Err(error) => Response::err(
+                request.id,
+                ErrorObject::new(ErrorCode::InvalidParams, error.to_string()),
+            ),
+        },
         other => Response::err(
             request.id,
             ErrorObject::new(
@@ -226,6 +240,35 @@ async fn handle_extension_request(
             ),
         ),
     }
+}
+
+fn apply_extension_control_state(
+    backend: &WebExtensionBackend,
+    params: Value,
+    human_takeover: bool,
+) -> anyhow::Result<()> {
+    let sessions = params
+        .get("sessions")
+        .and_then(Value::as_array)
+        .ok_or_else(|| anyhow::anyhow!("sessions must be an array"))?;
+    for session in sessions {
+        let session_id = session
+            .get("session_id")
+            .or_else(|| session.get("sessionId"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("session_id must be a non-empty string"))?;
+        let turn_id = session
+            .get("turn_id")
+            .or_else(|| session.get("turnId"))
+            .and_then(Value::as_str)
+            .filter(|value| !value.is_empty())
+            .ok_or_else(|| anyhow::anyhow!("turn_id must be a non-empty string"))?;
+        backend
+            .registry()
+            .set_human_takeover(session_id, Some(turn_id), human_takeover)?;
+    }
+    Ok(())
 }
 
 async fn close_runtime_descriptor_registration(

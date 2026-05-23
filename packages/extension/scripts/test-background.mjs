@@ -87,6 +87,7 @@ const calls = {
   tabsUngroup: [],
   windowsUpdate: [],
   runtimeReload: [],
+  runtimeReloadPendingUpdate: [],
 };
 let nextTabId = 1;
 let nextGroupId = 10;
@@ -110,6 +111,7 @@ globalThis.chrome = {
     getManifest: () => ({ version: "0.1.0" }),
     reload() {
       calls.runtimeReload.push({ at: Date.now() });
+      calls.runtimeReloadPendingUpdate.push(storage[pendingUpdateKey]);
     },
     connectNative(name) {
       assert.equal(name, "dev.obu.host");
@@ -415,6 +417,7 @@ assert.equal(debugStatus.enabled, false);
 const idleUpdateReloadStart = calls.runtimeReload.length;
 runtimeUpdateAvailable.emitLatest({ version: "0.2.0" });
 await waitFor(() => calls.runtimeReload.length === idleUpdateReloadStart + 1);
+assert.equal(calls.runtimeReloadPendingUpdate.at(-1), null);
 assert.equal(storage[pendingUpdateKey], null);
 assert.equal(storage[statusKey].pendingExtensionUpdate.state, "reloading");
 
@@ -442,6 +445,7 @@ const finalizedForUpdate = await hostRequest(port, "finalizeTabs", {
 });
 assert.deepEqual(finalizedForUpdate.result.closedTabIds, [updateDeferralTabId]);
 await waitFor(() => calls.runtimeReload.length === activeUpdateReloadStart + 1);
+assert.equal(calls.runtimeReloadPendingUpdate.at(-1), null);
 assert.equal(storage[pendingUpdateKey], null);
 assert.equal(storage[statusKey].pendingExtensionUpdate.state, "reloading");
 
@@ -457,6 +461,7 @@ const restoredUpdatePort = await waitFor(() => ports[restoredUpdatePortCount]);
 await waitFor(() => restoredUpdatePort.sent.find((message) => message.type === "hello"));
 restoredUpdatePort.emit({ type: "hello_ack", host_version: "0.1.0" });
 await waitFor(() => calls.runtimeReload.length === restoredUpdateReloadStart + 1);
+assert.equal(calls.runtimeReloadPendingUpdate.at(-1), null);
 assert.equal(storage[pendingUpdateKey], null);
 
 nextTabId = updateDeferralTabId;
@@ -1786,29 +1791,64 @@ await hostRequest(port, "claimUserTab", {
   tabId: 100,
 });
 assert.notEqual(tabs.get(100).groupId, -1);
-const stopPromise = popupMessage({ type: "STOP_BROWSER_CONTROL" });
-const stopRequest = await waitFor(() => port.sent.find((message) => message.method === "stopBrowserControl"));
-port.emit({ jsonrpc: "2.0", id: stopRequest.id, result: null });
+const takeControlStart = port.sent.length;
+const stopPromise = popupMessage({ type: "TAKE_BROWSER_CONTROL" });
+const takeControlRequest = await waitFor(() =>
+  port.sent.slice(takeControlStart).find((message) => message.method === "takeBrowserControl")
+);
+assert.ok(
+  takeControlRequest.params.sessions.some((session) => session.session_id === "stop-cleanup-session"),
+  "popup takeover must include the currently controlled active session",
+);
+assert.ok(
+  takeControlRequest.params.sessions.length > 1,
+  "popup takeover should pause every active browser-control session without cleanup",
+);
+assert.ok(takeControlRequest.params.sessions.every((session) =>
+  /^popup-take-control:/.test(session.turn_id)
+));
+port.emit({ jsonrpc: "2.0", id: takeControlRequest.id, result: null });
 const stopped = await stopPromise;
-assert.equal(stopped.state, "stopped");
-assert.equal(port.disconnected, true);
-assert.equal(storage[statusKey].state, "stopped");
-assert.equal(calls.debuggerDetach[0].tabId, 1);
-assert.equal(tabs.has(stopCleanupAgentTabId), false);
+assert.equal(stopped.state, "connected");
+assert.equal(stopped.browserControl, "human_takeover");
+assert.equal(port.disconnected, false);
+assert.notEqual(storage[statusKey].state, "stopped");
+assert.equal(storage[statusKey].state, "connected");
+assert.equal(storage[statusKey].browserControl, "human_takeover");
+assert.equal(tabs.has(stopCleanupAgentTabId), true);
 assert.equal(tabs.has(100), true);
-assert.equal(tabs.get(100).groupId, -1);
+assert.notEqual(tabs.get(100).groupId, -1);
 assert.equal(tabs.has(102), true);
 assert.notEqual(tabs.get(102).groupId, -1);
-assert.deepEqual(sessionStateTabs("stop-cleanup-session"), []);
+assert.equal(
+  storage[sessionStateKey]?.sessions?.find((session) => session.session_id === "stop-cleanup-session")?.controlState,
+  "human_takeover",
+);
+assert.deepEqual(
+  sessionStateTabs("stop-cleanup-session")
+    .map((tab) => [tab.tabId, tab.origin, tab.status])
+    .sort((left, right) => left[0] - right[0]),
+  [
+    [stopCleanupAgentTabId, "agent", "active"],
+    [100, "user", "active"],
+  ],
+);
 
-const resumePortIndex = ports.length;
+const popupResumeStart = port.sent.length;
 const resumePromise = popupMessage({ type: "RESUME_BROWSER_CONTROL" });
-const resumedPort = await waitFor(() => ports[resumePortIndex]);
-await waitFor(() => resumedPort.sent.find((message) => message.type === "hello"));
-resumedPort.emit({ type: "hello_ack", host_version: "0.1.0" });
+const resumeRequest = await waitFor(() =>
+  port.sent.slice(popupResumeStart).find((message) => message.method === "resumeBrowserControl")
+);
+port.emit({ jsonrpc: "2.0", id: resumeRequest.id, result: null });
 const resumed = await resumePromise;
-assert.equal(resumed.state, "hello_pending");
-await waitFor(() => storage[statusKey]?.state === "connected");
+assert.equal(resumed.state, "connected");
+assert.equal(resumed.browserControl, undefined);
+assert.equal(storage[statusKey].state, "connected");
+assert.equal(storage[statusKey].browserControl, undefined);
+assert.equal(
+  storage[sessionStateKey]?.sessions?.find((session) => session.session_id === "stop-cleanup-session")?.controlState,
+  undefined,
+);
 
 await runPendingReconnectSurvivesServiceWorkerRestart();
 

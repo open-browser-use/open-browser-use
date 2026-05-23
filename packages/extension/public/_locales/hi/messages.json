@@ -77,10 +77,94 @@
     "message": "Agent सेटअप हैंडऑफ कॉपी करें"
   },
   "stopButton": {
-    "message": "मैं नियंत्रण लूंगा"
+    "message": "नियंत्रण लें"
   },
   "resumeButton": {
-    "message": "फिर शुरू करें"
+    "message": "Agent फिर से जोड़ें"
+  },
+  "stopButtonTakeControl": {
+    "message": "नियंत्रण लें"
+  },
+  "stopButtonTakeControlDescription": {
+    "message": "Agent नियंत्रण रोकें ताकि आप यह ब्राउज़र स्वयं उपयोग कर सकें।"
+  },
+  "stopButtonTakingControl": {
+    "message": "नियंत्रण लिया जा रहा है"
+  },
+  "stopButtonTakingControlDescription": {
+    "message": "Agent ब्राउज़र नियंत्रण छोड़ रहा है।"
+  },
+  "stopButtonUserControl": {
+    "message": "नियंत्रण आपके पास है"
+  },
+  "stopButtonUserControlDescription": {
+    "message": "आप ब्राउज़र सीधे उपयोग कर रहे हैं।"
+  },
+  "stopButtonUpdateNeeded": {
+    "message": "अपडेट आवश्यक"
+  },
+  "stopButtonUpdateNeededDescription": {
+    "message": "ब्राउज़र नियंत्रण बदलने से पहले लोकल होस्ट अपडेट करें।"
+  },
+  "stopButtonSetupNeeded": {
+    "message": "सेटअप आवश्यक"
+  },
+  "stopButtonSetupNeededDescription": {
+    "message": "ब्राउज़र नियंत्रण लेने या लौटाने से पहले सेटअप ठीक करें।"
+  },
+  "stopButtonAgentConnecting": {
+    "message": "Agent जुड़ रहा है"
+  },
+  "stopButtonAgentConnectingDescription": {
+    "message": "Agent अभी भी ब्राउज़र नियंत्रण से जुड़ रहा है।"
+  },
+  "stopButtonAgentOffline": {
+    "message": "Agent ऑफलाइन"
+  },
+  "stopButtonAgentOfflineDescription": {
+    "message": "लेने के लिए कोई सक्रिय Agent नियंत्रण नहीं है।"
+  },
+  "resumeButtonAgentControl": {
+    "message": "Agent नियंत्रण में है"
+  },
+  "resumeButtonAgentControlDescription": {
+    "message": "Agent पहले से ब्राउज़र नियंत्रित कर रहा है।"
+  },
+  "resumeButtonWait": {
+    "message": "प्रतीक्षा करें"
+  },
+  "resumeButtonWaitDescription": {
+    "message": "ब्राउज़र नियंत्रण पूरी तरह रुकने तक प्रतीक्षा करें।"
+  },
+  "resumeButtonReturnToAgent": {
+    "message": "Agent को लौटाएँ"
+  },
+  "resumeButtonReturnToAgentDescription": {
+    "message": "ब्राउज़र नियंत्रण Agent को वापस दें।"
+  },
+  "resumeButtonReconnectAfterUpdate": {
+    "message": "अपडेट के बाद फिर जुड़ें"
+  },
+  "resumeButtonReconnectAfterUpdateDescription": {
+    "message": "लोकल होस्ट अपडेट होने के बाद फिर जुड़ें।"
+  },
+  "resumeButtonRetryConnection": {
+    "message": "कनेक्शन फिर आज़माएँ"
+  },
+  "resumeButtonRetryConnectionDescription": {
+    "message": "सेटअप ठीक होने के बाद फिर जुड़ने की कोशिश करें।"
+  },
+  "resumeButtonReconnectAgent": {
+    "message": "Agent फिर से जोड़ें"
+  },
+  "resumeButtonReconnectAgentDescription": {
+    "message": "Agent को ब्राउज़र नियंत्रण से फिर जोड़ें।"
+  },
+  "resumeButtonConnecting": {
+    "message": "जुड़ रहा है"
+  },
+  "resumeButtonConnectingDescription": {
+    "message": "Agent अभी जुड़ रहा है।"
   },
   "cleanupButton": {
     "message": "ब्राउज़र टैब साफ करें"
@@ -219,6 +303,17 @@
     "message": "$count$ डिलिवरेबल टैब उपलब्ध हैं। इन्हें वापस पाने के लिए browser.deliverables(), फिर claim() का उपयोग करें।",
     "placeholders": {
       "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "pendingExtensionUpdate": {
+    "message": "ब्राउज़र नियंत्रण निष्क्रिय होने पर एक्सटेंशन अपडेट लागू होगा।"
+  },
+  "pendingExtensionUpdateVersion": {
+    "message": "ब्राउज़र नियंत्रण निष्क्रिय होने पर एक्सटेंशन अपडेट $version$ लागू होगा।",
+    "placeholders": {
+      "version": {
         "content": "$1"
       }
     }

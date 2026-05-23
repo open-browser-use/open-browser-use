@@ -77,10 +77,94 @@
     "message": "Agent セットアップ用ハンドオフをコピー"
   },
   "stopButton": {
-    "message": "自分で操作する"
+    "message": "操作を引き継ぐ"
   },
   "resumeButton": {
-    "message": "再開"
+    "message": "Agent を再接続"
+  },
+  "stopButtonTakeControl": {
+    "message": "操作を引き継ぐ"
+  },
+  "stopButtonTakeControlDescription": {
+    "message": "Agent の制御を一時停止して、自分でこのブラウザを操作します。"
+  },
+  "stopButtonTakingControl": {
+    "message": "引き継ぎ中"
+  },
+  "stopButtonTakingControlDescription": {
+    "message": "Agent がブラウザ制御を解放しています。"
+  },
+  "stopButtonUserControl": {
+    "message": "あなたが操作中"
+  },
+  "stopButtonUserControlDescription": {
+    "message": "あなたがブラウザを直接操作しています。"
+  },
+  "stopButtonUpdateNeeded": {
+    "message": "更新が必要"
+  },
+  "stopButtonUpdateNeededDescription": {
+    "message": "ブラウザ制御を切り替える前にローカルホストを更新してください。"
+  },
+  "stopButtonSetupNeeded": {
+    "message": "設定が必要"
+  },
+  "stopButtonSetupNeededDescription": {
+    "message": "制御を引き継ぐ、または戻す前に設定を修復してください。"
+  },
+  "stopButtonAgentConnecting": {
+    "message": "Agent 接続中"
+  },
+  "stopButtonAgentConnectingDescription": {
+    "message": "Agent はまだブラウザ制御へ接続中です。"
+  },
+  "stopButtonAgentOffline": {
+    "message": "Agent オフライン"
+  },
+  "stopButtonAgentOfflineDescription": {
+    "message": "引き継げる有効な Agent 制御はありません。"
+  },
+  "resumeButtonAgentControl": {
+    "message": "Agent が操作中"
+  },
+  "resumeButtonAgentControlDescription": {
+    "message": "Agent はすでにブラウザを制御しています。"
+  },
+  "resumeButtonWait": {
+    "message": "待機"
+  },
+  "resumeButtonWaitDescription": {
+    "message": "ブラウザ制御が完全に停止するまで待ってください。"
+  },
+  "resumeButtonReturnToAgent": {
+    "message": "Agent に戻す"
+  },
+  "resumeButtonReturnToAgentDescription": {
+    "message": "ブラウザ制御を Agent に戻します。"
+  },
+  "resumeButtonReconnectAfterUpdate": {
+    "message": "更新後に再接続"
+  },
+  "resumeButtonReconnectAfterUpdateDescription": {
+    "message": "ローカルホストの更新後に再接続します。"
+  },
+  "resumeButtonRetryConnection": {
+    "message": "接続を再試行"
+  },
+  "resumeButtonRetryConnectionDescription": {
+    "message": "設定を修復した後で再接続を試します。"
+  },
+  "resumeButtonReconnectAgent": {
+    "message": "Agent を再接続"
+  },
+  "resumeButtonReconnectAgentDescription": {
+    "message": "Agent をブラウザ制御へ再接続します。"
+  },
+  "resumeButtonConnecting": {
+    "message": "接続中"
+  },
+  "resumeButtonConnectingDescription": {
+    "message": "Agent が接続中です。"
   },
   "cleanupButton": {
     "message": "ブラウザータブを整理"
@@ -219,6 +303,17 @@
     "message": "$count$ 個の成果物タブがあります。browser.deliverables() を使用し、claim() で復元してください。",
     "placeholders": {
       "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "pendingExtensionUpdate": {
+    "message": "拡張機能の更新は、ブラウザ制御がアイドルになった後に適用されます。"
+  },
+  "pendingExtensionUpdateVersion": {
+    "message": "拡張機能の更新 $version$ は、ブラウザ制御がアイドルになった後に適用されます。",
+    "placeholders": {
+      "version": {
         "content": "$1"
       }
     }

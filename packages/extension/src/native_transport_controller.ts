@@ -22,6 +22,7 @@ import type { OverlayReleaseDiagnostic, PendingExtensionUpdateTrigger } from "./
 
 export type HostStatus = {
   state: NativeHostState;
+  browserControl?: "human_takeover";
   message?: string;
   diagnosis?: NativeHostDiagnosis;
   hostVersion?: string;

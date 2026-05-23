@@ -98,6 +98,7 @@ let pendingExtensionUpdate: PendingExtensionUpdate | undefined;
 let pendingExtensionUpdateCheckTimer: ReturnType<typeof setTimeout> | undefined;
 let pendingExtensionUpdateCheckTrigger: PendingExtensionUpdateTrigger | undefined;
 let applyingPendingExtensionUpdate = false;
+let popupControlTurnSequence = 0;
 
 const overlayCoordinator = new OverlayCoordinator((trigger) => {
   schedulePendingExtensionUpdateCheck(trigger);
@@ -315,8 +316,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse(await getStatus());
       return;
     }
-    if (isMessage(message, "STOP_BROWSER_CONTROL")) {
-      await stopBrowserControl();
+    if (isMessage(message, "TAKE_BROWSER_CONTROL")) {
+      await takeBrowserControl();
       sendResponse(await getStatus());
       return;
     }
@@ -488,11 +489,11 @@ async function handleNativeApplicationMessage(message: unknown, sourcePort: Nati
   }
 }
 
-async function stopBrowserControl(): Promise<void> {
-  await nativeTransport.stop();
-}
-
 async function resumeBrowserControl(): Promise<void> {
+  if (nativeTransport.currentStatus().state === "connected" && hasHumanTakeoverSession()) {
+    await resumeAgentControl();
+    return;
+  }
   await nativeTransport.resume();
 }
 
@@ -898,6 +899,33 @@ async function stopActiveBrowserControl(): Promise<CleanupBrowserTabsResult> {
   return await tabLifecycleController.cleanupAllSessionTabs("stop");
 }
 
+async function takeBrowserControl(): Promise<void> {
+  const sessions = sessionParamsForPopupControl("popup-take-control")
+    .filter(({ session }) => {
+      return session.controlState !== "human_takeover" &&
+        [...session.tabs.values()].some((row) => row.status === "active");
+    });
+  if (sessions.length === 0) return;
+  const payload = { sessions: sessions.map(({ params }) => params) };
+  await sendRequest("takeBrowserControl", payload);
+  for (const { params } of sessions) {
+    await browserSessionController.yieldControl(params);
+  }
+  await publishBrowserControlStatus();
+}
+
+async function resumeAgentControl(): Promise<void> {
+  const sessions = sessionParamsForPopupControl("popup-resume-control")
+    .filter(({ session }) => session.controlState === "human_takeover");
+  if (sessions.length === 0) return;
+  const payload = { sessions: sessions.map(({ params }) => params) };
+  await sendRequest("resumeBrowserControl", payload);
+  for (const { params } of sessions) {
+    await browserSessionController.resumeControl(params);
+  }
+  await publishBrowserControlStatus();
+}
+
 async function cleanUpBrowserTabs(): Promise<CleanupBrowserTabsResult> {
   const result = await tabLifecycleController.cleanupAllSessionTabs("stop");
   appendDebugLog("info", "browser_tabs.cleaned", result);
@@ -920,7 +948,19 @@ async function getStatus(): Promise<HostStatus> {
   if ((current.state === "disconnected" || current.state === "error" || current.state === "heartbeat_failed") && !nativeTransport.hasReconnectTimer()) {
     void connectNative();
   }
-  return statusWithOverlayRelease(statusWithDeliverables(statusWithPendingUpdate(nativeTransport.currentStatus())));
+  return statusWithBrowserControl(statusWithOverlayRelease(statusWithDeliverables(statusWithPendingUpdate(nativeTransport.currentStatus()))));
+}
+
+function statusWithBrowserControl(current: HostStatus): HostStatus {
+  const base = { ...current };
+  delete base.browserControl;
+  if (hasHumanTakeoverSession()) return { ...base, browserControl: "human_takeover" };
+  return base;
+}
+
+async function publishBrowserControlStatus(): Promise<void> {
+  await setStatus(statusWithBrowserControl(nativeTransport.currentStatus()));
+  publishExtensionStatus();
 }
 
 function statusWithDeliverables(current: HostStatus): HostStatus {
@@ -941,6 +981,30 @@ function statusWithOverlayRelease(current: HostStatus): HostStatus {
 
 function countDeliverableTabs(): number {
   return sessionRepository.countDeliverableTabs();
+}
+
+function hasHumanTakeoverSession(): boolean {
+  return [...sessionRepository.values()].some((session) => session.controlState === "human_takeover");
+}
+
+function sessionParamsForPopupControl(prefix: string): Array<{
+  sessionId: string;
+  session: BrowserSession;
+  params: SessionParams;
+}> {
+  return [...sessionRepository.entries()].map(([sessionId, session]) => ({
+    sessionId,
+    session,
+    params: {
+      session_id: sessionId,
+      turn_id: nextPopupControlTurnId(prefix, sessionId),
+    },
+  }));
+}
+
+function nextPopupControlTurnId(prefix: string, sessionId: string): string {
+  popupControlTurnSequence = (popupControlTurnSequence + 1) % Number.MAX_SAFE_INTEGER;
+  return `${prefix}:${sessionId}:${Date.now()}:${popupControlTurnSequence}`;
 }
 
 function syncSessionGroupMirrors(session: BrowserSession): void {
@@ -1080,12 +1144,11 @@ async function maybeApplyPendingExtensionUpdate(trigger: PendingExtensionUpdateT
     const version = applyPlan.version;
     pendingExtensionUpdate = applyPlan.pending;
     appendDebugLog("info", "extension.update.reload", { trigger, version });
-    await persistPendingExtensionUpdate();
     await setStatus({ ...nativeTransport.currentStatus(), updatedAt: Date.now() });
     publishExtensionStatus();
-    chrome.runtime.reload();
     pendingExtensionUpdate = undefined;
     await persistPendingExtensionUpdate();
+    chrome.runtime.reload();
   } finally {
     applyingPendingExtensionUpdate = false;
   }

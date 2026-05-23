@@ -77,10 +77,94 @@
     "message": "Salin serah terima penyiapan Agent"
   },
   "stopButton": {
-    "message": "Saya ambil alih"
+    "message": "Ambil kontrol"
   },
   "resumeButton": {
-    "message": "Lanjutkan"
+    "message": "Hubungkan ulang Agent"
+  },
+  "stopButtonTakeControl": {
+    "message": "Ambil kontrol"
+  },
+  "stopButtonTakeControlDescription": {
+    "message": "Jeda kontrol Agent agar Anda bisa memakai browser ini sendiri."
+  },
+  "stopButtonTakingControl": {
+    "message": "Mengambil kontrol"
+  },
+  "stopButtonTakingControlDescription": {
+    "message": "Agent sedang melepas kontrol browser."
+  },
+  "stopButtonUserControl": {
+    "message": "Anda memegang kontrol"
+  },
+  "stopButtonUserControlDescription": {
+    "message": "Anda sedang memakai browser secara langsung."
+  },
+  "stopButtonUpdateNeeded": {
+    "message": "Perlu pembaruan"
+  },
+  "stopButtonUpdateNeededDescription": {
+    "message": "Perbarui host lokal sebelum mengganti kontrol browser."
+  },
+  "stopButtonSetupNeeded": {
+    "message": "Perlu penyiapan"
+  },
+  "stopButtonSetupNeededDescription": {
+    "message": "Perbaiki penyiapan sebelum mengambil atau mengembalikan kontrol browser."
+  },
+  "stopButtonAgentConnecting": {
+    "message": "Agent menghubungkan"
+  },
+  "stopButtonAgentConnectingDescription": {
+    "message": "Agent masih menghubungkan ke kontrol browser."
+  },
+  "stopButtonAgentOffline": {
+    "message": "Agent offline"
+  },
+  "stopButtonAgentOfflineDescription": {
+    "message": "Tidak ada kontrol Agent aktif untuk diambil."
+  },
+  "resumeButtonAgentControl": {
+    "message": "Agent memegang kontrol"
+  },
+  "resumeButtonAgentControlDescription": {
+    "message": "Agent sudah mengontrol browser."
+  },
+  "resumeButtonWait": {
+    "message": "Tunggu"
+  },
+  "resumeButtonWaitDescription": {
+    "message": "Tunggu sampai kontrol browser berhenti sepenuhnya."
+  },
+  "resumeButtonReturnToAgent": {
+    "message": "Kembalikan ke Agent"
+  },
+  "resumeButtonReturnToAgentDescription": {
+    "message": "Kembalikan kontrol browser ke Agent."
+  },
+  "resumeButtonReconnectAfterUpdate": {
+    "message": "Hubungkan setelah pembaruan"
+  },
+  "resumeButtonReconnectAfterUpdateDescription": {
+    "message": "Hubungkan ulang setelah host lokal diperbarui."
+  },
+  "resumeButtonRetryConnection": {
+    "message": "Coba koneksi lagi"
+  },
+  "resumeButtonRetryConnectionDescription": {
+    "message": "Coba hubungkan ulang setelah penyiapan diperbaiki."
+  },
+  "resumeButtonReconnectAgent": {
+    "message": "Hubungkan ulang Agent"
+  },
+  "resumeButtonReconnectAgentDescription": {
+    "message": "Hubungkan ulang Agent ke kontrol browser."
+  },
+  "resumeButtonConnecting": {
+    "message": "Menghubungkan"
+  },
+  "resumeButtonConnectingDescription": {
+    "message": "Agent sedang menghubungkan."
   },
   "cleanupButton": {
     "message": "Bersihkan tab browser"
@@ -219,6 +303,17 @@
     "message": "$count$ tab hasil tersedia. Gunakan browser.deliverables(), lalu claim() untuk memulihkannya.",
     "placeholders": {
       "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "pendingExtensionUpdate": {
+    "message": "Pembaruan ekstensi akan diterapkan saat kontrol browser sedang menganggur."
+  },
+  "pendingExtensionUpdateVersion": {
+    "message": "Pembaruan ekstensi $version$ akan diterapkan saat kontrol browser sedang menganggur.",
+    "placeholders": {
+      "version": {
         "content": "$1"
       }
     }

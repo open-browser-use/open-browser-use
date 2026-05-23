@@ -77,10 +77,94 @@
     "message": "Copia il passaggio di configurazione Agente"
   },
   "stopButton": {
-    "message": "Prendo il controllo"
+    "message": "Prendi controllo"
   },
   "resumeButton": {
-    "message": "Riprendi"
+    "message": "Riconnetti agente"
+  },
+  "stopButtonTakeControl": {
+    "message": "Prendi controllo"
+  },
+  "stopButtonTakeControlDescription": {
+    "message": "Metti in pausa il controllo dell’agente per usare tu questo browser."
+  },
+  "stopButtonTakingControl": {
+    "message": "Controllo in corso"
+  },
+  "stopButtonTakingControlDescription": {
+    "message": "L’agente sta rilasciando il controllo del browser."
+  },
+  "stopButtonUserControl": {
+    "message": "Hai il controllo"
+  },
+  "stopButtonUserControlDescription": {
+    "message": "Stai usando direttamente il browser."
+  },
+  "stopButtonUpdateNeeded": {
+    "message": "Aggiornamento richiesto"
+  },
+  "stopButtonUpdateNeededDescription": {
+    "message": "Aggiorna l’host locale prima di cambiare il controllo del browser."
+  },
+  "stopButtonSetupNeeded": {
+    "message": "Configurazione richiesta"
+  },
+  "stopButtonSetupNeededDescription": {
+    "message": "Ripara la configurazione prima di prendere o restituire il controllo del browser."
+  },
+  "stopButtonAgentConnecting": {
+    "message": "Agente in connessione"
+  },
+  "stopButtonAgentConnectingDescription": {
+    "message": "L’agente si sta ancora connettendo al controllo del browser."
+  },
+  "stopButtonAgentOffline": {
+    "message": "Agente offline"
+  },
+  "stopButtonAgentOfflineDescription": {
+    "message": "Non c’è alcun controllo agente attivo da prendere."
+  },
+  "resumeButtonAgentControl": {
+    "message": "L’agente controlla"
+  },
+  "resumeButtonAgentControlDescription": {
+    "message": "L’agente controlla già il browser."
+  },
+  "resumeButtonWait": {
+    "message": "Attendi"
+  },
+  "resumeButtonWaitDescription": {
+    "message": "Attendi finché il controllo del browser non è completamente fermo."
+  },
+  "resumeButtonReturnToAgent": {
+    "message": "Restituisci all’agente"
+  },
+  "resumeButtonReturnToAgentDescription": {
+    "message": "Restituisci il controllo del browser all’agente."
+  },
+  "resumeButtonReconnectAfterUpdate": {
+    "message": "Riconnetti dopo aggiornamento"
+  },
+  "resumeButtonReconnectAfterUpdateDescription": {
+    "message": "Riconnetti dopo l’aggiornamento dell’host locale."
+  },
+  "resumeButtonRetryConnection": {
+    "message": "Riprova connessione"
+  },
+  "resumeButtonRetryConnectionDescription": {
+    "message": "Prova a riconnettere dopo aver riparato la configurazione."
+  },
+  "resumeButtonReconnectAgent": {
+    "message": "Riconnetti agente"
+  },
+  "resumeButtonReconnectAgentDescription": {
+    "message": "Riconnetti l’agente al controllo del browser."
+  },
+  "resumeButtonConnecting": {
+    "message": "Connessione"
+  },
+  "resumeButtonConnectingDescription": {
+    "message": "L’agente si sta connettendo."
   },
   "cleanupButton": {
     "message": "Pulisci le schede del browser"
@@ -227,6 +311,17 @@
     "message": "$count$ schede consegnabili disponibili. Usa browser.deliverables(), poi claim() per recuperarle.",
     "placeholders": {
       "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "pendingExtensionUpdate": {
+    "message": "L’aggiornamento dell’estensione verrà applicato quando il controllo del browser sarà inattivo."
+  },
+  "pendingExtensionUpdateVersion": {
+    "message": "L’aggiornamento dell’estensione $version$ verrà applicato quando il controllo del browser sarà inattivo.",
+    "placeholders": {
+      "version": {
         "content": "$1"
       }
     }

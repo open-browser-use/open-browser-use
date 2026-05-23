@@ -77,10 +77,94 @@
     "message": "Agent kurulum devrini kopyala"
   },
   "stopButton": {
-    "message": "Kontrolü alıyorum"
+    "message": "Kontrolü al"
   },
   "resumeButton": {
-    "message": "Sürdür"
+    "message": "Ajanı yeniden bağla"
+  },
+  "stopButtonTakeControl": {
+    "message": "Kontrolü al"
+  },
+  "stopButtonTakeControlDescription": {
+    "message": "Bu tarayıcıyı kendin kullanabilmen için ajan kontrolünü duraklat."
+  },
+  "stopButtonTakingControl": {
+    "message": "Kontrol alınıyor"
+  },
+  "stopButtonTakingControlDescription": {
+    "message": "Ajan tarayıcı kontrolünü bırakıyor."
+  },
+  "stopButtonUserControl": {
+    "message": "Kontrol sende"
+  },
+  "stopButtonUserControlDescription": {
+    "message": "Tarayıcıyı doğrudan kullanıyorsun."
+  },
+  "stopButtonUpdateNeeded": {
+    "message": "Güncelleme gerekli"
+  },
+  "stopButtonUpdateNeededDescription": {
+    "message": "Tarayıcı kontrolünü değiştirmeden önce yerel sunucuyu güncelle."
+  },
+  "stopButtonSetupNeeded": {
+    "message": "Kurulum gerekli"
+  },
+  "stopButtonSetupNeededDescription": {
+    "message": "Tarayıcı kontrolünü almadan veya geri vermeden önce kurulumu onar."
+  },
+  "stopButtonAgentConnecting": {
+    "message": "Ajan bağlanıyor"
+  },
+  "stopButtonAgentConnectingDescription": {
+    "message": "Ajan hâlâ tarayıcı kontrolüne bağlanıyor."
+  },
+  "stopButtonAgentOffline": {
+    "message": "Ajan çevrimdışı"
+  },
+  "stopButtonAgentOfflineDescription": {
+    "message": "Devralınacak etkin ajan kontrolü yok."
+  },
+  "resumeButtonAgentControl": {
+    "message": "Kontrol ajanda"
+  },
+  "resumeButtonAgentControlDescription": {
+    "message": "Ajan tarayıcıyı zaten kontrol ediyor."
+  },
+  "resumeButtonWait": {
+    "message": "Bekle"
+  },
+  "resumeButtonWaitDescription": {
+    "message": "Tarayıcı kontrolü tamamen durana kadar bekle."
+  },
+  "resumeButtonReturnToAgent": {
+    "message": "Ajana geri ver"
+  },
+  "resumeButtonReturnToAgentDescription": {
+    "message": "Tarayıcı kontrolünü ajana geri ver."
+  },
+  "resumeButtonReconnectAfterUpdate": {
+    "message": "Güncellemeden sonra bağlan"
+  },
+  "resumeButtonReconnectAfterUpdateDescription": {
+    "message": "Yerel sunucu güncellendikten sonra yeniden bağlan."
+  },
+  "resumeButtonRetryConnection": {
+    "message": "Bağlantıyı tekrar dene"
+  },
+  "resumeButtonRetryConnectionDescription": {
+    "message": "Kurulum onarıldıktan sonra yeniden bağlanmayı dene."
+  },
+  "resumeButtonReconnectAgent": {
+    "message": "Ajanı yeniden bağla"
+  },
+  "resumeButtonReconnectAgentDescription": {
+    "message": "Ajanı tarayıcı kontrolüne yeniden bağla."
+  },
+  "resumeButtonConnecting": {
+    "message": "Bağlanıyor"
+  },
+  "resumeButtonConnectingDescription": {
+    "message": "Ajan şimdi bağlanıyor."
   },
   "cleanupButton": {
     "message": "Tarayıcı sekmelerini temizle"
@@ -219,6 +303,17 @@
     "message": "$count$ teslim edilebilir sekme var. Geri almak için browser.deliverables(), ardından claim() kullanın.",
     "placeholders": {
       "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "pendingExtensionUpdate": {
+    "message": "Uzantı güncellemesi, tarayıcı kontrolü boşta olduğunda uygulanacak."
+  },
+  "pendingExtensionUpdateVersion": {
+    "message": "Uzantı güncellemesi $version$, tarayıcı kontrolü boşta olduğunda uygulanacak.",
+    "placeholders": {
+      "version": {
         "content": "$1"
       }
     }

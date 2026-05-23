@@ -98,12 +98,12 @@ export class FinalizeTabsController {
 
   async finalizeTabs(sessionParams: SessionParams, params: unknown): Promise<FinalizeTabsResult> {
     const session = this.options.sessionFor(sessionParams.session_id);
-    session.currentTurnId = sessionParams.turn_id;
-    session.lifecycle = { kind: "finalizing", turnId: sessionParams.turn_id };
-    session.turnLifecycle = finalizingTurnLifecycle(sessionParams.session_id, sessionParams.turn_id);
     if (session.controlState === "human_takeover") {
       throw new Error("finalizeTabs blocked during human takeover");
     }
+    session.currentTurnId = sessionParams.turn_id;
+    session.lifecycle = { kind: "finalizing", turnId: sessionParams.turn_id };
+    session.turnLifecycle = finalizingTurnLifecycle(sessionParams.session_id, sessionParams.turn_id);
     await this.options.hideSessionTakeover(session);
     const keep = parseFinalizeKeep(params);
     const closedTabIds: number[] = [];

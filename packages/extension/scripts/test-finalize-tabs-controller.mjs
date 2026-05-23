@@ -43,6 +43,9 @@ import { FinalizeTabsController } from "../dist/finalize_tabs_controller.js";
   );
 
   assert.equal(harness.session.tabs.has(9), true);
+  assert.equal(harness.session.currentTurnId, "");
+  assert.equal(harness.session.lifecycle.kind, "human_takeover");
+  assert.equal(harness.session.turnLifecycle.kind, "idle");
   assert.equal(harness.calls.hide ?? 0, 0);
   assert.deepEqual(harness.calls.close, []);
   assert.deepEqual(harness.calls.release, []);

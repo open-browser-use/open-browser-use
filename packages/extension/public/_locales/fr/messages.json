@@ -77,10 +77,94 @@
     "message": "Copier le transfert de configuration de l'Agent"
   },
   "stopButton": {
-    "message": "Je prends la main"
+    "message": "Prendre le contrôle"
   },
   "resumeButton": {
-    "message": "Reprendre"
+    "message": "Reconnecter l’agent"
+  },
+  "stopButtonTakeControl": {
+    "message": "Prendre le contrôle"
+  },
+  "stopButtonTakeControlDescription": {
+    "message": "Suspend le contrôle de l’agent pour utiliser ce navigateur toi-même."
+  },
+  "stopButtonTakingControl": {
+    "message": "Prise de contrôle"
+  },
+  "stopButtonTakingControlDescription": {
+    "message": "L’agent libère le contrôle du navigateur."
+  },
+  "stopButtonUserControl": {
+    "message": "Tu as le contrôle"
+  },
+  "stopButtonUserControlDescription": {
+    "message": "Tu utilises directement le navigateur."
+  },
+  "stopButtonUpdateNeeded": {
+    "message": "Mise à jour requise"
+  },
+  "stopButtonUpdateNeededDescription": {
+    "message": "Mets à jour l’hôte local avant de changer le contrôle du navigateur."
+  },
+  "stopButtonSetupNeeded": {
+    "message": "Configuration requise"
+  },
+  "stopButtonSetupNeededDescription": {
+    "message": "Répare la configuration avant de prendre ou rendre le contrôle du navigateur."
+  },
+  "stopButtonAgentConnecting": {
+    "message": "Agent en connexion"
+  },
+  "stopButtonAgentConnectingDescription": {
+    "message": "L’agent se connecte encore au contrôle du navigateur."
+  },
+  "stopButtonAgentOffline": {
+    "message": "Agent hors ligne"
+  },
+  "stopButtonAgentOfflineDescription": {
+    "message": "Aucun contrôle actif de l’agent à prendre."
+  },
+  "resumeButtonAgentControl": {
+    "message": "L’agent contrôle"
+  },
+  "resumeButtonAgentControlDescription": {
+    "message": "L’agent contrôle déjà le navigateur."
+  },
+  "resumeButtonWait": {
+    "message": "Attendre"
+  },
+  "resumeButtonWaitDescription": {
+    "message": "Attends que le contrôle du navigateur soit complètement arrêté."
+  },
+  "resumeButtonReturnToAgent": {
+    "message": "Rendre à l’agent"
+  },
+  "resumeButtonReturnToAgentDescription": {
+    "message": "Rends le contrôle du navigateur à l’agent."
+  },
+  "resumeButtonReconnectAfterUpdate": {
+    "message": "Reconnecter après mise à jour"
+  },
+  "resumeButtonReconnectAfterUpdateDescription": {
+    "message": "Reconnecte après la mise à jour de l’hôte local."
+  },
+  "resumeButtonRetryConnection": {
+    "message": "Réessayer la connexion"
+  },
+  "resumeButtonRetryConnectionDescription": {
+    "message": "Essaie de reconnecter après réparation de la configuration."
+  },
+  "resumeButtonReconnectAgent": {
+    "message": "Reconnecter l’agent"
+  },
+  "resumeButtonReconnectAgentDescription": {
+    "message": "Reconnecte l’agent au contrôle du navigateur."
+  },
+  "resumeButtonConnecting": {
+    "message": "Connexion"
+  },
+  "resumeButtonConnectingDescription": {
+    "message": "L’agent se connecte maintenant."
   },
   "cleanupButton": {
     "message": "Nettoyer les onglets du navigateur"
@@ -227,6 +311,17 @@
     "message": "$count$ onglets livrables disponibles. Utilisez browser.deliverables(), puis claim() pour les récupérer.",
     "placeholders": {
       "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "pendingExtensionUpdate": {
+    "message": "La mise à jour de l’extension s’appliquera quand le contrôle du navigateur sera inactif."
+  },
+  "pendingExtensionUpdateVersion": {
+    "message": "La mise à jour de l’extension $version$ s’appliquera quand le contrôle du navigateur sera inactif.",
+    "placeholders": {
+      "version": {
         "content": "$1"
       }
     }
