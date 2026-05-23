@@ -1,4 +1,10 @@
 //! Pure lifecycle planners for WebExtension runtime descriptors.
+//!
+//! Pure lifecycle PLANNER. `next_state` values are diagnostic/planning labels
+//! only — the host runtime does not store them in a live field and does not
+//! gate transitions on them. Do not build long-task continuity guarantees on
+//! `next_state` until it is persisted/consumed by runtime code. See review
+//! Finding 17.
 
 use std::path::{Path, PathBuf};
 
