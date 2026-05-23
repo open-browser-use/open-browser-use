@@ -361,18 +361,83 @@ import { BrowserSessionController } from "../dist/browser_session_controller.js"
   );
 }
 
+// Finding 19: finalize_partial and resuming must be blocked by ensureSessionAcceptsAction
+
+{
+  const params = { session_id: "s1", turn_id: "t1" };
+  for (const kind of ["finalize_partial", "resuming"]) {
+    const lifecycle =
+      kind === "finalize_partial"
+        ? { kind, turnId: "t0", failures: [] }
+        : { kind, repairPlanId: "p1" };
+    const session = sessionWithTabs([], { lifecycle });
+    const harness = createHarness({ session });
+    await assert.rejects(
+      () => harness.controller.createSessionTab(params, "about:blank"),
+      new RegExp(kind),
+      `createSessionTab must reject while ${kind}`,
+    );
+    assert.equal(session.lifecycle.kind, kind, `${kind} must not be rewritten to active by createSessionTab`);
+  }
+}
+
+{
+  const params = { session_id: "s1", turn_id: "t1" };
+  for (const kind of ["finalize_partial", "resuming"]) {
+    const lifecycle =
+      kind === "finalize_partial"
+        ? { kind, turnId: "t0", failures: [] }
+        : { kind, repairPlanId: "p1" };
+    const session = sessionWithTabs([], { lifecycle });
+    const harness = createHarness({
+      session,
+      tabsById: new Map([[8, tabForId(8, { active: true })]]),
+    });
+    await assert.rejects(
+      () => harness.controller.requireCurrentSessionTabForBrowserCommand(params, "browser viewport set"),
+      new RegExp(kind),
+      `requireCurrentSessionTabForBrowserCommand must reject while ${kind}`,
+    );
+    assert.equal(session.lifecycle.kind, kind, `${kind} must not be rewritten to active by requireCurrentSessionTabForBrowserCommand`);
+  }
+}
+
+{
+  const params = { session_id: "s1", turn_id: "t1" };
+  for (const kind of ["finalize_partial", "resuming"]) {
+    const lifecycle =
+      kind === "finalize_partial"
+        ? { kind, turnId: "t0", failures: [] }
+        : { kind, repairPlanId: "p1" };
+    const session = sessionWithTabs([[8, { tabId: 8, origin: "agent", status: "active" }]], { lifecycle });
+    const harness = createHarness({ session });
+    assert.throws(
+      () => harness.controller.requireSessionTab(params, 8),
+      new RegExp(kind),
+      `requireSessionTab must reject while ${kind}`,
+    );
+    assert.equal(session.lifecycle.kind, kind, `${kind} must not be rewritten to active by requireSessionTab`);
+  }
+}
+
 function sessionParams() {
   return { session_id: "session-a", turn_id: "turn-1" };
 }
 
 function sessionWithTabs(activeRows, options = {}) {
+  let lifecycle;
+  if (options.lifecycle !== undefined) {
+    lifecycle = options.lifecycle;
+  } else if (options.controlState === "human_takeover") {
+    lifecycle = { kind: "human_takeover", activeTabId: options.activeTabId };
+  } else {
+    lifecycle = { kind: "active", ...(options.activeTabId !== undefined ? { activeTabId: options.activeTabId } : {}) };
+  }
   return {
     currentTurnId: "",
     activeTabId: options.activeTabId,
     controlState: options.controlState,
-    lifecycle: options.controlState === "human_takeover"
-      ? { kind: "human_takeover", activeTabId: options.activeTabId }
-      : { kind: "active", ...(options.activeTabId !== undefined ? { activeTabId: options.activeTabId } : {}) },
+    lifecycle,
     turnLifecycle: { kind: "idle" },
     tabs: new Map(activeRows),
     finalizedTabs: new Map(options.finalized ?? []),
