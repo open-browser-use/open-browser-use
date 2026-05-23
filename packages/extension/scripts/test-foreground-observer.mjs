@@ -82,6 +82,7 @@ const takeoverObserver = new ForegroundObserver({
 });
 await takeoverObserver.handleForegroundTabChanged(4, "tab_activated");
 assert.equal(takeoverSession.activeTabId, 7, "human_takeover must not move agent activeTabId");
+assert.equal(takeoverCalls.sync, 1, "syncForeground must still fire during human_takeover");
 assert.equal(takeoverCalls.persist, 0, "human_takeover must not trigger persist");
 
 console.log("All tests passed.");
