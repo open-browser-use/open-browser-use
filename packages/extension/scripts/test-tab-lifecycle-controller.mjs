@@ -169,6 +169,31 @@ import { TabLifecycleController } from "../dist/tab_lifecycle_controller.js";
   assert.equal(harness.calls.persist, 1);
 }
 
+// Finding 22 (a): empty pass must NOT auto-heal while failed resources persist
+{
+  const session = sessionWith({});
+  session.lifecycle = { kind: "cleanup_failed", failures: [{ tabId: 99, errorMessage: "boom" }] };
+  // Tab 99 is still present (handoff status so planCleanupSessionTabs skips it → no new failures this pass)
+  session.tabs.set(99, { tabId: 99, status: "handoff", origin: "agent" });
+  const harness = createHarness({ sessions: [["session-a", session]] });
+
+  await harness.controller.cleanupAllSessionTabs("stop");
+
+  assert.equal(session.lifecycle.kind, "cleanup_failed", "must not self-heal while failed tab still exists");
+}
+
+// Finding 22 (b): empty pass with resolved failures returns to active
+{
+  const session = sessionWith({});
+  session.lifecycle = { kind: "cleanup_failed", failures: [{ tabId: 99, errorMessage: "boom" }] };
+  // Tab 99 is NOT in session.tabs and NOT in session.attachedTabIds → resolved
+  const harness = createHarness({ sessions: [["session-a", session]] });
+
+  await harness.controller.cleanupAllSessionTabs("stop");
+
+  assert.equal(session.lifecycle.kind, "active", "must self-heal when all recorded failures are resolved");
+}
+
 function sessionWith(options = {}) {
   return {
     currentTurnId: "",

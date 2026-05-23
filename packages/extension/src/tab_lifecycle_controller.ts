@@ -192,11 +192,27 @@ export class TabLifecycleController {
       };
       result.changed = true;
     } else if (session.lifecycle.kind === "cleanup_failed") {
-      session.lifecycle = activeSessionLifecycle(session.activeTabId);
-      result.changed = true;
+      if (this.recordedFailuresResolved(session, session.lifecycle.failures)) {
+        session.lifecycle = activeSessionLifecycle(session.activeTabId);
+        result.changed = true;
+      }
+      // else: keep cleanup_failed until an explicit repair pass clears them
     }
     this.options.syncSessionGroupMirrors(session);
     return result;
+  }
+
+  private recordedFailuresResolved(
+    session: BrowserSession,
+    failures: BrowserSessionCleanupFailureSummary[],
+  ): boolean {
+    return failures.every((failure) => {
+      // A failure without a tabId cannot be verified by tab id; treat as resolved
+      // to avoid permanently locking the session in cleanup_failed.
+      if (failure.tabId === undefined) return true;
+      return !session.tabs.has(failure.tabId)
+        && !session.attachedTabIds.has(failure.tabId);
+    });
   }
 }
 
