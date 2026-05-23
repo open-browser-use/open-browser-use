@@ -18,7 +18,8 @@ use crate::ops::cua::{
     NavigationWaitOptions, NavigationWaiter,
 };
 use crate::ops::dialogs::DialogTraceStore;
-use crate::ops::dom_cua::{self, Rect};
+use crate::ops::dom_cua::{self, VisibleDomSnapshotStore};
+use crate::ops::dom_cua_runtime::{self, DomCuaRuntimeBackend};
 use crate::ops::event_wait;
 use crate::ops::playwright::handles as handle_ops;
 use crate::ops::playwright::runtime::{
@@ -40,7 +41,7 @@ pub struct WebExtensionBackend {
     registry: Arc<ServiceRegistry>,
     dialog_traces: DialogTraceStore,
     extension_diagnostics: Arc<StdMutex<Value>>,
-    visible_dom_nodes: Arc<Mutex<HashMap<String, HashSet<String>>>>,
+    visible_dom_nodes: Arc<Mutex<VisibleDomSnapshotStore>>,
     virtual_clipboard_scripts: Arc<Mutex<HashMap<String, String>>>,
 }
 
@@ -57,7 +58,7 @@ impl WebExtensionBackend {
             registry: Arc::new(ServiceRegistry::default()),
             dialog_traces: DialogTraceStore::default(),
             extension_diagnostics: Arc::new(StdMutex::new(json!({}))),
-            visible_dom_nodes: Arc::new(Mutex::new(HashMap::new())),
+            visible_dom_nodes: Arc::new(Mutex::new(VisibleDomSnapshotStore::default())),
             virtual_clipboard_scripts: Arc::new(Mutex::new(HashMap::new())),
         }
     }
@@ -655,7 +656,13 @@ impl BrowserBackend for WebExtensionBackend {
             false,
         )?;
         if let Some(tab_id) = normalized_tab.get("tab_id").and_then(Value::as_str) {
-            record_webext_tab(self, ctx, normalized_tab, TabOrigin::Agent, TabStatus::Active)?;
+            record_webext_tab(
+                self,
+                ctx,
+                normalized_tab,
+                TabOrigin::Agent,
+                TabStatus::Active,
+            )?;
             self.registry().set_active_tab(
                 ctx.session_id.as_deref().unwrap_or_default(),
                 tab_id,
@@ -1652,15 +1659,86 @@ async fn run_cua_command(
             CoordinateCommand::DownloadMedia => cua_download_media(backend, ctx, params).await,
         };
     }
-    match method {
-        methods::DOM_CUA_GET_VISIBLE_DOM => dom_cua_visible_dom(backend, ctx, params).await,
-        methods::DOM_CUA_CLICK => dom_cua_click(backend, ctx, params, 1).await,
-        methods::DOM_CUA_DOUBLE_CLICK => dom_cua_click(backend, ctx, params, 2).await,
-        methods::DOM_CUA_SCROLL => dom_cua_scroll(backend, ctx, params).await,
-        methods::DOM_CUA_TYPE => dom_cua_type(backend, ctx, params).await,
-        methods::DOM_CUA_KEYPRESS => dom_cua_keypress(backend, ctx, params).await,
-        methods::DOM_CUA_DOWNLOAD_MEDIA => dom_cua_download_media(backend, ctx, params).await,
-        _ => Err(HostError::NotImplemented(format!("cua command {method}"))),
+    if method == methods::DOM_CUA_DOWNLOAD_MEDIA {
+        return dom_cua_download_media(backend, ctx, params).await;
+    }
+    if method.starts_with("dom_cua_") {
+        return dom_cua_runtime::run(backend, ctx, method, params).await;
+    }
+    Err(HostError::NotImplemented(format!("cua command {method}")))
+}
+
+#[async_trait::async_trait]
+impl DomCuaRuntimeBackend for WebExtensionBackend {
+    async fn execute_dom_cdp(
+        &self,
+        ctx: &BackendRequestContext,
+        tab_id: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        self.execute_cdp_with_context(ctx, tab_id, method, params)
+            .await
+    }
+
+    async fn dispatch_coordinate_cua(
+        &self,
+        ctx: &BackendRequestContext,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        if let Some(command) = cua_ops::coordinate_command(method) {
+            return match command {
+                CoordinateCommand::Click { click_count } => {
+                    click(self, ctx, params, click_count).await
+                }
+                CoordinateCommand::Scroll => scroll(self, ctx, params).await,
+                CoordinateCommand::TypeText => type_text(self, ctx, params).await,
+                CoordinateCommand::Keypress => keypress(self, ctx, params).await,
+                CoordinateCommand::Drag => drag(self, ctx, params).await,
+                CoordinateCommand::Move => move_mouse(self, ctx, params).await,
+                CoordinateCommand::DownloadMedia => cua_download_media(self, ctx, params).await,
+            };
+        }
+        Err(HostError::NotImplemented(format!("cua command {method}")))
+    }
+
+    async fn remember_visible_dom_nodes(
+        &self,
+        ctx: &BackendRequestContext,
+        tab_id: &str,
+        observation_id: Option<&str>,
+        nodes: &[Value],
+    ) {
+        self.visible_dom_nodes
+            .lock()
+            .await
+            .remember(ctx, tab_id, observation_id, nodes);
+    }
+
+    async fn validate_visible_dom_node(
+        &self,
+        ctx: &BackendRequestContext,
+        tab_id: &str,
+        observation_id: Option<&str>,
+        node_id: &str,
+    ) -> Result<()> {
+        self.visible_dom_nodes
+            .lock()
+            .await
+            .validate_node(ctx, tab_id, observation_id, node_id)
+    }
+
+    async fn forget_visible_dom_snapshot(
+        &self,
+        ctx: &BackendRequestContext,
+        tab_id: &str,
+        observation_id: Option<&str>,
+    ) {
+        self.visible_dom_nodes
+            .lock()
+            .await
+            .forget_snapshot(ctx, tab_id, observation_id);
     }
 }
 
@@ -1988,8 +2066,12 @@ async fn forget_tab_state(
     ctx: &BackendRequestContext,
     tab_id: &str,
 ) {
+    backend
+        .visible_dom_nodes
+        .lock()
+        .await
+        .forget_tab(ctx, tab_id);
     let key = dom_cua::snapshot_key(ctx, tab_id);
-    backend.visible_dom_nodes.lock().await.remove(&key);
     backend.virtual_clipboard_scripts.lock().await.remove(&key);
 }
 
@@ -2388,133 +2470,6 @@ async fn cua_download_media(
     Ok(Value::Null)
 }
 
-async fn dom_cua_visible_dom(
-    backend: &WebExtensionBackend,
-    ctx: &BackendRequestContext,
-    params: Value,
-) -> Result<Value> {
-    let tab_id = required_str(&params, "tab_id")?;
-    let viewport = viewport_rect(backend, ctx, tab_id).await?;
-    let document = backend
-        .execute_cdp_with_context(
-            ctx,
-            tab_id,
-            "DOM.getDocument",
-            json!({ "depth": -1, "pierce": true }),
-        )
-        .await?;
-    let root = document
-        .get("root")
-        .ok_or_else(|| HostError::Protocol("DOM.getDocument missing root".into()))?;
-    let mut nodes = Vec::new();
-    collect_visible_dom_nodes(backend, ctx, tab_id, root, viewport, &mut nodes).await?;
-    remember_visible_dom_nodes(backend, ctx, tab_id, &nodes).await;
-    match params.get("format").and_then(Value::as_str) {
-        Some("text") => {
-            let text = dom_cua::render_visible_dom_text(&nodes);
-            return Ok(json!({ "format": "text", "text": text, "nodes": nodes }));
-        }
-        Some("debug_text") => {
-            let text = dom_cua::render_visible_dom_debug_text(&nodes);
-            return Ok(json!({ "format": "debug_text", "text": text, "nodes": nodes }));
-        }
-        Some("compact_text") => {
-            let text = dom_cua::render_visible_dom_compact_text(&nodes);
-            return Ok(json!({ "format": "compact_text", "text": text, "nodes": nodes }));
-        }
-        _ => {}
-    }
-    Ok(json!({ "nodes": nodes }))
-}
-
-async fn dom_cua_click(
-    backend: &WebExtensionBackend,
-    ctx: &BackendRequestContext,
-    params: Value,
-    click_count: i64,
-) -> Result<Value> {
-    let tab_id = required_str(&params, "tab_id")?;
-    let (x, y) = node_action_point(backend, ctx, tab_id, required_str(&params, "node_id")?).await?;
-    let mut click_params = json!({
-        "tab_id": tab_id,
-        "x": x,
-        "y": y,
-    });
-    copy_modifiers(&mut click_params, &params);
-    click(backend, ctx, click_params, click_count).await
-}
-
-async fn dom_cua_scroll(
-    backend: &WebExtensionBackend,
-    ctx: &BackendRequestContext,
-    params: Value,
-) -> Result<Value> {
-    let tab_id = required_str(&params, "tab_id")?;
-    let (x, y) = if let Some(node_id) = params.get("node_id").and_then(Value::as_str) {
-        node_action_point(backend, ctx, tab_id, node_id).await?
-    } else {
-        visual_viewport_input_center(backend, ctx, tab_id).await?
-    };
-    let delta_x = params
-        .get("deltaX")
-        .or_else(|| params.get("delta_x"))
-        .and_then(Value::as_f64)
-        .unwrap_or(0.0);
-    let delta_y = params
-        .get("deltaY")
-        .or_else(|| params.get("delta_y"))
-        .and_then(Value::as_f64)
-        .unwrap_or(0.0);
-    let mut scroll_params = json!({
-        "tab_id": tab_id,
-        "x": x,
-        "y": y,
-        "deltaX": delta_x,
-        "deltaY": delta_y,
-    });
-    copy_modifiers(&mut scroll_params, &params);
-    scroll(backend, ctx, scroll_params).await
-}
-
-async fn dom_cua_type(
-    backend: &WebExtensionBackend,
-    ctx: &BackendRequestContext,
-    params: Value,
-) -> Result<Value> {
-    let tab_id = required_str(&params, "tab_id")?;
-    let (x, y) = node_action_point(backend, ctx, tab_id, required_str(&params, "node_id")?).await?;
-    click(backend, ctx, json!({ "tab_id": tab_id, "x": x, "y": y }), 1).await?;
-    type_text(
-        backend,
-        ctx,
-        json!({
-            "tab_id": tab_id,
-            "text": required_str(&params, "text")?,
-        }),
-    )
-    .await
-}
-
-async fn dom_cua_keypress(
-    backend: &WebExtensionBackend,
-    ctx: &BackendRequestContext,
-    params: Value,
-) -> Result<Value> {
-    let tab_id = required_str(&params, "tab_id")?;
-    let (x, y) = node_action_point(backend, ctx, tab_id, required_str(&params, "node_id")?).await?;
-    click(backend, ctx, json!({ "tab_id": tab_id, "x": x, "y": y }), 1).await?;
-    keypress(backend, ctx, params).await
-}
-
-fn copy_modifiers(target: &mut Value, source: &Value) {
-    let Some(modifiers) = source.get("modifiers") else {
-        return;
-    };
-    if let Some(object) = target.as_object_mut() {
-        object.insert("modifiers".into(), modifiers.clone());
-    }
-}
-
 async fn dom_cua_download_media(
     backend: &WebExtensionBackend,
     ctx: &BackendRequestContext,
@@ -2522,7 +2477,10 @@ async fn dom_cua_download_media(
 ) -> Result<Value> {
     let tab_id = required_str(&params, "tab_id")?;
     let node_id = required_str(&params, "node_id")?;
-    validate_visible_dom_node(backend, ctx, tab_id, node_id).await?;
+    let observation_id = params.get("observation_id").and_then(Value::as_str);
+    backend
+        .validate_visible_dom_node(ctx, tab_id, observation_id, node_id)
+        .await?;
     let backend_node_id = dom_cua::backend_node_id(node_id)?;
     let resolved = backend
         .execute_cdp_with_context(
@@ -2552,194 +2510,12 @@ async fn dom_cua_download_media(
         )
         .await?;
     exception_to_error(&result, "Runtime.callFunctionOn")?;
+    if observation_id.is_some() {
+        backend
+            .forget_visible_dom_snapshot(ctx, tab_id, observation_id)
+            .await;
+    }
     Ok(Value::Null)
-}
-
-async fn viewport_rect(
-    backend: &WebExtensionBackend,
-    ctx: &BackendRequestContext,
-    tab_id: &str,
-) -> Result<Rect> {
-    let metrics = backend
-        .execute_cdp_with_context(ctx, tab_id, "Page.getLayoutMetrics", json!({}))
-        .await?;
-    dom_cua::viewport_rect_from_layout_metrics(&metrics)
-}
-
-async fn visual_viewport_input_center(
-    backend: &WebExtensionBackend,
-    ctx: &BackendRequestContext,
-    tab_id: &str,
-) -> Result<(f64, f64)> {
-    let metrics = backend
-        .execute_cdp_with_context(ctx, tab_id, "Page.getLayoutMetrics", json!({}))
-        .await?;
-    dom_cua::visual_viewport_input_center(&metrics)
-}
-
-async fn collect_visible_dom_nodes(
-    backend: &WebExtensionBackend,
-    ctx: &BackendRequestContext,
-    tab_id: &str,
-    node: &Value,
-    viewport: Rect,
-    nodes: &mut Vec<Value>,
-) -> Result<()> {
-    let mut stack = vec![node];
-    while let Some(node) = stack.pop() {
-        if dom_cua::is_hidden_subtree(node) {
-            continue;
-        }
-        if let Some(backend_node_id) = node.get("backendNodeId").and_then(Value::as_i64)
-            && let Some(rect) = box_model_rect(backend, ctx, tab_id, backend_node_id).await?
-            && rect.width > 0.0
-            && rect.height > 0.0
-            && rect.intersects(viewport)
-            && let Some(entry) = dom_cua::snapshot_entry(node, backend_node_id, rect)
-        {
-            nodes.push(entry);
-        }
-        for key in ["children", "shadowRoots", "pseudoElements"] {
-            if let Some(children) = node.get(key).and_then(Value::as_array) {
-                for child in children.iter().rev() {
-                    stack.push(child);
-                }
-            }
-        }
-        if let Some(content_document) = node.get("contentDocument") {
-            stack.push(content_document);
-        }
-    }
-    Ok(())
-}
-
-async fn node_action_point(
-    backend: &WebExtensionBackend,
-    ctx: &BackendRequestContext,
-    tab_id: &str,
-    node_id: &str,
-) -> Result<(f64, f64)> {
-    validate_visible_dom_node(backend, ctx, tab_id, node_id).await?;
-    let backend_node_id = dom_cua::backend_node_id(node_id)?;
-    let _ = backend
-        .execute_cdp_with_context(
-            ctx,
-            tab_id,
-            "DOM.scrollIntoViewIfNeeded",
-            json!({ "backendNodeId": backend_node_id }),
-        )
-        .await;
-    let viewport = viewport_rect(backend, ctx, tab_id).await?;
-    if let Some(point) =
-        content_quad_action_point(backend, ctx, tab_id, backend_node_id, viewport).await?
-    {
-        return Ok(point);
-    }
-    if let Some(point) =
-        box_model_action_point(backend, ctx, tab_id, backend_node_id, viewport).await?
-    {
-        return Ok(point);
-    }
-    Err(HostError::Protocol(format!(
-        "node_outside_viewport_after_scroll: DOM-CUA node {node_id} has no reliable visible action point"
-    )))
-}
-
-async fn content_quad_action_point(
-    backend: &WebExtensionBackend,
-    ctx: &BackendRequestContext,
-    tab_id: &str,
-    backend_node_id: i64,
-    viewport: Rect,
-) -> Result<Option<(f64, f64)>> {
-    let result = match backend
-        .execute_cdp_with_context(
-            ctx,
-            tab_id,
-            "DOM.getContentQuads",
-            json!({ "backendNodeId": backend_node_id }),
-        )
-        .await
-    {
-        Ok(result) => result,
-        Err(_) => return Ok(None),
-    };
-    Ok(dom_cua::action_point_from_content_quads(&result, viewport))
-}
-
-async fn box_model_action_point(
-    backend: &WebExtensionBackend,
-    ctx: &BackendRequestContext,
-    tab_id: &str,
-    backend_node_id: i64,
-    viewport: Rect,
-) -> Result<Option<(f64, f64)>> {
-    let result = match backend
-        .execute_cdp_with_context(
-            ctx,
-            tab_id,
-            "DOM.getBoxModel",
-            json!({ "backendNodeId": backend_node_id }),
-        )
-        .await
-    {
-        Ok(result) => result,
-        Err(_) => return Ok(None),
-    };
-    Ok(dom_cua::action_point_from_box_model(&result, viewport))
-}
-
-async fn remember_visible_dom_nodes(
-    backend: &WebExtensionBackend,
-    ctx: &BackendRequestContext,
-    tab_id: &str,
-    nodes: &[Value],
-) {
-    backend.visible_dom_nodes.lock().await.insert(
-        dom_cua::snapshot_key(ctx, tab_id),
-        dom_cua::snapshot_node_ids(nodes),
-    );
-}
-
-async fn validate_visible_dom_node(
-    backend: &WebExtensionBackend,
-    ctx: &BackendRequestContext,
-    tab_id: &str,
-    node_id: &str,
-) -> Result<()> {
-    let snapshots = backend.visible_dom_nodes.lock().await;
-    let Some(ids) = snapshots.get(&dom_cua::snapshot_key(ctx, tab_id)) else {
-        return Err(HostError::Protocol(
-            "DOM-CUA node_id requires a current visible DOM snapshot".into(),
-        ));
-    };
-    if !ids.contains(node_id) {
-        return Err(HostError::Protocol(format!(
-            "DOM-CUA node_id was not returned by the current visible DOM snapshot: {node_id}"
-        )));
-    }
-    Ok(())
-}
-
-async fn box_model_rect(
-    backend: &WebExtensionBackend,
-    ctx: &BackendRequestContext,
-    tab_id: &str,
-    backend_node_id: i64,
-) -> Result<Option<Rect>> {
-    let result = match backend
-        .execute_cdp_with_context(
-            ctx,
-            tab_id,
-            "DOM.getBoxModel",
-            json!({ "backendNodeId": backend_node_id }),
-        )
-        .await
-    {
-        Ok(result) => result,
-        Err(_) => return Ok(None),
-    };
-    Ok(dom_cua::rect_from_box_model(&result))
 }
 
 async fn overlay_move_mouse(

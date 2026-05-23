@@ -940,6 +940,203 @@ async fn cua_click_dispatches_raw_cdp_mouse_events() {
 }
 
 #[tokio::test]
+async fn cdp_dom_cua_uses_dom_snapshot_and_coordinate_input() {
+    let (ws_url, mut requests) = spawn_fake_cdp().await;
+    let ctx = test_context("session");
+    let backend = CdpBackend::connect(&ws_url, Arc::new(ServiceRegistry::default()))
+        .await
+        .unwrap();
+    let created = backend
+        .create_tab_with_context(&ctx, Some("about:blank".into()))
+        .await
+        .unwrap();
+    let tab_id = created["id"].as_str().unwrap().to_string();
+    backend.attach_with_context(&ctx, &tab_id).await.unwrap();
+
+    let dom = backend
+        .cua_command_with_context(
+            &ctx,
+            methods::DOM_CUA_GET_VISIBLE_DOM,
+            json!({ "tab_id": tab_id, "format": "compact_text" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dom["nodes"][0]["node_id"], "101");
+    assert!(
+        dom["text"]
+            .as_str()
+            .unwrap()
+            .contains(r#"<button node_id=101 aria-label="Submit">Submit</button>"#)
+    );
+
+    backend
+        .cua_command_with_context(
+            &ctx,
+            methods::DOM_CUA_CLICK,
+            json!({ "tab_id": tab_id, "node_id": "101", "modifiers": ["Shift"] }),
+        )
+        .await
+        .unwrap();
+
+    let mouse = recv_until_method(&mut requests, "Input.dispatchMouseEvent").await;
+    assert_eq!(mouse["params"]["x"], 20.0);
+    assert_eq!(mouse["params"]["y"], 30.0);
+    assert_eq!(mouse["params"]["modifiers"], 8);
+}
+
+#[tokio::test]
+async fn cdp_dom_cua_scopes_node_ids_to_observation_snapshots() {
+    let (ws_url, mut requests) = spawn_fake_cdp().await;
+    let ctx = test_context("session");
+    let backend = CdpBackend::connect(&ws_url, Arc::new(ServiceRegistry::default()))
+        .await
+        .unwrap();
+    let created = backend
+        .create_tab_with_context(&ctx, Some("about:blank".into()))
+        .await
+        .unwrap();
+    let tab_id = created["id"].as_str().unwrap().to_string();
+    backend.attach_with_context(&ctx, &tab_id).await.unwrap();
+
+    let dom = backend
+        .cua_command_with_context(
+            &ctx,
+            methods::DOM_CUA_GET_VISIBLE_DOM,
+            json!({
+                "tab_id": tab_id,
+                "format": "compact_text",
+                "observation_id": "obs-1"
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dom["observation_id"], "obs-1");
+    assert_eq!(dom["nodes"][0]["node_id"], "101");
+
+    let missing_observation = backend
+        .cua_command_with_context(
+            &ctx,
+            methods::DOM_CUA_CLICK,
+            json!({ "tab_id": tab_id, "node_id": "101" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        missing_observation
+            .to_string()
+            .contains("current visible DOM snapshot")
+    );
+
+    let wrong_observation = backend
+        .cua_command_with_context(
+            &ctx,
+            methods::DOM_CUA_CLICK,
+            json!({ "tab_id": tab_id, "node_id": "101", "observation_id": "obs-2" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        wrong_observation
+            .to_string()
+            .contains("current visible DOM snapshot")
+    );
+
+    let clicked = backend
+        .cua_command_with_context(
+            &ctx,
+            methods::DOM_CUA_CLICK,
+            json!({ "tab_id": tab_id, "node_id": "101", "observation_id": "obs-1" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(clicked["point"]["x"], 20.0);
+    assert_eq!(clicked["point"]["y"], 30.0);
+
+    let mouse = recv_until_method(&mut requests, "Input.dispatchMouseEvent").await;
+    assert_eq!(mouse["params"]["x"], 20.0);
+    assert_eq!(mouse["params"]["y"], 30.0);
+
+    let consumed_observation = backend
+        .cua_command_with_context(
+            &ctx,
+            methods::DOM_CUA_CLICK,
+            json!({ "tab_id": tab_id, "node_id": "101", "observation_id": "obs-1" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        consumed_observation
+            .to_string()
+            .contains("current visible DOM snapshot")
+    );
+}
+
+#[tokio::test]
+async fn cdp_dom_cua_actions_return_resolved_action_points() {
+    let (ws_url, _requests) = spawn_fake_cdp().await;
+    let ctx = test_context("session");
+    let backend = CdpBackend::connect(&ws_url, Arc::new(ServiceRegistry::default()))
+        .await
+        .unwrap();
+    let created = backend
+        .create_tab_with_context(&ctx, Some("about:blank".into()))
+        .await
+        .unwrap();
+    let tab_id = created["id"].as_str().unwrap().to_string();
+    backend.attach_with_context(&ctx, &tab_id).await.unwrap();
+
+    for (index, (method, mut params)) in [
+        (
+            methods::DOM_CUA_SCROLL,
+            json!({ "tab_id": tab_id.clone(), "node_id": "101", "deltaY": 120 }),
+        ),
+        (
+            methods::DOM_CUA_TYPE,
+            json!({ "tab_id": tab_id.clone(), "node_id": "101", "text": "hello" }),
+        ),
+        (
+            methods::DOM_CUA_KEYPRESS,
+            json!({ "tab_id": tab_id.clone(), "node_id": "101", "key": "Enter" }),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let observation_id = format!("obs-{index}");
+        backend
+            .cua_command_with_context(
+                &ctx,
+                methods::DOM_CUA_GET_VISIBLE_DOM,
+                json!({ "tab_id": tab_id.clone(), "observation_id": observation_id.clone() }),
+            )
+            .await
+            .unwrap();
+        params["observation_id"] = json!(observation_id);
+        let result = backend
+            .cua_command_with_context(&ctx, method, params.clone())
+            .await
+            .unwrap();
+        assert_eq!(result["node_id"], "101", "{method} must preserve node id");
+        assert_eq!(result["point"]["x"], 20.0, "{method} must return x");
+        assert_eq!(result["point"]["y"], 30.0, "{method} must return y");
+        assert_eq!(
+            result["point"]["coordinateSpace"], "visualViewport",
+            "{method} must return viewport coordinate space"
+        );
+        let consumed = backend
+            .cua_command_with_context(&ctx, method, params)
+            .await
+            .unwrap_err();
+        assert!(
+            consumed
+                .to_string()
+                .contains("current visible DOM snapshot"),
+            "{method} must consume observation-scoped DOM-CUA snapshots"
+        );
+    }
+}
+
+#[tokio::test]
 async fn cua_click_waits_for_navigation_when_requested() {
     let (ws_url, mut requests) = spawn_fake_cdp().await;
     let backend = CdpBackend::connect(&ws_url, Arc::new(ServiceRegistry::default()))
@@ -2168,6 +2365,7 @@ fn fake_result(method: &str, params: &Value) -> Value {
         | "Emulation.setFocusEmulationEnabled"
         | "Target.detachFromTarget"
         | "Page.enable"
+        | "DOM.scrollIntoViewIfNeeded"
         | "Page.handleJavaScriptDialog"
         | "DOM.enable"
         | "Page.setInterceptFileChooserDialog"
@@ -2213,6 +2411,60 @@ fn fake_result(method: &str, params: &Value) -> Value {
             "entries": [{ "id": 1, "url": "about:blank" }, { "id": 2, "url": "https://example.test/" }]
         }),
         "Page.captureScreenshot" => json!({ "data": "iVBORw0KGgo=" }),
+        "Page.getLayoutMetrics" => json!({
+            "cssVisualViewport": {
+                "pageX": 0,
+                "pageY": 0,
+                "clientWidth": 800,
+                "clientHeight": 600
+            }
+        }),
+        "DOM.getDocument" => json!({
+            "root": {
+                "nodeName": "HTML",
+                "nodeType": 1,
+                "backendNodeId": 100,
+                "children": [
+                    {
+                        "nodeName": "BUTTON",
+                        "nodeType": 1,
+                        "backendNodeId": 101,
+                        "attributes": ["aria-label", "Submit"],
+                        "children": [
+                            {
+                                "nodeName": "#text",
+                                "nodeType": 3,
+                                "nodeValue": "Submit",
+                                "backendNodeId": 102
+                            }
+                        ]
+                    }
+                ]
+            }
+        }),
+        "DOM.getBoxModel" => {
+            let backend_node_id = params
+                .get("backendNodeId")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            match backend_node_id {
+                101 => json!({
+                    "model": {
+                        "content": [10, 20, 30, 20, 30, 40, 10, 40],
+                        "border": [10, 20, 30, 20, 30, 40, 10, 40]
+                    }
+                }),
+                _ => json!({
+                    "model": {
+                        "content": [0, 0, 0, 0, 0, 0, 0, 0],
+                        "border": [0, 0, 0, 0, 0, 0, 0, 0]
+                    }
+                }),
+            }
+        }
+        "DOM.getContentQuads" => json!({
+            "quads": [[10, 20, 30, 20, 30, 40, 10, 40]]
+        }),
         "Page.printToPDF" => json!({ "data": "JVBERi0=" }),
         "Target.closeTarget" => json!({ "success": true }),
         other => json!({ "unexpectedMethod": other }),

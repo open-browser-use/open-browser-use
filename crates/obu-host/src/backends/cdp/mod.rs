@@ -4,10 +4,12 @@ use std::sync::Arc;
 
 use async_trait::async_trait;
 use serde_json::{Value, json};
+use tokio::sync::Mutex;
 
 use crate::backends::{BackendKind, BackendRequestContext, BrowserBackend};
 use crate::error::{HostError, Result};
 use crate::ops::dialogs::DialogTraceStore;
+use crate::ops::dom_cua::VisibleDomSnapshotStore;
 use crate::service_registry::ServiceRegistry;
 
 pub mod attach;
@@ -15,6 +17,7 @@ pub mod compose;
 pub mod cua;
 pub(crate) mod dialogs;
 pub mod discovery;
+pub mod dom_cua;
 pub mod ensure_injected;
 pub mod error;
 pub mod execute;
@@ -29,6 +32,7 @@ pub struct CdpBackend {
     registry: Arc<ServiceRegistry>,
     dialog_traces: DialogTraceStore,
     download_dir: tempfile::TempDir,
+    visible_dom_nodes: Arc<Mutex<VisibleDomSnapshotStore>>,
 }
 
 impl CdpBackend {
@@ -58,6 +62,7 @@ impl CdpBackend {
             registry,
             dialog_traces: DialogTraceStore::default(),
             download_dir,
+            visible_dom_nodes: Arc::new(Mutex::new(VisibleDomSnapshotStore::default())),
         })
     }
 
@@ -69,6 +74,13 @@ impl CdpBackend {
     /// CDP transport.
     pub fn transport(&self) -> &Arc<transport::CdpTransport> {
         &self.transport
+    }
+
+    pub(crate) async fn forget_visible_dom_tab_state(&self, tab_id: &str) {
+        self.visible_dom_nodes
+            .lock()
+            .await
+            .forget_tab_for_any_session(tab_id);
     }
 
     /// Per-session download directory.
@@ -375,7 +387,11 @@ impl BrowserBackend for CdpBackend {
         require_session_turn_context(ctx, method)?;
         let tab_id = tab_id_param(&params);
         self.validate_active_tab_param(ctx, tab_id.as_deref())?;
-        let result = self.cua_command(method, params).await?;
+        let result = if method.starts_with("dom_cua_") {
+            dom_cua::run(self, ctx, method, params).await?
+        } else {
+            self.cua_command(method, params).await?
+        };
         self.remember_tab_id(ctx, tab_id.as_deref())?;
         Ok(result)
     }

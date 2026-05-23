@@ -111,6 +111,7 @@ pub async fn close_tab(backend: &CdpBackend, tab_id: &str) -> Result<Value> {
         crate::backends::cdp::dialogs::context_for_tab(backend, tab_id, &session_id, "tab_close");
     crate::backends::cdp::dialogs::run_with_dialog_policy(backend, context, operation).await?;
     backend.registry().clear_playwright_injected(&id)?;
+    backend.forget_visible_dom_tab_state(tab_id).await;
     let _ = backend.registry().remove(&id)?;
     Ok(Value::Null)
 }
@@ -249,7 +250,9 @@ pub async fn finalize_tabs(
             },
         }
     }
-    let _ = backend.registry().repair_current_tab_for_session(session_id)?;
+    let _ = backend
+        .registry()
+        .repair_current_tab_for_session(session_id)?;
 
     Ok(json!({
         "closed_tab_ids": closed_tab_ids,

@@ -535,32 +535,32 @@ pub const BACKEND_METHOD_SUPPORT: &[(&str, BackendMethodSupport, BackendMethodSu
     ),
     (
         DOM_CUA_GET_VISIBLE_DOM,
-        BackendMethodSupport::Unsupported,
+        BackendMethodSupport::Implemented,
         BackendMethodSupport::Implemented,
     ),
     (
         DOM_CUA_CLICK,
-        BackendMethodSupport::Unsupported,
+        BackendMethodSupport::Implemented,
         BackendMethodSupport::Implemented,
     ),
     (
         DOM_CUA_DOUBLE_CLICK,
-        BackendMethodSupport::Unsupported,
+        BackendMethodSupport::Implemented,
         BackendMethodSupport::Implemented,
     ),
     (
         DOM_CUA_SCROLL,
-        BackendMethodSupport::Unsupported,
+        BackendMethodSupport::Implemented,
         BackendMethodSupport::Implemented,
     ),
     (
         DOM_CUA_TYPE,
-        BackendMethodSupport::Unsupported,
+        BackendMethodSupport::Implemented,
         BackendMethodSupport::Implemented,
     ),
     (
         DOM_CUA_KEYPRESS,
-        BackendMethodSupport::Unsupported,
+        BackendMethodSupport::Implemented,
         BackendMethodSupport::Implemented,
     ),
     (
@@ -647,12 +647,6 @@ pub const CDP_UNSUPPORTED_METHODS: &[&str] = &[
     TAB_CLIPBOARD_WRITE_TEXT,
     TAB_CLIPBOARD_READ,
     TAB_CLIPBOARD_WRITE,
-    DOM_CUA_GET_VISIBLE_DOM,
-    DOM_CUA_CLICK,
-    DOM_CUA_DOUBLE_CLICK,
-    DOM_CUA_SCROLL,
-    DOM_CUA_TYPE,
-    DOM_CUA_KEYPRESS,
     DOM_CUA_DOWNLOAD_MEDIA,
 ];
 

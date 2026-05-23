@@ -937,11 +937,18 @@ async fn getinfo_exposes_backend_capability_matrix() {
 
     assert_eq!(response["result"]["capabilities"]["backend"], "cdp");
     assert!(
-        response["result"]["capabilities"]["unsupported_methods"]
+        response["result"]["capabilities"]["supported_methods"]
             .as_array()
             .unwrap()
             .iter()
             .any(|method| method == methods::DOM_CUA_CLICK)
+    );
+    assert!(
+        response["result"]["capabilities"]["unsupported_methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|method| method == methods::DOM_CUA_DOWNLOAD_MEDIA)
     );
     assert!(
         response["result"]["capabilities"]["unsupported_methods"]
@@ -968,7 +975,7 @@ async fn getinfo_exposes_backend_capability_matrix() {
     assert!(response["result"]["capabilities"]["visibility"].is_null());
     assert_eq!(
         response["result"]["capabilities"]["budgeted_outputs"]["dom_cua_get_visible_dom"],
-        false
+        true
     );
     assert!(
         response["result"]["capabilities"]["supported_methods"]

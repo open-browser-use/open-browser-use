@@ -1398,6 +1398,149 @@ async fn webext_backend_dom_cua_uses_backend_node_ids() {
 }
 
 #[tokio::test]
+async fn webext_backend_dom_cua_scopes_node_ids_to_observation_snapshots() {
+    let transport = Arc::new(FakeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+
+    let dom = backend
+        .cua_command_with_context(
+            &ctx,
+            "dom_cua_get_visible_dom",
+            json!({ "tab_id": "42", "format": "compact_text", "observation_id": "obs-1" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dom["observation_id"], "obs-1");
+    assert_eq!(dom["nodes"][0]["node_id"], "101");
+
+    let missing_observation = backend
+        .cua_command_with_context(
+            &ctx,
+            "dom_cua_click",
+            json!({ "tab_id": "42", "node_id": "101" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        missing_observation
+            .to_string()
+            .contains("requires a current visible DOM snapshot")
+    );
+
+    let wrong_observation = backend
+        .cua_command_with_context(
+            &ctx,
+            "dom_cua_click",
+            json!({ "tab_id": "42", "node_id": "101", "observation_id": "obs-2" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        wrong_observation
+            .to_string()
+            .contains("requires a current visible DOM snapshot")
+    );
+
+    let clicked = backend
+        .cua_command_with_context(
+            &ctx,
+            "dom_cua_click",
+            json!({ "tab_id": "42", "node_id": "101", "observation_id": "obs-1" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(clicked["point"]["x"], 20.0);
+    assert_eq!(clicked["point"]["y"], 30.0);
+
+    let calls = transport.calls.lock().unwrap();
+    assert!(calls.iter().any(|(method, params)| {
+        method == "executeCdp"
+            && params["method"] == "Input.dispatchMouseEvent"
+            && params["commandParams"]["x"] == 20.0
+            && params["commandParams"]["y"] == 30.0
+    }));
+    drop(calls);
+
+    let consumed_observation = backend
+        .cua_command_with_context(
+            &ctx,
+            "dom_cua_click",
+            json!({ "tab_id": "42", "node_id": "101", "observation_id": "obs-1" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        consumed_observation
+            .to_string()
+            .contains("requires a current visible DOM snapshot")
+    );
+}
+
+#[tokio::test]
+async fn webext_backend_dom_cua_observation_actions_consume_snapshot_scope() {
+    let transport = Arc::new(FakeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport);
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    };
+
+    for (index, (method, mut params)) in [
+        (
+            "dom_cua_scroll",
+            json!({ "tab_id": "42", "node_id": "101", "deltaY": 120 }),
+        ),
+        (
+            "dom_cua_type",
+            json!({ "tab_id": "42", "node_id": "101", "text": "hello" }),
+        ),
+        (
+            "dom_cua_keypress",
+            json!({ "tab_id": "42", "node_id": "101", "key": "Enter" }),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let observation_id = format!("obs-{index}");
+        backend
+            .cua_command_with_context(
+                &ctx,
+                "dom_cua_get_visible_dom",
+                json!({ "tab_id": "42", "observation_id": observation_id.clone() }),
+            )
+            .await
+            .unwrap();
+        params["observation_id"] = json!(observation_id);
+
+        let result = backend
+            .cua_command_with_context(&ctx, method, params.clone())
+            .await
+            .unwrap();
+        assert_eq!(result["node_id"], "101", "{method} must preserve node id");
+        assert_eq!(result["point"]["x"], 20.0, "{method} must return x");
+        assert_eq!(result["point"]["y"], 30.0, "{method} must return y");
+
+        let consumed = backend
+            .cua_command_with_context(&ctx, method, params)
+            .await
+            .unwrap_err();
+        assert!(
+            consumed
+                .to_string()
+                .contains("requires a current visible DOM snapshot"),
+            "{method} must consume observation-scoped DOM-CUA snapshots"
+        );
+    }
+}
+
+#[tokio::test]
 async fn webext_backend_dom_cua_click_forwards_modifiers_to_mouse_events() {
     let transport = Arc::new(FakeTransport::default());
     let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());

@@ -391,9 +391,7 @@ async fn download_path(
             backend
                 .registry()
                 .mark_download_failed(&download_id, &state, reason.clone())?;
-            return Err(HostError::CdpFailure(format!(
-                "{reason}; event={progress}"
-            )));
+            return Err(HostError::CdpFailure(format!("{reason}; event={progress}")));
         }
         let path = handle_ops::download_progress_file_path(&progress);
         handle_ops::mark_download_completed(backend.registry(), &download_id, &mut state, path)?;

@@ -1,6 +1,7 @@
 //! Shared DOM-CUA snapshot and geometry helpers.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, HashMap, HashSet};
+use std::time::{Duration, Instant};
 
 use serde_json::{Map, Value, json};
 
@@ -8,6 +9,8 @@ use crate::backends::BackendRequestContext;
 use crate::error::{HostError, Result};
 
 pub(crate) const OBU_OVERLAY_ROOT_ID: &str = "obu-agent-overlay-root";
+pub(crate) const VISIBLE_DOM_SNAPSHOT_TTL: Duration = Duration::from_secs(60);
+pub(crate) const VISIBLE_DOM_SNAPSHOT_MAX_ENTRIES: usize = 128;
 
 #[derive(Debug, Clone, Copy)]
 pub(crate) struct Rect {
@@ -41,6 +44,148 @@ impl Rect {
 
 pub(crate) fn snapshot_key(ctx: &BackendRequestContext, tab_id: &str) -> String {
     format!("{}:{tab_id}", ctx.session_id.as_deref().unwrap_or_default())
+}
+
+#[derive(Debug, Clone)]
+struct VisibleDomSnapshotRecord {
+    node_ids: HashSet<String>,
+    created_at: Instant,
+    last_used_at: Instant,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
+struct VisibleDomSnapshotKey {
+    session_id: String,
+    tab_id: String,
+    observation_id: Option<String>,
+}
+
+impl VisibleDomSnapshotKey {
+    fn new(ctx: &BackendRequestContext, tab_id: &str, observation_id: Option<&str>) -> Self {
+        Self {
+            session_id: ctx.session_id.as_deref().unwrap_or_default().to_string(),
+            tab_id: tab_id.to_string(),
+            observation_id: observation_id
+                .filter(|value| !value.is_empty())
+                .map(str::to_string),
+        }
+    }
+
+    fn matches_tab(&self, ctx: &BackendRequestContext, tab_id: &str) -> bool {
+        self.session_id == ctx.session_id.as_deref().unwrap_or_default() && self.tab_id == tab_id
+    }
+
+    fn matches_tab_id(&self, tab_id: &str) -> bool {
+        self.tab_id == tab_id
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct VisibleDomSnapshotStore {
+    entries: HashMap<VisibleDomSnapshotKey, VisibleDomSnapshotRecord>,
+    ttl: Duration,
+    max_entries: usize,
+}
+
+impl Default for VisibleDomSnapshotStore {
+    fn default() -> Self {
+        Self {
+            entries: HashMap::new(),
+            ttl: VISIBLE_DOM_SNAPSHOT_TTL,
+            max_entries: VISIBLE_DOM_SNAPSHOT_MAX_ENTRIES,
+        }
+    }
+}
+
+impl VisibleDomSnapshotStore {
+    pub(crate) fn remember(
+        &mut self,
+        ctx: &BackendRequestContext,
+        tab_id: &str,
+        observation_id: Option<&str>,
+        nodes: &[Value],
+    ) {
+        let now = Instant::now();
+        self.prune_expired(now);
+        self.entries.insert(
+            VisibleDomSnapshotKey::new(ctx, tab_id, observation_id),
+            VisibleDomSnapshotRecord {
+                node_ids: snapshot_node_ids(nodes),
+                created_at: now,
+                last_used_at: now,
+            },
+        );
+        self.prune_overflow();
+    }
+
+    pub(crate) fn validate_node(
+        &mut self,
+        ctx: &BackendRequestContext,
+        tab_id: &str,
+        observation_id: Option<&str>,
+        node_id: &str,
+    ) -> Result<()> {
+        let now = Instant::now();
+        self.prune_expired(now);
+        let key = VisibleDomSnapshotKey::new(ctx, tab_id, observation_id);
+        let Some(record) = self.entries.get_mut(&key) else {
+            return Err(HostError::Protocol(
+                "DOM-CUA node_id requires a current visible DOM snapshot".into(),
+            ));
+        };
+        record.last_used_at = now;
+        if !record.node_ids.contains(node_id) {
+            return Err(HostError::Protocol(format!(
+                "DOM-CUA node_id was not returned by the current visible DOM snapshot: {node_id}"
+            )));
+        }
+        Ok(())
+    }
+
+    pub(crate) fn forget_snapshot(
+        &mut self,
+        ctx: &BackendRequestContext,
+        tab_id: &str,
+        observation_id: Option<&str>,
+    ) {
+        self.entries
+            .remove(&VisibleDomSnapshotKey::new(ctx, tab_id, observation_id));
+    }
+
+    pub(crate) fn forget_tab(&mut self, ctx: &BackendRequestContext, tab_id: &str) {
+        self.entries
+            .retain(|candidate, _| !candidate.matches_tab(ctx, tab_id));
+    }
+
+    pub(crate) fn forget_tab_for_any_session(&mut self, tab_id: &str) {
+        self.entries
+            .retain(|candidate, _| !candidate.matches_tab_id(tab_id));
+    }
+
+    #[cfg(test)]
+    pub(crate) fn len(&self) -> usize {
+        self.entries.len()
+    }
+
+    fn prune_expired(&mut self, now: Instant) {
+        let ttl = self.ttl;
+        self.entries
+            .retain(|_, record| now.duration_since(record.created_at) <= ttl);
+    }
+
+    fn prune_overflow(&mut self) {
+        while self.entries.len() > self.max_entries {
+            let Some(oldest_key) = self
+                .entries
+                .iter()
+                .min_by_key(|(_, record)| record.last_used_at)
+                .map(|(key, _)| key.clone())
+            else {
+                return;
+            };
+            self.entries.remove(&oldest_key);
+        }
+    }
 }
 
 pub(crate) fn backend_node_id(node_id: &str) -> Result<i64> {
@@ -505,6 +650,8 @@ fn escape_text(value: &str, max_len: usize) -> String {
 mod tests {
     use serde_json::json;
 
+    use crate::backends::BackendRequestContext;
+
     use super::*;
 
     #[test]
@@ -639,6 +786,102 @@ mod tests {
         assert!(!is_hidden_subtree(
             &json!({ "nodeName": "BUTTON", "attributes": ["aria-label", "Save"] })
         ));
+    }
+
+    #[test]
+    fn visible_dom_snapshot_store_scopes_consumes_and_prunes_entries() {
+        let ctx = BackendRequestContext {
+            session_id: Some("session:with:colon".into()),
+            turn_id: Some("turn".into()),
+            client_timeout_ms: None,
+        };
+        let other_ctx = BackendRequestContext {
+            session_id: Some("other:session".into()),
+            turn_id: Some("turn".into()),
+            client_timeout_ms: None,
+        };
+        let mut store = VisibleDomSnapshotStore::default();
+        let nodes = vec![json!({ "node_id": "101" })];
+
+        store.remember(&ctx, "tab:42", Some("obs:1"), &nodes);
+        store.remember(&other_ctx, "tab:42", Some("obs:1"), &nodes);
+        store.remember(&ctx, "tab:43", Some("obs:1"), &nodes);
+        assert!(
+            store
+                .validate_node(&ctx, "tab:42", Some("obs:1"), "101")
+                .is_ok()
+        );
+        assert!(
+            store
+                .validate_node(&ctx, "tab:42", Some("obs:2"), "101")
+                .unwrap_err()
+                .to_string()
+                .contains("current visible DOM snapshot")
+        );
+        assert!(
+            store
+                .validate_node(&other_ctx, "tab:42", Some("obs:1"), "101")
+                .is_ok()
+        );
+        assert!(
+            store
+                .validate_node(&ctx, "tab:43", Some("obs:1"), "101")
+                .is_ok()
+        );
+
+        store.forget_snapshot(&ctx, "tab:42", Some("obs:1"));
+        assert!(
+            store
+                .validate_node(&ctx, "tab:42", Some("obs:1"), "101")
+                .unwrap_err()
+                .to_string()
+                .contains("current visible DOM snapshot")
+        );
+        assert!(
+            store
+                .validate_node(&other_ctx, "tab:42", Some("obs:1"), "101")
+                .is_ok()
+        );
+
+        store.remember(&ctx, "tab:42", Some("obs:3"), &nodes);
+        store.forget_tab(&ctx, "tab:42");
+        assert!(
+            store
+                .validate_node(&ctx, "tab:42", Some("obs:3"), "101")
+                .unwrap_err()
+                .to_string()
+                .contains("current visible DOM snapshot")
+        );
+        assert!(
+            store
+                .validate_node(&other_ctx, "tab:42", Some("obs:1"), "101")
+                .is_ok()
+        );
+        assert!(
+            store
+                .validate_node(&ctx, "tab:43", Some("obs:1"), "101")
+                .is_ok()
+        );
+
+        store.forget_tab_for_any_session("tab:42");
+        assert!(
+            store
+                .validate_node(&other_ctx, "tab:42", Some("obs:1"), "101")
+                .unwrap_err()
+                .to_string()
+                .contains("current visible DOM snapshot")
+        );
+
+        let mut store = VisibleDomSnapshotStore::default();
+        for index in 0..(VISIBLE_DOM_SNAPSHOT_MAX_ENTRIES + 5) {
+            store.remember(
+                &ctx,
+                "tab:42",
+                Some(&format!("obs-{index}")),
+                &[json!({ "node_id": format!("{index}") })],
+            );
+        }
+        assert_eq!(store.len(), VISIBLE_DOM_SNAPSHOT_MAX_ENTRIES);
     }
 
     #[test]
