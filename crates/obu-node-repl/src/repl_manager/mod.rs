@@ -280,6 +280,7 @@ impl JsRuntimeManager {
             "sdk_bootstrap": sdk_bootstrap,
             "sdk_bootstrap_detail": sdk_bootstrap_detail,
             "kernel_lifecycle": self.kernel_lifecycle.lock().await.clone(),
+            "kernel_generation": *self.kernel_generation.lock().await,
             "backends": inventory.backends,
             "diagnostics": inventory.diagnostics,
             "runtime_dir": runtime_dir().to_string_lossy(),
@@ -1919,6 +1920,16 @@ mod tests {
         // recovered=true => coarse returns to Idle (re-bootable)
         manager.set_kernel_failed(3, "exec", "thrown".into(), true).await;
         assert_eq!(manager.coarse_state_for_tests().await, KernelState::Idle);
+    }
+
+    #[tokio::test]
+    async fn browser_status_exposes_kernel_generation() {
+        let manager = JsRuntimeManager::new(ManagerOptions::for_tests()).await.unwrap();
+        let status = manager.browser_status().await.unwrap();
+        assert!(
+            status["kernel_generation"].is_u64(),
+            "browser_status must expose a stable top-level kernel_generation field, got: {status}",
+        );
     }
 
     #[tokio::test]
