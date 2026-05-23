@@ -18,6 +18,7 @@ import { TabCua } from "./tab-cua.js";
 import { TabDev } from "./tab-dev.js";
 import { TabDomCua, type DomCuaActionResult } from "./tab-dom-cua.js";
 import { TabPlaywright } from "./tab-playwright.js";
+import { TabFlows } from "./tab-flows.js";
 import { getSessionLifecycleContext, withSessionMeta } from "./session-meta.js";
 import { createActionStateTrace, createObserveStateTrace } from "./state-machines.js";
 import type { StateTrace, StateTraceEntry, ObserveRequestState, ActionRuntimeState } from "./state-machines.js";
@@ -274,6 +275,7 @@ export class Tab {
   readonly cua: TabCua;
   readonly dev: TabDev;
   readonly dom_cua: TabDomCua;
+  readonly flows: TabFlows;
   readonly playwright: TabPlaywright;
   readonly metadata: TabMetadata;
   #localObservations = new Map<string, ObservationLifecycle>();
@@ -290,6 +292,10 @@ export class Tab {
     this.#pointerState = this.runtimeContext.pointerStore?.get(this.id);
     const ensureCommandable = (method: string) => this.#ensureCommandable(method);
     this.act = new TabAct((action) => this.step(action));
+    this.flows = new TabFlows({
+      observe: (opts) => this.observe(opts),
+      step: (action) => this.step(action),
+    });
     this.clipboard = new TabClipboard(transport, guards, id, ensureCommandable);
     this.content = new TabContent(transport, guards, id, ensureCommandable);
     this.cua = new TabCua(transport, guards, id, ensureCommandable);
