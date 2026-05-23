@@ -25,7 +25,7 @@ type HostStatus = {
   deliverableTabs?: number;
   overlayRelease?: Array<{
     tabId: number;
-    state: "release_pending" | "release_failed";
+    state: "release_pending" | "release_failed" | "release_abandoned";
     failures?: number;
     sessionId: string;
     turnId: string;
