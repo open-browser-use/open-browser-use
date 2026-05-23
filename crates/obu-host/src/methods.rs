@@ -98,6 +98,8 @@ pub const TAB_SCREENSHOT: &str = "tab_screenshot";
 pub const TAB_WAIT_FOR_URL: &str = "tab_wait_for_url";
 pub const TAB_WAIT_FOR_LOAD_STATE: &str = "tab_wait_for_load_state";
 pub const TAB_CONTENT_EXPORT: &str = "tab_content_export";
+pub const TAB_EVALUATE: &str = "tab_evaluate";
+pub const TAB_SNAPSHOT_TEXT: &str = "tab_snapshot_text";
 pub const TAB_URL: &str = "tab_url";
 pub const TAB_TITLE: &str = "tab_title";
 
@@ -185,6 +187,8 @@ pub const ALL_INBOUND_METHODS: &[&str] = &[
     TAB_WAIT_FOR_URL,
     TAB_WAIT_FOR_LOAD_STATE,
     TAB_CONTENT_EXPORT,
+    TAB_EVALUATE,
+    TAB_SNAPSHOT_TEXT,
     TAB_URL,
     TAB_TITLE,
 ];
@@ -606,6 +610,16 @@ pub const BACKEND_METHOD_SUPPORT: &[(&str, BackendMethodSupport, BackendMethodSu
     ),
     (
         TAB_CONTENT_EXPORT,
+        BackendMethodSupport::Implemented,
+        BackendMethodSupport::Implemented,
+    ),
+    (
+        TAB_EVALUATE,
+        BackendMethodSupport::Implemented,
+        BackendMethodSupport::Implemented,
+    ),
+    (
+        TAB_SNAPSHOT_TEXT,
         BackendMethodSupport::Implemented,
         BackendMethodSupport::Implemented,
     ),

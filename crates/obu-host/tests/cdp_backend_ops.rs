@@ -17,6 +17,14 @@ use obu_host::{
     tab_state::{TabId, TabOrigin, TabRecord, TabStatus},
 };
 
+fn test_context(session_id: &str) -> BackendRequestContext {
+    BackendRequestContext {
+        session_id: Some(session_id.into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+    }
+}
+
 #[tokio::test]
 async fn targets_attach_and_execute_cdp_work_against_fake_browser() {
     let (ws_url, mut requests) = spawn_fake_cdp().await;
@@ -25,7 +33,7 @@ async fn targets_attach_and_execute_cdp_work_against_fake_browser() {
         .unwrap();
 
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap();
@@ -81,6 +89,7 @@ async fn cdp_list_tabs_surfaces_preserved_host_lifecycle_semantics() {
             cdp_session_id: Some("old-session".into()),
         })
         .unwrap();
+    let events_before = registry.recent_lifecycle_events(20).unwrap().len();
 
     let listed = backend.list_tabs().await.unwrap();
 
@@ -92,6 +101,31 @@ async fn cdp_list_tabs_surfaces_preserved_host_lifecycle_semantics() {
     let record = registry.get(&TabId::new("deliverable")).unwrap().unwrap();
     assert_eq!(record.status, TabStatus::Deliverable);
     assert_eq!(record.origin, TabOrigin::Agent);
+    assert_eq!(record.url, "https://old.example");
+    assert_eq!(record.attached, true);
+    assert_eq!(
+        registry.recent_lifecycle_events(20).unwrap().len(),
+        events_before,
+        "CDP getTabs observation must not record registry lifecycle events"
+    );
+}
+
+#[tokio::test]
+async fn cdp_list_tabs_observes_unknown_targets_without_importing_registry_rows() {
+    let (ws_url, _requests) = spawn_fake_cdp().await;
+    let registry = Arc::new(ServiceRegistry::default());
+    let backend = CdpBackend::connect(&ws_url, registry.clone())
+        .await
+        .unwrap();
+
+    let listed = backend.list_tabs().await.unwrap();
+
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    assert_eq!(listed[0]["id"], "target-1");
+    assert!(
+        registry.get(&TabId::new("target-1")).unwrap().is_none(),
+        "CDP getTabs observation must not import unknown targets into the host registry"
+    );
 }
 
 #[tokio::test]
@@ -106,6 +140,17 @@ async fn cdp_current_selected_and_resume_use_only_active_session_tabs() {
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
     };
+    registry
+        .set_human_takeover("session", Some("turn"), true)
+        .unwrap();
+    let error = backend
+        .turn_ended_with_context(&ctx, json!({}))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("human takeover"));
+    registry
+        .set_human_takeover("session", Some("turn"), false)
+        .unwrap();
     for (tab_id, status) in [
         ("active-b", TabStatus::Active),
         ("active-a", TabStatus::Active),
@@ -136,7 +181,12 @@ async fn cdp_current_selected_and_resume_use_only_active_session_tabs() {
     assert_eq!(current["commandable"], true);
 
     registry
-        .set_active_tab("session", "handoff", Some("turn-2"))
+        .set_active_tab("session", "active-b", Some("turn-2"))
+        .unwrap();
+    registry
+        .update(&TabId::new("active-b"), |record| {
+            record.status = TabStatus::Handoff;
+        })
         .unwrap();
     let selected = backend.selected_tab_with_context(&ctx).await.unwrap();
     assert_eq!(selected["tab_id"], "active-a");
@@ -443,7 +493,7 @@ async fn tab_commands_navigate_and_export_content_against_fake_browser() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -543,7 +593,7 @@ async fn execute_cdp_requires_attach() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap();
@@ -859,7 +909,7 @@ async fn cua_click_dispatches_raw_cdp_mouse_events() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -896,7 +946,7 @@ async fn cua_click_waits_for_navigation_when_requested() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -942,7 +992,7 @@ async fn cua_commands_validate_payloads_and_dispatch_expected_input_events() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -1076,7 +1126,7 @@ async fn cdp_cua_input_sequences_enable_page_once_per_command() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -1160,7 +1210,7 @@ async fn cdp_drag_releases_mouse_when_move_fails() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -1206,7 +1256,7 @@ async fn cdp_scroll_falls_back_to_mouse_wheel_when_synthesized_gesture_fails() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -1245,7 +1295,7 @@ async fn cdp_modified_scroll_uses_mouse_wheel_without_synthesized_gesture() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -1298,7 +1348,7 @@ async fn cua_commands_reject_malformed_coordinates_drag_paths_and_tab_ids() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -1336,7 +1386,7 @@ async fn playwright_click_routes_through_injected_runtime_and_cua() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -1381,7 +1431,7 @@ async fn playwright_fill_uses_shared_text_input_fallback() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -1435,7 +1485,7 @@ async fn playwright_press_uses_shared_focus_runtime_before_keyboard_events() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -1493,7 +1543,7 @@ async fn playwright_locator_click_forwards_navigation_wait_to_cua() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -1543,7 +1593,7 @@ async fn playwright_wait_states_and_action_point_failures_are_encoded() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -1602,14 +1652,15 @@ async fn file_chooser_wait_returns_handle_and_set_files_uses_backend_node() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
     backend.attach(&tab_id).await.unwrap();
 
     let handle = backend
-        .playwright_command(
+        .playwright_command_with_context(
+            &test_context("session"),
             methods::PLAYWRIGHT_WAIT_FOR_FILE_CHOOSER,
             json!({ "tab_id": tab_id, "timeout_ms": 500 }),
         )
@@ -1619,7 +1670,8 @@ async fn file_chooser_wait_returns_handle_and_set_files_uses_backend_node() {
     assert_eq!(handle["is_multiple"], true);
 
     backend
-        .playwright_command(
+        .playwright_command_with_context(
+            &test_context("session"),
             methods::PLAYWRIGHT_FILE_CHOOSER_SET_FILES,
             json!({ "file_chooser_id": file_chooser_id, "files": ["/tmp/upload.txt"] }),
         )
@@ -1671,7 +1723,7 @@ async fn cdp_wait_for_download_ignores_unrelated_frame_event() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -1731,7 +1783,7 @@ async fn cdp_download_path_rejects_canceled_progress_without_timing_out() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -1777,7 +1829,7 @@ async fn cdp_file_chooser_rejects_wrong_session_without_consuming() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();

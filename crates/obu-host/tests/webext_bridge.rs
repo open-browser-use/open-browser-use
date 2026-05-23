@@ -95,6 +95,17 @@ async fn webext_backend_exposes_current_and_selected_with_ownership_boundary() {
         .yield_control_with_context(&ctx, json!({}))
         .await
         .unwrap();
+    let call_count_after_yield = transport.calls.lock().unwrap().len();
+    let error = backend
+        .turn_ended_with_context(&ctx, json!({}))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("human takeover"));
+    assert_eq!(
+        transport.calls.lock().unwrap().len(),
+        call_count_after_yield,
+        "turnEnded during human takeover must not be sent to the extension"
+    );
     let resumed = backend
         .resume_control_with_context(&ctx, json!({}))
         .await
@@ -110,7 +121,7 @@ async fn webext_backend_exposes_current_and_selected_with_ownership_boundary() {
 }
 
 #[tokio::test]
-async fn webext_backend_reconciles_session_tabs_missing_after_get_tabs() {
+async fn webext_backend_get_tabs_is_pure_observation_without_host_reconcile() {
     let transport = Arc::new(FakeTransport::default());
     let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport);
     let ctx = BackendRequestContext {
@@ -149,21 +160,11 @@ async fn webext_backend_reconciles_session_tabs_missing_after_get_tabs() {
 
     let listed = backend.list_tabs_with_context(&ctx).await.unwrap();
     assert_eq!(listed[0]["id"], "42");
-    assert!(backend.registry().get(&stale_tab).unwrap().is_none());
-    assert!(
-        backend
-            .registry()
-            .describe_missing_tab(&stale_tab)
-            .unwrap()
-            .contains("not returned by WebExtension getTabs")
-    );
-    assert!(
-        backend
-            .registry()
-            .describe_missing_file_chooser(&FileChooserId("chooser-stale".into()))
-            .unwrap()
-            .contains("not returned by WebExtension getTabs")
-    );
+    assert!(backend.registry().get(&stale_tab).unwrap().is_some());
+    let counts = backend.registry().lifecycle_counts().unwrap();
+    assert_eq!(counts.stale_tabs, 0);
+    assert_eq!(counts.stale_file_choosers, 0);
+    assert_eq!(counts.file_choosers, 1);
 }
 
 #[tokio::test]
@@ -224,13 +225,19 @@ async fn webext_backend_preserves_host_tab_lifecycle_when_get_tabs_omits_state()
             cdp_session_id: None,
         })
         .unwrap();
+    let events_before = backend
+        .registry()
+        .recent_lifecycle_events(20)
+        .unwrap()
+        .len();
 
     backend.list_tabs_with_context(&ctx).await.unwrap();
 
     let record = backend.registry().get(&deliverable_tab).unwrap().unwrap();
     assert_eq!(record.origin, TabOrigin::User);
     assert_eq!(record.status, TabStatus::Deliverable);
-    assert_eq!(record.url, "https://example.com");
+    assert_eq!(record.url, "https://old-deliverable.example");
+    assert_eq!(record.title, "Old Deliverable");
     assert_eq!(
         backend
             .registry()
@@ -250,11 +257,20 @@ async fn webext_backend_preserves_host_tab_lifecycle_when_get_tabs_omits_state()
     );
     assert_eq!(
         diagnostics["lifecycle"]["deliverable_tab_summaries"][0]["url"],
-        "https://example.com"
+        "https://old-deliverable.example"
     );
     assert_eq!(
         diagnostics["lifecycle"]["deliverable_tab_summaries"][0]["title"],
-        "Example"
+        "Old Deliverable"
+    );
+    assert_eq!(
+        backend
+            .registry()
+            .recent_lifecycle_events(20)
+            .unwrap()
+            .len(),
+        events_before,
+        "getTabs observation must not record registry lifecycle events"
     );
 }
 
@@ -272,18 +288,21 @@ async fn webext_backend_rehydrates_deliverables_from_get_tabs_side_channel() {
     assert_eq!(listed.as_array().unwrap().len(), 1);
     assert_eq!(listed[0]["id"], "42");
 
-    let active_record = backend.registry().get(&TabId::new("42")).unwrap().unwrap();
-    assert_eq!(active_record.status, TabStatus::Active);
-    let deliverable_record = backend.registry().get(&TabId::new("8")).unwrap().unwrap();
-    assert_eq!(deliverable_record.status, TabStatus::Deliverable);
-    assert_eq!(deliverable_record.url, "https://deliverable.example");
+    assert!(
+        backend.registry().get(&TabId::new("42")).unwrap().is_none(),
+        "getTabs observation must not import active tab rows into the host registry"
+    );
+    assert!(
+        backend.registry().get(&TabId::new("8")).unwrap().is_none(),
+        "getTabs observation must not rehydrate deliverable side-channel rows"
+    );
     assert_eq!(
         backend
             .registry()
             .lifecycle_counts()
             .unwrap()
             .deliverable_tabs,
-        1
+        0
     );
 }
 
@@ -1797,13 +1816,26 @@ async fn webext_backend_exposes_extension_status_diagnostics() {
                 "state": "waiting_for_idle",
                 "version": "0.2.0",
                 "pendingSince": 123
-            }
+            },
+            "overlay_release": [
+                {
+                    "tabId": 42,
+                    "state": "release_failed",
+                    "failures": 1,
+                    "sessionId": "session",
+                    "turnId": "turn"
+                }
+            ]
         }),
     );
 
     assert_eq!(
         backend.diagnostics()["extension"]["pending_update"]["version"],
         "0.2.0"
+    );
+    assert_eq!(
+        backend.diagnostics()["extension"]["overlay_release"][0]["state"],
+        "release_failed"
     );
 }
 

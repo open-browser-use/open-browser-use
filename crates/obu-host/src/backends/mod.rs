@@ -170,6 +170,15 @@ pub trait BrowserBackend: Send + Sync {
         method_supported(self.kind(), method)
     }
 
+    /// Return whether this backend owns request deadline tracking for a method.
+    ///
+    /// Backends that send non-cancellable browser effects across another
+    /// transport should keep their own correlation through timeout and late
+    /// completion instead of letting the dispatcher drop the in-flight future.
+    fn owns_request_deadline(&self, _method: &str) -> bool {
+        false
+    }
+
     /// Attach to a tab.
     async fn attach(&self, _tab_id: &str) -> Result<()> {
         Err(HostError::NotImplemented("attach".into()))
@@ -204,6 +213,15 @@ pub trait BrowserBackend: Send + Sync {
         params: Value,
     ) -> Result<Value> {
         self.execute_cdp(tab_id, method, params).await
+    }
+
+    /// Read a tab's current URL for host policy without mutating host lifecycle state.
+    async fn current_url_for_policy(
+        &self,
+        _ctx: &BackendRequestContext,
+        _tab_id: &str,
+    ) -> Result<String> {
+        Err(HostError::NotImplemented("current_url_for_policy".into()))
     }
 
     /// Create a tab.

@@ -82,6 +82,8 @@
     { "constant": "TAB_WAIT_FOR_URL", "name": "tab_wait_for_url", "policy": "target-url", "family": "tab", "support": { "cdp": "implemented", "webextension": "implemented" } },
     { "constant": "TAB_WAIT_FOR_LOAD_STATE", "name": "tab_wait_for_load_state", "policy": "current-origin", "family": "tab", "support": { "cdp": "implemented", "webextension": "implemented" } },
     { "constant": "TAB_CONTENT_EXPORT", "name": "tab_content_export", "policy": "current-origin", "family": "tab", "support": { "cdp": "implemented", "webextension": "implemented" } },
+    { "constant": "TAB_EVALUATE", "name": "tab_evaluate", "policy": "current-origin", "family": "tab", "support": { "cdp": "implemented", "webextension": "implemented" } },
+    { "constant": "TAB_SNAPSHOT_TEXT", "name": "tab_snapshot_text", "policy": "current-origin", "family": "tab", "support": { "cdp": "implemented", "webextension": "implemented" } },
     { "constant": "TAB_URL", "name": "tab_url", "policy": "current-origin", "family": "tab", "support": { "cdp": "implemented", "webextension": "implemented" } },
     { "constant": "TAB_TITLE", "name": "tab_title", "policy": "current-origin", "family": "tab", "support": { "cdp": "implemented", "webextension": "implemented" } }
   ]

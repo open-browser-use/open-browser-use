@@ -1002,6 +1002,7 @@ fn is_fatal(error: &HostError) -> bool {
         | HostError::TabNotAttached(_)
         | HostError::PageClosed(_)
         | HostError::DialogRequiresDecision(_)
+        | HostError::Rpc { .. }
         | HostError::Timeout(_) => true,
         HostError::CdpFailure(message) => {
             message.contains("strict mode violation:")

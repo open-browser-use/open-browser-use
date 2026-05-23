@@ -1,7 +1,6 @@
 //! Chrome Native Messaging mode for the WebExtension backend.
 
-use std::collections::HashMap;
-use std::hash::Hash;
+use std::collections::{HashMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::Mutex as StdMutex;
@@ -32,6 +31,10 @@ use crate::cli::Cli;
 use crate::dispatcher::Dispatcher;
 use crate::error::{HostError, Result};
 use crate::policy::ConfiguredHostPolicy;
+use crate::runtime_descriptor_lifecycle::{
+    RuntimeDescriptorLifecycleEventKind, plan_runtime_descriptor_drop,
+    plan_runtime_descriptor_write,
+};
 use crate::socket::{Listener, unix::UnixSockListener};
 
 type NativeReader = FramedRead<Stdin, FrameCodec>;
@@ -39,7 +42,7 @@ type NativeWriter = FramedWrite<Stdout, FrameCodec>;
 
 const MIN_EXTENSION_VERSION: &str = "0.1.0";
 const DEFAULT_EXTENSION_REQUEST_TIMEOUT_MS: u64 = 30_000;
-const EXTENSION_RESPONSE_OVERSHOOT_MS: u64 = 5_000;
+const MAX_EXTENSION_TRANSPORT_DIAGNOSTICS: usize = 20;
 
 /// Run `obu-host` as a Chrome Native Messaging host.
 pub async fn run(_args: Cli) -> anyhow::Result<()> {
@@ -162,7 +165,7 @@ pub async fn run(_args: Cli) -> anyhow::Result<()> {
     )
     .await;
     accept_loop.abort();
-    drop(registration.lock().await.take());
+    close_runtime_descriptor_registration(&registration, "native_messaging_loop_finished").await;
     native_loop.map_err(Into::into)
 }
 
@@ -212,7 +215,7 @@ async fn handle_extension_request(
         "stopBrowserControl" => {
             backend.stop();
             let _ = stop_tx.send(true);
-            drop(registration.lock().await.take());
+            close_runtime_descriptor_registration(registration, "stop_browser_control").await;
             Response::ok(request.id, Value::Null)
         }
         other => Response::err(
@@ -225,29 +228,30 @@ async fn handle_extension_request(
     }
 }
 
+async fn close_runtime_descriptor_registration(
+    registration: &Arc<Mutex<Option<RuntimeDescriptorRegistration>>>,
+    reason: &str,
+) {
+    if let Some(registration) = registration.lock().await.take() {
+        registration.close(reason);
+    } else {
+        trace_runtime_descriptor_drop(None, reason);
+    }
+}
+
 struct NativeExtensionTransport {
     writer: Arc<Mutex<NativeWriter>>,
     next_id: AtomicI64,
-    pending: StdMutex<HashMap<i64, oneshot::Sender<Response>>>,
+    pending: StdMutex<HashMap<i64, PendingExtensionRequest>>,
+    diagnostics: StdMutex<VecDeque<Value>>,
 }
 
-struct PendingRemovalGuard<'a, K, V>
-where
-    K: Copy + Eq + Hash,
-{
-    pending: &'a StdMutex<HashMap<K, V>>,
-    id: K,
-}
-
-impl<K, V> Drop for PendingRemovalGuard<'_, K, V>
-where
-    K: Copy + Eq + Hash,
-{
-    fn drop(&mut self) {
-        if let Ok(mut pending) = self.pending.lock() {
-            pending.remove(&self.id);
-        }
-    }
+struct PendingExtensionRequest {
+    method: String,
+    started_at_unix_ms: u64,
+    timeout_ms: u64,
+    responder: Option<oneshot::Sender<Response>>,
+    timed_out_at_unix_ms: Option<u64>,
 }
 
 impl NativeExtensionTransport {
@@ -256,6 +260,7 @@ impl NativeExtensionTransport {
             writer,
             next_id: AtomicI64::new(1),
             pending: StdMutex::new(HashMap::new()),
+            diagnostics: StdMutex::new(VecDeque::new()),
         }
     }
 
@@ -263,25 +268,80 @@ impl NativeExtensionTransport {
         let Some(id) = response_id(&response.id) else {
             return;
         };
-        if let Some(tx) = self
+        if let Some(mut pending) = self
             .pending
             .lock()
             .expect("native extension pending lock")
             .remove(&id)
         {
-            let _ = tx.send(response);
+            if let Some(tx) = pending.responder.take() {
+                if !tx.is_closed() {
+                    let _ = tx.send(response);
+                    return;
+                }
+            }
+            self.record_diagnostic(late_response_event(id, pending, response));
         }
     }
 
     async fn fail_all(&self, message: &str) {
         let pending =
             std::mem::take(&mut *self.pending.lock().expect("native extension pending lock"));
-        for (id, tx) in pending {
-            let _ = tx.send(Response::err(
+        for (id, mut pending) in pending {
+            let response = Response::err(
                 Id::Number(id),
                 ErrorObject::new(ErrorCode::InternalError, message),
-            ));
+            );
+            if let Some(tx) = pending.responder.take() {
+                if !tx.is_closed() {
+                    let _ = tx.send(response);
+                    continue;
+                }
+            }
+            self.record_diagnostic(late_transport_closed_event(id, pending, message));
         }
+    }
+
+    fn diagnostics(&self) -> Value {
+        let pending = self
+            .pending
+            .lock()
+            .expect("native extension pending lock")
+            .values()
+            .map(|pending| {
+                json!({
+                    "method": pending.method,
+                    "started_at_unix_ms": pending.started_at_unix_ms,
+                    "timeout_ms": pending.timeout_ms,
+                    "timed_out_at_unix_ms": pending.timed_out_at_unix_ms,
+                    "awaiting_late_completion": pending
+                        .responder
+                        .as_ref()
+                        .map(oneshot::Sender::is_closed)
+                        .unwrap_or(true),
+                })
+            })
+            .collect::<Vec<_>>();
+        let recent_events = self
+            .diagnostics
+            .lock()
+            .expect("native extension diagnostics lock")
+            .iter()
+            .cloned()
+            .collect::<Vec<_>>();
+        json!({
+            "pending": pending,
+            "recent_events": recent_events,
+            "recent_event_count": recent_events.len(),
+        })
+    }
+
+    fn record_diagnostic(&self, event: Value) {
+        let mut diagnostics = self
+            .diagnostics
+            .lock()
+            .expect("native extension diagnostics lock");
+        push_bounded_transport_diagnostic(&mut diagnostics, event);
     }
 }
 
@@ -290,59 +350,118 @@ impl ExtensionTransport for NativeExtensionTransport {
     async fn request(&self, method: &str, params: Value) -> Result<Value> {
         let id = self.next_id.fetch_add(1, Ordering::SeqCst);
         let (tx, rx) = oneshot::channel();
-        self.pending
-            .lock()
-            .expect("native extension pending lock")
-            .insert(id, tx);
-        let _pending_guard = PendingRemovalGuard {
-            pending: &self.pending,
-            id,
-        };
         let timeout_ms = params
             .get("timeoutMs")
             .or_else(|| params.get("client_timeout_ms"))
             .and_then(Value::as_u64)
-            .unwrap_or(DEFAULT_EXTENSION_REQUEST_TIMEOUT_MS)
-            .saturating_add(EXTENSION_RESPONSE_OVERSHOOT_MS);
+            .unwrap_or(DEFAULT_EXTENSION_REQUEST_TIMEOUT_MS);
+        let started_at_unix_ms = unix_millis_now();
+        self.pending
+            .lock()
+            .expect("native extension pending lock")
+            .insert(
+                id,
+                PendingExtensionRequest {
+                    method: method.to_string(),
+                    started_at_unix_ms,
+                    timeout_ms,
+                    responder: Some(tx),
+                    timed_out_at_unix_ms: None,
+                },
+            );
         let request = Request::new(id, method, params);
         if let Err(error) = send_native(&self.writer, &request).await {
+            self.pending
+                .lock()
+                .expect("native extension pending lock")
+                .remove(&id);
             return Err(error);
         }
-        let response =
-            match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), rx).await {
-                Ok(response) => response.map_err(|_| {
-                    HostError::Protocol(format!("extension response dropped: {method}"))
-                })?,
-                Err(_) => {
-                    return Err(HostError::Timeout(format!(
-                        "extension request timed out: {method}"
-                    )));
+        let response = match tokio::time::timeout(std::time::Duration::from_millis(timeout_ms), rx)
+            .await
+        {
+            Ok(response) => response.map_err(|_| {
+                HostError::Protocol(format!("extension response dropped: {method}"))
+            })?,
+            Err(_) => {
+                let timed_out_at_unix_ms = unix_millis_now();
+                if let Some(pending) = self
+                    .pending
+                    .lock()
+                    .expect("native extension pending lock")
+                    .get_mut(&id)
+                {
+                    pending.responder = None;
+                    pending.timed_out_at_unix_ms = Some(timed_out_at_unix_ms);
                 }
-            };
+                self.record_diagnostic(json!({
+                    "kind": "timed_out_awaiting_late_completion",
+                    "request_id": id,
+                    "method": method,
+                    "started_at_unix_ms": started_at_unix_ms,
+                    "timed_out_at_unix_ms": timed_out_at_unix_ms,
+                    "elapsed_ms": timed_out_at_unix_ms.saturating_sub(started_at_unix_ms),
+                    "timeout_ms": timeout_ms,
+                }));
+                return Err(HostError::Timeout(format!(
+                    "extension request timed out: {method}; late completion will be reported in transport diagnostics"
+                )));
+            }
+        };
         if let Some(error) = response.error {
-            return Err(HostError::Protocol(error.message));
+            return Err(HostError::rpc(error));
         }
         Ok(response.result.unwrap_or(Value::Null))
     }
+
+    fn diagnostics(&self) -> Value {
+        NativeExtensionTransport::diagnostics(self)
+    }
 }
 
-#[cfg(test)]
-mod tests {
-    use super::PendingRemovalGuard;
-    use std::collections::HashMap;
-    use std::sync::Mutex;
-
-    #[test]
-    fn pending_guard_removes_entry_on_drop() {
-        let pending = Mutex::new(HashMap::from([(7_i64, "pending")]));
-        {
-            let _guard = PendingRemovalGuard {
-                pending: &pending,
-                id: 7,
-            };
-            assert!(pending.lock().expect("pending lock").contains_key(&7));
+fn late_response_event(id: i64, pending: PendingExtensionRequest, response: Response) -> Value {
+    let completed_at_unix_ms = unix_millis_now();
+    let mut event = json!({
+        "kind": if response.error.is_some() { "timed_out_late_error" } else { "timed_out_late_success" },
+        "request_id": id,
+        "method": pending.method,
+        "started_at_unix_ms": pending.started_at_unix_ms,
+        "timed_out_at_unix_ms": pending.timed_out_at_unix_ms,
+        "completed_at_unix_ms": completed_at_unix_ms,
+        "elapsed_ms": completed_at_unix_ms.saturating_sub(pending.started_at_unix_ms),
+        "timeout_ms": pending.timeout_ms,
+    });
+    if let Some(error) = response.error
+        && let Some(object) = event.as_object_mut()
+    {
+        object.insert("error_code".into(), json!(error.code));
+        object.insert("error_message".into(), json!(error.message));
+        if let Some(data) = error.data {
+            object.insert("error_data".into(), data);
         }
-        assert!(!pending.lock().expect("pending lock").contains_key(&7));
+    }
+    event
+}
+
+fn late_transport_closed_event(id: i64, pending: PendingExtensionRequest, message: &str) -> Value {
+    let completed_at_unix_ms = unix_millis_now();
+    json!({
+        "kind": "timed_out_late_transport_closed",
+        "request_id": id,
+        "method": pending.method,
+        "started_at_unix_ms": pending.started_at_unix_ms,
+        "timed_out_at_unix_ms": pending.timed_out_at_unix_ms,
+        "completed_at_unix_ms": completed_at_unix_ms,
+        "elapsed_ms": completed_at_unix_ms.saturating_sub(pending.started_at_unix_ms),
+        "timeout_ms": pending.timeout_ms,
+        "error_message": message,
+    })
+}
+
+fn push_bounded_transport_diagnostic(diagnostics: &mut VecDeque<Value>, event: Value) {
+    diagnostics.push_back(event);
+    while diagnostics.len() > MAX_EXTENSION_TRANSPORT_DIAGNOSTICS {
+        diagnostics.pop_front();
     }
 }
 
@@ -351,6 +470,13 @@ fn response_id(id: &Id) -> Option<i64> {
         Id::Number(value) => Some(*value),
         Id::String(value) => value.parse().ok(),
     }
+}
+
+fn unix_millis_now() -> u64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| duration.as_millis() as u64)
+        .unwrap_or(0)
 }
 
 async fn send_native<T: serde::Serialize>(
@@ -455,7 +581,7 @@ fn sanitize_profile_metadata(raw: Option<&Value>) -> Value {
 }
 
 struct RuntimeDescriptorRegistration {
-    descriptor_path: PathBuf,
+    descriptor_path: Option<PathBuf>,
 }
 
 impl RuntimeDescriptorRegistration {
@@ -466,31 +592,72 @@ impl RuntimeDescriptorRegistration {
         validate_owner_only_dir(&dir)?;
 
         let id = Uuid::new_v4().simple().to_string();
-        let descriptor_path = dir.join(format!("{id}.json"));
-        let tmp_path = dir.join(format!("{id}.json.tmp"));
-        let descriptor = json!({
-            "schema_version": 1,
-            "type": "webextension",
-            "name": metadata
-                .get("browser_kind")
-                .and_then(Value::as_str)
-                .unwrap_or("chrome"),
-            "socketPath": socket_path.to_string_lossy(),
-            "sdk_auth_token": sdk_auth_token,
-            "pid": pid,
-            "startedAt": started_at(),
-            "metadata": metadata,
-        });
+        let plan = plan_runtime_descriptor_write(
+            &dir,
+            &id,
+            socket_path,
+            sdk_auth_token,
+            metadata,
+            pid,
+            started_at(),
+        );
 
-        write_owner_only_json(&tmp_path, &descriptor)?;
-        std::fs::rename(&tmp_path, &descriptor_path)?;
-        Ok(Self { descriptor_path })
+        write_owner_only_json(&plan.tmp_path, &plan.descriptor)?;
+        std::fs::rename(&plan.tmp_path, &plan.descriptor_path)?;
+        tracing::debug!(
+            event = ?plan.event.kind,
+            descriptor_path = %plan.descriptor_path.display(),
+            "runtime descriptor lifecycle"
+        );
+        Ok(Self {
+            descriptor_path: Some(plan.descriptor_path),
+        })
+    }
+
+    fn close(mut self, reason: &str) {
+        self.remove_descriptor_file(reason);
+    }
+
+    fn remove_descriptor_file(&mut self, reason: &str) {
+        let descriptor_path = self.descriptor_path.as_deref();
+        let plan = plan_runtime_descriptor_drop(descriptor_path, reason);
+        trace_runtime_descriptor_drop(plan.remove_path.as_deref(), reason);
+        if let Some(path) = plan.remove_path {
+            let _ = std::fs::remove_file(path);
+            self.descriptor_path = None;
+        }
     }
 }
 
 impl Drop for RuntimeDescriptorRegistration {
     fn drop(&mut self) {
-        let _ = std::fs::remove_file(&self.descriptor_path);
+        if self.descriptor_path.is_some() {
+            self.remove_descriptor_file("registration_dropped");
+        }
+    }
+}
+
+fn trace_runtime_descriptor_drop(descriptor_path: Option<&Path>, reason: &str) {
+    let plan = plan_runtime_descriptor_drop(descriptor_path, reason);
+    match plan.event.kind {
+        RuntimeDescriptorLifecycleEventKind::Dropped => {
+            if let Some(path) = plan.event.descriptor_path {
+                tracing::debug!(
+                    event = ?plan.event.kind,
+                    descriptor_path = %path.display(),
+                    reason,
+                    "runtime descriptor lifecycle"
+                );
+            }
+        }
+        RuntimeDescriptorLifecycleEventKind::DropSkipped => {
+            tracing::debug!(
+                event = ?plan.event.kind,
+                reason,
+                "runtime descriptor lifecycle"
+            );
+        }
+        RuntimeDescriptorLifecycleEventKind::Fresh => {}
     }
 }
 
@@ -513,4 +680,55 @@ fn started_at() -> String {
         .duration_since(UNIX_EPOCH)
         .map(|duration| duration.as_millis().to_string())
         .unwrap_or_else(|_| "0".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn late_timeout_success_error_and_transport_closed_events_are_structured() {
+        let success = late_response_event(
+            7,
+            pending_request("createTab"),
+            Response::ok(Id::Number(7), json!({ "tabId": 7 })),
+        );
+        assert_eq!(success["kind"], "timed_out_late_success");
+        assert_eq!(success["request_id"], 7);
+        assert_eq!(success["method"], "createTab");
+        assert_eq!(success["timeout_ms"], 5);
+        assert!(success.get("error_code").is_none());
+
+        let error = late_response_event(
+            8,
+            pending_request("click"),
+            Response::err(
+                Id::Number(8),
+                ErrorObject::new(ErrorCode::InternalError, "click failed")
+                    .with_data(json!({ "code": "synthetic_click_failure" })),
+            ),
+        );
+        assert_eq!(error["kind"], "timed_out_late_error");
+        assert_eq!(error["request_id"], 8);
+        assert_eq!(error["method"], "click");
+        assert_eq!(error["error_code"], ErrorCode::InternalError.value());
+        assert_eq!(error["error_message"], "click failed");
+        assert_eq!(error["error_data"], json!({ "code": "synthetic_click_failure" }));
+
+        let closed = late_transport_closed_event(9, pending_request("goto"), "native port closed");
+        assert_eq!(closed["kind"], "timed_out_late_transport_closed");
+        assert_eq!(closed["request_id"], 9);
+        assert_eq!(closed["method"], "goto");
+        assert_eq!(closed["error_message"], "native port closed");
+    }
+
+    fn pending_request(method: &str) -> PendingExtensionRequest {
+        PendingExtensionRequest {
+            method: method.into(),
+            started_at_unix_ms: 1,
+            timeout_ms: 5,
+            responder: None,
+            timed_out_at_unix_ms: Some(6),
+        }
+    }
 }

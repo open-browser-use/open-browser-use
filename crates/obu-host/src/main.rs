@@ -10,6 +10,7 @@ use obu_host::{
     diagnostics,
     dispatcher::Dispatcher,
     peer_auth::{PeerAuthGate, PeerAuthMode, unix::UnixPeerAuthGate},
+    peer_lifecycle::PeerLifecycleDiagnostics,
     policy::ConfiguredHostPolicy,
     socket::{self, Listener, unix::UnixSockListener},
 };
@@ -41,7 +42,9 @@ async fn main() -> anyhow::Result<()> {
 
     let mut listener = UnixSockListener::bind(&socket_path)?;
     let peer_auth_mode = PeerAuthMode::parse(&args.peer_auth);
-    let peer_auth = UnixPeerAuthGate::new(peer_auth_mode);
+    let peer_diagnostics = PeerLifecycleDiagnostics::default();
+    let peer_auth =
+        UnixPeerAuthGate::new_with_diagnostics(peer_auth_mode, peer_diagnostics.clone());
     let registry = Arc::new(obu_host::service_registry::ServiceRegistry::default());
     let backend: Arc<dyn BrowserBackend> = match args.cdp_url.as_deref() {
         Some(url) => {
@@ -50,10 +53,11 @@ async fn main() -> anyhow::Result<()> {
         }
         None => Arc::new(WebExtensionBackend::default()),
     };
-    let dispatcher = Arc::new(Dispatcher::new_with_policy(
+    let dispatcher = Arc::new(Dispatcher::new_with_policy_and_peer_diagnostics(
         env!("CARGO_PKG_VERSION").into(),
         backend,
         Arc::new(ConfiguredHostPolicy::from_env()),
+        peer_diagnostics,
     ));
     let capability_token = args.capability_token.clone();
 

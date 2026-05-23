@@ -9,8 +9,19 @@ use crate::backends::{BackendRequestContext, cdp::CdpBackend};
 use crate::error::{HostError, Result};
 use crate::tab_state::{TabId, TabOrigin, TabRecord, TabStatus};
 
-/// Create a new page target and register it as an agent-owned tab.
-pub async fn create_tab(backend: &CdpBackend, url: Option<String>) -> Result<Value> {
+struct ObservedTarget {
+    target_id: String,
+    url: String,
+    title: String,
+    attached: bool,
+}
+
+/// Create a new page target and register it as an agent-owned session tab.
+pub async fn create_tab(
+    backend: &CdpBackend,
+    url: Option<String>,
+    session_id: &str,
+) -> Result<Value> {
     let url = url.unwrap_or_else(|| "about:blank".into());
     let result = backend
         .transport()
@@ -26,7 +37,7 @@ pub async fn create_tab(backend: &CdpBackend, url: Option<String>) -> Result<Val
     let tab_id = TabId::new(format!("tab-{}", Uuid::new_v4()));
     let record = TabRecord {
         id: tab_id.clone(),
-        session_id: None,
+        session_id: Some(session_id.to_string()),
         target_id: target_id.clone(),
         url: url.clone(),
         title: String::new(),
@@ -47,18 +58,8 @@ pub async fn create_tab(backend: &CdpBackend, url: Option<String>) -> Result<Val
     }))
 }
 
-/// List page targets, refreshing the registry with any user-created tabs.
+/// List page targets without mutating host registry lifecycle state.
 pub async fn list_tabs(backend: &CdpBackend) -> Result<Value> {
-    let result = backend
-        .transport()
-        .send_command("Target.getTargets", Value::Object(Map::new()), None)
-        .await
-        .map_err(HostError::from)?;
-    let targets = result
-        .get("targetInfos")
-        .and_then(Value::as_array)
-        .ok_or_else(|| HostError::Protocol("Target.getTargets missing targetInfos".into()))?;
-
     let existing_by_target: HashMap<String, TabRecord> = backend
         .registry()
         .list()?
@@ -67,35 +68,8 @@ pub async fn list_tabs(backend: &CdpBackend) -> Result<Value> {
         .collect();
 
     let mut out = Vec::new();
-    for target in targets {
-        if target.get("type").and_then(Value::as_str) != Some("page") {
-            continue;
-        }
-        let Some(target_id) = target.get("targetId").and_then(Value::as_str) else {
-            continue;
-        };
-        let url = target
-            .get("url")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let title = target
-            .get("title")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string();
-        let attached = target
-            .get("attached")
-            .and_then(Value::as_bool)
-            .unwrap_or(false);
-        let record = upsert_target_record(
-            backend,
-            existing_by_target.get(target_id).cloned(),
-            target_id,
-            &url,
-            &title,
-            attached,
-        )?;
+    for target in observed_page_targets(backend).await? {
+        let record = observed_target_record(existing_by_target.get(&target.target_id), &target);
         out.push(tab_record_to_value(&record));
     }
     Ok(Value::Array(out))
@@ -104,9 +78,6 @@ pub async fn list_tabs(backend: &CdpBackend) -> Result<Value> {
 /// Return the host-owned logical current tab for a session.
 pub async fn current_tab(backend: &CdpBackend, ctx: &BackendRequestContext) -> Result<Value> {
     let session_id = require_session_id(ctx, "getCurrentTab")?;
-    backend
-        .registry()
-        .touch_session(session_id, ctx.turn_id.as_deref())?;
     Ok(backend
         .registry()
         .current_tab_for_session(session_id)?
@@ -156,7 +127,7 @@ pub async fn claim_user_tab(
         .touch_session(session_id, ctx.turn_id.as_deref())?;
     let id = TabId::new(tab_id);
     if backend.registry().get(&id)?.is_none() {
-        let _ = list_tabs(backend).await?;
+        reconcile_tabs(backend).await?;
     }
     let Some(mut record) = backend.registry().get(&id)? else {
         return Err(HostError::PageClosed(format!("unknown tab {tab_id}")));
@@ -179,6 +150,27 @@ pub async fn claim_user_tab(
     Ok(tab_record_to_value(&record))
 }
 
+/// Explicitly import currently observed CDP page targets into the host registry.
+async fn reconcile_tabs(backend: &CdpBackend) -> Result<()> {
+    let existing_by_target: HashMap<String, TabRecord> = backend
+        .registry()
+        .list()?
+        .into_iter()
+        .map(|record| (record.target_id.clone(), record))
+        .collect();
+    for target in observed_page_targets(backend).await? {
+        upsert_target_record(
+            backend,
+            existing_by_target.get(&target.target_id).cloned(),
+            &target.target_id,
+            &target.url,
+            &target.title,
+            target.attached,
+        )?;
+    }
+    Ok(())
+}
+
 /// Finalize CDP session tabs using host-owned lifecycle state.
 pub async fn finalize_tabs(
     backend: &CdpBackend,
@@ -186,6 +178,9 @@ pub async fn finalize_tabs(
     params: Value,
 ) -> Result<Value> {
     let session_id = require_session_id(ctx, "finalizeTabs")?;
+    backend
+        .registry()
+        .assert_agent_owns_session(session_id, "finalizeTabs")?;
     backend
         .registry()
         .touch_session(session_id, ctx.turn_id.as_deref())?;
@@ -254,7 +249,7 @@ pub async fn finalize_tabs(
             },
         }
     }
-    let _ = backend.registry().current_tab_for_session(session_id)?;
+    let _ = backend.registry().repair_current_tab_for_session(session_id)?;
 
     Ok(json!({
         "closed_tab_ids": closed_tab_ids,
@@ -280,7 +275,7 @@ fn upsert_target_record(
         return Ok(record);
     }
 
-    let id = TabId::new(format!("tab-{}", Uuid::new_v4()));
+    let id = TabId::new(target_id.to_string());
     let record = TabRecord {
         id: id.clone(),
         session_id: None,
@@ -294,6 +289,68 @@ fn upsert_target_record(
     };
     backend.registry().insert(record.clone())?;
     Ok(record)
+}
+
+async fn observed_page_targets(backend: &CdpBackend) -> Result<Vec<ObservedTarget>> {
+    let result = backend
+        .transport()
+        .send_command("Target.getTargets", Value::Object(Map::new()), None)
+        .await
+        .map_err(HostError::from)?;
+    let targets = result
+        .get("targetInfos")
+        .and_then(Value::as_array)
+        .ok_or_else(|| HostError::Protocol("Target.getTargets missing targetInfos".into()))?;
+
+    let mut observed = Vec::new();
+    for target in targets {
+        if target.get("type").and_then(Value::as_str) != Some("page") {
+            continue;
+        }
+        let Some(target_id) = target.get("targetId").and_then(Value::as_str) else {
+            continue;
+        };
+        observed.push(ObservedTarget {
+            target_id: target_id.to_string(),
+            url: target
+                .get("url")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            title: target
+                .get("title")
+                .and_then(Value::as_str)
+                .unwrap_or_default()
+                .to_string(),
+            attached: target
+                .get("attached")
+                .and_then(Value::as_bool)
+                .unwrap_or(false),
+        });
+    }
+    Ok(observed)
+}
+
+fn observed_target_record(existing: Option<&TabRecord>, target: &ObservedTarget) -> TabRecord {
+    if let Some(record) = existing {
+        let mut observed = record.clone();
+        observed.url = target.url.clone();
+        observed.title = target.title.clone();
+        observed.attached = target.attached;
+        return observed;
+    }
+
+    TabRecord {
+        id: TabId::new(target.target_id.clone()),
+        session_id: None,
+        target_id: target.target_id.clone(),
+        url: target.url.clone(),
+        title: target.title.clone(),
+        origin: TabOrigin::User,
+        status: TabStatus::Active,
+        attached: target.attached,
+        cdp_session_id: None,
+    }
 }
 
 fn require_session_id<'a>(ctx: &'a BackendRequestContext, method: &str) -> Result<&'a str> {

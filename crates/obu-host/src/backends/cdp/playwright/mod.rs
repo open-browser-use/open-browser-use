@@ -387,9 +387,12 @@ async fn download_path(
         )
         .await?;
         if handle_ops::download_progress_is_canceled(&progress) {
+            let reason = format!("download {} was canceled", download_id.0);
+            backend
+                .registry()
+                .mark_download_failed(&download_id, &state, reason.clone())?;
             return Err(HostError::CdpFailure(format!(
-                "download {} was canceled; event={progress}",
-                download_id.0
+                "{reason}; event={progress}"
             )));
         }
         let path = handle_ops::download_progress_file_path(&progress);
@@ -403,13 +406,18 @@ fn handle_owner_session(
     backend: &CdpBackend,
     tab_id: &str,
 ) -> Result<Option<String>> {
-    if ctx.session_id.is_some() {
-        return Ok(ctx.session_id.clone());
+    let session_id = ctx.session_id.clone().ok_or_else(|| {
+        HostError::Protocol(format!(
+            "playwright handle creation for tab {tab_id} requires session_id"
+        ))
+    })?;
+    if ctx.turn_id.as_deref().unwrap_or_default().is_empty() {
+        return Err(HostError::Protocol(format!(
+            "playwright handle creation for tab {tab_id} requires turn_id"
+        )));
     }
-    Ok(backend
-        .registry()
-        .get(&TabId::new(tab_id))?
-        .and_then(|record| record.session_id))
+    let _ = backend.registry().get(&TabId::new(tab_id))?;
+    Ok(Some(session_id))
 }
 
 async fn download_frame_ids(backend: &CdpBackend, session_id: &str) -> Result<HashSet<String>> {

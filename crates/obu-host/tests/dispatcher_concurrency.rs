@@ -149,7 +149,7 @@ async fn later_request_can_complete_while_first_request_is_pending() {
         .send(frame(json!({
             "jsonrpc": "2.0",
             "method": methods::ATTACH,
-            "params": { "tab_id": "tab-1" },
+            "params": session_tab_params("session-1", "turn-1", "tab-1"),
             "id": 1,
         })))
         .await
@@ -205,7 +205,7 @@ async fn same_tab_mutations_are_serialized_while_other_tabs_progress() {
         .send(frame(json!({
             "jsonrpc": "2.0",
             "method": methods::ATTACH,
-            "params": { "tab_id": "tab-1" },
+            "params": session_tab_params("session-1", "turn-1", "tab-1"),
             "id": 1,
         })))
         .await
@@ -217,7 +217,7 @@ async fn same_tab_mutations_are_serialized_while_other_tabs_progress() {
         .send(frame(json!({
             "jsonrpc": "2.0",
             "method": methods::DETACH,
-            "params": { "tab_id": "tab-1" },
+            "params": session_tab_params("session-1", "turn-2", "tab-1"),
             "id": 2,
         })))
         .await
@@ -226,7 +226,7 @@ async fn same_tab_mutations_are_serialized_while_other_tabs_progress() {
         .send(frame(json!({
             "jsonrpc": "2.0",
             "method": methods::ATTACH,
-            "params": { "tab_id": "tab-2" },
+            "params": session_tab_params("session-2", "turn-1", "tab-2"),
             "id": 3,
         })))
         .await
@@ -287,7 +287,7 @@ async fn session_lifecycle_waits_for_in_flight_same_session_tab_mutation() {
         .send(frame(json!({
             "jsonrpc": "2.0",
             "method": methods::ATTACH,
-            "params": { "session_id": "session", "tab_id": "tab-1" },
+            "params": session_tab_params("session", "turn-1", "tab-1"),
             "id": 1,
         })))
         .await
@@ -299,7 +299,7 @@ async fn session_lifecycle_waits_for_in_flight_same_session_tab_mutation() {
         .send(frame(json!({
             "jsonrpc": "2.0",
             "method": methods::FINALIZE_TABS,
-            "params": { "session_id": "session", "keep": [] },
+            "params": { "session_id": "session", "turn_id": "turn-2", "keep": [] },
             "id": 2,
         })))
         .await
@@ -375,7 +375,12 @@ async fn client_timeout_ms_bounds_server_request() {
         .send(frame(json!({
             "jsonrpc": "2.0",
             "method": methods::ATTACH,
-            "params": { "tab_id": "tab-1", "client_timeout_ms": 10 },
+            "params": {
+                "session_id": "session-1",
+                "turn_id": "turn-1",
+                "tab_id": "tab-1",
+                "client_timeout_ms": 10
+            },
             "id": 1,
         })))
         .await
@@ -426,7 +431,7 @@ async fn peer_in_flight_limit_rejects_excess_request_without_blocking_active_req
         .send(frame(json!({
             "jsonrpc": "2.0",
             "method": methods::ATTACH,
-            "params": { "tab_id": "tab-1" },
+            "params": session_tab_params("session-1", "turn-1", "tab-1"),
             "id": 1,
         })))
         .await
@@ -488,7 +493,7 @@ async fn peer_close_cancels_pending_request_tasks() {
         .send(frame(json!({
             "jsonrpc": "2.0",
             "method": methods::ATTACH,
-            "params": { "tab_id": "tab-1" },
+            "params": session_tab_params("session-1", "turn-1", "tab-1"),
             "id": 1,
         })))
         .await
@@ -507,6 +512,14 @@ async fn peer_close_cancels_pending_request_tasks() {
 
 fn frame(value: serde_json::Value) -> bytes::Bytes {
     bytes::Bytes::from(serde_json::to_vec(&value).unwrap())
+}
+
+fn session_tab_params(session_id: &str, turn_id: &str, tab_id: &str) -> serde_json::Value {
+    json!({
+        "session_id": session_id,
+        "turn_id": turn_id,
+        "tab_id": tab_id,
+    })
 }
 
 async fn read_json(framed: &mut Framed<UnixStream, FrameCodec>) -> serde_json::Value {

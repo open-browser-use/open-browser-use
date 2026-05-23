@@ -30,7 +30,11 @@ use crate::backends::{
 };
 use crate::error::{HostError, Result};
 use crate::methods;
-use crate::peer_auth::check_capability_token;
+use crate::peer_lifecycle::{
+    PEER_AUTH_REQUIRED_MESSAGE, PeerFirstFrameAction, PeerLifecycleDiagnostics, plan_peer_auth,
+    plan_peer_first_frame, plan_peer_request_cancelled, plan_peer_shutdown,
+    plan_peer_terminal_close,
+};
 use crate::policy::{
     HostPolicy, MethodPolicyKind, PermissivePolicy, PolicyContext, guard_mode_disabled,
 };
@@ -48,6 +52,7 @@ struct DispatcherInner {
     host_version: String,
     backend: Arc<dyn BrowserBackend>,
     policy: Arc<dyn HostPolicy>,
+    peer_diagnostics: PeerLifecycleDiagnostics,
     session_operation_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     tab_operation_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
@@ -60,6 +65,7 @@ impl Dispatcher {
                 host_version,
                 backend,
                 policy: Arc::new(PermissivePolicy),
+                peer_diagnostics: PeerLifecycleDiagnostics::default(),
                 session_operation_locks: Mutex::new(HashMap::new()),
                 tab_operation_locks: Mutex::new(HashMap::new()),
             }),
@@ -77,6 +83,26 @@ impl Dispatcher {
                 host_version,
                 backend,
                 policy,
+                peer_diagnostics: PeerLifecycleDiagnostics::default(),
+                session_operation_locks: Mutex::new(HashMap::new()),
+                tab_operation_locks: Mutex::new(HashMap::new()),
+            }),
+        }
+    }
+
+    /// Construct a dispatcher around one browser backend, explicit policy, and shared peer diagnostics.
+    pub fn new_with_policy_and_peer_diagnostics(
+        host_version: String,
+        backend: Arc<dyn BrowserBackend>,
+        policy: Arc<dyn HostPolicy>,
+        peer_diagnostics: PeerLifecycleDiagnostics,
+    ) -> Self {
+        Self {
+            inner: Arc::new(DispatcherInner {
+                host_version,
+                backend,
+                policy,
+                peer_diagnostics,
                 session_operation_locks: Mutex::new(HashMap::new()),
                 tab_operation_locks: Mutex::new(HashMap::new()),
             }),
@@ -128,30 +154,51 @@ impl Dispatcher {
         let mut first_frame = None;
 
         let Some(first) = framed.next().await else {
+            self.inner
+                .peer_diagnostics
+                .record(&plan_peer_terminal_close("peer closed before first frame").event);
             return Ok(());
         };
-        let first = first?;
-        match serde_json::from_slice::<Request>(&first) {
-            Ok(req) if req.method == "auth" => {
+        let first = match first {
+            Ok(bytes) => bytes,
+            Err(error) => {
+                self.inner
+                    .peer_diagnostics
+                    .record(&plan_peer_terminal_close("peer closed with invalid first frame").event);
+                return Err(error.into());
+            }
+        };
+        let first_request = serde_json::from_slice::<Request>(&first).ok();
+        let first_frame_plan = plan_peer_first_frame(
+            cap_token.is_some(),
+            first_request.as_ref().map(|req| req.method.as_str()),
+        );
+        self.inner.peer_diagnostics.record(&first_frame_plan.event);
+        match first_frame_plan.action {
+            PeerFirstFrameAction::Authenticate => {
+                let req = first_request.expect("auth first-frame plan requires a parsed request");
                 let response = self.handle_auth(req, cap_token);
                 let authorized = response.error.is_none();
                 framed.send(encode_response(&response)?).await?;
                 if !authorized {
+                    self.inner
+                        .peer_diagnostics
+                        .record(&plan_peer_terminal_close("peer rejected during capability authentication").event);
                     return Ok(());
                 }
             }
-            _ if cap_token.is_some() => {
+            PeerFirstFrameAction::RejectMissingAuth => {
                 let response = Response::err(
                     Id::Number(0),
-                    ErrorObject::new(
-                        ErrorCode::Server(ERR_PEER_AUTH),
-                        "first frame must be auth when capability token is enabled",
-                    ),
+                    ErrorObject::new(ErrorCode::Server(ERR_PEER_AUTH), PEER_AUTH_REQUIRED_MESSAGE),
                 );
                 framed.send(encode_response(&response)?).await?;
+                self.inner
+                    .peer_diagnostics
+                    .record(&plan_peer_terminal_close("peer rejected before dispatch: missing auth").event);
                 return Ok(());
             }
-            _ => first_frame = Some(first),
+            PeerFirstFrameAction::DispatchFirstFrame => first_frame = Some(first),
         }
 
         let (mut sink, mut stream) = framed.split();
@@ -181,26 +228,39 @@ impl Dispatcher {
         }
         .await;
 
-        peer_cancel.cancel();
-        drop(tx);
-        let _ = writer.await;
+        let shutdown_plan = plan_peer_shutdown();
+        self.inner.peer_diagnostics.record(&shutdown_plan.event);
+        if shutdown_plan.cancel_pending_requests {
+            peer_cancel.cancel();
+        }
+        if shutdown_plan.close_response_channel {
+            drop(tx);
+        }
+        if shutdown_plan.await_writer {
+            let _ = writer.await;
+        }
         read_result
     }
 
     fn handle_auth(&self, req: Request, cap_token: Option<&str>) -> Response {
-        if let Some(expected) = cap_token {
-            let presented = req.params.get("capability_token").and_then(Value::as_str);
-            if !check_capability_token(Some(expected), presented) {
-                return Response::err(
-                    req.id,
-                    ErrorObject::new(
-                        ErrorCode::Server(ERR_PEER_AUTH),
-                        "capability token mismatch",
-                    ),
-                );
-            }
+        let presented = req.params.get("capability_token").and_then(Value::as_str);
+        let plan = plan_peer_auth(cap_token, presented);
+        self.inner.peer_diagnostics.record(&plan.event);
+        if let Some(message) = plan.error_message {
+            return Response::err(
+                req.id,
+                ErrorObject::new(ErrorCode::Server(ERR_PEER_AUTH), message),
+            );
         }
         Response::ok(req.id, Value::Null)
+    }
+
+    fn trace_peer_request_cancelled(plan: &crate::peer_lifecycle::PeerRequestCancellationPlan) {
+        tracing::debug!(
+            event = ?plan.event.kind,
+            reason = plan.event.reason.as_deref(),
+            "peer lifecycle"
+        );
     }
 
     async fn dispatch_frame(
@@ -234,15 +294,20 @@ impl Dispatcher {
             return;
         };
         let dispatcher = self.clone();
+        let peer_diagnostics = dispatcher.inner.peer_diagnostics.clone();
         let tx = tx.clone();
         tokio::spawn(async move {
             let _permit = permit;
             let id = request.id.clone();
             let method = request.method.clone();
+            let cancel_method = method.clone();
             let timeout_ms = request_context(&request.params).client_timeout_ms;
+            let backend_owns_deadline =
+                timeout_ms.is_some() && dispatcher.inner.backend.owns_request_deadline(&method);
             let route = crate::backends::scope_client_timeout(timeout_ms, async move {
-                match timeout_ms {
-                    Some(timeout_ms) => match tokio::time::timeout(
+                match (timeout_ms, backend_owns_deadline) {
+                    (_, true) => dispatcher.route_request(request).await,
+                    (Some(timeout_ms), false) => match tokio::time::timeout(
                         Duration::from_millis(timeout_ms),
                         dispatcher.route_request(request),
                     )
@@ -257,11 +322,19 @@ impl Dispatcher {
                             ),
                         ),
                     },
-                    None => dispatcher.route_request(request).await,
+                    (None, false) => dispatcher.route_request(request).await,
                 }
             });
             let response = tokio::select! {
-                _ = peer_cancel.cancelled() => return,
+                _ = peer_cancel.cancelled() => {
+                    let cancel_plan = plan_peer_request_cancelled(&cancel_method);
+                    Self::trace_peer_request_cancelled(&cancel_plan);
+                    peer_diagnostics.record(&cancel_plan.event);
+                    if cancel_plan.suppress_response {
+                        return;
+                    }
+                    return;
+                },
                 response = route => response,
             };
             if let Ok(bytes) = encode_response(&response) {
@@ -278,6 +351,9 @@ impl Dispatcher {
                 req.id,
                 unsupported_backend_capability_error(backend, &req.method),
             );
+        }
+        if let Err(error) = require_mutation_context(&req.method, &ctx) {
+            return Response::err(req.id, error);
         }
         let session_lock = match session_mutation_key(&req.method, &ctx) {
             Some(session_id) => Some(self.session_operation_lock(&session_id).await),
@@ -401,6 +477,8 @@ impl Dispatcher {
             | methods::TAB_WAIT_FOR_URL
             | methods::TAB_WAIT_FOR_LOAD_STATE
             | methods::TAB_CONTENT_EXPORT
+            | methods::TAB_EVALUATE
+            | methods::TAB_SNAPSHOT_TEXT
             | methods::TAB_URL
             | methods::TAB_TITLE
             | methods::TAB_CLIPBOARD_READ_TEXT
@@ -719,6 +797,8 @@ impl Dispatcher {
             | methods::TAB_WAIT_FOR_URL
             | methods::TAB_WAIT_FOR_LOAD_STATE
             | methods::TAB_CONTENT_EXPORT
+            | methods::TAB_EVALUATE
+            | methods::TAB_SNAPSHOT_TEXT
             | methods::TAB_URL
             | methods::TAB_TITLE
             | methods::TAB_CLIPBOARD_READ_TEXT
@@ -837,28 +917,27 @@ impl Dispatcher {
         let Some(tab_id) = tab_id else {
             return Err(invalid_params("missing tab_id for current-origin policy"));
         };
-        let current_url = TabBackendOps::tab_command_with_context(
-            self.inner.backend.as_ref(),
-            ctx,
-            methods::TAB_URL,
-            json!({ "tab_id": tab_id }),
-        )
-        .await
-        .map_err(host_err_to_rpc)?;
-        let url = current_url.as_str().ok_or_else(|| {
-            invalid_params("current-origin policy expected tab_url string response")
-        })?;
+        let url = self
+            .inner
+            .backend
+            .current_url_for_policy(ctx, tab_id)
+            .await
+            .map_err(host_err_to_rpc)?;
         self.inner
             .policy
-            .check_current_origin(tab_id, url, policy_ctx)
+            .check_current_origin(tab_id, &url, policy_ctx)
     }
 
     fn get_info(&self) -> Value {
         let backend_metadata = self.inner.backend.metadata();
+        let mut diagnostics = self.inner.backend.diagnostics();
+        if let Some(object) = diagnostics.as_object_mut() {
+            object.insert("peer".to_string(), self.peer_lifecycle_metadata());
+        }
         let mut metadata = json!({
             "host_version": self.inner.host_version,
             "backend": backend_metadata,
-            "diagnostics": self.inner.backend.diagnostics(),
+            "diagnostics": diagnostics,
         });
         expose_public_profile_metadata(&mut metadata);
         json!({
@@ -866,6 +945,14 @@ impl Dispatcher {
             "name": self.inner.backend.id(),
             "metadata": metadata,
             "capabilities": self.inner.backend.capabilities(),
+        })
+    }
+
+    fn peer_lifecycle_metadata(&self) -> Value {
+        let recent_events = self.inner.peer_diagnostics.recent_events(20);
+        json!({
+            "recent_event_count": recent_events.len(),
+            "recent_events": recent_events,
         })
     }
 
@@ -1197,10 +1284,46 @@ fn tab_mutation_key(method: &str, params: &Value) -> Option<String> {
 }
 
 fn session_mutation_key(method: &str, ctx: &BackendRequestContext) -> Option<String> {
-    if !is_session_mutating_method(method) {
+    if !requires_mutation_context(method) {
         return None;
     }
     ctx.session_id.clone()
+}
+
+fn require_mutation_context(
+    method: &str,
+    ctx: &BackendRequestContext,
+) -> std::result::Result<(), ErrorObject> {
+    if !requires_mutation_context(method) {
+        return Ok(());
+    }
+    if ctx.session_id.as_deref().unwrap_or_default().is_empty() {
+        return Err(invalid_params(
+            "missing session_id for mutating browser method",
+        ));
+    }
+    if ctx.turn_id.as_deref().unwrap_or_default().is_empty() {
+        return Err(invalid_params(
+            "missing turn_id for mutating browser method",
+        ));
+    }
+    Ok(())
+}
+
+fn requires_mutation_context(method: &str) -> bool {
+    is_session_mutating_method(method)
+        || matches!(
+            method,
+            methods::NAME_SESSION
+                | methods::TURN_ENDED
+                | methods::YIELD_CONTROL
+                | methods::RESUME_CONTROL
+                | methods::BROWSER_VIEWPORT_SET
+                | methods::BROWSER_VIEWPORT_RESET
+                | methods::BROWSER_VISIBILITY_SET
+                | methods::PLAYWRIGHT_WAIT_FOR_FILE_CHOOSER
+                | methods::PLAYWRIGHT_WAIT_FOR_DOWNLOAD
+        )
 }
 
 fn is_session_mutating_method(method: &str) -> bool {
@@ -1279,6 +1402,18 @@ fn unsupported_backend_capability_error(backend: &str, method: &str) -> ErrorObj
 }
 
 fn host_err_to_rpc(error: HostError) -> ErrorObject {
+    if let HostError::Rpc {
+        code,
+        message,
+        data,
+    } = error
+    {
+        let error = ErrorObject::new(code, message);
+        return match data {
+            Some(data) => error.with_data(data),
+            None => error,
+        };
+    }
     let code = match &error {
         HostError::Io(_) | HostError::Frame(_) => ErrorCode::Server(ERR_IO),
         HostError::PeerAuthRefused(_) => ErrorCode::Server(ERR_PEER_AUTH),
@@ -1288,6 +1423,7 @@ fn host_err_to_rpc(error: HostError) -> ErrorObject {
         HostError::CdpFailure(_) => ErrorCode::Server(ERR_CDP_FAILURE),
         HostError::TabNotAttached(_) => ErrorCode::Server(ERR_TAB_NOT_ATTACHED),
         HostError::DialogRequiresDecision(_) => ErrorCode::Server(ERR_DIALOG_REQUIRES_DECISION),
+        HostError::Rpc { .. } => unreachable!("handled above"),
         HostError::NotImplemented(_) => ErrorCode::Server(ERR_NOT_IMPLEMENTED),
         HostError::Protocol(_) => ErrorCode::Server(ERR_PROTOCOL),
     };

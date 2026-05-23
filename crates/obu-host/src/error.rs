@@ -6,6 +6,7 @@ use serde_json::Value;
 use thiserror::Error;
 
 use obu_wire::frame::FrameError;
+use obu_wire::{ErrorCode, ErrorObject};
 
 /// Structured native-dialog decision requirement.
 #[derive(Debug, Clone)]
@@ -51,6 +52,17 @@ pub enum HostError {
     #[error("{0}")]
     DialogRequiresDecision(DialogRequiresDecision),
 
+    /// Structured JSON-RPC error returned by the WebExtension side.
+    #[error("rpc error: {message}")]
+    Rpc {
+        /// Wire error code.
+        code: ErrorCode,
+        /// Human-readable message.
+        message: String,
+        /// Stable JSON-RPC `error.data` payload when available.
+        data: Option<Value>,
+    },
+
     /// Feature is not implemented yet.
     #[error("backend not implemented: {0}")]
     NotImplemented(String),
@@ -66,6 +78,17 @@ pub enum HostError {
 
 /// `obu-host` result type.
 pub type Result<T> = std::result::Result<T, HostError>;
+
+impl HostError {
+    /// Preserve a structured JSON-RPC error as it crosses host boundaries.
+    pub fn rpc(error: ErrorObject) -> Self {
+        Self::Rpc {
+            code: error.code,
+            message: error.message,
+            data: error.data,
+        }
+    }
+}
 
 impl std::fmt::Display for DialogRequiresDecision {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {

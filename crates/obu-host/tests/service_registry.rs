@@ -1,6 +1,7 @@
 use std::collections::HashSet;
 use std::time::SystemTime;
 
+use obu_host::registry_lifecycle::{MAX_REGISTRY_LIFECYCLE_EVENTS, RegistryLifecycleEventKind};
 use obu_host::service_registry::{
     DownloadId, DownloadState, FileChooserId, FileChooserState, ServiceRegistry,
 };
@@ -48,6 +49,61 @@ fn insert_get_list_update_remove_tab() {
 }
 
 #[test]
+fn registry_lifecycle_events_track_named_mutations() {
+    let registry = ServiceRegistry::default();
+    let tab_id = TabId::new("t1");
+
+    registry.touch_session("session", Some("turn-1")).unwrap();
+    registry
+        .name_session("session", Some("Research".into()))
+        .unwrap();
+    registry.insert(tab_record(tab_id.clone())).unwrap();
+    registry
+        .update(&tab_id, |record| record.title = "Updated".into())
+        .unwrap();
+    registry.mark_playwright_injected(&tab_id).unwrap();
+    registry.clear_tab_handles(&tab_id).unwrap();
+    registry
+        .remove_with_reason(&tab_id, "test cleanup")
+        .unwrap();
+    registry.clear_stale_diagnostics().unwrap();
+
+    let kinds = registry
+        .recent_lifecycle_events(20)
+        .unwrap()
+        .into_iter()
+        .map(|event| event.kind)
+        .collect::<Vec<_>>();
+
+    assert!(kinds.contains(&RegistryLifecycleEventKind::SessionTouched));
+    assert!(kinds.contains(&RegistryLifecycleEventKind::SessionNamed));
+    assert!(kinds.contains(&RegistryLifecycleEventKind::TabInserted));
+    assert!(kinds.contains(&RegistryLifecycleEventKind::TabUpdated));
+    assert!(kinds.contains(&RegistryLifecycleEventKind::PlaywrightInjected));
+    assert!(kinds.contains(&RegistryLifecycleEventKind::TabHandlesCleared));
+    assert!(kinds.contains(&RegistryLifecycleEventKind::TabStale));
+    assert!(kinds.contains(&RegistryLifecycleEventKind::DiagnosticsCleared));
+}
+
+#[test]
+fn registry_lifecycle_events_are_bounded() {
+    let registry = ServiceRegistry::default();
+
+    for index in 0..(MAX_REGISTRY_LIFECYCLE_EVENTS + 5) {
+        registry
+            .insert(tab_record(TabId::new(format!("tab-{index}"))))
+            .unwrap();
+    }
+
+    let events = registry
+        .recent_lifecycle_events(MAX_REGISTRY_LIFECYCLE_EVENTS + 10)
+        .unwrap();
+    assert_eq!(events.len(), MAX_REGISTRY_LIFECYCLE_EVENTS);
+    assert_eq!(events[0].kind, RegistryLifecycleEventKind::TabInserted);
+    assert_eq!(events[0].subject_id, "tab-5");
+}
+
+#[test]
 fn download_lifecycle_tracks_completion() {
     let registry = ServiceRegistry::default();
     let id = DownloadId("d1".into());
@@ -84,7 +140,42 @@ fn download_lifecycle_tracks_completion() {
         registry
             .describe_missing_download(&id)
             .unwrap()
-            .contains("removed explicitly")
+        .contains("removed explicitly")
+    );
+    let failed_id = DownloadId("d2".into());
+    let failed_state = DownloadState {
+        tab_id: TabId::new("t1"),
+        owner_session_id: Some("session".into()),
+        created_at: SystemTime::now(),
+        url: "https://example.com/failed".into(),
+        suggested_filename: "failed.txt".into(),
+        guid: "guid-2".into(),
+        completed_path: None,
+    };
+    registry
+        .insert_download(failed_id.clone(), failed_state.clone())
+        .unwrap();
+    registry
+        .mark_download_failed(&failed_id, &failed_state, "download was canceled")
+        .unwrap();
+    assert!(registry.get_download(&failed_id).unwrap().is_none());
+    assert!(registry
+        .describe_missing_download(&failed_id)
+        .unwrap()
+        .contains("download was canceled"));
+    let events = registry.recent_lifecycle_events(10).unwrap();
+    let kinds = events.iter().map(|event| event.kind.clone()).collect::<Vec<_>>();
+    assert!(kinds.contains(&RegistryLifecycleEventKind::DownloadInserted));
+    assert!(kinds.contains(&RegistryLifecycleEventKind::DownloadCompleted));
+    assert!(kinds.contains(&RegistryLifecycleEventKind::DownloadRemoved));
+    assert!(kinds.contains(&RegistryLifecycleEventKind::DownloadFailed));
+    assert!(kinds.contains(&RegistryLifecycleEventKind::DownloadStale));
+    assert_eq!(
+        events
+            .iter()
+            .find(|event| event.kind == RegistryLifecycleEventKind::DownloadFailed)
+            .and_then(|event| event.next_action.as_deref()),
+        Some("inspect_error_or_retry_download")
     );
 }
 
@@ -396,46 +487,13 @@ fn current_tab_for_session_falls_back_only_to_active_owned_tabs() {
     insert_tab("active-a", TabStatus::Active);
 
     registry
-        .set_active_tab("session", "handoff", Some("turn-1"))
+        .set_active_tab("session", "active-a", Some("turn-1"))
         .unwrap();
-    assert_eq!(
-        registry
-            .current_tab_for_session("session")
-            .unwrap()
-            .unwrap()
-            .id,
-        TabId::new("active-a")
-    );
-    assert_eq!(
-        registry
-            .get_session("session")
-            .unwrap()
-            .unwrap()
-            .active_tab_id,
-        Some(TabId::new("active-a"))
-    );
-
     registry
-        .set_active_tab("session", "missing", Some("turn-2"))
+        .update(&TabId::new("active-a"), |record| {
+            record.status = TabStatus::Handoff;
+        })
         .unwrap();
-    assert_eq!(
-        registry
-            .current_tab_for_session("session")
-            .unwrap()
-            .unwrap()
-            .id,
-        TabId::new("active-a")
-    );
-    assert_eq!(
-        registry
-            .get_session("session")
-            .unwrap()
-            .unwrap()
-            .active_tab_id,
-        Some(TabId::new("active-a"))
-    );
-
-    registry.remove(&TabId::new("active-a")).unwrap();
     assert_eq!(
         registry
             .current_tab_for_session("session")
@@ -444,7 +502,34 @@ fn current_tab_for_session_falls_back_only_to_active_owned_tabs() {
             .id,
         TabId::new("active-b")
     );
+    assert_eq!(
+        registry
+            .get_session("session")
+            .unwrap()
+            .unwrap()
+            .active_tab_id,
+        Some(TabId::new("active-a"))
+    );
+    assert_eq!(
+        registry
+            .repair_current_tab_for_session("session")
+            .unwrap()
+            .unwrap()
+            .id,
+        TabId::new("active-b")
+    );
+    assert_eq!(
+        registry
+            .get_session("session")
+            .unwrap()
+            .unwrap()
+            .active_tab_id,
+        Some(TabId::new("active-b"))
+    );
 
+    registry
+        .set_active_tab("session", "active-b", Some("turn-2"))
+        .unwrap();
     registry.remove(&TabId::new("active-b")).unwrap();
     assert!(
         registry
@@ -459,6 +544,211 @@ fn current_tab_for_session_falls_back_only_to_active_owned_tabs() {
             .unwrap()
             .active_tab_id
             .is_none()
+    );
+    assert!(
+        registry
+            .repair_current_tab_for_session("session")
+            .unwrap()
+            .is_none()
+    );
+    assert!(
+        registry
+            .get_session("session")
+            .unwrap()
+            .unwrap()
+            .active_tab_id
+            .is_none()
+    );
+}
+
+#[test]
+fn active_tab_reconciliation_events_include_the_planned_next_active_tab() {
+    let registry = ServiceRegistry::default();
+    registry.insert(tab_record(TabId::new("active-a"))).unwrap();
+    registry.insert(tab_record(TabId::new("active-b"))).unwrap();
+    registry
+        .set_active_tab("session", "active-a", Some("turn-1"))
+        .unwrap();
+
+    let observed = HashSet::from([TabId::new("active-b")]);
+    let stale = registry
+        .reconcile_session_tabs("session", &observed, "backend omitted active-a")
+        .unwrap();
+
+    assert_eq!(stale.len(), 1);
+    assert_eq!(
+        registry
+            .get_session("session")
+            .unwrap()
+            .unwrap()
+            .active_tab_id,
+        Some(TabId::new("active-b"))
+    );
+    let reconciled = registry
+        .recent_lifecycle_events(20)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == RegistryLifecycleEventKind::SessionActiveTabReconciled)
+        .collect::<Vec<_>>();
+    assert_eq!(reconciled.len(), 1);
+    assert_eq!(reconciled[0].tab_id.as_deref(), Some("active-b"));
+    assert_eq!(
+        reconciled[0].reason.as_deref(),
+        Some("session tab reconciliation updated active tab")
+    );
+}
+
+#[test]
+fn direct_active_tab_removal_records_reconciliation_event() {
+    let registry = ServiceRegistry::default();
+    registry.insert(tab_record(TabId::new("active-a"))).unwrap();
+    registry.insert(tab_record(TabId::new("active-b"))).unwrap();
+    registry
+        .set_active_tab("session", "active-a", Some("turn-1"))
+        .unwrap();
+
+    registry.remove(&TabId::new("active-a")).unwrap();
+
+    assert_eq!(
+        registry
+            .get_session("session")
+            .unwrap()
+            .unwrap()
+            .active_tab_id,
+        Some(TabId::new("active-b"))
+    );
+    let reconciled = registry
+        .recent_lifecycle_events(20)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == RegistryLifecycleEventKind::SessionActiveTabReconciled)
+        .collect::<Vec<_>>();
+    assert_eq!(reconciled.len(), 1);
+    assert_eq!(reconciled[0].tab_id.as_deref(), Some("active-b"));
+    assert_eq!(
+        reconciled[0].reason.as_deref(),
+        Some("active tab was removed from host registry")
+    );
+}
+
+#[test]
+fn repeated_active_tab_assignment_does_not_emit_noop_lifecycle_events() {
+    let registry = ServiceRegistry::default();
+    registry.insert(tab_record(TabId::new("active"))).unwrap();
+
+    registry
+        .set_active_tab("session", "active", Some("turn-1"))
+        .unwrap();
+    registry
+        .set_active_tab("session", "active", Some("turn-2"))
+        .unwrap();
+
+    let active_set_events = registry
+        .recent_lifecycle_events(20)
+        .unwrap()
+        .into_iter()
+        .filter(|event| event.kind == RegistryLifecycleEventKind::SessionActiveTabSet)
+        .collect::<Vec<_>>();
+    assert_eq!(active_set_events.len(), 1);
+    assert_eq!(active_set_events[0].tab_id.as_deref(), Some("active"));
+    assert_eq!(
+        registry
+            .get_session("session")
+            .unwrap()
+            .unwrap()
+            .current_turn_id
+            .as_deref(),
+        Some("turn-2")
+    );
+}
+
+#[test]
+fn set_active_tab_rejects_invalid_authority_transitions() {
+    let registry = ServiceRegistry::default();
+    registry.touch_session("session", Some("turn")).unwrap();
+    registry
+        .touch_session("other-session", Some("turn"))
+        .unwrap();
+    registry.insert(tab_record(TabId::new("active"))).unwrap();
+    registry
+        .insert(TabRecord {
+            id: TabId::new("other"),
+            session_id: Some("other-session".into()),
+            target_id: "target-other".into(),
+            url: "https://other.example".into(),
+            title: "Other".into(),
+            origin: TabOrigin::Agent,
+            status: TabStatus::Active,
+            attached: false,
+            cdp_session_id: None,
+        })
+        .unwrap();
+    registry
+        .insert(TabRecord {
+            id: TabId::new("handoff"),
+            session_id: Some("session".into()),
+            target_id: "target-handoff".into(),
+            url: "https://handoff.example".into(),
+            title: "Handoff".into(),
+            origin: TabOrigin::Agent,
+            status: TabStatus::Handoff,
+            attached: false,
+            cdp_session_id: None,
+        })
+        .unwrap();
+    registry
+        .insert(TabRecord {
+            id: TabId::new("deliverable"),
+            session_id: Some("session".into()),
+            target_id: "target-deliverable".into(),
+            url: "https://deliverable.example".into(),
+            title: "Deliverable".into(),
+            origin: TabOrigin::Agent,
+            status: TabStatus::Deliverable,
+            attached: false,
+            cdp_session_id: None,
+        })
+        .unwrap();
+
+    assert!(
+        registry
+            .set_active_tab("missing-session", "active", Some("turn"))
+            .unwrap_err()
+            .to_string()
+            .contains("missing session")
+    );
+    assert!(
+        registry
+            .set_active_tab("session", "missing-tab", Some("turn"))
+            .unwrap_err()
+            .to_string()
+            .contains("missing tab")
+    );
+    assert!(
+        registry
+            .set_active_tab("session", "other", Some("turn"))
+            .unwrap_err()
+            .to_string()
+            .contains("does not belong")
+    );
+    assert!(
+        registry
+            .set_active_tab("session", "handoff", Some("turn"))
+            .unwrap_err()
+            .to_string()
+            .contains("not actively controlled")
+    );
+    assert!(
+        registry
+            .set_active_tab("session", "deliverable", Some("turn"))
+            .unwrap_err()
+            .to_string()
+            .contains("not actively controlled")
+    );
+    assert!(
+        registry
+            .set_active_tab("session", "active", Some("turn"))
+            .is_ok()
     );
 }
 
@@ -532,4 +822,18 @@ fn restored_session_tab_clears_stale_diagnostic_without_losing_deliverable() {
         registry.get(&deliverable_tab).unwrap().unwrap().status,
         TabStatus::Deliverable
     );
+}
+
+fn tab_record(id: TabId) -> TabRecord {
+    TabRecord {
+        id,
+        session_id: Some("session".into()),
+        target_id: "target".into(),
+        url: "https://example.test/".into(),
+        title: "Example".into(),
+        origin: TabOrigin::Agent,
+        status: TabStatus::Active,
+        attached: false,
+        cdp_session_id: None,
+    }
 }
