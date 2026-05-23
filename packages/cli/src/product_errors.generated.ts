@@ -62,6 +62,17 @@ export const PRODUCT_ERROR_SCHEMA = [
     }
   },
   {
+    "code": "invalid_descriptor",
+    "title": "Runtime descriptor is invalid",
+    "summary": "A browser runtime descriptor exists but its JSON, schema, type, socket path, or descriptor metadata is not valid.",
+    "jsonRpcCodes": [],
+    "nextAction": {
+      "kind": "run_repair",
+      "summary": "Run repair to remove invalid descriptor entries safely, then reopen the popup so the extension publishes a fresh descriptor.",
+      "command": "obu verify --repair --agent=<agent-id> --browser=<browser> --channel=<extension-channel> --extension-id=<extension-id>"
+    }
+  },
+  {
     "code": "stale_descriptor",
     "title": "Runtime descriptor is stale",
     "summary": "A browser runtime descriptor exists but no longer points at a usable live backend.",

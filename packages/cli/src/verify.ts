@@ -15,7 +15,20 @@ import { type ExtensionChannel, type ExtensionIdSource } from "./extension-chann
 import { browserProfileRoot, nativeMessagingHostDir, type BrowserKind } from "./browser-paths.js";
 import { nativeHostWrapperContent, nativeHostWrapperPath, supportedNativeHostBrowsers } from "./native-host.js";
 import { PRODUCT_ERROR_SCHEMA } from "./product_errors.generated.js";
+import {
+  planRuntimeDescriptorFailure,
+  planRuntimeDescriptorFresh,
+  planRuntimeDescriptorSetupFailure,
+  runtimeDescriptorLifecycleNextAction,
+  runtimeDescriptorLifecycleProductError,
+  summarizeRuntimeDescriptorFailures,
+  type RuntimeDescriptorLifecycle,
+  type RuntimeDescriptorLifecycleReasonCode,
+  type RuntimeDescriptorLifecycleSummary,
+} from "./runtime_descriptor_lifecycle.js";
 import { executableExists, packageVersion, type RuntimeLayout } from "./runtime-layout.js";
+import { computeVerifyReadiness, selectVerifyResultAndAction } from "./verify_machine.js";
+import { advanceVerifySetup, initialVerifySetupState } from "./verify_setup_machine.js";
 
 const HOST_NAME = "dev.obu.host";
 const SERVER_NAME = "open-browser-use";
@@ -37,7 +50,7 @@ export type ComponentState =
   | "invalid"
   | "not_checked";
 type RuntimeBinding = "profile_verified" | "single_candidate" | "browser_extension_scope" | "not_available";
-type VerifyLayer =
+export type VerifyLayer =
   | "target_support"
   | "cli_install"
   | "native_host"
@@ -83,7 +96,7 @@ type Evidence = {
   source: string;
 };
 
-type ActionCandidate = {
+export type ActionCandidate = {
   result: Exclude<VerifyResult, "ready">;
   kind: NextActionKind;
   priority: number;
@@ -111,7 +124,7 @@ export type VerifyCheck = {
   productError?: ProductErrorCode;
 };
 
-type VerifyNextAction = Omit<ActionCandidate, "result" | "priority">;
+export type VerifyNextAction = Omit<ActionCandidate, "result" | "priority">;
 
 type ProductErrorCode = (typeof PRODUCT_ERROR_SCHEMA)[number]["code"];
 
@@ -334,26 +347,6 @@ type TrustedRuntimeResult =
     details?: Record<string, unknown>;
   };
 
-const layerOrder: VerifyLayer[] = [
-  "target_support",
-  "cli_install",
-  "native_host",
-  "browser_profile",
-  "browser_extension",
-  "extension_runtime",
-  "runtime_descriptor",
-  "agent_mcp",
-  "agent_instruction",
-  "mcp_runtime",
-  "agent_runtime",
-];
-
-const resultPriority: Record<Exclude<VerifyResult, "ready">, number> = {
-  needs_manual_action: 1,
-  needs_repair: 2,
-  needs_browser_popup: 3,
-};
-
 const manualActionPriority: Record<NextActionKind, number> = {
   install_cli: 1,
   unsupported: 2,
@@ -394,55 +387,124 @@ export async function applyVerifyRepairs(options: VerifyOptions): Promise<void> 
 
 export async function verifyOpenBrowserUse(options: VerifyOptions): Promise<VerifyReport> {
   const targetSupported = supportedNativeHostBrowsers().includes(options.browser);
-  if (options.repair && targetSupported) await applyVerifyRepairs(options);
-
   const verificationTarget: VerificationTarget = options.requireAgentRuntime ? "agent_runtime" : "cli";
   const checks: VerifyCheck[] = [];
   const targetBase = baseTarget(options);
   const homeDir = options.homeDir ?? homeDirFromLayout(options.layout) ?? os.homedir();
   const env = options.env ?? process.env;
+  let nativeHost: Awaited<ReturnType<typeof checkNativeHost>> | undefined;
+  let descriptorProbe: RuntimeDescriptorProbe | undefined;
+  let profileResolution: ProfileResolution | undefined;
+  let agentMcpDoctorCheck: AgentDoctorCheck | undefined;
+  let agentInstructionDoctorCheck: AgentDoctorCheck | undefined;
+  let agentMcpCheck: VerifyCheck | undefined;
+  let agentInstructionCheck: VerifyCheck | undefined;
+  let mcpCli: McpRuntimeStatus | undefined;
+  let agentRuntime: Awaited<ReturnType<typeof evaluateAgentRuntime>> | undefined;
+  let terminal:
+    | {
+      readiness: VerifyReport["readiness"];
+      result: VerifyResult;
+      nextAction: VerifyNextAction | null;
+      productError: ProductErrorSummary | null;
+    }
+    | undefined;
 
-  checks.push(await checkCliInstall(options, targetBase));
-  checks.push(targetSupportCheck(options, targetSupported, targetBase));
-  const nativeHost = await checkNativeHost(options, homeDir, targetBase);
-  checks.push(nativeHost.check);
+  for (
+    let state = initialVerifySetupState({ repairRequested: Boolean(options.repair), targetSupported });
+    ;
+  ) {
+    const transition = advanceVerifySetup(state);
+    if (!transition) break;
+    switch (transition.effect.type) {
+      case "apply_repairs":
+        await applyVerifyRepairs(options);
+        break;
+      case "check_cli_install":
+        checks.push(await checkCliInstall(options, targetBase));
+        break;
+      case "check_target_support":
+        checks.push(targetSupportCheck(options, targetSupported, targetBase));
+        break;
+      case "check_native_host":
+        nativeHost = await checkNativeHost(options, homeDir, targetBase);
+        checks.push(nativeHost.check);
+        break;
+      case "probe_runtime_descriptor":
+        descriptorProbe = await probeRuntimeDescriptor(options, targetBase);
+        break;
+      case "resolve_profile":
+        if (!descriptorProbe) throw new Error("verify setup machine resolved profile before descriptor probe");
+        profileResolution = await resolveBrowserProfile(options, homeDir, descriptorProbe, targetBase);
+        checks.push(...profileResolution.checks);
+        break;
+      case "check_browser_extension":
+        if (!profileResolution) throw new Error("verify setup machine checked extension before profile resolution");
+        checks.push(browserExtensionCheck(options, profileResolution, targetBase));
+        break;
+      case "check_extension_runtime":
+        if (!descriptorProbe || !profileResolution) throw new Error("verify setup machine checked runtime before descriptor/profile resolution");
+        checks.push(...runtimeChecksFromProbe(options, descriptorProbe, profileResolution.profile.path, targetBase));
+        break;
+      case "check_agent_config": {
+        const agentReport = await doctorAgent({
+          agent: options.agent,
+          server: options.server,
+          env,
+          homeDir,
+          ...(options.projectDir ? { projectDir: options.projectDir } : {}),
+        });
+        agentMcpDoctorCheck = agentReport.checks.find((row) => row.id === "agent-mcp-server");
+        agentInstructionDoctorCheck = agentReport.checks.find((row) => row.id === "agent-primary-instruction");
+        agentMcpCheck = normalizeAgentMcpCheck(options, agentMcpDoctorCheck, targetBase);
+        checks.push(agentMcpCheck);
+        agentInstructionCheck = normalizeAgentInstructionCheck(options, agentInstructionDoctorCheck);
+        checks.push(agentInstructionCheck);
+        break;
+      }
+      case "probe_mcp_runtime":
+        if (!descriptorProbe) throw new Error("verify setup machine probed MCP runtime before descriptor probe");
+        mcpCli = descriptorProbe.status === "pass"
+          ? await probeDirectMcpRuntime(options)
+          : notCheckedMcpRuntime("runtime_descriptor_not_active");
+        checks.push(normalizeMcpRuntimeCheck(options, mcpCli, descriptorProbe, targetBase));
+        break;
+      case "probe_agent_runtime": {
+        const cliReadyBeforeAgentRuntime = !checks.some((check) => check.status === "fail" && check.blocks?.includes("cli"));
+        agentRuntime = await evaluateAgentRuntime(options, verificationTarget, cliReadyBeforeAgentRuntime, targetBase);
+        checks.push(agentRuntime.check);
+        break;
+      }
+      case "select_terminal_action": {
+        if (!descriptorProbe) throw new Error("verify setup machine selected terminal action before descriptor probe");
+        const readiness = computeVerifyReadiness(verificationTarget, checks);
+        const { result, nextAction } = selectVerifyResultAndAction(verificationTarget, readiness, checks);
+        terminal = {
+          readiness,
+          result,
+          nextAction,
+          productError: selectProductError(result, nextAction, checks, descriptorProbe),
+        };
+        break;
+      }
+    }
+    state = transition.state;
+  }
 
-  const descriptorProbe = await probeRuntimeDescriptor(options, targetBase);
-  const profileResolution = await resolveBrowserProfile(options, homeDir, descriptorProbe, targetBase);
-  checks.push(...profileResolution.checks);
+  if (
+    !nativeHost ||
+    !descriptorProbe ||
+    !profileResolution ||
+    !agentMcpCheck ||
+    !agentInstructionCheck ||
+    !mcpCli ||
+    !agentRuntime ||
+    !terminal
+  ) {
+    throw new Error("verify setup machine finished without producing a complete report context");
+  }
 
-  const extensionCheck = browserExtensionCheck(options, profileResolution, targetBase);
-  checks.push(extensionCheck);
-
-  const runtimeChecks = runtimeChecksFromProbe(options, descriptorProbe, profileResolution.profile.path, targetBase);
-  checks.push(...runtimeChecks);
-
-  const agentReport = await doctorAgent({
-    agent: options.agent,
-    server: options.server,
-    env,
-    homeDir,
-    ...(options.projectDir ? { projectDir: options.projectDir } : {}),
-  });
-  const agentMcpDoctorCheck = agentReport.checks.find((row) => row.id === "agent-mcp-server");
-  const agentInstructionDoctorCheck = agentReport.checks.find((row) => row.id === "agent-primary-instruction");
-  const agentMcpCheck = normalizeAgentMcpCheck(options, agentMcpDoctorCheck, targetBase);
-  checks.push(agentMcpCheck);
-  const agentInstructionCheck = normalizeAgentInstructionCheck(options, agentInstructionDoctorCheck);
-  checks.push(agentInstructionCheck);
-
-  const mcpCli = descriptorProbe.status === "pass"
-    ? await probeDirectMcpRuntime(options)
-    : notCheckedMcpRuntime("runtime_descriptor_not_active");
-  checks.push(normalizeMcpRuntimeCheck(options, mcpCli, descriptorProbe, targetBase));
-
-  const cliReadyBeforeAgentRuntime = !checks.some((check) => check.status === "fail" && check.blocks?.includes("cli"));
-  const agentRuntime = await evaluateAgentRuntime(options, verificationTarget, cliReadyBeforeAgentRuntime, targetBase);
-  checks.push(agentRuntime.check);
-
-  const readiness = computeReadiness(verificationTarget, checks);
-  const { result, nextAction } = selectResultAndAction(verificationTarget, readiness, checks);
-  const productError = selectProductError(result, nextAction, checks, descriptorProbe);
+  const { readiness, result, nextAction, productError } = terminal;
 
   const browser: VerifyBrowser = {
     kind: options.browser,
@@ -1696,7 +1758,10 @@ async function probeRuntimeDescriptor(options: VerifyOptions, target: VerifyTarg
         message: `runtime descriptor directory missing at ${descriptorDir}`,
         result: "needs_repair",
         productError: "setup_missing",
-        details: { path: descriptorDir },
+        details: {
+          path: descriptorDir,
+          runtime_descriptor_setup_lifecycle: planRuntimeDescriptorSetupFailure("descriptor_dir_missing"),
+        },
       };
     }
     return {
@@ -1706,7 +1771,11 @@ async function probeRuntimeDescriptor(options: VerifyOptions, target: VerifyTarg
       message: `runtime descriptor directory cannot be read: ${descriptorDir}`,
       result: "needs_repair",
       productError: "setup_missing",
-      details: { path: descriptorDir, error: dirStats.message },
+      details: {
+        path: descriptorDir,
+        error: dirStats.message,
+        runtime_descriptor_setup_lifecycle: planRuntimeDescriptorSetupFailure("descriptor_dir_unreadable"),
+      },
     };
   }
   if (dirStats.isSymbolicLink() || !dirStats.isDirectory()) {
@@ -1717,7 +1786,10 @@ async function probeRuntimeDescriptor(options: VerifyOptions, target: VerifyTarg
       message: `runtime descriptor path is not an owner-only directory: ${descriptorDir}`,
       result: "needs_repair",
       productError: "setup_missing",
-      details: { path: descriptorDir },
+      details: {
+        path: descriptorDir,
+        runtime_descriptor_setup_lifecycle: planRuntimeDescriptorSetupFailure("descriptor_dir_invalid"),
+      },
     };
   }
   const ownerIssue = ownerOnlyIssue(dirStats, "runtime descriptor directory");
@@ -1729,7 +1801,10 @@ async function probeRuntimeDescriptor(options: VerifyOptions, target: VerifyTarg
       message: ownerIssue,
       result: "needs_repair",
       productError: "setup_missing",
-      details: { path: descriptorDir },
+      details: {
+        path: descriptorDir,
+        runtime_descriptor_setup_lifecycle: planRuntimeDescriptorSetupFailure("descriptor_dir_permissions"),
+      },
     };
   }
 
@@ -1743,6 +1818,7 @@ async function probeRuntimeDescriptor(options: VerifyOptions, target: VerifyTarg
       result: "needs_browser_popup",
       productError: "browser_popup_boundary",
       details: {
+        runtime_descriptor_setup_lifecycle: planRuntimeDescriptorSetupFailure("descriptor_missing"),
         resumeRequired: true,
         resumeAction: "open the open-browser-use extension popup; click Resume if it is enabled, otherwise wait for Connected and rerun verify",
       },
@@ -1754,31 +1830,40 @@ async function probeRuntimeDescriptor(options: VerifyOptions, target: VerifyTarg
     const descriptorPath = path.join(descriptorDir, file);
     const fileIssue = await validateDescriptorFile(descriptorPath);
     if (fileIssue) {
-      errors.push(descriptorProbeFailure(`${file}: ${fileIssue}`, "stale_descriptor"));
+      errors.push(descriptorProbeFailure(`${file}: ${fileIssue}`, undefined, undefined, undefined, "descriptor_file_invalid"));
       continue;
     }
     const descriptor = await readJson(descriptorPath).catch((error) => {
-      errors.push(descriptorProbeFailure(`${file}: invalid json (${error})`, "stale_descriptor"));
+      errors.push(descriptorProbeFailure(`${file}: invalid json (${error})`, undefined, undefined, undefined, "descriptor_json_invalid"));
       return undefined;
     });
     if (!isRecord(descriptor)) continue;
     const probe = await probeOneDescriptor(descriptor, descriptorPath, file, options);
     if (probe.status === "pass") return probe;
-    errors.push(descriptorProbeFailure(`${file}: ${probe.message}`, probe.productError, probe.result, probe.state));
+    errors.push(descriptorProbeFailure(
+      `${file}: ${probe.message}`,
+      probe.productError,
+      probe.result,
+      probe.state,
+      runtimeDescriptorReasonCode(probe.details),
+    ));
   }
-  const productError = descriptorProductError(errors);
+  const lifecycleSummary = summarizeRuntimeDescriptorFailures(errors.map((error) => error.runtimeDescriptorLifecycle));
+  const productError = descriptorProductError(errors, lifecycleSummary);
+  const result = runtimeDescriptorLifecycleNextAction(lifecycleSummary);
 
   return {
     status: "fail",
-    state: productError === "stale_descriptor" ? "stale" : "invalid",
+    state: lifecycleSummary.state === "stale" ? "stale" : "invalid",
     reason: "descriptor_unusable",
     message: errors.length > 0 ? errors.map((error) => error.message).join("; ") : "no usable WebExtension descriptor found",
-    result: productError === "stale_descriptor" ? "needs_repair" : "needs_browser_popup",
+    result,
     productError,
     details: {
       resumeRequired: true,
       descriptorErrors: errors.map((error) => error.message),
       descriptorProductErrors: errors.map((error) => error.productError),
+      runtime_descriptor_lifecycle: lifecycleSummary,
     },
   };
 }
@@ -1789,14 +1874,14 @@ async function probeOneDescriptor(
   descriptorFile: string,
   options: VerifyOptions,
 ): Promise<RuntimeDescriptorProbe> {
-  if (descriptor.schema_version !== 1) return descriptorFailure("schema_version must be 1", "stale_descriptor");
-  if (descriptor.type !== "webextension") return descriptorFailure("type must be webextension", "stale_descriptor");
-  if (typeof descriptor.socketPath !== "string") return descriptorFailure("socketPath missing", "stale_descriptor");
-  if (typeof descriptor.sdk_auth_token !== "string") return descriptorFailure("sdk_auth_token missing", "stale_descriptor");
+  if (descriptor.schema_version !== 1) return descriptorFailure("schema_version must be 1", undefined, undefined, "unsupported_schema_version");
+  if (descriptor.type !== "webextension") return descriptorFailure("type must be webextension", undefined, undefined, "unsupported_descriptor_type");
+  if (typeof descriptor.socketPath !== "string") return descriptorFailure("socketPath missing", undefined, undefined, "socket_path_missing");
+  if (typeof descriptor.sdk_auth_token !== "string") return descriptorFailure("sdk_auth_token missing", undefined, undefined, "sdk_auth_token_missing");
   const processIssue = descriptorProcessIssue(descriptor);
-  if (processIssue) return descriptorFailure(processIssue, "stale_descriptor");
+  if (processIssue) return descriptorFailure(processIssue, undefined, undefined, "descriptor_process_not_alive");
   const socketIssue = await validateDescriptorSocket(descriptor.socketPath);
-  if (socketIssue) return descriptorFailure(socketIssue, "stale_descriptor");
+  if (socketIssue) return descriptorFailure(socketIssue, undefined, undefined, "descriptor_socket_invalid");
   try {
     const [auth, info] = await rpcSequenceOverUnixSocket(descriptor.socketPath, [
       {
@@ -1812,10 +1897,10 @@ async function probeOneDescriptor(
         params: {},
       },
     ]);
-    if (auth?.error) return descriptorFailure("auth rejected", "stale_descriptor");
-    if (info?.error) return descriptorFailure(`getInfo failed: ${JSON.stringify(info.error)}`, "stale_descriptor");
-    if (info?.result?.type !== "webextension") return descriptorFailure("getInfo type mismatch", "stale_descriptor");
-    if (info?.result?.name !== descriptor.name) return descriptorFailure("getInfo name mismatch", "stale_descriptor");
+    if (auth?.error) return descriptorFailure("auth rejected", undefined, undefined, "descriptor_auth_rejected");
+    if (info?.error) return descriptorFailure(`getInfo failed: ${JSON.stringify(info.error)}`, undefined, undefined, "descriptor_getinfo_failed");
+    if (info?.result?.type !== "webextension") return descriptorFailure("getInfo type mismatch", undefined, undefined, "descriptor_getinfo_type_mismatch");
+    if (info?.result?.name !== descriptor.name) return descriptorFailure("getInfo name mismatch", undefined, undefined, "descriptor_getinfo_name_mismatch");
     const metadata = mergedDescriptorMetadata(descriptor, info.result);
     const browserKind = stringFromPath(metadata, ["browser_kind"]) ?? String(descriptor.name ?? "");
     const extensionId = stringFromPath(metadata, ["extension_id"]) ?? "unknown";
@@ -1824,6 +1909,7 @@ async function probeOneDescriptor(
         `descriptor browser kind ${browserKind || "unknown"} does not match ${runtimeBrowserKind(options.browser)}`,
         "browser_popup_boundary",
         "needs_browser_popup",
+        "descriptor_browser_kind_mismatch",
       );
     }
     if (extensionId !== options.extensionId) {
@@ -1831,6 +1917,7 @@ async function probeOneDescriptor(
         `descriptor extension id ${extensionId} does not match ${options.extensionId}`,
         "extension_id_mismatch",
         "needs_browser_popup",
+        "descriptor_extension_id_mismatch",
       );
     }
     const profilePath = descriptorProfilePath(metadata);
@@ -1850,10 +1937,11 @@ async function probeOneDescriptor(
         source: "runtime_descriptor_probe",
         resumeRequired: false,
         metadata,
+        runtime_descriptor_lifecycle: planRuntimeDescriptorFresh(),
       },
     };
   } catch (error) {
-    return descriptorFailure(`socket probe failed: ${String(error)}`, "stale_descriptor");
+    return descriptorFailure(`socket probe failed: ${String(error)}`, undefined, undefined, "descriptor_probe_failed");
   }
 }
 
@@ -1862,36 +1950,65 @@ type DescriptorProbeFailure = {
   productError: ProductErrorCode;
   result: "needs_repair" | "needs_browser_popup";
   state: ComponentState;
+  runtimeDescriptorLifecycle: RuntimeDescriptorLifecycle;
 };
 
 function descriptorProbeFailure(
   message: string,
-  productError: ProductErrorCode,
-  result: "needs_repair" | "needs_browser_popup" = productError === "stale_descriptor" ? "needs_repair" : "needs_browser_popup",
-  state: ComponentState = productError === "stale_descriptor" ? "stale" : "invalid",
+  productError: ProductErrorCode | undefined,
+  result: "needs_repair" | "needs_browser_popup" | undefined = undefined,
+  state: ComponentState | undefined = undefined,
+  reasonCode: RuntimeDescriptorLifecycleReasonCode = "descriptor_probe_failed",
 ): DescriptorProbeFailure {
-  return { message, productError, result, state };
+  const runtimeDescriptorLifecycle = planRuntimeDescriptorFailure(reasonCode);
+  const resolvedProductError = productError ?? runtimeDescriptorLifecycleProductError(runtimeDescriptorLifecycle) ?? "stale_descriptor";
+  const resolvedResult = result ?? runtimeDescriptorLifecycleNextAction(runtimeDescriptorLifecycle);
+  return {
+    message,
+    productError: resolvedProductError,
+    result: resolvedResult,
+    state: state ?? (runtimeDescriptorLifecycle.state === "stale" ? "stale" : "invalid"),
+    runtimeDescriptorLifecycle,
+  };
 }
 
-function descriptorProductError(errors: DescriptorProbeFailure[]): ProductErrorCode {
+function descriptorProductError(
+  errors: DescriptorProbeFailure[],
+  lifecycleSummary: RuntimeDescriptorLifecycleSummary,
+): ProductErrorCode {
   return errors.find((error) => error.productError === "extension_id_mismatch")?.productError
     ?? errors.find((error) => error.productError === "browser_popup_boundary")?.productError
+    ?? runtimeDescriptorLifecycleProductError(lifecycleSummary)
     ?? errors[0]?.productError
     ?? "stale_descriptor";
 }
 
+function runtimeDescriptorReasonCode(details: Record<string, unknown> | undefined): RuntimeDescriptorLifecycleReasonCode {
+  const lifecycle = details?.runtime_descriptor_lifecycle;
+  if (isRecord(lifecycle) && typeof lifecycle.reason_code === "string") {
+    return lifecycle.reason_code as RuntimeDescriptorLifecycleReasonCode;
+  }
+  return "descriptor_probe_failed";
+}
+
 function descriptorFailure(
   message: string,
-  productError: ProductErrorCode,
-  result: "needs_repair" | "needs_browser_popup" = productError === "stale_descriptor" ? "needs_repair" : "needs_browser_popup",
+  productError: ProductErrorCode | undefined,
+  result: "needs_repair" | "needs_browser_popup" | undefined = undefined,
+  reasonCode: RuntimeDescriptorLifecycleReasonCode = "descriptor_probe_failed",
 ): RuntimeDescriptorProbe {
+  const runtimeDescriptorLifecycle = planRuntimeDescriptorFailure(reasonCode);
+  const resolvedProductError = productError ?? runtimeDescriptorLifecycleProductError(runtimeDescriptorLifecycle) ?? "stale_descriptor";
   return {
     status: "fail",
-    state: productError === "stale_descriptor" ? "stale" : "invalid",
+    state: runtimeDescriptorLifecycle.state === "stale" ? "stale" : "invalid",
     reason: "descriptor_invalid",
     message,
-    result,
-    productError,
+    result: result ?? runtimeDescriptorLifecycleNextAction(runtimeDescriptorLifecycle),
+    productError: resolvedProductError,
+    details: {
+      runtime_descriptor_lifecycle: runtimeDescriptorLifecycle,
+    },
   };
 }
 
@@ -2046,48 +2163,6 @@ function runtimeBindingForResolvedProfile(input: {
   if (input.explicit) return "browser_extension_scope";
   if (input.matchingCount === 1) return "single_candidate";
   return "browser_extension_scope";
-}
-
-function computeReadiness(verificationTarget: VerificationTarget, checks: VerifyCheck[]): VerifyReport["readiness"] {
-  const cliBlocked = checks.some((check) => check.status === "fail" && check.blocks?.includes("cli"));
-  const agentRuntimeBlocked = checks.some((check) => check.status === "fail" && check.blocks?.includes("agent_runtime"));
-  return {
-    cli: cliBlocked ? "blocked" : "ready",
-    agentRuntime: verificationTarget === "cli" ? "not_checked" : cliBlocked ? "not_checked" : agentRuntimeBlocked ? "blocked" : "ready",
-  };
-}
-
-function selectResultAndAction(
-  verificationTarget: VerificationTarget,
-  readiness: VerifyReport["readiness"],
-  checks: VerifyCheck[],
-): { result: VerifyResult; nextAction: VerifyNextAction | null } {
-  const eligible = readiness.cli !== "ready"
-    ? checks.filter((check) => check.status === "fail" && check.blocks?.includes("cli"))
-    : verificationTarget === "agent_runtime" && readiness.agentRuntime !== "ready"
-      ? checks.filter((check) => check.status === "fail" && check.blocks?.includes("agent_runtime"))
-      : [];
-  if (eligible.length === 0) return { result: "ready", nextAction: null };
-  const candidates = eligible.flatMap((check) => check.actionCandidate ? [{ check, candidate: check.actionCandidate }] : []);
-  if (candidates.length === 0) {
-    return {
-      result: "needs_manual_action",
-      nextAction: {
-        kind: "unsupported",
-        message: "Verification found a blocking state without an automated next action.",
-      },
-    };
-  }
-  candidates.sort((left, right) => {
-    const resultDelta = resultPriority[left.candidate.result] - resultPriority[right.candidate.result];
-    if (resultDelta !== 0) return resultDelta;
-    const actionDelta = left.candidate.priority - right.candidate.priority;
-    if (actionDelta !== 0) return actionDelta;
-    return layerOrder.indexOf(left.check.layer) - layerOrder.indexOf(right.check.layer);
-  });
-  const selected = candidates[0]!.candidate;
-  const { result, priority, ...nextAction } = selected;
-  return { result, nextAction };
 }
 
 function selectProductError(

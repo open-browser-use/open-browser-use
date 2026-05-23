@@ -584,6 +584,78 @@ test("doctorBrowser repair fixes runtime descriptor permissions", async (t) => {
   });
 });
 
+test("doctorBrowser reports and repairs malformed runtime descriptor JSON as invalid", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX descriptor validation is not meaningful on Windows");
+    return;
+  }
+  const fixture = await createDoctorFixture(t);
+  const descriptorPath = path.join(fixture.runtimeDescriptorDir, "broken.json");
+  await writeFile(descriptorPath, "{", "utf8");
+  await chmod(descriptorPath, 0o600);
+
+  const report = await doctorBrowser(fixture.options);
+  const descriptorProbe = checksById(report)["runtime-descriptor-probe"];
+  assert.equal(descriptorProbe?.status, "fail");
+  assert.match(descriptorProbe?.message ?? "", /invalid json/);
+  assert.deepEqual(descriptorProbe?.details?.runtime_descriptor_lifecycle, {
+    state: "invalid",
+    reason_codes: ["descriptor_json_invalid"],
+  });
+
+  const repaired = await doctorBrowser({ ...fixture.options, repair: true });
+  assert.equal(await stat(descriptorPath).then(() => true).catch(() => false), false);
+  assertRepair(repaired, {
+    id: "runtime-descriptor-invalid",
+    status: "applied",
+    message: /removed invalid runtime descriptor .*invalid json/,
+    human: /APPLIED removed invalid runtime descriptor .*invalid json/,
+    details: ["path", "reason"],
+  });
+});
+
+test("doctorBrowser repair removes runtime descriptor symlinks as invalid", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX descriptor validation is not meaningful on Windows");
+    return;
+  }
+  const fixture = await createDoctorFixture(t);
+  const descriptorPath = path.join(fixture.runtimeDescriptorDir, "linked.json");
+  await symlink(path.join(fixture.root, "missing-target.json"), descriptorPath);
+
+  const repaired = await doctorBrowser({ ...fixture.options, repair: true });
+
+  assert.equal(await stat(descriptorPath).then(() => true).catch(() => false), false);
+  assertRepair(repaired, {
+    id: "runtime-descriptor-invalid",
+    status: "applied",
+    message: /removed invalid runtime descriptor .*descriptor is a symlink/,
+    human: /APPLIED removed invalid runtime descriptor .*descriptor is a symlink/,
+    details: ["path", "reason"],
+  });
+});
+
+test("doctorBrowser repair removes empty runtime descriptor directories as invalid", async (t) => {
+  if (process.platform === "win32") {
+    t.skip("POSIX descriptor validation is not meaningful on Windows");
+    return;
+  }
+  const fixture = await createDoctorFixture(t);
+  const descriptorPath = path.join(fixture.runtimeDescriptorDir, "directory.json");
+  await mkdir(descriptorPath);
+
+  const repaired = await doctorBrowser({ ...fixture.options, repair: true });
+
+  assert.equal(await stat(descriptorPath).then(() => true).catch(() => false), false);
+  assertRepair(repaired, {
+    id: "runtime-descriptor-invalid",
+    status: "applied",
+    message: /removed invalid runtime descriptor .*descriptor is not a file/,
+    human: /APPLIED removed invalid runtime descriptor .*descriptor is not a file/,
+    details: ["path", "reason"],
+  });
+});
+
 test("doctorBrowser accepts the versioned runtime descriptor fixture without leaking its token", async (t) => {
   if (process.platform === "win32") {
     t.skip("Unix socket probing is POSIX-only");
@@ -604,6 +676,7 @@ test("doctorBrowser accepts the versioned runtime descriptor fixture without lea
 
   assert.equal(descriptorProbe?.status, "pass");
   assert.match(descriptorProbe?.message ?? "", /chrome\.json responded to getInfo/);
+  assert.deepEqual(descriptorProbe?.details?.runtime_descriptor_lifecycle, { state: "fresh" });
   assert.doesNotMatch(JSON.stringify(report), /fixture-sdk-auth-token/);
   assert.doesNotMatch(formatDoctorReport(report), /fixture-sdk-auth-token/);
 });
@@ -623,6 +696,10 @@ test("doctorBrowser reports stale runtime descriptor processes before socket pro
 
   assert.equal(descriptorProbe?.status, "fail");
   assert.match(descriptorProbe?.message ?? "", /descriptor process is not alive/);
+  assert.deepEqual(descriptorProbe?.details?.runtime_descriptor_lifecycle, {
+    state: "stale",
+    reason_codes: ["descriptor_process_not_alive"],
+  });
 });
 
 test("doctorBrowser repair removes stale runtime descriptor processes", async (t) => {
@@ -667,6 +744,10 @@ test("doctorBrowser rejects runtime descriptors pointing at non-socket files", a
 
   assert.equal(descriptorProbe?.status, "fail");
   assert.match(descriptorProbe?.message ?? "", /descriptor socket path is not a socket/);
+  assert.deepEqual(descriptorProbe?.details?.runtime_descriptor_lifecycle, {
+    state: "invalid",
+    reason_codes: ["descriptor_socket_invalid"],
+  });
 });
 
 test("doctorBrowser repair removes descriptors pointing at non-socket files", async (t) => {
@@ -688,10 +769,10 @@ test("doctorBrowser repair removes descriptors pointing at non-socket files", as
   assert.match(descriptorProbe?.message ?? "", /no active WebExtension descriptor/);
   assert.equal(await stat(descriptorPath).then(() => true).catch(() => false), false);
   assertRepair(report, {
-    id: "runtime-descriptor-stale",
+    id: "runtime-descriptor-invalid",
     status: "applied",
     message: /descriptor socket path is not a socket/,
-    human: /APPLIED removed stale runtime descriptor .*descriptor socket path is not a socket/,
+    human: /APPLIED removed invalid runtime descriptor .*descriptor socket path is not a socket/,
     details: ["path", "reason"],
   });
 });
@@ -715,6 +796,10 @@ test("doctorBrowser reports runtime descriptor auth rejection", async (t) => {
 
   assert.equal(descriptorProbe?.status, "fail");
   assert.match(descriptorProbe?.message ?? "", /auth rejected/);
+  assert.deepEqual(descriptorProbe?.details?.runtime_descriptor_lifecycle, {
+    state: "stale",
+    reason_codes: ["descriptor_auth_rejected"],
+  });
   assert.match(String(descriptorProbe?.details?.repair ?? ""), /click Resume/);
 });
 
@@ -766,6 +851,10 @@ test("doctorBrowser reports runtime descriptor getInfo consistency failures", as
 
   assert.equal(descriptorProbe?.status, "fail");
   assert.match(descriptorProbe?.message ?? "", /getInfo name mismatch/);
+  assert.deepEqual(descriptorProbe?.details?.runtime_descriptor_lifecycle, {
+    state: "stale",
+    reason_codes: ["descriptor_getinfo_name_mismatch"],
+  });
   assert.match(String(descriptorProbe?.details?.repair ?? ""), /click Resume/);
 });
 
@@ -832,6 +921,7 @@ test("doctorBrowser surfaces runtime descriptor lifecycle diagnostics", async (t
   assert.equal(descriptorProbe?.status, "pass");
   assert.match(descriptorProbe?.message ?? "", /chrome\.json responded to getInfo/);
   assert.equal(descriptorProbe?.details?.descriptor, "chrome.json");
+  assert.deepEqual(descriptorProbe?.details?.runtime_descriptor_lifecycle, { state: "fresh" });
   assert.deepEqual(descriptorProbe?.details?.lifecycle, lifecycle);
   assert.match(String(descriptorProbe?.details?.deliverable_recovery ?? ""), /browser\.deliverables\(\)/);
 

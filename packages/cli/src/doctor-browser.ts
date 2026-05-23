@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { constants } from "node:fs";
-import { access, chmod, lstat, mkdir, readdir, readFile, realpath, stat, unlink, writeFile } from "node:fs/promises";
+import { access, chmod, lstat, mkdir, readdir, readFile, realpath, rmdir, stat, unlink, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -10,6 +10,13 @@ import { promisify } from "node:util";
 import { browserInstallPath, browserProfileRoot, nativeMessagingHostDir, type BrowserKind } from "./browser-paths.js";
 import { type ExtensionChannel, type ExtensionIdSource } from "./extension-channel.js";
 import { nativeHostWrapperContent, nativeHostWrapperPath, writeIfChanged } from "./native-host.js";
+import {
+  planRuntimeDescriptorFailure,
+  planRuntimeDescriptorFresh,
+  summarizeRuntimeDescriptorFailures,
+  type RuntimeDescriptorLifecycle,
+  type RuntimeDescriptorLifecycleReasonCode,
+} from "./runtime_descriptor_lifecycle.js";
 import { resolveRuntimeLayout, validateRuntimeDir, type RuntimeLayout } from "./runtime-layout.js";
 
 const execFileAsync = promisify(execFile);
@@ -80,7 +87,7 @@ export type DoctorBrowserOptions = {
 
 type RuntimeDescriptorProbeResult =
   | { ok: true; details: Record<string, unknown>; infoResult: Record<string, any> }
-  | { ok: false; message: string };
+  | { ok: false; message: string; runtimeDescriptorLifecycle: RuntimeDescriptorLifecycle };
 
 export type WebExtensionRuntimeDescriptorTarget = {
   extensionId?: string;
@@ -509,6 +516,7 @@ async function repairRuntimeDescriptors(descriptorDir: string): Promise<DoctorRe
       details: { path: descriptorPath },
     });
   }
+  actions.push(...await repairInvalidRuntimeDescriptors(descriptorDir));
   actions.push(...await repairStaleRuntimeDescriptors(descriptorDir));
   actions.push(...await repairStaleLifecycleDiagnostics(descriptorDir));
 
@@ -521,6 +529,57 @@ async function repairRuntimeDescriptors(descriptorDir: string): Promise<DoctorRe
     });
   }
   return actions;
+}
+
+async function repairInvalidRuntimeDescriptors(descriptorDir: string): Promise<DoctorRepairAction[]> {
+  const actions: DoctorRepairAction[] = [];
+  const files = await readdir(descriptorDir).catch(() => []);
+  for (const file of files.filter((row) => row.endsWith(".json"))) {
+    const descriptorPath = path.join(descriptorDir, file);
+    const stats = await lstat(descriptorPath).catch(() => undefined);
+    if (!stats) continue;
+    if (stats.isSymbolicLink()) {
+      await unlink(descriptorPath);
+      actions.push({
+        id: "runtime-descriptor-invalid",
+        status: "applied",
+        message: `removed invalid runtime descriptor ${descriptorPath}: descriptor is a symlink`,
+        details: { path: descriptorPath, reason: "descriptor is a symlink" },
+      });
+      continue;
+    }
+    if (!stats.isFile()) {
+      const removed = await removeInvalidDescriptorNonFile(descriptorPath);
+      actions.push({
+        id: "runtime-descriptor-invalid",
+        status: removed ? "applied" : "failed",
+        message: removed
+          ? `removed invalid runtime descriptor ${descriptorPath}: descriptor is not a file`
+          : `cannot remove invalid runtime descriptor ${descriptorPath}: descriptor is not a file`,
+        details: { path: descriptorPath, reason: "descriptor is not a file" },
+      });
+      continue;
+    }
+    const invalidReason = await invalidDescriptorRepairReason(descriptorPath);
+    if (!invalidReason) continue;
+    await unlink(descriptorPath);
+    actions.push({
+      id: "runtime-descriptor-invalid",
+      status: "applied",
+      message: `removed invalid runtime descriptor ${descriptorPath}: ${invalidReason}`,
+      details: { path: descriptorPath, reason: invalidReason },
+    });
+  }
+  return actions;
+}
+
+async function removeInvalidDescriptorNonFile(descriptorPath: string): Promise<boolean> {
+  try {
+    await rmdir(descriptorPath);
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 async function repairStaleRuntimeDescriptors(descriptorDir: string): Promise<DoctorRepairAction[]> {
@@ -576,18 +635,25 @@ async function repairStaleLifecycleDiagnostics(descriptorDir: string): Promise<D
   return actions;
 }
 
+async function invalidDescriptorRepairReason(descriptorPath: string): Promise<string | undefined> {
+  const descriptor = await readJson(descriptorPath).catch((error) => `invalid json (${error})`);
+  if (typeof descriptor === "string") return descriptor;
+  if (!isRecord(descriptor)) return "descriptor JSON must be an object";
+  if (descriptor.schema_version !== 1) return "schema_version must be 1";
+  if (descriptor.type !== "webextension") return "type must be webextension";
+  if (typeof descriptor.socketPath !== "string") return "socketPath missing";
+  if (typeof descriptor.sdk_auth_token !== "string") return "sdk_auth_token missing";
+  if (descriptorProcessIssue(descriptor)) return undefined;
+  const socketIssue = await validateDescriptorSocket(descriptor.socketPath);
+  if (socketIssue) return socketIssue;
+  return undefined;
+}
+
 async function staleDescriptorRepairReason(descriptor: Record<string, unknown>): Promise<string | undefined> {
   const processIssue = descriptorProcessIssue(descriptor);
   if (processIssue) return processIssue;
   const socketPath = descriptor.socketPath;
   if (typeof socketPath !== "string") return undefined;
-  const socketIssue = await validateDescriptorSocket(socketPath);
-  if (socketIssue) {
-    if (socketIssue.startsWith("stat descriptor socket failed") || socketIssue === "descriptor socket path is not a socket") {
-      return socketIssue;
-    }
-    return undefined;
-  }
   const probe = await probeDescriptor(descriptor);
   if (!probe.ok && isRepairableDescriptorProbeFailure(probe.message)) return probe.message;
   return undefined;
@@ -836,16 +902,22 @@ async function checkRuntimeDescriptors(descriptorDir: string): Promise<DoctorChe
   if (descriptors.length === 0) {
     return warn("runtime-descriptor-probe", "Runtime descriptor probe", "no active WebExtension descriptor found", resumeRequiredDetails());
   }
-  const errors: string[] = [];
+  const errors: { message: string; runtimeDescriptorLifecycle: RuntimeDescriptorLifecycle }[] = [];
   for (const file of descriptors) {
     const descriptorPath = path.join(descriptorDir, file);
     const fileIssue = await validateRuntimeDescriptorFile(descriptorPath);
     if (fileIssue) {
-      errors.push(`${file}: ${fileIssue}`);
+      errors.push({
+        message: `${file}: ${fileIssue}`,
+        runtimeDescriptorLifecycle: planRuntimeDescriptorFailure("descriptor_file_invalid"),
+      });
       continue;
     }
     const descriptor = await readJson(descriptorPath).catch((error) => {
-      errors.push(`${file}: invalid json (${error})`);
+      errors.push({
+        message: `${file}: invalid json (${error})`,
+        runtimeDescriptorLifecycle: planRuntimeDescriptorFailure("descriptor_json_invalid"),
+      });
       return undefined;
     });
     if (!descriptor) continue;
@@ -854,6 +926,7 @@ async function checkRuntimeDescriptors(descriptorDir: string): Promise<DoctorChe
       const details = {
         descriptor: file,
         resume_required: false,
+        runtime_descriptor_lifecycle: planRuntimeDescriptorFresh(),
         ...result.details,
       };
       const staleLifecycle = staleLifecycleSummary(result.details.lifecycle);
@@ -867,11 +940,15 @@ async function checkRuntimeDescriptors(descriptorDir: string): Promise<DoctorChe
       }
       return pass("runtime-descriptor-probe", "Runtime descriptor probe", `${file} responded to getInfo`, details);
     }
-    errors.push(`${file}: ${result.message}`);
+    errors.push({
+      message: `${file}: ${result.message}`,
+      runtimeDescriptorLifecycle: result.runtimeDescriptorLifecycle,
+    });
   }
-  return fail("runtime-descriptor-probe", "Runtime descriptor probe", errors.join("; "), {
+  return fail("runtime-descriptor-probe", "Runtime descriptor probe", errors.map((error) => error.message).join("; "), {
     ...resumeRequiredDetails(),
-    descriptor_errors: errors,
+    descriptor_errors: errors.map((error) => error.message),
+    runtime_descriptor_lifecycle: summarizeRuntimeDescriptorFailures(errors.map((error) => error.runtimeDescriptorLifecycle)),
   });
 }
 
@@ -883,15 +960,15 @@ function resumeRequiredDetails(): Record<string, unknown> {
 }
 
 async function probeDescriptor(descriptor: Record<string, unknown>): Promise<RuntimeDescriptorProbeResult> {
-  if (descriptor.schema_version !== 1) return probeError("schema_version must be 1");
-  if (descriptor.type !== "webextension") return probeError("type must be webextension");
-  if (typeof descriptor.socketPath !== "string") return probeError("socketPath missing");
-  if (typeof descriptor.sdk_auth_token !== "string") return probeError("sdk_auth_token missing");
+  if (descriptor.schema_version !== 1) return probeError("schema_version must be 1", "unsupported_schema_version");
+  if (descriptor.type !== "webextension") return probeError("type must be webextension", "unsupported_descriptor_type");
+  if (typeof descriptor.socketPath !== "string") return probeError("socketPath missing", "socket_path_missing");
+  if (typeof descriptor.sdk_auth_token !== "string") return probeError("sdk_auth_token missing", "sdk_auth_token_missing");
   const processIssue = descriptorProcessIssue(descriptor);
-  if (processIssue) return probeError(processIssue);
-  if (process.platform === "win32") return probeError("socket probe is not implemented on Windows");
+  if (processIssue) return probeError(processIssue, "descriptor_process_not_alive");
+  if (process.platform === "win32") return probeError("socket probe is not implemented on Windows", "descriptor_probe_failed");
   const socketIssue = await validateDescriptorSocket(descriptor.socketPath);
-  if (socketIssue) return probeError(socketIssue);
+  if (socketIssue) return probeError(socketIssue, "descriptor_socket_invalid");
   try {
     const [auth, info] = await rpcSequenceOverUnixSocket(descriptor.socketPath, [
       {
@@ -907,22 +984,29 @@ async function probeDescriptor(descriptor: Record<string, unknown>): Promise<Run
         params: {},
       },
     ]);
-    if (auth.error) return probeError("auth rejected");
-    if (info.error) return probeError(`getInfo failed: ${JSON.stringify(info.error)}`);
-    if (info.result?.type !== "webextension") return probeError("getInfo type mismatch");
-    if (info.result?.name !== descriptor.name) return probeError("getInfo name mismatch");
+    if (auth.error) return probeError("auth rejected", "descriptor_auth_rejected");
+    if (info.error) return probeError(`getInfo failed: ${JSON.stringify(info.error)}`, "descriptor_getinfo_failed");
+    if (info.result?.type !== "webextension") return probeError("getInfo type mismatch", "descriptor_getinfo_type_mismatch");
+    if (info.result?.name !== descriptor.name) return probeError("getInfo name mismatch", "descriptor_getinfo_name_mismatch");
     return {
       ok: true,
       details: runtimeDescriptorProbeDetails(info.result),
       infoResult: info.result,
     };
   } catch (error) {
-    return probeError(`socket probe failed: ${String(error)}`);
+    return probeError(`socket probe failed: ${String(error)}`, "descriptor_probe_failed");
   }
 }
 
-function probeError(message: string): RuntimeDescriptorProbeResult {
-  return { ok: false, message };
+function probeError(
+  message: string,
+  reasonCode: RuntimeDescriptorLifecycleReasonCode = "descriptor_probe_failed",
+): RuntimeDescriptorProbeResult {
+  return {
+    ok: false,
+    message,
+    runtimeDescriptorLifecycle: planRuntimeDescriptorFailure(reasonCode),
+  };
 }
 
 function runtimeDescriptorProbeDetails(infoResult: Record<string, any>): Record<string, unknown> {

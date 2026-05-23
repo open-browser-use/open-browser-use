@@ -130,6 +130,18 @@ function normalizeBackendDiagnostics(value) {
         .map((diagnostic) => deepFreeze({
           source: diagnostic.source,
           reason: diagnostic.reason,
+          ...(typeof diagnostic.lifecycle_state === "string"
+            ? { lifecycle_state: diagnostic.lifecycle_state }
+            : {}),
+          ...(typeof diagnostic.reason_code === "string"
+            ? { reason_code: diagnostic.reason_code }
+            : {}),
+          ...(typeof diagnostic.setup_lifecycle_state === "string"
+            ? { setup_lifecycle_state: diagnostic.setup_lifecycle_state }
+            : {}),
+          ...(typeof diagnostic.setup_reason_code === "string"
+            ? { setup_reason_code: diagnostic.setup_reason_code }
+            : {}),
         }))
     : [];
 }
