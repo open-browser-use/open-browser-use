@@ -49,6 +49,11 @@ impl TaskStoreHandle {
     /// Open the task store in owner-only directory `dir` on a dedicated actor
     /// thread and return a handle to it.
     ///
+    /// An `Ok(Self)` means the actor THREAD started; it does NOT guarantee the
+    /// store opened. If [`TaskStore::open`] fails inside the thread (e.g. `dir`
+    /// is not owner-only), the thread exits and the first command resolves to a
+    /// "task store actor closed" error rather than blocking.
+    ///
     /// Spawns the `obu-task-store` thread, which calls [`TaskStore::open`] and
     /// then blocks on the command channel, processing one command at a time. If
     /// the store cannot be opened the thread logs and exits, which closes the
@@ -115,5 +120,40 @@ mod tests {
         let handle = TaskStoreHandle::open(dir.path().to_path_buf()).unwrap();
         let rows = handle.list_tasks(Default::default()).await.unwrap();
         assert!(rows.is_empty());
+
+        // A clone shares the same underlying actor thread and works against the
+        // same (good) store, proving `TaskStoreHandle: Clone` is more than a
+        // formality.
+        let rows = handle.clone().list_tasks(Default::default()).await.unwrap();
+        assert!(rows.is_empty());
+    }
+
+    /// The actor's primary failure guarantee: when the store cannot open,
+    /// `list_tasks` resolves to an error and never hangs.
+    ///
+    /// We force a deterministic open failure by handing the actor a tempdir with
+    /// world-accessible (`0o777`) permissions: `TaskStore::open` calls
+    /// `validate_owner_only_dir`, which rejects any dir whose mode has group/other
+    /// bits set (`mode & 0o077 != 0`) with `PermissionDenied`. So `TaskStore::open`
+    /// returns `Err` before touching SQLite, the actor thread logs and exits, and
+    /// the command resolves to "task store actor closed".
+    ///
+    /// This is race-free: whether the send loses to the thread's rx-drop or the
+    /// command is enqueued then orphaned by the exiting thread, `list_tasks`
+    /// resolves to an error either way.
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn list_tasks_errors_when_store_fails_to_open() {
+        let dir = tempfile::tempdir().unwrap();
+        // Opposite of the passing test: world-accessible perms, which
+        // `validate_owner_only_dir` (and thus `TaskStore::open`) rejects.
+        std::fs::set_permissions(
+            dir.path(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o777),
+        )
+        .unwrap();
+        let handle = TaskStoreHandle::open(dir.path().to_path_buf()).unwrap();
+        let result = handle.list_tasks(Default::default()).await;
+        assert!(result.is_err());
     }
 }
