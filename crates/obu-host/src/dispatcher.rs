@@ -1437,3 +1437,61 @@ fn host_err_to_rpc(error: HostError) -> ErrorObject {
         None => error,
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::backends::BackendRequestContext;
+
+    /// Long-task resume inherits the dispatcher's turn-authority gate:
+    /// `RESUME_CONTROL` is a mutation-context method, so a resume request that
+    /// arrives without a `turn_id` is rejected at the dispatcher boundary
+    /// before any later browser side effects can run. This is the dispatcher
+    /// half of the contract enforced at the store level by
+    /// `task_store::record_resume_segment`.
+    #[test]
+    fn resume_control_rejected_without_turn_id() {
+        // Session id present, but no turn id => no turn authority.
+        let ctx = BackendRequestContext {
+            session_id: Some("sess-1".into()),
+            turn_id: None,
+            client_timeout_ms: None,
+        };
+        let err = require_mutation_context(methods::RESUME_CONTROL, &ctx)
+            .expect_err("resume without turn_id must be rejected");
+        assert_eq!(err.code, ErrorCode::InvalidParams);
+
+        // Empty turn id is likewise no authority.
+        let ctx_empty = BackendRequestContext {
+            session_id: Some("sess-1".into()),
+            turn_id: Some(String::new()),
+            client_timeout_ms: None,
+        };
+        assert!(
+            require_mutation_context(methods::RESUME_CONTROL, &ctx_empty).is_err(),
+            "empty turn_id must be rejected"
+        );
+
+        // Missing session id is also rejected.
+        let ctx_no_session = BackendRequestContext {
+            session_id: None,
+            turn_id: Some("turn-1".into()),
+            client_timeout_ms: None,
+        };
+        assert!(
+            require_mutation_context(methods::RESUME_CONTROL, &ctx_no_session).is_err(),
+            "resume without session_id must be rejected"
+        );
+    }
+
+    /// With both ids present, resume carries turn authority and passes the gate.
+    #[test]
+    fn resume_control_allowed_with_full_turn_authority() {
+        let ctx = BackendRequestContext {
+            session_id: Some("sess-1".into()),
+            turn_id: Some("turn-1".into()),
+            client_timeout_ms: None,
+        };
+        assert!(require_mutation_context(methods::RESUME_CONTROL, &ctx).is_ok());
+    }
+}

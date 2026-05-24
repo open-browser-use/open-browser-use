@@ -42,7 +42,9 @@ pub struct Checkpoint {
 
 /// A per-resume execution segment record.
 ///
-/// Task 5.4 elaborates the segment API; this is the minimal insert shape.
+/// Each segment marks one execution of a task bound to a single MCP turn: a
+/// long task accumulates one segment per resume, so a task that runs across
+/// several turns has several segments recorded in resume order.
 #[derive(Debug, Clone)]
 pub struct Segment {
     /// Stable identifier for the segment.
@@ -51,6 +53,18 @@ pub struct Segment {
     pub session_id: String,
     /// Turn within the session.
     pub turn_id: String,
+}
+
+impl Segment {
+    /// Create a segment bound to `session_id`/`turn_id`, generating a fresh
+    /// random `segment_id`.
+    pub fn new(session_id: impl Into<String>, turn_id: impl Into<String>) -> Self {
+        Self {
+            segment_id: uuid::Uuid::new_v4().to_string(),
+            session_id: session_id.into(),
+            turn_id: turn_id.into(),
+        }
+    }
 }
 
 /// A task loaded back from the durable store.
@@ -87,6 +101,36 @@ fn now_millis() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or(0)
+}
+
+/// Record a fresh execution segment for a task resume, bound to the current
+/// MCP turn.
+///
+/// Turn-authority gate: a resume may only record a segment when the current
+/// request carries both a non-empty `session_id` and a non-empty `turn_id`.
+/// This mirrors the dispatcher's `require_mutation_context` rule (which already
+/// rejects mutating browser methods — including session-control resume —
+/// without both ids) at the task-store level, so a resume cannot proceed to
+/// record execution or take later browser side effects without turn authority.
+/// On success the new [`Segment`] is appended and returned; on a missing/empty
+/// id the call is rejected and no segment is appended.
+pub fn record_resume_segment(
+    store: &TaskStore,
+    task_id: &str,
+    session_id: Option<&str>,
+    turn_id: Option<&str>,
+) -> Result<Segment> {
+    let session_id = session_id.unwrap_or_default();
+    let turn_id = turn_id.unwrap_or_default();
+    if session_id.is_empty() {
+        bail!("missing session_id: resume requires turn authority");
+    }
+    if turn_id.is_empty() {
+        bail!("missing turn_id: resume requires turn authority");
+    }
+    let segment = Segment::new(session_id, turn_id);
+    store.append_segment(task_id, segment.clone())?;
+    Ok(segment)
 }
 
 impl TaskStore {
@@ -302,6 +346,37 @@ impl TaskStore {
         Ok(())
     }
 
+    /// Return a task's execution segments in insertion (resume) order.
+    ///
+    /// Ordering is `started_at ASC, rowid ASC`: `started_at` is a millisecond
+    /// timestamp that can collide for two fast appends, so the implicit
+    /// `rowid` is the deterministic tiebreak that preserves insertion order.
+    pub fn segments(&self, task_id: &str) -> Result<Vec<Segment>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT segment_id, session_id, turn_id
+                 FROM task_segments
+                 WHERE task_id = ?1
+                 ORDER BY started_at ASC, rowid ASC",
+            )
+            .context("prepare segments query")?;
+        let rows = stmt
+            .query_map([task_id], |row| {
+                Ok(Segment {
+                    segment_id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    turn_id: row.get(2)?,
+                })
+            })
+            .context("query segments")?;
+        let mut segments = Vec::new();
+        for row in rows {
+            segments.push(row.context("read segment row")?);
+        }
+        Ok(segments)
+    }
+
     /// Return the current maximum event cursor for a task (0 if no events).
     pub fn event_cursor(&self, task_id: &str) -> Result<i64> {
         let cursor: Option<i64> = self
@@ -345,6 +420,78 @@ mod tests {
             std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).unwrap();
         }
         dir
+    }
+
+    /// Open a fresh store in an owner-only temp dir, leaking the dir for the
+    /// duration of the test so the SQLite file outlives the helper.
+    fn open_temp_store() -> TaskStore {
+        let dir = owner_only_tempdir();
+        let store = TaskStore::open(dir.path()).unwrap();
+        // Keep the temp dir alive for the rest of the process so the db path
+        // stays valid; tests are short-lived so the leak is harmless.
+        std::mem::forget(dir);
+        store
+    }
+
+    /// A default `NewTask` for tests that do not care about the label.
+    fn default_new_task() -> NewTask {
+        NewTask {
+            label: "task".into(),
+            schema_version: TASK_STORE_SCHEMA_VERSION,
+        }
+    }
+
+    #[test]
+    fn resume_appends_new_segment_with_current_turn() {
+        let store = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        store.append_segment(&task_id, Segment::new("s1", "t1")).unwrap();
+        // resume under a NEW turn
+        store.append_segment(&task_id, Segment::new("s1", "t2")).unwrap();
+        let segs = store.segments(&task_id).unwrap();
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs.last().unwrap().turn_id, "t2");
+    }
+
+    #[test]
+    fn record_resume_segment_binds_to_current_turn_and_spans_turns() {
+        let store = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+
+        let first = record_resume_segment(&store, &task_id, Some("s1"), Some("t1")).unwrap();
+        assert_eq!(first.session_id, "s1");
+        assert_eq!(first.turn_id, "t1");
+
+        // Resuming under a new turn appends a second segment: a single task
+        // spans multiple turns, one segment per resume.
+        let second = record_resume_segment(&store, &task_id, Some("s1"), Some("t2")).unwrap();
+        assert_eq!(second.turn_id, "t2");
+        assert_ne!(first.segment_id, second.segment_id);
+
+        let segs = store.segments(&task_id).unwrap();
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0].turn_id, "t1");
+        assert_eq!(segs[1].turn_id, "t2");
+    }
+
+    #[test]
+    fn record_resume_segment_rejects_missing_turn_authority() {
+        let store = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+
+        // No turn_id => no turn authority => rejected, no segment appended.
+        assert!(record_resume_segment(&store, &task_id, Some("s1"), None).is_err());
+        // Empty turn_id is also rejected.
+        assert!(record_resume_segment(&store, &task_id, Some("s1"), Some("")).is_err());
+        // Missing/empty session_id is rejected too.
+        assert!(record_resume_segment(&store, &task_id, None, Some("t1")).is_err());
+        assert!(record_resume_segment(&store, &task_id, Some(""), Some("t1")).is_err());
+
+        assert_eq!(
+            store.segments(&task_id).unwrap().len(),
+            0,
+            "rejected resume must not append a segment"
+        );
     }
 
     #[test]
