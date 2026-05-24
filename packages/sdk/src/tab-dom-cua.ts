@@ -2,6 +2,7 @@ import { withSessionMeta } from "./session-meta.js";
 import { Guards } from "./guards.js";
 import type { Transport } from "./wire/transport.js";
 import * as M from "./wire/methods.js";
+import type { CoordinateSpace } from "@open-browser-use/browser-control-core";
 
 export type DomCuaNode = {
   node_id: string;
@@ -25,7 +26,7 @@ export type DomCuaObservationOptions = { observationId?: string };
 export type DomCuaActionOptions = DomCuaTimeoutOptions & DomCuaModifierOptions & DomCuaObservationOptions;
 export type DomCuaActionResult = {
   node_id?: string;
-  point?: { x: number; y: number; coordinateSpace?: "visualViewport" | "layoutViewport" };
+  point?: { x: number; y: number; coordinateSpace?: CoordinateSpace };
   dispatch?: unknown;
 };
 

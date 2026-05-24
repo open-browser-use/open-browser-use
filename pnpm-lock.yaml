@@ -58,6 +58,9 @@ importers:
 
   packages/sdk:
     devDependencies:
+      '@open-browser-use/browser-control-core':
+        specifier: workspace:*
+        version: link:../browser-control-core
       '@types/node':
         specifier: 22.10.5
         version: 22.10.5

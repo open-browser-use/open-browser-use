@@ -3,11 +3,12 @@ import { getRuntimeMeta, withSessionMeta } from "./session-meta.js";
 import type { BrowserResumeControlResult } from "./browser.js";
 import type { Transport } from "./wire/transport.js";
 import * as M from "./wire/methods.js";
+import type { TaskState, ResumeCompleteStatus } from "@open-browser-use/browser-control-core";
 
 export type TaskSummary = {
   taskId: string;
   label: string;
-  state: string;
+  state: TaskState;
   schemaVersion: number;
   createdAt: number;
   segmentCount: number;
@@ -74,7 +75,7 @@ export class BrowserTasks {
     } catch (error) {
       await this.transport.sendRequest(
         M.TASKS_RESUME_COMPLETE,
-        withSessionMeta({ taskId, resumeToken: begin.resumeToken, status: "attach_failed", error: normalizeError(error) }),
+        withSessionMeta({ taskId, resumeToken: begin.resumeToken, status: "attach_failed" satisfies ResumeCompleteStatus, error: normalizeError(error) }),
         opts.timeout,
         { runtime },
       );
@@ -84,7 +85,7 @@ export class BrowserTasks {
     if (control.status === "blocked") {
       await this.transport.sendRequest(
         M.TASKS_RESUME_COMPLETE,
-        withSessionMeta({ taskId, resumeToken: begin.resumeToken, status: "blocked", repair: control.repair }),
+        withSessionMeta({ taskId, resumeToken: begin.resumeToken, status: "blocked" satisfies ResumeCompleteStatus, repair: control.repair }),
         opts.timeout,
         { runtime },
       );
@@ -93,7 +94,7 @@ export class BrowserTasks {
 
     const complete = await this.transport.sendRequest<{ segment: TaskSegmentSummary }>(
       M.TASKS_RESUME_COMPLETE,
-      withSessionMeta({ taskId, resumeToken: begin.resumeToken, status: "attached" }),
+      withSessionMeta({ taskId, resumeToken: begin.resumeToken, status: "attached" satisfies ResumeCompleteStatus }),
       opts.timeout,
       { runtime },
     );
@@ -117,7 +118,7 @@ export class BrowserTasks {
     ): Promise<BrowserTaskResumeResult> => {
       await this.transport.sendRequest(
         M.TASKS_RESUME_COMPLETE,
-        withSessionMeta({ taskId, resumeToken: begin.resumeToken, status: "observation_failed", error: wireError }),
+        withSessionMeta({ taskId, resumeToken: begin.resumeToken, status: "observation_failed" satisfies ResumeCompleteStatus, error: wireError }),
         opts.timeout,
         { runtime },
       );

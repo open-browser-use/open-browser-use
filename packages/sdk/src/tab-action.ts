@@ -1,3 +1,5 @@
+import type { CoordinateSpace } from "@open-browser-use/browser-control-core";
+
 export type ActionStatus = "succeeded" | "failed" | "blocked" | "cancelled";
 
 export type ActionEffect =
@@ -17,7 +19,7 @@ export type AgentPointerState = {
   tabId: string;
   x: number;
   y: number;
-  coordinateSpace: "visualViewport" | "layoutViewport";
+  coordinateSpace: CoordinateSpace;
   viewportRevision?: string;
   phase: "idle" | "moving" | "pressed" | "dragging" | "released" | "stale";
   buttonsDown: Array<"left" | "right" | "middle">;
