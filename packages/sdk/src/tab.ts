@@ -153,6 +153,9 @@ export type ObservationLifecycle = {
   focusRevision?: string;
   domCuaRevision?: string;
   modalRevision?: string;
+  screenshotRevision?: string;
+  visualRevision?: string;
+  annotationRevision?: string;
   invalidatedAt?: number;
   invalidity?: {
     reason: "stale" | "expired" | "consumed";

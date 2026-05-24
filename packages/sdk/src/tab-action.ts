@@ -45,7 +45,19 @@ export type CoordinateActionTarget = {
   x?: number;
   y?: number;
   observationId?: string;
+  annotationId?: string;
+  visualRevision?: string;
+  annotationRevision?: string;
 };
+
+export function coordinateTargetCarriesVisualRevisions(t: CoordinateActionTarget): boolean {
+  return (
+    t.observationId !== undefined &&
+    t.annotationId !== undefined &&
+    t.visualRevision !== undefined &&
+    t.annotationRevision !== undefined
+  );
+}
 
 export type EnvActionTarget = LocatorActionTarget | DomCuaActionTarget | CoordinateActionTarget;
 
