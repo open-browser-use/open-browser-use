@@ -1,0 +1,31 @@
+{
+  "protocolVersion": 1,
+  "cases": [
+    {
+      "name": "activeCommandAccepted",
+      "input": {
+        "generation": 1,
+        "operation": "tab_goto"
+      },
+      "expected": {
+        "result": "accepted"
+      }
+    },
+    {
+      "name": "finalizeTwoTabs",
+      "input": {
+        "tabs": [
+          { "tabId": 1, "origin": "agent", "status": "active" },
+          { "tabId": 2, "origin": "user", "status": "active" }
+        ],
+        "keep": [{ "tab_id": 2, "status": "handoff" }]
+      },
+      "expected": {
+        "effects": [
+          { "tabId": 1, "effect": "close_agent_tab" },
+          { "tabId": 2, "effect": "keep_handoff" }
+        ]
+      }
+    }
+  ]
+}
