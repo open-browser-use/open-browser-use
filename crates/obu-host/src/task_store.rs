@@ -277,16 +277,16 @@ pub struct ResumeAttachedOutcome {
 /// most one `status='pending'` row per task, so this is the at-most-one
 /// outstanding attempt that [`TaskStore::begin_resume_attempt`] reconciles
 /// against for idempotency and cross-session conflict detection.
+///
+/// Private: produced only by the private `pending_resume_attempt` and consumed
+/// only inside `begin_resume_attempt` (same module), so it is not part of the
+/// crate's public surface.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct PendingResumeAttempt {
-    /// Stable attempt id.
-    pub attempt_id: String,
-    /// Session that opened the attempt.
-    pub session_id: String,
-    /// Turn the attempt is bound to.
-    pub turn_id: String,
-    /// Attempt expiry (unix millis).
-    pub expires_at: i64,
+struct PendingResumeAttempt {
+    attempt_id: String,
+    session_id: String,
+    turn_id: String,
+    expires_at: i64,
 }
 
 /// A resume attempt resolved by token for completion (attach/block).
@@ -294,15 +294,15 @@ pub struct PendingResumeAttempt {
 /// Used internally by [`TaskStore::complete_resume_attached`] and
 /// [`TaskStore::complete_resume_blocked`]: it carries the attempt's identity and
 /// owning `(session_id, turn_id)` so the caller can materialize the turn segment
-/// and execution owner. `generation` is the generation recorded when the attempt
-/// began (retained for completeness; attach uses the caller-supplied generation).
+/// and execution owner. The attempt's stored `generation` is intentionally not
+/// surfaced: attach uses the caller-supplied current generation (the live kernel
+/// generation), not the one recorded when the attempt began.
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct AttachableAttempt {
     attempt_id: String,
     task_id: String,
     session_id: String,
     turn_id: String,
-    generation: i64,
 }
 
 /// Generate a fresh raw resume token (a random UUIDv4 in simple/hyphenless form).
@@ -1438,7 +1438,7 @@ impl TaskStore {
     fn attempt_by_token_for_attach(&self, token: &str) -> Result<Option<AttachableAttempt>> {
         self.conn
             .query_row(
-                "SELECT attempt_id, task_id, session_id, turn_id, generation
+                "SELECT attempt_id, task_id, session_id, turn_id
                  FROM task_resume_attempts
                  WHERE token_hash = ?1 AND status IN ('pending', 'attached')",
                 [token_hash(token)],
@@ -1448,7 +1448,6 @@ impl TaskStore {
                         task_id: row.get(1)?,
                         session_id: row.get(2)?,
                         turn_id: row.get(3)?,
-                        generation: row.get(4)?,
                     })
                 },
             )
@@ -1476,7 +1475,6 @@ impl TaskStore {
             task_id,
             session_id,
             turn_id,
-            generation: _,
         } = match self.attempt_by_token_for_attach(token)? {
             Some(attempt) => attempt,
             None => bail!("invalid_resume_token"),
@@ -2225,5 +2223,49 @@ mod tests {
         assert_eq!(store.segments(&task_id).unwrap().len(), 0);
         assert!(store.active_execution_owner(&task_id).unwrap().is_none());
         assert_eq!(store.events(&task_id).unwrap().last().unwrap().kind, "resume_attempt_blocked");
+    }
+
+    // Task 8 relies on rotate_resume_attempt_token to recover a wire token for a
+    // persisted pending attempt after a host restart (the in-memory raw token is
+    // gone). Rotation must mint a NEW token, invalidate the OLD one, and leave
+    // the attempt still attachable via the new token.
+    #[test]
+    fn rotate_resume_attempt_token_invalidates_old_token_and_issues_new() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        let attempt = store
+            .begin_resume_attempt(&task_id, "session-1", "turn-1", 7, 60_000)
+            .unwrap();
+        let old_token = attempt.resume_token.clone().unwrap();
+
+        // Rotation mints a fresh token distinct from the original.
+        let new_token = store.rotate_resume_attempt_token(&attempt.attempt_id).unwrap();
+        assert_ne!(new_token, old_token, "rotation must mint a new token");
+
+        // The OLD token no longer resolves (its hash was overwritten).
+        assert!(
+            store.complete_resume_attached(&old_token, 7).is_err(),
+            "old token must be rejected after rotation"
+        );
+
+        // Rotating an unknown attempt id is rejected. Tested while the attempt is
+        // still pending so a non-pending status is not what causes the failure.
+        let unknown_err = store
+            .rotate_resume_attempt_token("no-such-attempt")
+            .unwrap_err();
+        assert!(
+            unknown_err.to_string().contains("invalid_resume_attempt"),
+            "unexpected error rotating unknown attempt: {unknown_err}"
+        );
+
+        // The NEW token DOES resolve, attaching to the same task/segment. Done
+        // last because attaching moves the attempt out of 'pending'.
+        let attached = store.complete_resume_attached(&new_token, 7).unwrap();
+        assert_eq!(attached.attempt_id, attempt.attempt_id);
+        assert_eq!(attached.task_id, task_id);
+        assert_eq!(
+            store.active_execution_owner(&task_id).unwrap().unwrap().segment_id,
+            attached.segment.segment_id
+        );
     }
 }
