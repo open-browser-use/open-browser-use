@@ -460,7 +460,7 @@ impl JsRuntimeManager {
             self.set_progress_sink(Some(sink)).await;
         }
         let outcome = self
-            .exec_inner(source, timeout_ms, &exec_id, &turn_id)
+            .exec_inner(source, timeout_ms, &exec_id, &turn_id, generation)
             .await;
         if installed_progress_sink {
             self.set_progress_sink(None).await;
@@ -492,10 +492,10 @@ impl JsRuntimeManager {
         timeout_ms: Option<u64>,
         exec_id: &str,
         turn_id: &str,
+        generation: u64,
     ) -> Result<JsExecResult> {
         self.sync_module_dirs_to_kernel().await?;
         let mut result_rx = self.register_exec_waiter(exec_id).await?;
-        let generation = *self.kernel_generation.lock().await;
         let frame = json!({
             "type": "exec",
             "id": exec_id,

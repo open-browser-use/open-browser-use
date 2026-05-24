@@ -1298,6 +1298,28 @@ async fn task_methods_reject_user_runtime_params() {
         response["error"]["data"]["code"],
         "untrusted_runtime_metadata"
     );
+
+    // The bare `runtime` key in params is rejected as well, not just `_runtime`.
+    let bare_runtime = one_request(
+        Dispatcher::new_for_test(),
+        json!({
+            "jsonrpc": "2.0",
+            "method": methods::TASKS_RESUME,
+            "params": {
+                "taskId": "task-1",
+                "session_id": "session-1",
+                "turn_id": "turn-1",
+                "runtime": { "kernel_generation": 99 }
+            },
+            "id": 2,
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        bare_runtime["error"]["data"]["code"],
+        "untrusted_runtime_metadata"
+    );
 }
 
 fn frame(value: serde_json::Value) -> bytes::Bytes {
