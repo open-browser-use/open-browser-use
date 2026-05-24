@@ -25,7 +25,7 @@ use obu_host::error::Result as HostResult;
 use obu_host::methods;
 use obu_host::socket::{Listener, unix::UnixSockListener};
 use obu_wire::FrameCodec;
-use obu_wire::error::ERR_NOT_FOUND;
+use obu_wire::error::{ERR_CONFLICT, ERR_NOT_FOUND};
 
 #[tokio::test]
 async fn tasks_list_returns_empty_store() {
@@ -251,6 +251,87 @@ async fn finalize_twice_same_turn_keeps_one_segment() {
     assert_eq!(tasks["result"][0]["segmentCount"], 1);
     assert_eq!(tasks["result"][0]["eventCursor"], 2);
     assert_eq!(tasks["result"][0]["lastSegment"]["turnId"], "turn-1");
+}
+
+/// Two distinct sessions racing to resume the SAME task: the first wins the
+/// at-most-one pending-attempt slot (`begin_resume_attempt` inserts a fresh
+/// pending row), the second collides because a pending attempt for a *different*
+/// `(session_id, turn_id)` already exists and `begin_resume_attempt` bails with
+/// `task_resume_conflict` (host-mapped to `ERR_CONFLICT`).
+///
+/// The task must EXIST first, so we drive it through a SUCCESSFUL finalize on a
+/// dispatcher whose finalize session (`session-a`) is registered as agent-owned
+/// (`finalize_dispatcher`) — finalize auto-creates+binds the task (Task 10).
+/// `resume` is a task method exempt from the capability gate and from
+/// `assert_agent_owns_session`, so the resuming sessions (`session-b`/`session-c`)
+/// need NOT be registered.
+///
+/// Both resumes carry their trusted kernel generation in the frame-level
+/// `runtime` envelope (a sibling of `params`, NOT inside it). Without that
+/// envelope the FIRST resume would never reach the conflict path — it would fail
+/// earlier with `task_runtime_metadata_missing` (Finding F2), exactly as the
+/// `tasks_resume_rejects_missing_generation` test asserts.
+#[tokio::test]
+async fn concurrent_resume_same_task_returns_conflict() {
+    let dispatcher = finalize_dispatcher("session-a", "turn-a");
+    let task_id = create_task_via_finalize(&dispatcher, "session-a", "turn-a").await;
+
+    let first = dispatch_resume(&dispatcher, &task_id, "session-b", "turn-b", 7).await;
+    assert!(
+        first.get("result").is_some(),
+        "first resume should win the pending slot: {first:#}"
+    );
+
+    let second = dispatch_resume(&dispatcher, &task_id, "session-c", "turn-c", 7).await;
+    assert!(
+        second.get("result").is_none(),
+        "second resume should not succeed: {second:#}"
+    );
+    assert_eq!(second["error"]["code"], ERR_CONFLICT);
+    assert_eq!(second["error"]["data"]["code"], "task_resume_conflict");
+}
+
+/// Resume with a trusted generation envelope at the frame top level (a sibling of
+/// `params`). Reuses `dispatch_frame_for_test` (the existing raw-frame helper) so
+/// the `runtime` envelope rides the wire exactly as the SDK sends it.
+async fn dispatch_resume(
+    dispatcher: &Dispatcher,
+    task_id: &str,
+    session_id: &str,
+    turn_id: &str,
+    generation: i64,
+) -> Value {
+    dispatch_frame_for_test(
+        dispatcher,
+        json!({
+            "jsonrpc": "2.0",
+            "method": methods::TASKS_RESUME,
+            "params": { "taskId": task_id, "session_id": session_id, "turn_id": turn_id },
+            "runtime": { "kernel_generation": generation },
+            "id": 1,
+        }),
+    )
+    .await
+}
+
+/// Drive a successful finalize (which auto-creates+binds a task on a
+/// `finalize_dispatcher`) and return the resulting task id via `tasksList`.
+async fn create_task_via_finalize(
+    dispatcher: &Dispatcher,
+    session_id: &str,
+    turn_id: &str,
+) -> String {
+    let _ = dispatch_for_test(
+        dispatcher,
+        methods::FINALIZE_TABS,
+        json!({ "session_id": session_id, "turn_id": turn_id, "keep": [] }),
+    )
+    .await;
+    let tasks = dispatch_for_test(dispatcher, methods::TASKS_LIST, json!({ "limit": 10 })).await;
+    tasks["result"][0]["taskId"]
+        .as_str()
+        .expect("auto-created task id")
+        .to_string()
 }
 
 async fn dispatch_for_test(dispatcher: &Dispatcher, method: &str, params: Value) -> Value {
