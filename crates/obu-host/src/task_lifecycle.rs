@@ -27,9 +27,12 @@ pub enum TaskState {
     /// Task is being resumed; continuity is still being re-established.
     Resuming,
     /// Resumption could not prove continuity; manual or automated repair is
-    /// required before the task can continue.
+    /// required, after which the task re-enters via [`TaskState::Resuming`]
+    /// (it may not jump directly to [`TaskState::Running`]).
     RepairRequired,
-    /// Task cannot make forward progress and is blocked pending intervention.
+    /// Task cannot make forward progress and is blocked pending intervention;
+    /// recovery routes back through [`TaskState::Resuming`] rather than
+    /// directly to [`TaskState::Running`].
     Blocked,
     /// Task finished successfully. Terminal.
     Completed,
@@ -71,8 +74,11 @@ fn allowed_transitions(state: TaskState) -> &'static [TaskState] {
         WaitingForHuman => &[Running, PausedYielded, Resuming, Cancelling, Blocked, Failed],
         PausedYielded => &[Resuming, WaitingForHuman, Cancelling, Blocked, Failed],
         Resuming => &[Running, RepairRequired, Blocked, Cancelling, Failed],
-        RepairRequired => &[Resuming, Running, Cancelling, Blocked, Failed],
-        Blocked => &[Resuming, Running, WaitingForHuman, Cancelling, Failed],
+        // RepairRequired and Blocked must re-enter through Resuming, where
+        // continuity/authority is re-established; they may not jump straight to
+        // Running (Tasks 5.2 and 5.7 project resume-safety on this).
+        RepairRequired => &[Resuming, Cancelling, Failed],
+        Blocked => &[Resuming, WaitingForHuman, Cancelling, Failed],
         Cancelling => &[Cancelled, Failed],
         Completed | Cancelled | Failed => &[],
     }
@@ -154,8 +160,9 @@ mod tests {
         assert_eq!(TaskLifecycle::default().state(), TaskState::Created);
     }
 
+    // Finding 9
     #[test]
-    fn cancelling_path_from_waiting_for_human(/* Finding 9 */) {
+    fn cancelling_path_from_waiting_for_human() {
         let mut t = TaskLifecycle::new();
         t.transition(TaskState::Running).unwrap();
         t.transition(TaskState::WaitingForHuman).unwrap();
@@ -164,8 +171,9 @@ mod tests {
         assert_eq!(t.state(), TaskState::Cancelled);
     }
 
+    // Finding 9
     #[test]
-    fn cancelling_path_from_paused_yielded(/* Finding 9 */) {
+    fn cancelling_path_from_paused_yielded() {
         let mut t = TaskLifecycle::new();
         t.transition(TaskState::Running).unwrap();
         t.transition(TaskState::PausedYielded).unwrap();
@@ -179,6 +187,45 @@ mod tests {
         let mut t = TaskLifecycle::new();
         t.transition(TaskState::Running).unwrap();
         t.transition(TaskState::PausedYielded).unwrap();
+        t.transition(TaskState::Resuming).unwrap();
+        t.transition(TaskState::Running).unwrap();
+        assert_eq!(t.state(), TaskState::Running);
+    }
+
+    #[test]
+    fn blocked_and_repair_required_cannot_jump_to_running() {
+        // Blocked -> Running is rejected (must route through Resuming).
+        let mut blocked = TaskLifecycle::new();
+        blocked.transition(TaskState::Running).unwrap();
+        blocked.transition(TaskState::Blocked).unwrap();
+        assert!(blocked.transition(TaskState::Running).is_err());
+        assert_eq!(blocked.state(), TaskState::Blocked);
+
+        // RepairRequired -> Running is rejected (must route through Resuming).
+        let mut repair = TaskLifecycle::new();
+        repair.transition(TaskState::Running).unwrap();
+        repair.transition(TaskState::Resuming).unwrap();
+        repair.transition(TaskState::RepairRequired).unwrap();
+        assert!(repair.transition(TaskState::Running).is_err());
+        assert_eq!(repair.state(), TaskState::RepairRequired);
+    }
+
+    #[test]
+    fn blocked_recovers_via_resuming_then_running() {
+        let mut t = TaskLifecycle::new();
+        t.transition(TaskState::Running).unwrap();
+        t.transition(TaskState::Blocked).unwrap();
+        t.transition(TaskState::Resuming).unwrap();
+        t.transition(TaskState::Running).unwrap();
+        assert_eq!(t.state(), TaskState::Running);
+    }
+
+    #[test]
+    fn repair_required_recovers_via_resuming_then_running() {
+        let mut t = TaskLifecycle::new();
+        t.transition(TaskState::Running).unwrap();
+        t.transition(TaskState::Resuming).unwrap();
+        t.transition(TaskState::RepairRequired).unwrap();
         t.transition(TaskState::Resuming).unwrap();
         t.transition(TaskState::Running).unwrap();
         assert_eq!(t.state(), TaskState::Running);
