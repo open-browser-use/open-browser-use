@@ -7,6 +7,7 @@
 
 pub mod backends;
 pub mod cli;
+pub mod coordinate_space;
 pub mod diagnostics;
 pub mod dispatcher;
 pub mod error;

@@ -437,7 +437,7 @@ fn action_point_result(node_id: Option<&str>, x: f64, y: f64, dispatch: Value) -
         "point": {
             "x": x,
             "y": y,
-            "coordinateSpace": "visualViewport",
+            "coordinateSpace": crate::coordinate_space::VISUAL_VIEWPORT,
         },
         "dispatch": dispatch,
     });

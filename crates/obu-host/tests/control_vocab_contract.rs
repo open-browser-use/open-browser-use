@@ -41,3 +41,34 @@ fn resume_status_vocab_matches_fixture() {
         .collect();
     assert_eq!(got, fixture_set(&fixture(), "resumeCompleteStatuses"));
 }
+
+fn serde_str<T: serde::Serialize>(value: &T) -> String {
+    serde_json::to_value(value)
+        .expect("serialize")
+        .as_str()
+        .expect("enum serializes to a string")
+        .to_string()
+}
+
+#[test]
+fn tab_origin_vocab_matches_fixture() {
+    use obu_host::tab_state::TabOrigin;
+    let got: BTreeSet<String> = TabOrigin::ALL.iter().map(serde_str).collect();
+    assert_eq!(got, fixture_set(&fixture(), "tabOrigins"));
+}
+
+#[test]
+fn tab_status_vocab_matches_fixture() {
+    use obu_host::tab_state::TabStatus;
+    let got: BTreeSet<String> = TabStatus::ALL.iter().map(serde_str).collect();
+    assert_eq!(got, fixture_set(&fixture(), "tabStatuses"));
+}
+
+#[test]
+fn coordinate_space_vocab_matches_fixture() {
+    let got: BTreeSet<String> = obu_host::coordinate_space::ALL
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    assert_eq!(got, fixture_set(&fixture(), "coordinateSpaces"));
+}
