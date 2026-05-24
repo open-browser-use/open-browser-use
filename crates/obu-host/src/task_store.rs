@@ -422,15 +422,15 @@ mod tests {
         dir
     }
 
-    /// Open a fresh store in an owner-only temp dir, leaking the dir for the
-    /// duration of the test so the SQLite file outlives the helper.
-    fn open_temp_store() -> TaskStore {
+    /// Open a fresh store in an owner-only temp dir.
+    ///
+    /// Returns the `TempDir` alongside the store so the caller can bind it for
+    /// the test scope: the `TaskStore` does not own the dir, so the dir must
+    /// outlive it via RAII (dropping the dir removes the SQLite file).
+    fn open_temp_store() -> (TaskStore, tempfile::TempDir) {
         let dir = owner_only_tempdir();
         let store = TaskStore::open(dir.path()).unwrap();
-        // Keep the temp dir alive for the rest of the process so the db path
-        // stays valid; tests are short-lived so the leak is harmless.
-        std::mem::forget(dir);
-        store
+        (store, dir)
     }
 
     /// A default `NewTask` for tests that do not care about the label.
@@ -443,7 +443,7 @@ mod tests {
 
     #[test]
     fn resume_appends_new_segment_with_current_turn() {
-        let store = open_temp_store();
+        let (store, _dir) = open_temp_store();
         let task_id = store.create_task(default_new_task()).unwrap();
         store.append_segment(&task_id, Segment::new("s1", "t1")).unwrap();
         // resume under a NEW turn
@@ -455,7 +455,7 @@ mod tests {
 
     #[test]
     fn record_resume_segment_binds_to_current_turn_and_spans_turns() {
-        let store = open_temp_store();
+        let (store, _dir) = open_temp_store();
         let task_id = store.create_task(default_new_task()).unwrap();
 
         let first = record_resume_segment(&store, &task_id, Some("s1"), Some("t1")).unwrap();
@@ -476,7 +476,7 @@ mod tests {
 
     #[test]
     fn record_resume_segment_rejects_missing_turn_authority() {
-        let store = open_temp_store();
+        let (store, _dir) = open_temp_store();
         let task_id = store.create_task(default_new_task()).unwrap();
 
         // No turn_id => no turn authority => rejected, no segment appended.
