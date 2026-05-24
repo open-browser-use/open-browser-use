@@ -125,6 +125,9 @@ export type {
   ClickByTextInput,
   FillFormInput,
   SubmitAndObserveInput,
+  DownloadAfterClickInput,
+  DownloadAfterClickOptions,
+  DownloadAfterClickResult,
 } from "./tab-flows.js";
 export { TabRead } from "./tab-read.js";
 export type { TabReadDeps, ExtractTableInput, ExtractTableResult } from "./tab-read.js";

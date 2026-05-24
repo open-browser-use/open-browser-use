@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { ActionResult, EnvAction, LocatorActionTarget } from "../src/tab-action.js";
 import type { TabObservation } from "../src/tab.js";
 import { TabFlows } from "../src/tab-flows.js";
+import { Download } from "../src/download.js";
+import type { Transport } from "../src/wire/transport.js";
 
 function fakeObservation(seq: number): TabObservation {
   return {
@@ -116,6 +118,68 @@ describe("TabFlows.fillForm edge cases", () => {
     });
     const result = await flows.fillForm({ fields: [] });
     expect(result.toJSON().status).toBe("succeeded");
+  });
+});
+
+describe("TabFlows.downloadAfterClick", () => {
+  const fakeTransport = {} as unknown as Transport;
+
+  it("reuses the existing host Download handle returned by waitForDownload", async () => {
+    let seq = 0;
+    const stepCalls: EnvAction[] = [];
+    const flows = new TabFlows({
+      observe: async () => { seq += 1; return fakeObservation(seq); },
+      step: async (action) => { stepCalls.push(action); return fakeActionResult(action); },
+    });
+
+    const existing = new Download(fakeTransport, "dl-1");
+    const dl = await flows.downloadAfterClick(
+      { trigger: { source: "locator", selector: "#dl" } },
+      { waitForDownload: async () => existing },
+    );
+
+    // must reuse the existing host Download handle, not a new stale-handle model
+    expect(dl.download).toBeInstanceOf(Download);
+    expect(dl.download).toBe(existing);
+    expect(dl.download.id).toBe("dl-1");
+
+    // the trigger click carries the current observation id
+    expect(stepCalls.length).toBe(1);
+    expect(stepCalls[0].kind).toBe("locator.click");
+    expect((stepCalls[0].target as LocatorActionTarget).observationId).toBe("obs-1");
+
+    // reaches a terminal high-level state
+    expect(dl.toJSON().status).toBe("succeeded");
+  });
+
+  it("transitions through the high-level state machine including the post-click boundary", async () => {
+    let seq = 0;
+    const flows = new TabFlows({
+      observe: async () => { seq += 1; return fakeObservation(seq); },
+      step: async (action) => fakeActionResult(action),
+    });
+    const dl = await flows.downloadAfterClick(
+      { trigger: { source: "locator", selector: "#dl" } },
+      { waitForDownload: async () => new Download(fakeTransport, "dl-2") },
+    );
+    const states = dl.toJSON().trace;
+    expect(states).toContain("running_step");
+    expect(states).toContain("waiting_for_effect");
+    expect(states).toContain("reconciling");
+    expect(states[states.length - 1]).toBe("succeeded");
+  });
+
+  it("ends partial when the trigger click does not succeed", async () => {
+    let seq = 0;
+    const flows = new TabFlows({
+      observe: async () => { seq += 1; return fakeObservation(seq); },
+      step: async (action) => fakeActionResult(action, "failed"),
+    });
+    const dl = await flows.downloadAfterClick(
+      { trigger: { source: "locator", selector: "#dl" } },
+      { waitForDownload: async () => new Download(fakeTransport, "dl-3") },
+    );
+    expect(dl.toJSON().status).toBe("partial");
   });
 });
 

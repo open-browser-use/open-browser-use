@@ -1,6 +1,7 @@
 import { createHighLevelActionResult, HighLevelActionResult } from "./high-level-action.js";
 import type { ActionResult, EnvAction, LocatorActionTarget } from "./tab-action.js";
 import type { TabObservation, TabObserveOptions } from "./tab.js";
+import type { Download } from "./download.js";
 
 export type TabFlowsDeps = {
   observe: (opts?: TabObserveOptions) => Promise<TabObservation>;
@@ -24,6 +25,27 @@ export type FillFormInput = {
   fields: Array<{ name: string; value: string; selector?: string }>;
   submit?: LocatorActionTarget;
 };
+
+export type DownloadAfterClickInput = {
+  trigger: LocatorActionTarget;
+};
+
+/**
+ * Options for {@link TabFlows.downloadAfterClick}. The `waitForDownload` dep
+ * surfaces the existing host {@link Download} handle (e.g. the one resolved by
+ * the live transport when the browser fires a download event), so the flow does
+ * NOT create a second stale-handle model.
+ */
+export type DownloadAfterClickOptions = {
+  waitForDownload: () => Promise<Download>;
+};
+
+/**
+ * Result of {@link TabFlows.downloadAfterClick}: the high-level action result
+ * with the existing host {@link Download} handle attached. The handle is a
+ * process-local runtime object and is intentionally NOT part of `toJSON()`.
+ */
+export type DownloadAfterClickResult = HighLevelActionResult & { download: Download };
 
 export class TabFlows {
   constructor(private readonly deps: TabFlowsDeps) {}
@@ -211,6 +233,43 @@ export class TabFlows {
 
     result.transition(lastStatus === "succeeded" ? "succeeded" : "partial");
     return result;
+  }
+
+  async downloadAfterClick(
+    input: DownloadAfterClickInput,
+    opts: DownloadAfterClickOptions,
+  ): Promise<DownloadAfterClickResult> {
+    const result = createHighLevelActionResult("downloadAfterClick");
+
+    result.transition("observing");
+    const before = await this.deps.observe({ mode: "actionable" });
+
+    result.transition("planning_steps");
+    result.transition("preflighting_steps");
+    result.transition("running_step");
+    const clickStep = await this.deps.step({
+      kind: "locator.click",
+      target: { ...input.trigger, observationId: before.observationId },
+    });
+    result.recordStep({
+      description: "click download trigger",
+      traceValues: [{ kind: "selector", value: input.trigger.selector }],
+      primitiveResult: clickStep,
+    });
+
+    // The click may navigate or mutate the page; await the existing host
+    // Download handle as the effect of the click.
+    result.transition("waiting_for_effect");
+    const download = await opts.waitForDownload();
+
+    // BOUNDARY: re-observe after the download effect (observations.after).
+    result.transition("reconciling");
+    await this.deps.observe({ mode: "actionable" });
+    result.transition(clickStep.status === "succeeded" ? "succeeded" : "partial");
+
+    // Attach the existing Download handle as a process-local runtime field; it
+    // is deliberately excluded from toJSON() since it is not serializable.
+    return Object.assign(result, { download });
   }
 
   private locateByText(observation: TabObservation, text: string): LocatorActionTarget {
