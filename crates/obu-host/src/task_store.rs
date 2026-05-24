@@ -42,6 +42,65 @@ pub struct Checkpoint {
     pub payload: String,
 }
 
+/// A task-level event appended to a task's monotonic event log.
+///
+/// Task-level events are the durable record that *links* a task's per-turn
+/// execution segments together — e.g. a `"resumed"` or `"segment_started"`
+/// event recorded when a long task is picked back up under a new turn. They
+/// live at the task granularity (not the segment granularity) precisely so the
+/// episode export can stitch the turn-segmented sections into one task episode.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TaskEvent {
+    /// Monotonic cursor for the event (1-based, assigned by [`TaskStore::append_event`]).
+    pub cursor: i64,
+    /// Stable event kind discriminator (e.g. `"resumed"`, `"segment_started"`).
+    pub kind: String,
+    /// Opaque event payload.
+    pub payload: String,
+}
+
+/// One turn-bound section of a multi-turn task episode.
+///
+/// Finding 4: a long task spans multiple turns, accumulating one execution
+/// segment per resume. Each [`EpisodeTurnSection`] is exactly one such segment,
+/// so the episode is *segmented by turn*. Every section carries BOTH the
+/// `task_id` and the active `turn_id` (and the owning `session_id`): at the
+/// store/segment granularity this is how "all task actions/observations carry
+/// both taskId and the active turnId" is expressed. The store deliberately does
+/// not persist SDK observation ids (Finding 10), so the segment is the unit.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EpisodeTurnSection {
+    /// The task this section belongs to.
+    pub task_id: String,
+    /// Session that owned the turn this section executed under.
+    pub session_id: String,
+    /// The active turn this section was bound to.
+    pub turn_id: String,
+    /// Stable identifier of the underlying execution segment.
+    pub segment_id: String,
+    /// Kernel generation recorded for the segment, if any.
+    pub generation: Option<i64>,
+}
+
+/// A multi-turn task episode, segmented by turn and linked by task-level events.
+///
+/// Finding 4: a single long task spans several MCP turns. [`turns`] holds one
+/// [`EpisodeTurnSection`] per execution segment, in resume order; [`events`]
+/// holds the task-level events that link those per-turn sections into one
+/// coherent episode.
+///
+/// [`turns`]: EpisodeExport::turns
+/// [`events`]: EpisodeExport::events
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct EpisodeExport {
+    /// The exported task.
+    pub task_id: String,
+    /// Per-turn sections in resume order (one per execution segment).
+    pub turns: Vec<EpisodeTurnSection>,
+    /// Task-level events linking the per-turn sections, in ascending cursor order.
+    pub events: Vec<TaskEvent>,
+}
+
 /// A per-resume execution segment record.
 ///
 /// Each segment marks one execution of a task bound to a single MCP turn: a
@@ -595,6 +654,83 @@ impl TaskStore {
         Ok(cursor.unwrap_or(0))
     }
 
+    /// Append a task-level event, assigning the next monotonic cursor.
+    ///
+    /// The cursor is `event_cursor(task_id) + 1` (1-based, gap-free for a single
+    /// process), so the first event on a task gets cursor `1`. These task-level
+    /// events are what *link* a long task's per-turn execution segments together
+    /// (e.g. a `"resumed"` or `"segment_started"` marker) and are surfaced by
+    /// [`TaskStore::export_episode`]. Returns the assigned cursor.
+    pub fn append_event(&self, task_id: &str, kind: &str, payload: &str) -> Result<i64> {
+        let cursor = self.event_cursor(task_id)? + 1;
+        self.conn
+            .execute(
+                "INSERT INTO task_events (task_id, cursor, kind, payload, at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                rusqlite::params![task_id, cursor, kind, payload, now_millis()],
+            )
+            .context("insert task event")?;
+        Ok(cursor)
+    }
+
+    /// Return a task's task-level events in ascending cursor order.
+    pub fn events(&self, task_id: &str) -> Result<Vec<TaskEvent>> {
+        let mut stmt = self
+            .conn
+            .prepare(
+                "SELECT cursor, kind, payload
+                 FROM task_events
+                 WHERE task_id = ?1
+                 ORDER BY cursor ASC",
+            )
+            .context("prepare events query")?;
+        let rows = stmt
+            .query_map([task_id], |row| {
+                Ok(TaskEvent {
+                    cursor: row.get(0)?,
+                    kind: row.get(1)?,
+                    payload: row.get(2)?,
+                })
+            })
+            .context("query events")?;
+        let mut events = Vec::new();
+        for row in rows {
+            events.push(row.context("read event row")?);
+        }
+        Ok(events)
+    }
+
+    /// Export a long task as a turn-segmented episode.
+    ///
+    /// Finding 4: a long task spans multiple MCP turns, accumulating one
+    /// execution segment per resume. This export is therefore *segmented by
+    /// turn*: it reads the task's execution segments (in resume order) and
+    /// emits one [`EpisodeTurnSection`] per segment, each tagged with the
+    /// `task_id` and the active `(session_id, turn_id)` it ran under, then
+    /// reads the task-level events that *link* those per-turn sections into one
+    /// coherent episode. The store does not persist SDK observation ids
+    /// (Finding 10), so the execution segment is the unit of turn-bound
+    /// attribution.
+    pub fn export_episode(&self, task_id: &str) -> Result<EpisodeExport> {
+        let turns = self
+            .segments(task_id)?
+            .into_iter()
+            .map(|seg| EpisodeTurnSection {
+                task_id: task_id.to_string(),
+                session_id: seg.session_id,
+                turn_id: seg.turn_id,
+                segment_id: seg.segment_id,
+                generation: seg.generation,
+            })
+            .collect();
+        let events = self.events(task_id)?;
+        Ok(EpisodeExport {
+            task_id: task_id.to_string(),
+            turns,
+            events,
+        })
+    }
+
     /// Update a task's persisted coarse state.
     ///
     /// Writes the stable string form (see [`TaskState::as_str`]) into the
@@ -978,6 +1114,77 @@ mod tests {
             segs[0].generation, None,
             "pre-existing v1 segment has no recorded generation after migration"
         );
+    }
+
+    // Finding 4: a long task spans multiple turns (one segment per resume), so
+    // its episode export is segmented by turn: one section per `(session,turn)`
+    // segment, in resume order, linked by task-level events. Every section
+    // carries both the `task_id` and the active `turn_id`.
+    #[test]
+    fn task_spanning_two_turns_exports_two_turn_segmented_sections() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+
+        // Two turns: one segment per resume.
+        store.append_segment(&task_id, Segment::new("s1", "t1")).unwrap();
+        store.append_segment(&task_id, Segment::new("s1", "t2")).unwrap();
+
+        // A task-level linking event spanning the segments.
+        let cursor = store.append_event(&task_id, "resumed", "to t2").unwrap();
+        assert_eq!(cursor, 1);
+
+        let ep = store.export_episode(&task_id).unwrap();
+
+        // One turn-segmented section per segment, in resume order.
+        assert_eq!(ep.turns.len(), 2);
+        assert_eq!(ep.turns[0].turn_id, "t1");
+        assert_eq!(ep.turns[1].turn_id, "t2");
+
+        // Every section carries both the task_id and a non-empty active turn_id.
+        for section in &ep.turns {
+            assert_eq!(section.task_id, task_id, "section must carry task_id");
+            assert!(!section.turn_id.is_empty(), "section must carry active turn_id");
+        }
+
+        // Task-level linking events are exported alongside the sections.
+        assert!(ep.events.len() >= 1, "linking events must be exported");
+        assert!(
+            ep.events
+                .iter()
+                .any(|e| e.kind == "resumed" && e.payload == "to t2"),
+            "exported events must contain the appended task-level link"
+        );
+        assert_eq!(ep.task_id, task_id);
+    }
+
+    #[test]
+    fn append_event_assigns_monotonic_cursors() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+
+        let c1 = store.append_event(&task_id, "segment_started", "a").unwrap();
+        let c2 = store.append_event(&task_id, "resumed", "b").unwrap();
+        assert_eq!(c1, 1);
+        assert_eq!(c2, 2);
+
+        let events = store.events(&task_id).unwrap();
+        assert_eq!(events.len(), 2);
+        assert_eq!(events[0].cursor, 1);
+        assert_eq!(events[0].kind, "segment_started");
+        assert_eq!(events[0].payload, "a");
+        assert_eq!(events[1].cursor, 2);
+        assert_eq!(events[1].kind, "resumed");
+        assert_eq!(events[1].payload, "b");
+    }
+
+    #[test]
+    fn export_episode_of_task_without_segments_has_no_turns() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        let ep = store.export_episode(&task_id).unwrap();
+        assert_eq!(ep.task_id, task_id);
+        assert_eq!(ep.turns.len(), 0);
+        assert_eq!(ep.events.len(), 0);
     }
 
     #[test]
