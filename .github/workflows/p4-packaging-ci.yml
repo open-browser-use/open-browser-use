@@ -33,6 +33,9 @@ jobs:
       - name: Wire method generation check
         run: node scripts/generate-wire-methods.mjs --check
 
+      - name: Error code generation check
+        run: node scripts/generate-error-codes.mjs --check
+
       - name: Install JS dependencies
         run: pnpm install --frozen-lockfile
 
