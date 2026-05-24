@@ -24,6 +24,7 @@ docs/*
 .DS_Store
 .env
 .env.local
+.superpowers/
 /target
 **/node_modules
 **/*.snap.new

@@ -266,6 +266,7 @@ host = documentElement.children[0];
 const cursor = host.shadowChildren[2];
 assert.equal(cursor.style.transform, "translate3d(10px, 21px, 0)");
 assert.match(cursor.children[0].style.transform, /rotate\(-44\.00deg\)/);
+assert.doesNotMatch(cursor.children[0].style.background, /ffc400|f2a900/i);
 await waitFor(() => sentRuntimeMessages.some((message) => message.type === "OBU_CURSOR_ARRIVED" && message.sequence === 1));
 
 responses = runtimeMessages.emit({ type: "OBU_CURSOR_EVENT", kind: "release", x: 10, y: 21, button: "left" });
@@ -275,6 +276,7 @@ assert.equal(host.shadowChildren[1].children.length, 0);
 responses = runtimeMessages.emit({ type: "OBU_CURSOR_EVENT", kind: "click", x: 10, y: 21, button: "left" });
 assert.deepEqual(responses, [{ ok: true, kind: "click", sequence: undefined }]);
 assert.equal(host.shadowChildren[1].children.length, 1);
+assert.match(host.shadowChildren[1].children[0].style.background, /ffc400|f2a900/i);
 
 responses = runtimeMessages.emit({ type: "OBU_CURSOR_HIDE" });
 assert.deepEqual(responses, [{ ok: true }]);
