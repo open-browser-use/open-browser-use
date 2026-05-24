@@ -156,7 +156,7 @@ export class TabFlows {
     let lastStatus: ActionResult["status"] = "succeeded";
 
     for (let i = 0; i < input.fields.length; i++) {
-      const field = input.fields[i];
+      const field = input.fields[i]!;
       result.transition("running_step");
       const selector = field.selector ?? `[name="${field.name}"]`;
       const step = await this.deps.step({
