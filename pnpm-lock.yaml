@@ -41,6 +41,10 @@ importers:
         version: 5.7.3
 
   packages/extension:
+    dependencies:
+      '@open-browser-use/browser-control-core':
+        specifier: workspace:*
+        version: link:../browser-control-core
     devDependencies:
       c8:
         specifier: 10.1.3

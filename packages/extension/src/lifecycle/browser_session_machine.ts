@@ -1,11 +1,20 @@
 import type {
   BrowserSession,
-  BrowserSessionFinalizeFailureSummary,
-  BrowserSessionLifecycle,
-  BrowserTurnLifecycle,
   SessionTab,
   TabOrigin,
 } from "../session_store.js";
+
+// Pure protocol primitives now live in the browser-control-core package.
+// Re-export them so the extension's existing importers keep resolving every symbol.
+export {
+  activeSessionLifecycle,
+  endedTurnLifecycle,
+  failedTurnLifecycle,
+  finalizingTurnLifecycle,
+  humanTakeoverLifecycle,
+  openTurnLifecycle,
+  yieldedTurnLifecycle,
+} from "@open-browser-use/browser-control-core";
 
 export type SessionCleanupMode = "stop" | "unavailable";
 
@@ -54,44 +63,6 @@ export type CleanupSessionTabStep = {
   row: SessionTab;
   effect: CleanupSessionTabEffect;
 };
-
-export function activeSessionLifecycle(activeTabId: number | undefined): BrowserSessionLifecycle {
-  return activeTabId === undefined ? { kind: "active" } : { kind: "active", activeTabId };
-}
-
-export function humanTakeoverLifecycle(activeTabId: number | undefined): BrowserSessionLifecycle {
-  return activeTabId === undefined ? { kind: "human_takeover" } : { kind: "human_takeover", activeTabId };
-}
-
-export function openTurnLifecycle(sessionId: string, turnId: string): BrowserTurnLifecycle {
-  return { kind: "open", sessionId, turnId };
-}
-
-export function finalizingTurnLifecycle(sessionId: string, turnId: string): BrowserTurnLifecycle {
-  return { kind: "finalizing", sessionId, turnId };
-}
-
-export function yieldedTurnLifecycle(sessionId: string, turnId: string): BrowserTurnLifecycle {
-  return { kind: "yielded", sessionId, turnId };
-}
-
-export function endedTurnLifecycle(
-  sessionId: string,
-  turnId: string,
-  failures: BrowserSessionFinalizeFailureSummary[] | undefined,
-): BrowserTurnLifecycle {
-  if (failures && failures.length > 0) return { kind: "ended_partial", sessionId, turnId, failures };
-  return { kind: "ended", sessionId, turnId, finalization: "ok" };
-}
-
-export function failedTurnLifecycle(
-  sessionId: string,
-  turnId: string,
-  errorCode: string,
-  diagnostics: unknown[],
-): BrowserTurnLifecycle {
-  return { kind: "failed", sessionId, turnId, errorCode, diagnostics };
-}
 
 export function sessionTabForOrigin(tabId: number, origin: TabOrigin): SessionTab {
   return { tabId, origin, status: "active" };

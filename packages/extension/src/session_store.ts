@@ -1,4 +1,22 @@
+import type {
+  BrowserSessionCleanupFailureSummary,
+  BrowserSessionFinalizeFailureSummary,
+  BrowserSessionLifecycle,
+  BrowserTurnLifecycle,
+  SessionTab as CoreSessionTab,
+  TabOrigin,
+  TabStatus,
+} from "@open-browser-use/browser-control-core";
 import type { CursorTarget } from "./overlay_coordinator.js";
+
+export type {
+  BrowserSessionCleanupFailureSummary,
+  BrowserSessionFinalizeFailureSummary,
+  BrowserSessionLifecycle,
+  BrowserTurnLifecycle,
+  TabOrigin,
+  TabStatus,
+};
 
 export type BrowserSession = {
   currentTurnId: string;
@@ -15,51 +33,11 @@ export type BrowserSession = {
   label?: string;
 };
 
-export type TabOrigin = "agent" | "user";
-export type TabStatus = "active" | "handoff" | "deliverable";
-
-export type SessionTab = {
-  tabId: number;
-  origin: TabOrigin;
-  status: TabStatus;
-  lastCursor?: CursorTarget;
-};
-
-export type BrowserSessionLifecycle =
-  | { kind: "active"; activeTabId?: number }
-  | { kind: "human_takeover"; activeTabId?: number }
-  | { kind: "resuming"; repairPlanId: string }
-  | { kind: "finalizing"; turnId: string }
-  | { kind: "finalize_partial"; turnId: string; failures: BrowserSessionFinalizeFailureSummary[] }
-  | { kind: "finalize_failed"; turnId: string; errorCode: string; errorMessage: string }
-  | { kind: "cleanup_failed"; turnId?: string; failures: BrowserSessionCleanupFailureSummary[] }
-  | { kind: "stale"; reason: string };
-
-export type BrowserTurnLifecycle =
-  | { kind: "idle" }
-  | { kind: "open"; sessionId: string; turnId: string }
-  | { kind: "yielded"; sessionId: string; turnId: string }
-  | { kind: "finalizing"; sessionId: string; turnId: string }
-  | { kind: "ended"; sessionId: string; turnId: string; finalization: "ok" }
-  | { kind: "ended_partial"; sessionId: string; turnId: string; failures: BrowserSessionFinalizeFailureSummary[] }
-  | { kind: "failed"; sessionId: string; turnId: string; errorCode: string; diagnostics: unknown[] };
+export type SessionTab = CoreSessionTab & { lastCursor?: CursorTarget };
 
 export type BrowserSessionFinalizeDiagnostic =
   | { kind: "finalize_partial"; turnId: string; failures: BrowserSessionFinalizeFailureSummary[] }
   | { kind: "finalize_failed"; turnId: string; errorCode: string; errorMessage: string; failures: BrowserSessionFinalizeFailureSummary[] };
-
-export type BrowserSessionFinalizeFailureSummary = {
-  tabId?: number;
-  desiredStatus?: string;
-  errorCode: string;
-  errorMessage: string;
-};
-
-export type BrowserSessionCleanupFailureSummary = {
-  tabId?: number;
-  errorCode?: string;
-  errorMessage: string;
-};
 
 export type PersistedBrowserSessionState = {
   version: 1;
