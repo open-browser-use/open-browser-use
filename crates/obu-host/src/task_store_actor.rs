@@ -107,12 +107,15 @@ impl TaskStoreHandle {
                         return;
                     }
                 };
-                // Raw resume tokens minted this process lifetime, keyed by
-                // attempt id. The store persists only token *hashes*, never the
-                // raw token, so this in-memory map is the only place the raw
-                // wire token lives. It is intentionally process-local: after a
-                // host restart it starts empty, and the rotate-on-miss path
-                // below re-mints a token without double-counting the attempt.
+                // Raw resume tokens for in-flight attempts, keyed by attempt id.
+                // The store persists only token *hashes*, never the raw token,
+                // so this in-memory map is the only place the raw wire token
+                // lives. It is intentionally process-local: after a host restart
+                // it starts empty, and the rotate-on-miss path below re-mints a
+                // token without double-counting the attempt. Entries are removed
+                // when an attempt reaches a terminal state (attached/blocked); it
+                // is otherwise bounded by the set of currently-pending attempts
+                // over this process lifetime.
                 let mut raw_resume_tokens: HashMap<String, String> = HashMap::new();
                 // Blocking receive: this thread owns the store and processes
                 // commands serially, so the single-writer invariant holds. We
@@ -130,11 +133,23 @@ impl TaskStoreHandle {
                             );
                         }
                         TaskStoreCommand::Export { task_id, reply } => {
-                            let _ = reply.send(
-                                store
-                                    .export_episode(&task_id)
-                                    .map_err(|error| error.to_string()),
-                            );
+                            // §13: export of an unknown id must surface an
+                            // explicit existence failure, not an empty episode.
+                            // Checked here on the actor thread so it shares the
+                            // single round trip with `export_episode`.
+                            let result = store
+                                .task_exists(&task_id)
+                                .map_err(|error| error.to_string())
+                                .and_then(|exists| {
+                                    if exists {
+                                        store
+                                            .export_episode(&task_id)
+                                            .map_err(|error| error.to_string())
+                                    } else {
+                                        Err("unknown_task".to_string())
+                                    }
+                                });
+                            let _ = reply.send(result);
                         }
                         TaskStoreCommand::ResumeBegin {
                             task_id,
@@ -167,6 +182,9 @@ impl TaskStoreHandle {
                                     serde_json::to_value(outcome.segment)
                                         .map_err(|error| error.to_string())
                                 });
+                            // Terminal state reached: evict the cached raw token
+                            // so the map stays bounded.
+                            evict_resume_token(&mut raw_resume_tokens, &token);
                             let _ = reply.send(result);
                         }
                         TaskStoreCommand::ResumeCompleteBlocked {
@@ -174,11 +192,13 @@ impl TaskStoreHandle {
                             payload,
                             reply,
                         } => {
-                            let _ = reply.send(
-                                store
-                                    .complete_resume_blocked(&token, payload)
-                                    .map_err(|error| error.to_string()),
-                            );
+                            let result = store
+                                .complete_resume_blocked(&token, payload)
+                                .map_err(|error| error.to_string());
+                            // Terminal state reached: evict the cached raw token
+                            // so the map stays bounded.
+                            evict_resume_token(&mut raw_resume_tokens, &token);
+                            let _ = reply.send(result);
                         }
                     }
                 }
@@ -313,6 +333,12 @@ fn resume_begin(
     generation: i64,
     ttl_ms: i64,
 ) -> Result<Value, String> {
+    // §13: resume of an unknown id gets an explicit existence failure before any
+    // attempt insert, so the caller sees `unknown_task` rather than an opaque
+    // foreign-key-violation InternalError from `begin_resume_attempt`.
+    if !store.task_exists(task_id).map_err(|error| error.to_string())? {
+        return Err("unknown_task".to_string());
+    }
     let ResumeAttemptBegin {
         attempt_id,
         resume_token,
@@ -351,6 +377,22 @@ fn resume_begin(
         "plan": plan,
         "episode": episode,
     }))
+}
+
+/// Evict the cached raw token whose value matches `token`.
+///
+/// The map is keyed by attempt id, but a completion is identified by its raw
+/// wire token, so we drop the (single) entry whose value equals `token`. A
+/// no-op when the token is not cached (e.g. completed in a later process after a
+/// restart, where the cache started empty).
+fn evict_resume_token(raw_resume_tokens: &mut HashMap<String, String>, token: &str) {
+    if let Some(attempt_id) = raw_resume_tokens
+        .iter()
+        .find(|(_, cached)| cached.as_str() == token)
+        .map(|(attempt_id, _)| attempt_id.clone())
+    {
+        raw_resume_tokens.remove(&attempt_id);
+    }
 }
 
 #[cfg(test)]

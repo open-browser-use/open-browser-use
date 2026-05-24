@@ -609,9 +609,9 @@ impl Dispatcher {
             methods::TASKS_EXPORT => {
                 let task_id = require_task_id(&params)?.to_string();
                 let episode = store
-                    .export_episode(task_id)
+                    .export_episode(task_id.clone())
                     .await
-                    .map_err(|error| task_store_rpc_error(error.to_string()))?;
+                    .map_err(|error| task_store_rpc_error_for_task(error.to_string(), &task_id))?;
                 serde_json::to_value(episode)
                     .map_err(|error| ErrorObject::new(ErrorCode::InternalError, error.to_string()))
             }
@@ -657,7 +657,7 @@ impl Dispatcher {
                 RESUME_ATTEMPT_TTL_MS,
             )
             .await
-            .map_err(|error| task_store_rpc_error(error.to_string()))?;
+            .map_err(|error| task_store_rpc_error_for_task(error.to_string(), &task_id))?;
         serde_json::to_value(begin)
             .map_err(|error| ErrorObject::new(ErrorCode::InternalError, error.to_string()))
     }
@@ -1769,6 +1769,29 @@ fn require_trusted_generation(
 fn task_store_unavailable() -> ErrorObject {
     ErrorObject::new(ErrorCode::Server(ERR_IO), "task store unavailable")
         .with_data(json!({ "code": "task_store_unavailable", "retryable": false }))
+}
+
+/// `unknown_task` error carrying the offending `task_id` in its data.
+///
+/// §13: resume/export of an unknown id resolves to `ERR_NOT_FOUND` with
+/// `data: { code: "unknown_task", task_id }` so the SDK can report which task
+/// was missing.
+fn unknown_task_error(task_id: &str) -> ErrorObject {
+    ErrorObject::new(
+        ErrorCode::Server(ERR_NOT_FOUND),
+        format!("unknown_task: {task_id}"),
+    )
+    .with_data(json!({ "code": "unknown_task", "task_id": task_id }))
+}
+
+/// Like [`task_store_rpc_error`], but for handlers that know the `task_id`: the
+/// `unknown_task` case is enriched with the id (§13). All other cases defer to
+/// [`task_store_rpc_error`].
+fn task_store_rpc_error_for_task(error: String, task_id: &str) -> ErrorObject {
+    if error.contains("unknown_task") || error.contains("task not found") {
+        return unknown_task_error(task_id);
+    }
+    task_store_rpc_error(error)
 }
 
 /// Map a stringified task-store error onto a wire `ErrorObject` with a stable

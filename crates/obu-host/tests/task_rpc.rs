@@ -21,6 +21,7 @@ use obu_host::dispatcher::Dispatcher;
 use obu_host::methods;
 use obu_host::socket::{Listener, unix::UnixSockListener};
 use obu_wire::FrameCodec;
+use obu_wire::error::ERR_NOT_FOUND;
 
 #[tokio::test]
 async fn tasks_list_returns_empty_store() {
@@ -44,7 +45,64 @@ async fn tasks_resume_rejects_missing_generation() {
     );
 }
 
+#[tokio::test]
+async fn tasks_export_unknown_task_returns_not_found() {
+    let dispatcher = Dispatcher::new_for_test_with_temp_task_store();
+    let response = dispatch_for_test(
+        &dispatcher,
+        methods::TASKS_EXPORT,
+        json!({ "taskId": "missing-task" }),
+    )
+    .await;
+    // §13: export of an unknown id is an explicit existence failure
+    // (ERR_NOT_FOUND), not an empty `{ task_id, turns: [], events: [] }`.
+    assert!(response.get("result").is_none(), "unexpected ok: {response:#}");
+    assert_eq!(response["error"]["code"], ERR_NOT_FOUND);
+    assert_eq!(response["error"]["data"]["code"], "unknown_task");
+    assert_eq!(response["error"]["data"]["task_id"], "missing-task");
+}
+
+#[tokio::test]
+async fn tasks_resume_unknown_task_returns_not_found() {
+    let dispatcher = Dispatcher::new_for_test_with_temp_task_store();
+    // Carry a trusted kernel generation in the frame-level runtime envelope so
+    // the request clears the missing-generation guard and reaches the §13
+    // existence check (rather than failing earlier on the generation).
+    let response = dispatch_frame_for_test(
+        &dispatcher,
+        json!({
+            "jsonrpc": "2.0",
+            "method": methods::TASKS_RESUME,
+            "params": { "taskId": "missing-task", "session_id": "s", "turn_id": "t" },
+            "runtime": { "kernel_generation": 7 },
+            "id": 1,
+        }),
+    )
+    .await;
+    assert!(response.get("result").is_none(), "unexpected ok: {response:#}");
+    assert_eq!(response["error"]["code"], ERR_NOT_FOUND);
+    assert_eq!(response["error"]["data"]["code"], "unknown_task");
+    assert_eq!(response["error"]["data"]["task_id"], "missing-task");
+}
+
 async fn dispatch_for_test(dispatcher: &Dispatcher, method: &str, params: Value) -> Value {
+    dispatch_frame_for_test(
+        dispatcher,
+        json!({
+            "jsonrpc": "2.0",
+            "method": method,
+            "params": params,
+            "id": 1,
+        }),
+    )
+    .await
+}
+
+/// Drive the dispatcher with an arbitrary request frame.
+///
+/// Used by tests that need a frame-level `runtime` envelope (the trusted
+/// kernel-generation sibling of `params`), which `dispatch_for_test` omits.
+async fn dispatch_frame_for_test(dispatcher: &Dispatcher, frame: Value) -> Value {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("task-rpc.sock");
     let mut listener = UnixSockListener::bind(&path).unwrap();
@@ -59,15 +117,7 @@ async fn dispatch_for_test(dispatcher: &Dispatcher, method: &str, params: Value)
     let client = UnixStream::connect(&path).await.unwrap();
     let mut framed = Framed::new(client, FrameCodec);
     framed
-        .send(Bytes::from(
-            serde_json::to_vec(&json!({
-                "jsonrpc": "2.0",
-                "method": method,
-                "params": params,
-                "id": 1,
-            }))
-            .unwrap(),
-        ))
+        .send(Bytes::from(serde_json::to_vec(&frame).unwrap()))
         .await
         .unwrap();
 
