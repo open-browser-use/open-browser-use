@@ -352,7 +352,12 @@ pub struct TaskStore {
     conn: Connection,
 }
 
-fn now_millis() -> i64 {
+/// Current unix time in milliseconds (0 on a pre-epoch clock).
+///
+/// `pub(crate)` so the task-store actor can stamp typed evidence events (e.g.
+/// the `tabs_finalized`/`turn_ended` `at` field) with the same clock the store
+/// uses for its row timestamps.
+pub(crate) fn now_millis() -> i64 {
     SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)

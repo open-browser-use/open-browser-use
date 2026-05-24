@@ -179,13 +179,28 @@ impl Dispatcher {
     /// dir, kept alive for the dispatcher's lifetime.
     #[doc(hidden)]
     pub fn new_for_test_with_temp_task_store() -> Self {
+        Self::new_for_test_with_backend_and_temp_task_store(Arc::new(WebExtensionBackend::default()))
+    }
+
+    /// Test dispatcher around a caller-supplied `backend` plus a real task store
+    /// opened in a fresh owner-only temp dir (kept alive for the dispatcher's
+    /// lifetime).
+    ///
+    /// Used by Task 10's finalize/turn-end evidence tests, which need a backend
+    /// whose `finalizeTabs`/`turnEnded` actually SUCCEED (the bare default
+    /// WebExtension backend has no transport / owned session and so errors before
+    /// any evidence could be written).
+    #[doc(hidden)]
+    pub fn new_for_test_with_backend_and_temp_task_store(
+        backend: Arc<dyn BrowserBackend>,
+    ) -> Self {
         use std::os::unix::fs::PermissionsExt;
         let dir = Arc::new(tempfile::tempdir().expect("tempdir"));
         std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).expect("chmod");
         let handle = TaskStoreHandle::open(dir.path().to_path_buf()).expect("task store");
         Self::with_optional_task_store(
             env!("CARGO_PKG_VERSION").into(),
-            Arc::new(WebExtensionBackend::default()),
+            backend,
             Arc::new(PermissivePolicy),
             PeerLifecycleDiagnostics::default(),
             Some(handle),
@@ -722,6 +737,78 @@ impl Dispatcher {
         }
     }
 
+    /// Best-effort: record `tabs_finalized` evidence for the current turn after a
+    /// successful `finalizeTabs` (Task 10).
+    ///
+    /// Evidence is observability, not the user's result, so this never returns an
+    /// error and never alters the finalize response:
+    /// - no task store provisioned (`task_store == None`) → skip silently;
+    /// - `ctx` lacks a `session_id`/`turn_id` → skip (cannot bind a segment
+    ///   without turn authority);
+    /// - the actor command errors → `tracing::warn!` and continue.
+    ///
+    /// `status`/`failures` are derived from the backend's finalize `result`:
+    /// `status` is its `status` string when present (else `"ok"`, since a
+    /// successful finalize without an explicit status is a success), and
+    /// `failures` is its `failures` field when present (else an empty array).
+    async fn record_finalize_evidence(&self, ctx: &BackendRequestContext, result: &Value) {
+        let Some(store) = self.inner.task_store.as_ref() else {
+            return;
+        };
+        let (Some(session_id), Some(turn_id)) = (
+            ctx.session_id.as_deref().filter(|id| !id.is_empty()),
+            ctx.turn_id.as_deref().filter(|id| !id.is_empty()),
+        ) else {
+            return;
+        };
+        let status = result
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or("ok")
+            .to_string();
+        let failures = result
+            .get("failures")
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new()));
+        if let Err(error) = store
+            .record_finalize_evidence(
+                session_id.to_string(),
+                turn_id.to_string(),
+                ctx.trusted_kernel_generation,
+                status,
+                failures,
+            )
+            .await
+        {
+            tracing::warn!(%error, "failed to record tabs_finalized evidence; finalize still succeeded");
+        }
+    }
+
+    /// Best-effort: record `turn_ended` evidence for the current turn after a
+    /// successful `turnEnded` (Task 10). Same skip/log-and-continue contract as
+    /// [`Dispatcher::record_finalize_evidence`].
+    async fn record_turn_ended_evidence(&self, ctx: &BackendRequestContext) {
+        let Some(store) = self.inner.task_store.as_ref() else {
+            return;
+        };
+        let (Some(session_id), Some(turn_id)) = (
+            ctx.session_id.as_deref().filter(|id| !id.is_empty()),
+            ctx.turn_id.as_deref().filter(|id| !id.is_empty()),
+        ) else {
+            return;
+        };
+        if let Err(error) = store
+            .record_turn_ended_evidence(
+                session_id.to_string(),
+                turn_id.to_string(),
+                ctx.trusted_kernel_generation,
+            )
+            .await
+        {
+            tracing::warn!(%error, "failed to record turn_ended evidence; turnEnded still succeeded");
+        }
+    }
+
     async fn route_lifecycle_request(
         &self,
         method: &str,
@@ -735,9 +822,17 @@ impl Dispatcher {
                 .map_err(host_err_to_rpc),
             methods::GET_INFO => Ok(self.get_info()),
             methods::TURN_ENDED => {
-                SessionBackendOps::turn_ended_with_context(self.inner.backend.as_ref(), ctx, params)
-                    .await
-                    .map_err(host_err_to_rpc)
+                let result = SessionBackendOps::turn_ended_with_context(
+                    self.inner.backend.as_ref(),
+                    ctx,
+                    params,
+                )
+                .await
+                .map_err(host_err_to_rpc)?;
+                // Best-effort, AFTER backend success: record turn-ended evidence for
+                // the current turn's segment. Never fails the user's turnEnded.
+                self.record_turn_ended_evidence(ctx).await;
+                Ok(result)
             }
             methods::YIELD_CONTROL => SessionBackendOps::yield_control_with_context(
                 self.inner.backend.as_ref(),
@@ -811,13 +906,19 @@ impl Dispatcher {
                 .map_err(host_err_to_rpc),
                 None => Err(invalid_params("missing tab_id")),
             },
-            methods::FINALIZE_TABS => SessionBackendOps::finalize_tabs_with_context(
-                self.inner.backend.as_ref(),
-                ctx,
-                params,
-            )
-            .await
-            .map_err(host_err_to_rpc),
+            methods::FINALIZE_TABS => {
+                let result = SessionBackendOps::finalize_tabs_with_context(
+                    self.inner.backend.as_ref(),
+                    ctx,
+                    params,
+                )
+                .await
+                .map_err(host_err_to_rpc)?;
+                // Best-effort, AFTER backend success: record finalize evidence for
+                // the current turn's segment. Never fails the user's finalize.
+                self.record_finalize_evidence(ctx, &result).await;
+                Ok(result)
+            }
             methods::NAME_SESSION => SessionBackendOps::name_session_with_context(
                 self.inner.backend.as_ref(),
                 ctx,

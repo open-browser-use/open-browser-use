@@ -20,7 +20,8 @@ use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
 use crate::task_store::{
-    EpisodeExport, ResumeAttemptBegin, TaskListFilter, TaskStore, TaskSummary, plan_task_resume,
+    EpisodeExport, NewTask, ResumeAttemptBegin, Segment, TASK_STORE_SCHEMA_VERSION, TaskListFilter,
+    TaskStore, TaskSummary, now_millis, plan_task_resume,
 };
 
 /// Cloneable async handle to the task-store actor.
@@ -77,6 +78,31 @@ enum TaskStoreCommand {
     ResumeCompleteBlocked {
         token: String,
         payload: Value,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    /// Record finalize evidence for the current turn (Task 10).
+    ///
+    /// Atomic ensure+append on the actor thread: resolve (or auto-create+bind) the
+    /// session's task, ensure the `(session, turn)` segment exists, then append a
+    /// `tabs_finalized` typed event referencing the resolved `taskId`/`segmentId`.
+    /// Building the payload here keeps the resolved `task_id` on the writer thread
+    /// (no second round trip) and the whole thing single-writer.
+    RecordFinalizeEvidence {
+        session_id: String,
+        turn_id: String,
+        generation: Option<i64>,
+        status: String,
+        failures: Value,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
+    /// Record turn-ended evidence for the current turn (Task 10).
+    ///
+    /// Same atomic ensure+append shape as [`TaskStoreCommand::RecordFinalizeEvidence`],
+    /// appending a `turn_ended` typed event instead.
+    RecordTurnEndedEvidence {
+        session_id: String,
+        turn_id: String,
+        generation: Option<i64>,
         reply: oneshot::Sender<Result<(), String>>,
     },
 }
@@ -200,6 +226,38 @@ impl TaskStoreHandle {
                             evict_resume_token(&mut raw_resume_tokens, &token);
                             let _ = reply.send(result);
                         }
+                        TaskStoreCommand::RecordFinalizeEvidence {
+                            session_id,
+                            turn_id,
+                            generation,
+                            status,
+                            failures,
+                            reply,
+                        } => {
+                            let result = record_finalize_evidence(
+                                &store,
+                                &session_id,
+                                &turn_id,
+                                generation,
+                                &status,
+                                failures,
+                            );
+                            let _ = reply.send(result);
+                        }
+                        TaskStoreCommand::RecordTurnEndedEvidence {
+                            session_id,
+                            turn_id,
+                            generation,
+                            reply,
+                        } => {
+                            let result = record_turn_ended_evidence(
+                                &store,
+                                &session_id,
+                                &turn_id,
+                                generation,
+                            );
+                            let _ = reply.send(result);
+                        }
                     }
                 }
             })?;
@@ -307,6 +365,63 @@ impl TaskStoreHandle {
             .map_err(|_| anyhow!("task store actor closed"))?
             .map_err(anyhow::Error::msg)
     }
+
+    /// Record finalize evidence for the current turn's segment (Task 10).
+    ///
+    /// Atomically (on the actor thread) ensures the session's task and the
+    /// `(session, turn)` segment exist — auto-creating and binding a task when the
+    /// session has none — then appends a `tabs_finalized` typed event. This is a
+    /// best-effort observability side effect: callers (the dispatcher's finalize
+    /// route) log and continue on `Err` so a store hiccup never fails the user's
+    /// finalize.
+    pub async fn record_finalize_evidence(
+        &self,
+        session_id: String,
+        turn_id: String,
+        generation: Option<i64>,
+        status: String,
+        failures: Value,
+    ) -> Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(TaskStoreCommand::RecordFinalizeEvidence {
+                session_id,
+                turn_id,
+                generation,
+                status,
+                failures,
+                reply,
+            })
+            .map_err(|_| anyhow!("task store actor closed"))?;
+        rx.await
+            .map_err(|_| anyhow!("task store actor closed"))?
+            .map_err(anyhow::Error::msg)
+    }
+
+    /// Record turn-ended evidence for the current turn's segment (Task 10).
+    ///
+    /// Same atomic ensure+append contract as [`TaskStoreHandle::record_finalize_evidence`],
+    /// appending a `turn_ended` typed event. Best-effort: callers log and continue
+    /// on `Err`.
+    pub async fn record_turn_ended_evidence(
+        &self,
+        session_id: String,
+        turn_id: String,
+        generation: Option<i64>,
+    ) -> Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(TaskStoreCommand::RecordTurnEndedEvidence {
+                session_id,
+                turn_id,
+                generation,
+                reply,
+            })
+            .map_err(|_| anyhow!("task store actor closed"))?;
+        rx.await
+            .map_err(|_| anyhow!("task store actor closed"))?
+            .map_err(anyhow::Error::msg)
+    }
 }
 
 /// Begin a resume attempt on the actor thread and assemble the wire result.
@@ -377,6 +492,97 @@ fn resume_begin(
         "plan": plan,
         "episode": episode,
     }))
+}
+
+/// Resolve (or auto-create + bind) the task for `session_id`, then ensure the
+/// `(session_id, turn_id)` execution segment exists, returning both ids.
+///
+/// Runs on the actor thread so the resolved `task_id` stays where the typed
+/// evidence payload is built (no second round trip). When the session has no
+/// bound task yet, a fresh task is created (`label: "Browser task {session_id}"`)
+/// at the current [`TASK_STORE_SCHEMA_VERSION`] and bound to the session before
+/// the segment is ensured. [`TaskStore::ensure_turn_segment`] is idempotent, so a
+/// second finalize/turn-end for the same turn returns the existing segment rather
+/// than creating a second one.
+fn ensure_current_turn_segment(
+    store: &TaskStore,
+    session_id: &str,
+    turn_id: &str,
+    generation: Option<i64>,
+) -> Result<(String, Segment), String> {
+    let task_id = match store.task_for_session(session_id).map_err(|e| e.to_string())? {
+        Some(task_id) => task_id,
+        None => {
+            let task_id = store
+                .create_task(NewTask {
+                    label: format!("Browser task {session_id}"),
+                    schema_version: TASK_STORE_SCHEMA_VERSION,
+                })
+                .map_err(|e| e.to_string())?;
+            store
+                .bind_session_task(session_id, &task_id)
+                .map_err(|e| e.to_string())?;
+            task_id
+        }
+    };
+    let segment = store
+        .ensure_turn_segment(&task_id, session_id, turn_id, generation)
+        .map_err(|e| e.to_string())?;
+    Ok((task_id, segment))
+}
+
+/// Ensure the current turn's segment and append a `tabs_finalized` typed event.
+///
+/// The payload carries the resolved `taskId`/`segmentId` plus the finalize
+/// `status`/`failures` derived by the dispatcher from the backend's finalize
+/// result, so the durable episode records what finalize observed.
+fn record_finalize_evidence(
+    store: &TaskStore,
+    session_id: &str,
+    turn_id: &str,
+    generation: Option<i64>,
+    status: &str,
+    failures: Value,
+) -> Result<(), String> {
+    let (task_id, segment) =
+        ensure_current_turn_segment(store, session_id, turn_id, generation)?;
+    let payload = json!({
+        "kind": "tabs_finalized",
+        "taskId": task_id,
+        "segmentId": segment.segment_id,
+        "sessionId": session_id,
+        "turnId": turn_id,
+        "status": status,
+        "failures": failures,
+        "at": now_millis(),
+    });
+    store
+        .append_typed_event(&task_id, "tabs_finalized", payload)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Ensure the current turn's segment and append a `turn_ended` typed event.
+fn record_turn_ended_evidence(
+    store: &TaskStore,
+    session_id: &str,
+    turn_id: &str,
+    generation: Option<i64>,
+) -> Result<(), String> {
+    let (task_id, segment) =
+        ensure_current_turn_segment(store, session_id, turn_id, generation)?;
+    let payload = json!({
+        "kind": "turn_ended",
+        "taskId": task_id,
+        "segmentId": segment.segment_id,
+        "sessionId": session_id,
+        "turnId": turn_id,
+        "at": now_millis(),
+    });
+    store
+        .append_typed_event(&task_id, "turn_ended", payload)
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 /// Evict the cached raw token whose value matches `token`.
