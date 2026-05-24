@@ -607,6 +607,92 @@ describe("Tab environment-native action layer", () => {
     expect(transport.calls.map((call) => call.method)).not.toContain(M.DOM_CUA_CLICK);
   });
 
+  it("blocks coordinate replay when the visual revision changed since observation", async () => {
+    const transport = new FakeTransport();
+    const observationStore = new Map();
+    const tab = tabWithCapabilities(transport, { observationStore });
+    const observation = await tab.observe({
+      mode: "actionable",
+      includeText: false,
+      observationTtlMs: 60_000,
+    });
+    // Seed visual revisions on the stored lifecycle (Task 4.3 will populate these
+    // at observe time; for now we set them directly to exercise the preflight check).
+    const stored = observationStore.get(observation.observationId)!;
+    stored.visualRevision = "vis-1";
+    stored.annotationRevision = "ann-1";
+    transport.calls = [];
+
+    const blocked = await tab.step({
+      kind: "coordinate.click",
+      target: {
+        source: "coordinate",
+        x: 10,
+        y: 20,
+        observationId: observation.observationId,
+        annotationId: "a1",
+        visualRevision: "vis-2",
+        annotationRevision: "ann-1",
+      },
+    });
+
+    expect(blocked).toMatchObject({
+      status: "blocked",
+      error: {
+        code: "stale_observation",
+        data: {
+          changed: "visual",
+          expected: "vis-1",
+          current: "vis-2",
+        },
+      },
+      invalidatedObservations: [observation.observationId],
+    });
+    expect(transport.calls.map((call) => call.method)).not.toContain(M.CUA_CLICK);
+  });
+
+  it("blocks coordinate replay when the annotation revision changed since observation", async () => {
+    const transport = new FakeTransport();
+    const observationStore = new Map();
+    const tab = tabWithCapabilities(transport, { observationStore });
+    const observation = await tab.observe({
+      mode: "actionable",
+      includeText: false,
+      observationTtlMs: 60_000,
+    });
+    const stored = observationStore.get(observation.observationId)!;
+    stored.visualRevision = "vis-1";
+    stored.annotationRevision = "ann-1";
+    transport.calls = [];
+
+    const blocked = await tab.step({
+      kind: "coordinate.click",
+      target: {
+        source: "coordinate",
+        x: 10,
+        y: 20,
+        observationId: observation.observationId,
+        annotationId: "a1",
+        visualRevision: "vis-1",
+        annotationRevision: "ann-2",
+      },
+    });
+
+    expect(blocked).toMatchObject({
+      status: "blocked",
+      error: {
+        code: "stale_observation",
+        data: {
+          changed: "annotation",
+          expected: "ann-1",
+          current: "ann-2",
+        },
+      },
+      invalidatedObservations: [observation.observationId],
+    });
+    expect(transport.calls.map((call) => call.method)).not.toContain(M.CUA_CLICK);
+  });
+
   it("fails closed when required text revisions cannot be checked", async () => {
     const transport = new FakeTransport();
     const tab = tabWithCapabilities(transport);

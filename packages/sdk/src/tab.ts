@@ -11,6 +11,7 @@ import {
   type ActionEffect,
   type ActionResult,
   type AgentPointerState,
+  type CoordinateActionTarget,
   type EnvAction,
 } from "./tab-action.js";
 import { TabContent } from "./tab-content.js";
@@ -1459,6 +1460,24 @@ export class Tab {
             current: currentDomCuaRevision,
             changed: "dom",
           },
+        };
+      }
+    }
+    const target = action.target;
+    if (target.source === "coordinate" && (target as CoordinateActionTarget).visualRevision !== undefined) {
+      const t = target as CoordinateActionTarget;
+      if (lifecycle.visualRevision !== undefined && t.visualRevision !== lifecycle.visualRevision) {
+        return {
+          ok: false,
+          detail: "visual revision changed since observation",
+          data: { observationId, expected: lifecycle.visualRevision, current: t.visualRevision, changed: "visual" },
+        };
+      }
+      if (lifecycle.annotationRevision !== undefined && t.annotationRevision !== lifecycle.annotationRevision) {
+        return {
+          ok: false,
+          detail: "annotation revision changed since observation",
+          data: { observationId, expected: lifecycle.annotationRevision, current: t.annotationRevision, changed: "annotation" },
         };
       }
     }
