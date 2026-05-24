@@ -22,7 +22,7 @@ use crate::task_lifecycle::{SessionTurnEvidence, TaskState, control};
 /// Opening a store whose persisted version is newer than this constant fails
 /// rather than attempting a silent migration (stale-resource behavior after a
 /// host downgrade or partial upgrade).
-pub const TASK_STORE_SCHEMA_VERSION: u32 = 1;
+pub const TASK_STORE_SCHEMA_VERSION: u32 = 2;
 
 /// Parameters for creating a new task row.
 #[derive(Debug, Clone)]
@@ -55,16 +55,43 @@ pub struct Segment {
     pub session_id: String,
     /// Turn within the session.
     pub turn_id: String,
+    /// Kernel generation in effect when this segment last ran, if recorded.
+    ///
+    /// `None` means the generation was not captured (older segments, or a
+    /// segment recorded by [`Segment::new`]); resume cannot prove kernel
+    /// continuity from such a segment (Finding 16) and must recover from the
+    /// durable store with a fresh observation.
+    pub generation: Option<i64>,
 }
 
 impl Segment {
     /// Create a segment bound to `session_id`/`turn_id`, generating a fresh
-    /// random `segment_id`.
+    /// random `segment_id`. Records no kernel generation (`generation: None`).
     pub fn new(session_id: impl Into<String>, turn_id: impl Into<String>) -> Self {
         Self {
             segment_id: uuid::Uuid::new_v4().to_string(),
             session_id: session_id.into(),
             turn_id: turn_id.into(),
+            generation: None,
+        }
+    }
+
+    /// Create a segment that records the kernel `generation` in effect when it
+    /// ran, generating a fresh random `segment_id` (like [`Segment::new`]).
+    ///
+    /// The recorded generation lets a later resume detect a kernel reboot: if
+    /// the current kernel generation differs, the prior in-memory SDK bindings
+    /// are gone and resume must recover from the durable store (Finding 16).
+    pub fn with_generation(
+        session_id: impl Into<String>,
+        turn_id: impl Into<String>,
+        generation: i64,
+    ) -> Self {
+        Self {
+            segment_id: uuid::Uuid::new_v4().to_string(),
+            session_id: session_id.into(),
+            turn_id: turn_id.into(),
+            generation: Some(generation),
         }
     }
 }
@@ -134,6 +161,77 @@ pub fn record_resume_segment(
     let segment = Segment::new(session_id, turn_id);
     store.append_segment(task_id, segment.clone())?;
     Ok(segment)
+}
+
+/// Plan for resuming a long task, derived from kernel-generation continuity.
+///
+/// Finding 16: the JS kernel carries a monotonically increasing *generation*
+/// (surfaced by `browser_status.kernel_generation`). A change in that generation
+/// means the kernel was rebooted, so every SDK in-memory observation and pointer
+/// binding from the prior generation is gone. When continuity cannot be proven,
+/// resume must NOT trust stale in-memory bindings: it has to rebuild from the
+/// durable task store and allocate a fresh observation (which ties into Task
+/// 5.6's process-local observation-id contract).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ResumePlan {
+    /// When `true`, resume must reconstruct execution state from the durable
+    /// task store rather than from SDK in-memory bindings.
+    pub recover_from_store: bool,
+    /// When `true`, resume must allocate a fresh observation before taking
+    /// browser side effects (prior-generation observation bindings are void).
+    pub requires_fresh_observation: bool,
+}
+
+/// Decide how a task resume must recover, given the current kernel generation.
+///
+/// Compares the most recent execution segment's recorded kernel generation to
+/// `current_kernel_generation`:
+///
+/// - last segment's generation is `Some(g)` and `g == current` → kernel
+///   continuity holds → resume may continue from in-memory bindings
+///   (`recover_from_store: false, requires_fresh_observation: false`).
+/// - generation differs (`Some(g)`, `g != current`), is `None` (continuity
+///   cannot be proven), or there are no segments at all → resume MUST recover
+///   from the durable store and re-observe
+///   (`recover_from_store: true, requires_fresh_observation: true`).
+///
+/// `current_kernel_generation` is a parameter precisely so the eventual
+/// task-resume RPC handler can pass `browser_status`'s `kernel_generation`
+/// (added by Task 1.2) straight through — no `TaskStore` is wired into the live
+/// dispatcher request path here (that resume route is unbuilt; see the Task 5.7
+/// scoping note).
+///
+/// Returns a [`ResumePlan`] directly (not a `Result`): on the unlikely event
+/// that reading segments fails, it conservatively returns the recover-from-store
+/// plan, which is the safe default — never resume from possibly-stale in-memory
+/// bindings on a read error.
+pub fn plan_task_resume(
+    store: &TaskStore,
+    task_id: &str,
+    current_kernel_generation: i64,
+) -> ResumePlan {
+    // Safe default: recover from durable state + re-observe. Used for the
+    // changed/unrecorded/no-segments cases and for a conservative read-error
+    // fallback.
+    let recover = ResumePlan {
+        recover_from_store: true,
+        requires_fresh_observation: true,
+    };
+
+    let segments = match store.segments(task_id) {
+        Ok(segments) => segments,
+        // Conservative: on a DB read error we cannot prove continuity.
+        Err(_) => return recover,
+    };
+
+    match segments.last().and_then(|seg| seg.generation) {
+        Some(g) if g == current_kernel_generation => ResumePlan {
+            recover_from_store: false,
+            requires_fresh_observation: false,
+        },
+        // Generation differs, was never recorded (None), or no segments exist.
+        _ => recover,
+    }
 }
 
 /// Outcome of a [`cancel_task`] call.
@@ -255,6 +353,7 @@ impl TaskStore {
                  session_id TEXT NOT NULL,
                  turn_id    TEXT NOT NULL,
                  started_at INTEGER NOT NULL,
+                 generation INTEGER,
                  PRIMARY KEY (task_id, segment_id)
              );
              CREATE TABLE IF NOT EXISTS task_checkpoints (
@@ -296,6 +395,8 @@ impl TaskStore {
 
         match stored {
             None => {
+                // Fresh db: the CREATE TABLE above already includes every
+                // current-version column, so just record the current version.
                 tx.execute(
                     "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)",
                     [TASK_STORE_SCHEMA_VERSION.to_string()],
@@ -310,6 +411,26 @@ impl TaskStore {
                     bail!(
                         "task store schema version {on_disk} is newer than supported {TASK_STORE_SCHEMA_VERSION}"
                     );
+                }
+                // v1 -> v2: a real v1 db created `task_segments` without the
+                // `generation` column (the `CREATE TABLE IF NOT EXISTS` above is
+                // a no-op against the existing table, so it does not backfill the
+                // column). Add it exactly once, guarded strictly on `Some(1)` so
+                // `ALTER TABLE ADD COLUMN` never runs against a table that
+                // already has the column. Stays inside this transaction so the
+                // ALTER and the version bump are atomic.
+                if on_disk == 1 {
+                    tx.execute_batch(
+                        "ALTER TABLE task_segments ADD COLUMN generation INTEGER;",
+                    )
+                    .context("migrate task_segments: add generation column (v1->v2)")?;
+                }
+                if on_disk < TASK_STORE_SCHEMA_VERSION {
+                    tx.execute(
+                        "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
+                        [TASK_STORE_SCHEMA_VERSION.to_string()],
+                    )
+                    .context("record migrated schema_version")?;
                 }
             }
         }
@@ -404,14 +525,15 @@ impl TaskStore {
     pub fn append_segment(&self, task_id: &str, segment: Segment) -> Result<()> {
         self.conn
             .execute(
-                "INSERT INTO task_segments (task_id, segment_id, session_id, turn_id, started_at)
-                 VALUES (?1, ?2, ?3, ?4, ?5)",
+                "INSERT INTO task_segments (task_id, segment_id, session_id, turn_id, started_at, generation)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
                 rusqlite::params![
                     task_id,
                     segment.segment_id,
                     segment.session_id,
                     segment.turn_id,
                     now_millis(),
+                    segment.generation,
                 ],
             )
             .context("insert segment")?;
@@ -427,7 +549,7 @@ impl TaskStore {
         let mut stmt = self
             .conn
             .prepare(
-                "SELECT segment_id, session_id, turn_id
+                "SELECT segment_id, session_id, turn_id, generation
                  FROM task_segments
                  WHERE task_id = ?1
                  ORDER BY started_at ASC, rowid ASC",
@@ -439,6 +561,7 @@ impl TaskStore {
                     segment_id: row.get(0)?,
                     session_id: row.get(1)?,
                     turn_id: row.get(2)?,
+                    generation: row.get::<_, Option<i64>>(3)?,
                 })
             })
             .context("query segments")?;
@@ -670,6 +793,7 @@ mod tests {
                     segment_id: "seg-1".into(),
                     session_id: "sess-1".into(),
                     turn_id: "turn-1".into(),
+                    generation: None,
                 },
             )
             .unwrap();
@@ -722,6 +846,129 @@ mod tests {
         assert!(
             !cleanup.cleaned_browser_resources,
             "must not clean browser while a human holds control (yielded)"
+        );
+    }
+
+    // Finding 16: a kernel-generation change means the JS kernel was rebooted,
+    // so any SDK in-memory observation/pointer bindings from the prior
+    // generation are gone -> resume must rebuild from the durable store and
+    // allocate a fresh observation.
+    #[test]
+    fn resume_recovers_from_store_when_kernel_generation_changed() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        store
+            .append_segment(&task_id, Segment::with_generation("s1", "t1", 3))
+            .unwrap();
+        let plan = plan_task_resume(&store, &task_id, /* current_kernel_generation */ 5);
+        assert!(
+            plan.recover_from_store,
+            "generation changed -> must recover from durable state"
+        );
+        assert!(plan.requires_fresh_observation);
+    }
+
+    #[test]
+    fn resume_continues_in_memory_when_kernel_generation_matches() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        store
+            .append_segment(&task_id, Segment::with_generation("s1", "t1", 5))
+            .unwrap();
+        let plan = plan_task_resume(&store, &task_id, 5);
+        assert!(
+            !plan.recover_from_store,
+            "matching generation -> continuity holds, resume from in-memory bindings"
+        );
+        assert!(!plan.requires_fresh_observation);
+    }
+
+    #[test]
+    fn resume_recovers_from_store_when_generation_unrecorded() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        // Segment::new records no generation: continuity cannot be proven.
+        store.append_segment(&task_id, Segment::new("s1", "t1")).unwrap();
+        let plan = plan_task_resume(&store, &task_id, 5);
+        assert!(plan.recover_from_store);
+        assert!(plan.requires_fresh_observation);
+    }
+
+    #[test]
+    fn resume_recovers_from_store_when_no_segments() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        let plan = plan_task_resume(&store, &task_id, 5);
+        assert!(plan.recover_from_store);
+        assert!(plan.requires_fresh_observation);
+    }
+
+    #[test]
+    fn fresh_db_round_trips_segment_generation() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        store
+            .append_segment(&task_id, Segment::with_generation("s1", "t1", 7))
+            .unwrap();
+        store.append_segment(&task_id, Segment::new("s1", "t2")).unwrap();
+        let segs = store.segments(&task_id).unwrap();
+        assert_eq!(segs.len(), 2);
+        assert_eq!(segs[0].generation, Some(7));
+        assert_eq!(segs[1].generation, None);
+    }
+
+    // v1->v2 migration: an existing v1-shaped db (task_segments created WITHOUT
+    // the generation column, meta version '1') must open, get the column added,
+    // record version 2, and load its pre-existing segment with generation None.
+    #[test]
+    fn opens_and_migrates_v1_database() {
+        let dir = owner_only_tempdir();
+        let db_path = dir.path().join("tasks.db");
+        // Construct a v1-shaped db by hand.
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 CREATE TABLE tasks (
+                     id             TEXT PRIMARY KEY,
+                     label          TEXT NOT NULL,
+                     state          TEXT NOT NULL,
+                     schema_version INTEGER NOT NULL,
+                     created_at     INTEGER NOT NULL
+                 );
+                 CREATE TABLE task_segments (
+                     task_id    TEXT NOT NULL,
+                     segment_id TEXT NOT NULL,
+                     session_id TEXT NOT NULL,
+                     turn_id    TEXT NOT NULL,
+                     started_at INTEGER NOT NULL,
+                     PRIMARY KEY (task_id, segment_id)
+                 );
+                 INSERT INTO meta (key, value) VALUES ('schema_version', '1');
+                 INSERT INTO tasks (id, label, state, schema_version, created_at)
+                     VALUES ('task-1', 'l', 'created', 1, 0);
+                 INSERT INTO task_segments (task_id, segment_id, session_id, turn_id, started_at)
+                     VALUES ('task-1', 'seg-1', 's1', 't1', 0);",
+            )
+            .unwrap();
+        }
+
+        let store = TaskStore::open(dir.path()).unwrap();
+        let version: String = store
+            .conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, TASK_STORE_SCHEMA_VERSION.to_string());
+        let segs = store.segments("task-1").unwrap();
+        assert_eq!(segs.len(), 1);
+        assert_eq!(segs[0].segment_id, "seg-1");
+        assert_eq!(
+            segs[0].generation, None,
+            "pre-existing v1 segment has no recorded generation after migration"
         );
     }
 
