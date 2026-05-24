@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 
 import {
   assertActiveSessionTab,
-  assertSessionAcceptsAction,
+  assertControlStateAcceptsAction,
   attachedDebuggerTabIds,
   chooseLogicalActiveTabId,
   firstDefinedGroupId,
@@ -23,9 +23,9 @@ const emptySession = () => ({
 });
 
 assert.deepEqual(sessionTabForOrigin(1, "agent"), { tabId: 1, origin: "agent", status: "active" });
-assert.doesNotThrow(() => assertSessionAcceptsAction(undefined, "createTab"));
+assert.doesNotThrow(() => assertControlStateAcceptsAction(undefined, "createTab"));
 assert.throws(
-  () => assertSessionAcceptsAction("human_takeover", "tab command"),
+  () => assertControlStateAcceptsAction("human_takeover", "tab command"),
   /tab command rejected because browser control is yielded to the human/,
 );
 

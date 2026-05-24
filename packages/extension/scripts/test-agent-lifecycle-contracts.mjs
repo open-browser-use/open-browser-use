@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 
 import {
-  assertSessionAcceptsAction,
+  assertControlStateAcceptsAction,
   endedTurnLifecycle,
   finalizingTurnLifecycle,
   humanTakeoverLifecycle,
@@ -43,7 +43,7 @@ session.turnLifecycle = yieldedTurnLifecycle("session-a", "turn-1");
 session.tabs.set(10, sessionTabForOrigin(10, "agent"));
 
 assert.throws(
-  () => assertSessionAcceptsAction("human_takeover", "coordinate.click"),
+  () => assertControlStateAcceptsAction("human_takeover", "coordinate.click"),
   /coordinate\.click rejected because browser control is yielded to the human/,
 );
 assert.deepEqual(planSelectedTab({

@@ -68,7 +68,7 @@ export function sessionTabForOrigin(tabId: number, origin: TabOrigin): SessionTa
   return { tabId, origin, status: "active" };
 }
 
-export function assertSessionAcceptsAction(controlState: BrowserSession["controlState"], operation: string): void {
+export function assertControlStateAcceptsAction(controlState: BrowserSession["controlState"], operation: string): void {
   if (controlState === "human_takeover") {
     throw new Error(`${operation} rejected because browser control is yielded to the human; call resumeControl first`);
   }

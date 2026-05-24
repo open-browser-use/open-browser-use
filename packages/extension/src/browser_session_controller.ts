@@ -3,7 +3,7 @@ import type { BrowserSession, SessionTab, TabOrigin } from "./session_store.js";
 import {
   activeSessionLifecycle,
   assertActiveSessionTab,
-  assertSessionAcceptsAction,
+  assertControlStateAcceptsAction,
   endedTurnLifecycle,
   humanTakeoverLifecycle,
   openTurnLifecycle,
@@ -386,7 +386,7 @@ export class BrowserSessionController {
   }
 
   private ensureSessionAcceptsAction(session: BrowserSession, operation: string): void {
-    assertSessionAcceptsAction(session.controlState, operation);
+    assertControlStateAcceptsAction(session.controlState, operation);
     if (session.lifecycle.kind === "finalizing") {
       throw new Error(`${operation} rejected because turn ${session.lifecycle.turnId} is finalizing`);
     }

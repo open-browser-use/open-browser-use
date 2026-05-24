@@ -91,7 +91,7 @@ export function failedTurnLifecycle(
   sessionId: string,
   turnId: string,
   errorCode: string,
-  diagnostics: unknown[] = [],
+  diagnostics: unknown[],
 ): BrowserTurnLifecycle {
   return { kind: "failed", sessionId, turnId, errorCode, diagnostics };
 }

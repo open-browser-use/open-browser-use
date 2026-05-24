@@ -142,6 +142,9 @@ function finalizeErrorCode(error: unknown, fallbackCode: string): string {
 }
 
 function requireTabId(params: unknown): number {
+  // Accept both casings at both nesting levels: `tabId` is the in-process/camelCase
+  // form, `tab_id` is the JSON wire/snake_case form; either may sit at the top level
+  // or nested under a `target` command-envelope (e.g. { target: { tabId } }).
   if (!isRecord(params)) throw new Error("request params must be an object");
   const direct = params.tabId ?? params.tab_id;
   if (typeof direct === "number" && Number.isInteger(direct)) return direct;
