@@ -17,6 +17,8 @@
     "check:wire-methods": "node scripts/generate-wire-methods.mjs --check",
     "generate:error-codes": "node scripts/generate-error-codes.mjs",
     "check:error-codes": "node scripts/generate-error-codes.mjs --check",
+    "generate:control-vocab": "tsx scripts/generate-control-vocab.mjs",
+    "check:control-vocab": "tsx scripts/generate-control-vocab.mjs --check",
     "make:extension-store-artifact": "node scripts/make-extension-store-artifact.mjs",
     "fetch:node-runtime": "node scripts/fetch-node-runtime.mjs",
     "make:curl-artifact": "node scripts/make-curl-artifact.mjs",
@@ -42,6 +44,7 @@
     "typecheck": "pnpm -r typecheck"
   },
   "devDependencies": {
+    "tsx": "4.19.2",
     "typescript": "5.7.3"
   }
 }
