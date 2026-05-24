@@ -30,7 +30,9 @@ use crate::backends::{
 use crate::cli::Cli;
 use crate::dispatcher::Dispatcher;
 use crate::error::{HostError, Result};
+use crate::peer_lifecycle::PeerLifecycleDiagnostics;
 use crate::policy::ConfiguredHostPolicy;
+use crate::task_store_actor::TaskStoreHandle;
 use crate::runtime_descriptor_lifecycle::{
     RuntimeDescriptorDropPlan, RuntimeDescriptorLifecycleEventKind, plan_runtime_descriptor_drop,
     plan_runtime_descriptor_write,
@@ -119,10 +121,13 @@ pub async fn run(_args: Cli) -> anyhow::Result<()> {
         std::process::id(),
     )?)));
 
-    let dispatcher = Arc::new(Dispatcher::new_with_policy(
+    let task_store = open_task_store();
+    let dispatcher = Arc::new(Dispatcher::new_with_policy_peer_diagnostics_and_task_store(
         env!("CARGO_PKG_VERSION").into(),
         backend_for_dispatcher,
         Arc::new(ConfiguredHostPolicy::from_env()),
+        PeerLifecycleDiagnostics::default(),
+        task_store,
     ));
     let (stop_tx, mut stop_rx) = watch::channel(false);
     let token_for_accept = sdk_token.clone();
@@ -167,6 +172,26 @@ pub async fn run(_args: Cli) -> anyhow::Result<()> {
     accept_loop.abort();
     close_runtime_descriptor_registration(&registration, "native_messaging_loop_finished").await;
     native_loop.map_err(Into::into)
+}
+
+/// Provision the durable task store under `<runtime_dir>/tasks` for the
+/// native-messaging host.
+///
+/// Mirrors `main::open_task_store`: the directory is created owner-only before
+/// the store opens, and a failure is non-fatal — the host keeps serving and
+/// `browser.tasks.*` RPCs resolve to `task_store_unavailable`.
+fn open_task_store() -> Option<TaskStoreHandle> {
+    let task_dir = resolve_runtime_dir().join("tasks");
+    match ensure_owner_only_dir(&task_dir)
+        .map_err(anyhow::Error::from)
+        .and_then(|_| TaskStoreHandle::open(task_dir))
+    {
+        Ok(handle) => Some(handle),
+        Err(error) => {
+            tracing::warn!(%error, "task store unavailable; browser.tasks.* will fail");
+            None
+        }
+    }
 }
 
 async fn serve_native_messages(

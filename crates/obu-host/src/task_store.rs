@@ -111,7 +111,7 @@ pub struct Checkpoint {
 /// event recorded when a long task is picked back up under a new turn. They
 /// live at the task granularity (not the segment granularity) precisely so the
 /// episode export can stitch the turn-segmented sections into one task episode.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct TaskEvent {
     /// Monotonic cursor for the event (1-based, assigned by [`TaskStore::append_event`]).
     pub cursor: i64,
@@ -130,7 +130,7 @@ pub struct TaskEvent {
 /// store/segment granularity this is how "all task actions/observations carry
 /// both taskId and the active turnId" is expressed. The store deliberately does
 /// not persist SDK observation ids (Finding 10), so the segment is the unit.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct EpisodeTurnSection {
     /// The task this section belongs to.
     pub task_id: String,
@@ -153,7 +153,7 @@ pub struct EpisodeTurnSection {
 ///
 /// [`turns`]: EpisodeExport::turns
 /// [`events`]: EpisodeExport::events
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
 pub struct EpisodeExport {
     /// The exported task.
     pub task_id: String,
@@ -168,7 +168,8 @@ pub struct EpisodeExport {
 /// Each segment marks one execution of a task bound to a single MCP turn: a
 /// long task accumulates one segment per resume, so a task that runs across
 /// several turns has several segments recorded in resume order.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct Segment {
     /// Stable identifier for the segment.
     pub segment_id: String,
@@ -397,7 +398,8 @@ pub fn record_resume_segment(
 /// resume must NOT trust stale in-memory bindings: it has to rebuild from the
 /// durable task store and allocate a fresh observation (which ties into Task
 /// 5.6's process-local observation-id contract).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct ResumePlan {
     /// When `true`, resume must reconstruct execution state from the durable
     /// task store rather than from SDK in-memory bindings.

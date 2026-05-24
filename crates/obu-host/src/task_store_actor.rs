@@ -11,13 +11,17 @@
 //! single-writer invariant the store assumes (gap-free event cursors, etc.) and
 //! keeps the blocking `rusqlite` calls off the async runtime's worker threads.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::thread;
 
 use anyhow::{Result, anyhow};
+use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
-use crate::task_store::{TaskListFilter, TaskStore, TaskSummary};
+use crate::task_store::{
+    EpisodeExport, ResumeAttemptBegin, TaskListFilter, TaskStore, TaskSummary, plan_task_resume,
+};
 
 /// Cloneable async handle to the task-store actor.
 ///
@@ -36,12 +40,44 @@ pub struct TaskStoreHandle {
 /// carried as `String` so the SQLite-bound error does not have to cross the
 /// thread boundary as a non-`Send` type.
 ///
-/// Task 8 extends this with more variants (e.g. existence checks, episode
-/// export, resume begin/attach); only `ListTasks` exists at this stage.
+/// Task 8 wires the full set of task-RPC variants: existence checks, episode
+/// export, and resume begin/attach/block. Every variant carries JSON-safe
+/// inputs and replies with either a serializable DTO or a pre-built
+/// [`serde_json::Value`] (for variants that must consult store-private types
+/// the dispatcher does not import).
 enum TaskStoreCommand {
     ListTasks {
         filter: TaskListFilter,
         reply: oneshot::Sender<Result<Vec<TaskSummary>, String>>,
+    },
+    TaskExists {
+        task_id: String,
+        reply: oneshot::Sender<Result<bool, String>>,
+    },
+    Export {
+        task_id: String,
+        reply: oneshot::Sender<Result<EpisodeExport, String>>,
+    },
+    ResumeBegin {
+        task_id: String,
+        session_id: String,
+        turn_id: String,
+        generation: i64,
+        ttl_ms: i64,
+        /// Replies with the fully-built `tasksResume` wire result
+        /// (`{ resumeToken, attemptId, plan, episode }`).
+        reply: oneshot::Sender<Result<Value, String>>,
+    },
+    ResumeCompleteAttached {
+        token: String,
+        generation: i64,
+        /// Replies with the attached execution segment serialized to JSON.
+        reply: oneshot::Sender<Result<Value, String>>,
+    },
+    ResumeCompleteBlocked {
+        token: String,
+        payload: Value,
+        reply: oneshot::Sender<Result<(), String>>,
     },
 }
 
@@ -71,6 +107,13 @@ impl TaskStoreHandle {
                         return;
                     }
                 };
+                // Raw resume tokens minted this process lifetime, keyed by
+                // attempt id. The store persists only token *hashes*, never the
+                // raw token, so this in-memory map is the only place the raw
+                // wire token lives. It is intentionally process-local: after a
+                // host restart it starts empty, and the rotate-on-miss path
+                // below re-mints a token without double-counting the attempt.
+                let mut raw_resume_tokens: HashMap<String, String> = HashMap::new();
                 // Blocking receive: this thread owns the store and processes
                 // commands serially, so the single-writer invariant holds. We
                 // use `blocking_recv` (not `.await`) because this is a plain OS
@@ -80,6 +123,62 @@ impl TaskStoreHandle {
                         TaskStoreCommand::ListTasks { filter, reply } => {
                             let _ = reply
                                 .send(store.list_tasks(filter).map_err(|error| error.to_string()));
+                        }
+                        TaskStoreCommand::TaskExists { task_id, reply } => {
+                            let _ = reply.send(
+                                store.task_exists(&task_id).map_err(|error| error.to_string()),
+                            );
+                        }
+                        TaskStoreCommand::Export { task_id, reply } => {
+                            let _ = reply.send(
+                                store
+                                    .export_episode(&task_id)
+                                    .map_err(|error| error.to_string()),
+                            );
+                        }
+                        TaskStoreCommand::ResumeBegin {
+                            task_id,
+                            session_id,
+                            turn_id,
+                            generation,
+                            ttl_ms,
+                            reply,
+                        } => {
+                            let result = resume_begin(
+                                &store,
+                                &mut raw_resume_tokens,
+                                &task_id,
+                                &session_id,
+                                &turn_id,
+                                generation,
+                                ttl_ms,
+                            );
+                            let _ = reply.send(result);
+                        }
+                        TaskStoreCommand::ResumeCompleteAttached {
+                            token,
+                            generation,
+                            reply,
+                        } => {
+                            let result = store
+                                .complete_resume_attached(&token, generation)
+                                .map_err(|error| error.to_string())
+                                .and_then(|outcome| {
+                                    serde_json::to_value(outcome.segment)
+                                        .map_err(|error| error.to_string())
+                                });
+                            let _ = reply.send(result);
+                        }
+                        TaskStoreCommand::ResumeCompleteBlocked {
+                            token,
+                            payload,
+                            reply,
+                        } => {
+                            let _ = reply.send(
+                                store
+                                    .complete_resume_blocked(&token, payload)
+                                    .map_err(|error| error.to_string()),
+                            );
                         }
                     }
                 }
@@ -102,6 +201,156 @@ impl TaskStoreHandle {
             .map_err(|_| anyhow!("task store actor closed"))?
             .map_err(anyhow::Error::msg)
     }
+
+    /// Whether a task row with `task_id` exists, via the actor thread.
+    pub async fn task_exists(&self, task_id: String) -> Result<bool> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(TaskStoreCommand::TaskExists { task_id, reply })
+            .map_err(|_| anyhow!("task store actor closed"))?;
+        rx.await
+            .map_err(|_| anyhow!("task store actor closed"))?
+            .map_err(anyhow::Error::msg)
+    }
+
+    /// Export the full multi-turn episode for `task_id`, via the actor thread.
+    pub async fn export_episode(&self, task_id: String) -> Result<EpisodeExport> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(TaskStoreCommand::Export { task_id, reply })
+            .map_err(|_| anyhow!("task store actor closed"))?;
+        rx.await
+            .map_err(|_| anyhow!("task store actor closed"))?
+            .map_err(anyhow::Error::msg)
+    }
+
+    /// Begin a resume attempt and return the assembled `tasksResume` wire result
+    /// (`{ resumeToken, attemptId, plan, episode }`) as JSON.
+    ///
+    /// The raw wire token is resolved entirely on the actor thread (see
+    /// `resume_begin`): a freshly created attempt returns its newly minted
+    /// token, an idempotent retry returns the cached token, and a cache miss
+    /// after a host restart rotates a fresh token WITHOUT appending another
+    /// `resume_attempt_started` event.
+    pub async fn resume_begin(
+        &self,
+        task_id: String,
+        session_id: String,
+        turn_id: String,
+        generation: i64,
+        ttl_ms: i64,
+    ) -> Result<Value> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(TaskStoreCommand::ResumeBegin {
+                task_id,
+                session_id,
+                turn_id,
+                generation,
+                ttl_ms,
+                reply,
+            })
+            .map_err(|_| anyhow!("task store actor closed"))?;
+        rx.await
+            .map_err(|_| anyhow!("task store actor closed"))?
+            .map_err(anyhow::Error::msg)
+    }
+
+    /// Complete a resume attempt as attached, returning the attached execution
+    /// segment serialized to JSON.
+    pub async fn resume_complete_attached(&self, token: String, generation: i64) -> Result<Value> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(TaskStoreCommand::ResumeCompleteAttached {
+                token,
+                generation,
+                reply,
+            })
+            .map_err(|_| anyhow!("task store actor closed"))?;
+        rx.await
+            .map_err(|_| anyhow!("task store actor closed"))?
+            .map_err(anyhow::Error::msg)
+    }
+
+    /// Complete a resume attempt as blocked/terminal, recording `payload` as the
+    /// failure reason.
+    pub async fn resume_complete_blocked(&self, token: String, payload: Value) -> Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(TaskStoreCommand::ResumeCompleteBlocked {
+                token,
+                payload,
+                reply,
+            })
+            .map_err(|_| anyhow!("task store actor closed"))?;
+        rx.await
+            .map_err(|_| anyhow!("task store actor closed"))?
+            .map_err(anyhow::Error::msg)
+    }
+}
+
+/// Begin a resume attempt on the actor thread and assemble the wire result.
+///
+/// Token resolution (Task 8, Step 6):
+/// - [`TaskStore::begin_resume_attempt`] returning `resume_token: Some(token)`
+///   means a fresh attempt was created — cache the raw token by attempt id and
+///   use it.
+/// - returning `None` means an idempotent retry matched an existing pending
+///   attempt. Use the cached raw token if we still have it; if the cache has no
+///   entry (the attempt outlived this process — host restart), call
+///   [`TaskStore::rotate_resume_attempt_token`], which mints a replacement and
+///   stores its hash WITHOUT appending a second `resume_attempt_started` event,
+///   then cache and use the replacement.
+///
+/// The plan and episode are read after the attempt so the SDK gets the recovery
+/// decision (Finding 16) and the durable episode in the same round trip.
+fn resume_begin(
+    store: &TaskStore,
+    raw_resume_tokens: &mut HashMap<String, String>,
+    task_id: &str,
+    session_id: &str,
+    turn_id: &str,
+    generation: i64,
+    ttl_ms: i64,
+) -> Result<Value, String> {
+    let ResumeAttemptBegin {
+        attempt_id,
+        resume_token,
+        ..
+    } = store
+        .begin_resume_attempt(task_id, session_id, turn_id, generation, ttl_ms)
+        .map_err(|error| error.to_string())?;
+
+    let resume_token = match resume_token {
+        Some(token) => {
+            raw_resume_tokens.insert(attempt_id.clone(), token.clone());
+            token
+        }
+        None => match raw_resume_tokens.get(&attempt_id) {
+            Some(token) => token.clone(),
+            None => {
+                let token = store
+                    .rotate_resume_attempt_token(&attempt_id)
+                    .map_err(|error| error.to_string())?;
+                raw_resume_tokens.insert(attempt_id.clone(), token.clone());
+                token
+            }
+        },
+    };
+
+    let plan = plan_task_resume(store, task_id, generation);
+    let episode = store
+        .export_episode(task_id)
+        .map_err(|error| error.to_string())?;
+
+    let plan = serde_json::to_value(plan).map_err(|error| error.to_string())?;
+    let episode = serde_json::to_value(episode).map_err(|error| error.to_string())?;
+    Ok(json!({
+        "resumeToken": resume_token,
+        "attemptId": attempt_id,
+        "plan": plan,
+        "episode": episode,
+    }))
 }
 
 #[cfg(test)]

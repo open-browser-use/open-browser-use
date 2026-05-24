@@ -20,7 +20,10 @@ use obu_wire::{
         ERR_CDP_FAILURE, ERR_DIALOG_REQUIRES_DECISION, ERR_OVERLOADED, ERR_PAGE_CLOSED,
         ERR_TAB_NOT_ATTACHED,
     },
-    error::{ERR_IO, ERR_NO_BACKEND, ERR_NOT_IMPLEMENTED, ERR_PEER_AUTH, ERR_PROTOCOL},
+    error::{
+        ERR_CONFLICT, ERR_IO, ERR_NO_BACKEND, ERR_NOT_FOUND, ERR_NOT_IMPLEMENTED, ERR_PEER_AUTH,
+        ERR_PROTOCOL,
+    },
 };
 
 use crate::backends::{
@@ -30,6 +33,8 @@ use crate::backends::{
 };
 use crate::error::{HostError, Result};
 use crate::methods;
+use crate::task_store::TaskListFilter;
+use crate::task_store_actor::TaskStoreHandle;
 use crate::peer_lifecycle::{
     PEER_AUTH_REQUIRED_MESSAGE, PeerFirstFrameAction, PeerLifecycleDiagnostics, plan_peer_auth,
     plan_peer_first_frame, plan_peer_request_cancelled, plan_peer_shutdown,
@@ -53,6 +58,17 @@ struct DispatcherInner {
     backend: Arc<dyn BrowserBackend>,
     policy: Arc<dyn HostPolicy>,
     peer_diagnostics: PeerLifecycleDiagnostics,
+    /// Durable task store actor handle, when the host provisioned one. `None`
+    /// means task RPCs resolve to `task_store_unavailable` rather than panic.
+    task_store: Option<TaskStoreHandle>,
+    /// Keeps a test-owned temp dir alive for the lifetime of an in-test task
+    /// store so the backing SQLite file is not deleted out from under the actor.
+    ///
+    /// Always `None` in production; only `Some` for
+    /// [`Dispatcher::new_for_test_with_temp_task_store`]. Not `#[cfg(test)]`
+    /// because that constructor is reachable from integration tests, which link
+    /// the crate built WITHOUT `cfg(test)`.
+    _task_store_tempdir: Option<Arc<tempfile::TempDir>>,
     session_operation_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     tab_operation_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
 }
@@ -60,16 +76,14 @@ struct DispatcherInner {
 impl Dispatcher {
     /// Construct a dispatcher around one browser backend.
     pub fn new(host_version: String, backend: Arc<dyn BrowserBackend>) -> Self {
-        Self {
-            inner: Arc::new(DispatcherInner {
-                host_version,
-                backend,
-                policy: Arc::new(PermissivePolicy),
-                peer_diagnostics: PeerLifecycleDiagnostics::default(),
-                session_operation_locks: Mutex::new(HashMap::new()),
-                tab_operation_locks: Mutex::new(HashMap::new()),
-            }),
-        }
+        Self::with_optional_task_store(
+            host_version,
+            backend,
+            Arc::new(PermissivePolicy),
+            PeerLifecycleDiagnostics::default(),
+            None,
+            None,
+        )
     }
 
     /// Construct a dispatcher around one browser backend and explicit policy.
@@ -78,16 +92,14 @@ impl Dispatcher {
         backend: Arc<dyn BrowserBackend>,
         policy: Arc<dyn HostPolicy>,
     ) -> Self {
-        Self {
-            inner: Arc::new(DispatcherInner {
-                host_version,
-                backend,
-                policy,
-                peer_diagnostics: PeerLifecycleDiagnostics::default(),
-                session_operation_locks: Mutex::new(HashMap::new()),
-                tab_operation_locks: Mutex::new(HashMap::new()),
-            }),
-        }
+        Self::with_optional_task_store(
+            host_version,
+            backend,
+            policy,
+            PeerLifecycleDiagnostics::default(),
+            None,
+            None,
+        )
     }
 
     /// Construct a dispatcher around one browser backend, explicit policy, and shared peer diagnostics.
@@ -97,12 +109,58 @@ impl Dispatcher {
         policy: Arc<dyn HostPolicy>,
         peer_diagnostics: PeerLifecycleDiagnostics,
     ) -> Self {
+        Self::with_optional_task_store(
+            host_version,
+            backend,
+            policy,
+            peer_diagnostics,
+            None,
+            None,
+        )
+    }
+
+    /// Construct a dispatcher with an explicit policy, peer diagnostics, and an
+    /// optional durable task store actor handle.
+    ///
+    /// This is the constructor `main`/`native_messaging` use once they have
+    /// provisioned (or failed to provision) the task store: passing `None`
+    /// keeps the host running with task RPCs returning `task_store_unavailable`.
+    pub fn new_with_policy_peer_diagnostics_and_task_store(
+        host_version: String,
+        backend: Arc<dyn BrowserBackend>,
+        policy: Arc<dyn HostPolicy>,
+        peer_diagnostics: PeerLifecycleDiagnostics,
+        task_store: Option<TaskStoreHandle>,
+    ) -> Self {
+        Self::with_optional_task_store(
+            host_version,
+            backend,
+            policy,
+            peer_diagnostics,
+            task_store,
+            None,
+        )
+    }
+
+    /// Shared constructor body that wires every `DispatcherInner` field,
+    /// including the optional task store handle and (in test builds) the temp
+    /// dir that backs an in-test store.
+    fn with_optional_task_store(
+        host_version: String,
+        backend: Arc<dyn BrowserBackend>,
+        policy: Arc<dyn HostPolicy>,
+        peer_diagnostics: PeerLifecycleDiagnostics,
+        task_store: Option<TaskStoreHandle>,
+        task_store_tempdir: Option<Arc<tempfile::TempDir>>,
+    ) -> Self {
         Self {
             inner: Arc::new(DispatcherInner {
                 host_version,
                 backend,
                 policy,
                 peer_diagnostics,
+                task_store,
+                _task_store_tempdir: task_store_tempdir,
                 session_operation_locks: Mutex::new(HashMap::new()),
                 tab_operation_locks: Mutex::new(HashMap::new()),
             }),
@@ -114,6 +172,24 @@ impl Dispatcher {
         Self::new(
             env!("CARGO_PKG_VERSION").into(),
             Arc::new(WebExtensionBackend::default()),
+        )
+    }
+
+    /// Test dispatcher with a real task store opened in a fresh owner-only temp
+    /// dir, kept alive for the dispatcher's lifetime.
+    #[doc(hidden)]
+    pub fn new_for_test_with_temp_task_store() -> Self {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = Arc::new(tempfile::tempdir().expect("tempdir"));
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        let handle = TaskStoreHandle::open(dir.path().to_path_buf()).expect("task store");
+        Self::with_optional_task_store(
+            env!("CARGO_PKG_VERSION").into(),
+            Arc::new(WebExtensionBackend::default()),
+            Arc::new(PermissivePolicy),
+            PeerLifecycleDiagnostics::default(),
+            Some(handle),
+            Some(dir),
         )
     }
 
@@ -348,7 +424,12 @@ impl Dispatcher {
             return Response::err(req.id, error);
         }
         let ctx = request_context(&req);
-        if !self.inner.backend.supports_method(&req.method) {
+        // Finding F1: task RPCs are served by the dispatcher's own task store, not
+        // by the browser backend, so they are EXEMPT from the backend capability
+        // gate. They are NOT early-returned here: they fall through to the normal
+        // `require_mutation_context` + session-lock path below so a resume still
+        // acquires the per-session lock like any other mutating method.
+        if !is_task_method(&req.method) && !self.inner.backend.supports_method(&req.method) {
             let backend = self.inner.backend.kind().as_str();
             return Response::err(
                 req.id,
@@ -405,6 +486,10 @@ impl Dispatcher {
             | methods::EXECUTE_UNHANDLED_COMMAND => {
                 self.route_lifecycle_request(method, ctx, params).await
             }
+            methods::TASKS_LIST
+            | methods::TASKS_EXPORT
+            | methods::TASKS_RESUME
+            | methods::TASKS_RESUME_COMPLETE => self.route_task_request(method, ctx, params).await,
             methods::CREATE_TAB
             | methods::GET_TABS
             | methods::GET_CURRENT_TAB
@@ -492,6 +577,148 @@ impl Dispatcher {
                 ErrorCode::MethodNotFound,
                 format!("method not found: {method}"),
             )),
+        }
+    }
+
+    /// Dispatch a task RPC against the durable task store actor.
+    ///
+    /// All task methods funnel through the single-writer [`TaskStoreHandle`]
+    /// (which serializes store mutations on its own thread). When the host did
+    /// not provision a store, every task method resolves to
+    /// `task_store_unavailable` rather than panicking.
+    async fn route_task_request(
+        &self,
+        method: &str,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> std::result::Result<Value, ErrorObject> {
+        let store = self
+            .inner
+            .task_store
+            .as_ref()
+            .ok_or_else(task_store_unavailable)?;
+        match method {
+            methods::TASKS_LIST => {
+                let rows = store
+                    .list_tasks(parse_task_list_filter(&params, ctx))
+                    .await
+                    .map_err(|error| task_store_rpc_error(error.to_string()))?;
+                serde_json::to_value(rows)
+                    .map_err(|error| ErrorObject::new(ErrorCode::InternalError, error.to_string()))
+            }
+            methods::TASKS_EXPORT => {
+                let task_id = require_task_id(&params)?.to_string();
+                let episode = store
+                    .export_episode(task_id)
+                    .await
+                    .map_err(|error| task_store_rpc_error(error.to_string()))?;
+                serde_json::to_value(episode)
+                    .map_err(|error| ErrorObject::new(ErrorCode::InternalError, error.to_string()))
+            }
+            methods::TASKS_RESUME => self.route_task_resume_begin(ctx, &params).await,
+            methods::TASKS_RESUME_COMPLETE => {
+                self.route_task_resume_complete(ctx, &params).await
+            }
+            _ => Err(ErrorObject::new(
+                ErrorCode::MethodNotFound,
+                format!("method not found: {method}"),
+            )),
+        }
+    }
+
+    /// Begin a resume attempt (the `tasksResume` RPC).
+    ///
+    /// Requires a trusted kernel generation from the frame-level runtime
+    /// envelope (Task 4): without it the SDK cannot prove kernel continuity, so
+    /// the call is rejected with `task_runtime_metadata_missing` before any
+    /// store mutation. On success the attempt's wire token, recovery
+    /// [`ResumePlan`], and the task's [`EpisodeExport`] are returned together so
+    /// the SDK can decide how to recover (Finding 16) in one round trip.
+    async fn route_task_resume_begin(
+        &self,
+        ctx: &BackendRequestContext,
+        params: &Value,
+    ) -> std::result::Result<Value, ErrorObject> {
+        let store = self
+            .inner
+            .task_store
+            .as_ref()
+            .ok_or_else(task_store_unavailable)?;
+        let task_id = require_task_id(params)?.to_string();
+        let session_id = require_resume_session_id(ctx, params)?;
+        let turn_id = require_resume_turn_id(ctx, params)?;
+        let generation = require_trusted_generation(ctx)?;
+        let begin = store
+            .resume_begin(
+                task_id.clone(),
+                session_id,
+                turn_id,
+                generation,
+                RESUME_ATTEMPT_TTL_MS,
+            )
+            .await
+            .map_err(|error| task_store_rpc_error(error.to_string()))?;
+        serde_json::to_value(begin)
+            .map_err(|error| ErrorObject::new(ErrorCode::InternalError, error.to_string()))
+    }
+
+    /// Complete a resume attempt (the `tasksResumeComplete` RPC).
+    ///
+    /// Dispatches on the caller-reported `status`: `attached` materializes the
+    /// execution owner + segment and returns the attached segment; the terminal
+    /// `blocked`/`attach_failed`/`observation_failed` statuses record the
+    /// failure reason against the attempt without creating a segment. Like
+    /// begin, this requires a trusted generation (the SDK always carries it for
+    /// the attached path; rejecting its absence keeps the two halves symmetric).
+    async fn route_task_resume_complete(
+        &self,
+        ctx: &BackendRequestContext,
+        params: &Value,
+    ) -> std::result::Result<Value, ErrorObject> {
+        let store = self
+            .inner
+            .task_store
+            .as_ref()
+            .ok_or_else(task_store_unavailable)?;
+        let token = params
+            .get("resumeToken")
+            .and_then(Value::as_str)
+            .filter(|token| !token.is_empty())
+            .ok_or_else(|| {
+                invalid_params("missing resumeToken for tasksResumeComplete")
+                    .with_data(json!({ "code": "invalid_resume_token" }))
+            })?
+            .to_string();
+        let status = params
+            .get("status")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .to_string();
+        let generation = require_trusted_generation(ctx)?;
+        match status.as_str() {
+            "attached" => {
+                let outcome = store
+                    .resume_complete_attached(token, generation)
+                    .await
+                    .map_err(|error| task_store_rpc_error(error.to_string()))?;
+                Ok(json!({ "status": "attached", "segment": outcome }))
+            }
+            "blocked" | "attach_failed" | "observation_failed" => {
+                let reason = params
+                    .get("reason")
+                    .cloned()
+                    .unwrap_or(Value::Null);
+                let payload = json!({ "status": status, "reason": reason });
+                store
+                    .resume_complete_blocked(token, payload)
+                    .await
+                    .map_err(|error| task_store_rpc_error(error.to_string()))?;
+                Ok(json!({ "status": "blocked" }))
+            }
+            other => Err(invalid_params(&format!(
+                "unknown tasksResumeComplete status: {other}"
+            ))
+            .with_data(json!({ "code": "invalid_resume_status", "status": other }))),
         }
     }
 
@@ -1326,6 +1553,8 @@ fn requires_mutation_context(method: &str) -> bool {
                 | methods::BROWSER_VISIBILITY_SET
                 | methods::PLAYWRIGHT_WAIT_FOR_FILE_CHOOSER
                 | methods::PLAYWRIGHT_WAIT_FOR_DOWNLOAD
+                | methods::TASKS_RESUME
+                | methods::TASKS_RESUME_COMPLETE
         )
 }
 
@@ -1421,6 +1650,146 @@ fn reject_user_runtime_metadata(
 
 fn invalid_params(message: &str) -> ErrorObject {
     ErrorObject::new(ErrorCode::InvalidParams, message)
+}
+
+/// Time-to-live for a freshly begun resume attempt (60s).
+///
+/// Long enough for the SDK to attach within the same turn; short enough that an
+/// abandoned attempt expires rather than blocking the task's single pending
+/// attempt slot indefinitely.
+const RESUME_ATTEMPT_TTL_MS: i64 = 60_000;
+
+/// Whether `method` is a task RPC served by the dispatcher's task store rather
+/// than the browser backend (Finding F1: exempt from the capability gate).
+fn is_task_method(method: &str) -> bool {
+    matches!(
+        method,
+        methods::TASKS_LIST
+            | methods::TASKS_EXPORT
+            | methods::TASKS_RESUME
+            | methods::TASKS_RESUME_COMPLETE
+    )
+}
+
+/// Build a [`TaskListFilter`] from `tasksList` params + the request context.
+///
+/// `state` accepts either a single string or an array of strings;
+/// `scope: "currentSession"` restricts the listing to the request's session id.
+fn parse_task_list_filter(params: &Value, ctx: &BackendRequestContext) -> TaskListFilter {
+    let state = match params.get("state") {
+        Some(Value::String(s)) => Some(vec![s.clone()]),
+        Some(Value::Array(items)) => {
+            let states: Vec<String> = items
+                .iter()
+                .filter_map(|v| v.as_str().map(str::to_owned))
+                .collect();
+            (!states.is_empty()).then_some(states)
+        }
+        _ => None,
+    };
+    let limit = params.get("limit").and_then(Value::as_i64).unwrap_or(0);
+    let scope_session_id = match params.get("scope").and_then(Value::as_str) {
+        Some("currentSession") => Some(ctx.session_id.clone().unwrap_or_default()),
+        _ => None,
+    };
+    TaskListFilter {
+        state,
+        limit,
+        scope_session_id,
+    }
+}
+
+/// Extract a non-empty `taskId` from task RPC params.
+fn require_task_id(params: &Value) -> std::result::Result<&str, ErrorObject> {
+    params
+        .get("taskId")
+        .and_then(Value::as_str)
+        .filter(|id| !id.is_empty())
+        .ok_or_else(|| {
+            invalid_params("missing taskId").with_data(json!({ "code": "invalid_params" }))
+        })
+}
+
+/// Resolve the resume session id from the trusted context, falling back to
+/// params only when the context lacks one.
+fn require_resume_session_id(
+    ctx: &BackendRequestContext,
+    params: &Value,
+) -> std::result::Result<String, ErrorObject> {
+    ctx.session_id
+        .clone()
+        .filter(|id| !id.is_empty())
+        .or_else(|| {
+            params
+                .get("session_id")
+                .or_else(|| params.get("sessionId"))
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+        })
+        .ok_or_else(|| invalid_params("missing session_id: resume requires turn authority"))
+}
+
+/// Resolve the resume turn id from the trusted context, falling back to params
+/// only when the context lacks one.
+fn require_resume_turn_id(
+    ctx: &BackendRequestContext,
+    params: &Value,
+) -> std::result::Result<String, ErrorObject> {
+    ctx.turn_id
+        .clone()
+        .filter(|id| !id.is_empty())
+        .or_else(|| {
+            params
+                .get("turn_id")
+                .or_else(|| params.get("turnId"))
+                .and_then(Value::as_str)
+                .filter(|id| !id.is_empty())
+                .map(str::to_owned)
+        })
+        .ok_or_else(|| invalid_params("missing turn_id: resume requires turn authority"))
+}
+
+/// Require the trusted kernel generation from the frame-level runtime envelope.
+///
+/// A resume cannot prove kernel continuity (Finding 16) without it, so its
+/// absence is rejected with `task_runtime_metadata_missing` BEFORE any store
+/// mutation. The generation must ride in the trusted runtime envelope, never in
+/// caller-supplied params (already enforced by `reject_user_runtime_metadata`).
+fn require_trusted_generation(
+    ctx: &BackendRequestContext,
+) -> std::result::Result<i64, ErrorObject> {
+    ctx.trusted_kernel_generation.ok_or_else(|| {
+        invalid_params("missing trusted kernel generation for task resume")
+            .with_data(json!({ "code": "task_runtime_metadata_missing", "retryable": false }))
+    })
+}
+
+/// Error returned when a task RPC arrives but the host did not provision a store.
+fn task_store_unavailable() -> ErrorObject {
+    ErrorObject::new(ErrorCode::Server(ERR_IO), "task store unavailable")
+        .with_data(json!({ "code": "task_store_unavailable", "retryable": false }))
+}
+
+/// Map a stringified task-store error onto a wire `ErrorObject` with a stable
+/// `data.code`, so SDK callers can branch on the failure class.
+fn task_store_rpc_error(error: String) -> ErrorObject {
+    if error.contains("unknown_task") || error.contains("task not found") {
+        return ErrorObject::new(ErrorCode::Server(ERR_NOT_FOUND), error)
+            .with_data(json!({ "code": "unknown_task" }));
+    }
+    if error.contains("task_resume_conflict") {
+        return ErrorObject::new(ErrorCode::Server(ERR_CONFLICT), error)
+            .with_data(json!({ "code": "task_resume_conflict" }));
+    }
+    if error.contains("task_turn_conflict") {
+        return ErrorObject::new(ErrorCode::Server(ERR_CONFLICT), error)
+            .with_data(json!({ "code": "task_turn_conflict" }));
+    }
+    if error.contains("invalid_resume_token") || error.contains("resume_token_expired") {
+        return invalid_params(&error).with_data(json!({ "code": "invalid_resume_token" }));
+    }
+    ErrorObject::new(ErrorCode::InternalError, error)
 }
 
 fn unsupported_backend_capability_error(backend: &str, method: &str) -> ErrorObject {
