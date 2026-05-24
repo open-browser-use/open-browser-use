@@ -1496,13 +1496,17 @@ assert.deepEqual(
 );
 assert.deepEqual(handoffFailureTabs.result.deliverableTabs, []);
 assert.equal(tabGroupStateGroups().find((group) => group.tabs[String(handoffFailureTabId)])?.tabs[String(handoffFailureTabId)].status, "active");
+// Finding 19 (Task 0.1): a partial finalize leaves the session in
+// `finalize_partial`, which blocks new browser actions until the partial
+// finalize is acknowledged or repaired — preventing a command from silently
+// rewriting the lifecycle back to `active` and masking the failed handoff.
 const handoffFailureCdp = await hostRequest(port, "executeCdp", {
   session_id: "keep-failure-session",
   turn_id: "after-failed-handoff",
   target: { tabId: handoffFailureTabId },
   method: "Runtime.evaluate",
 });
-assert.equal(handoffFailureCdp.result.ok, true);
+assert.match(handoffFailureCdp.error.message, /finalized partially/);
 
 const deliverableFailureCreated = await hostRequest(port, "createTab", {
   session_id: "deliverable-failure-session",
