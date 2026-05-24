@@ -89,18 +89,32 @@ async fn tasks_resume_unknown_task_returns_not_found() {
     assert_eq!(response["error"]["data"]["task_id"], "missing-task");
 }
 
-/// Stub extension transport whose every request resolves to an empty object.
+/// Tab id the stub transport reports as closed by `finalizeTabs`, so tests can
+/// assert the durable `tabs_finalized` evidence carries the REAL disposition
+/// (not a constant). Numeric so it survives `normalize_finalize_response`'s
+/// integer-or-decimal-string id validation; the host normalizes it to the
+/// string `"42"`.
+const FINALIZE_CLOSED_TAB_ID: i64 = 42;
+
+/// Stub extension transport for a successful `finalizeTabs`.
 ///
 /// `finalizeTabs` on the WebExtension backend requires a transport (the bare
 /// `WebExtensionBackend::default()` has none and errors before any evidence could
-/// be written), and `normalize_finalize_response` only requires the transport
-/// reply be a JSON object. Returning `{}` is the minimal successful finalize.
+/// be written). For `finalizeTabs` this returns a non-empty disposition (one
+/// closed tab id) so the recorded evidence's `outcome` reflects actual finalize
+/// results; every other method resolves to an empty object (the minimal shape
+/// `normalize_finalize_response`/`turnEnded` accept). The closed tab is not
+/// registered, which is fine: `remove_with_reason` is a tolerant no-op for an
+/// unknown tab id.
 struct OkTransport;
 
 #[async_trait]
 impl ExtensionTransport for OkTransport {
-    async fn request(&self, _method: &str, _params: Value) -> HostResult<Value> {
-        Ok(json!({}))
+    async fn request(&self, method: &str, _params: Value) -> HostResult<Value> {
+        Ok(match method {
+            "finalizeTabs" => json!({ "closedTabIds": [FINALIZE_CLOSED_TAB_ID] }),
+            _ => json!({}),
+        })
     }
 }
 
@@ -111,10 +125,11 @@ impl ExtensionTransport for OkTransport {
 /// Reconciliation (reported to the planner): the plan's draft asserted
 /// `result.status == "ok"`, but NO real `finalizeTabs` success shape in obu-host
 /// carries a top-level `status` — the WebExtension backend returns the normalized
-/// `{closed/released/kept/deliverable}` object (here `{}`), and the default
-/// backend trait impl returns `null`. So this test asserts the load-bearing
-/// invariants the plan actually cares about: finalize succeeds (no error) and
-/// writes exactly one segment whose `turnId` is the current turn.
+/// `{closed/released/kept/deliverable}` object, and the default backend trait
+/// impl returns `null`. So these tests assert the load-bearing invariants the
+/// plan actually cares about: finalize succeeds (no error) and writes exactly one
+/// segment whose `turnId` is the current turn, and the recorded `tabs_finalized`
+/// evidence's `outcome` reflects the backend's real disposition.
 fn finalize_dispatcher(session_id: &str, turn_id: &str) -> Dispatcher {
     let backend = Arc::new(
         WebExtensionBackend::dev_chrome(json!({})).with_transport(Arc::new(OkTransport)),
@@ -144,6 +159,62 @@ async fn finalize_only_first_write_creates_one_segment_and_event() {
     let tasks = dispatch_for_test(&dispatcher, methods::TASKS_LIST, json!({ "limit": 10 })).await;
     assert_eq!(tasks["result"][0]["segmentCount"], 1);
     assert_eq!(tasks["result"][0]["lastSegment"]["turnId"], "turn-1");
+}
+
+/// The recorded `tabs_finalized` event carries the REAL finalize disposition, not
+/// a constant: the stub backend reports tab `42` as closed, so the durable event's
+/// `outcome.closedTabIds` must round-trip that exact id (host-normalized to a
+/// string). Read back via `tasksExport`, whose events expose the serialized
+/// payload string.
+#[tokio::test]
+async fn finalize_records_real_outcome_dispositions() {
+    let dispatcher = finalize_dispatcher("session-1", "turn-1");
+    let response = dispatch_for_test(
+        &dispatcher,
+        methods::FINALIZE_TABS,
+        json!({ "session_id": "session-1", "turn_id": "turn-1", "keep": [] }),
+    )
+    .await;
+    assert!(response.get("error").is_none(), "finalize failed: {response:#}");
+
+    // Resolve the auto-created task id, then export its episode (events included).
+    let tasks = dispatch_for_test(&dispatcher, methods::TASKS_LIST, json!({ "limit": 10 })).await;
+    let task_id = tasks["result"][0]["taskId"]
+        .as_str()
+        .expect("task id")
+        .to_string();
+    let export = dispatch_for_test(
+        &dispatcher,
+        methods::TASKS_EXPORT,
+        json!({ "taskId": task_id }),
+    )
+    .await;
+
+    // Find the tabs_finalized event and parse its serialized payload string.
+    let events = export["result"]["events"]
+        .as_array()
+        .expect("events array");
+    let finalized = events
+        .iter()
+        .find(|event| event["kind"] == "tabs_finalized")
+        .expect("a tabs_finalized event");
+    let payload: Value = serde_json::from_str(
+        finalized["payload"].as_str().expect("payload is a string"),
+    )
+    .expect("payload parses as json");
+
+    // The disposition is REAL data from the backend result, not a hardcoded value.
+    assert_eq!(
+        payload["outcome"]["closedTabIds"],
+        json!([FINALIZE_CLOSED_TAB_ID.to_string()]),
+        "tabs_finalized outcome must reflect the backend's closed tab; payload: {payload:#}"
+    );
+    // The honest constant-shape fields are present and empty (nothing else closed).
+    assert_eq!(payload["outcome"]["keptTabs"], json!([]));
+    assert_eq!(payload["outcome"]["releasedTabIds"], json!([]));
+    // The fabricated always-"ok" status / always-[] failures keys are gone.
+    assert!(payload.get("status").is_none(), "status should be removed: {payload:#}");
+    assert!(payload.get("failures").is_none(), "failures should be removed: {payload:#}");
 }
 
 /// `turnEnded` also records evidence for the current turn's segment, auto-creating

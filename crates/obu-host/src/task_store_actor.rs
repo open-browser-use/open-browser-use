@@ -87,12 +87,16 @@ enum TaskStoreCommand {
     /// `tabs_finalized` typed event referencing the resolved `taskId`/`segmentId`.
     /// Building the payload here keeps the resolved `task_id` on the writer thread
     /// (no second round trip) and the whole thing single-writer.
+    ///
+    /// `outcome` is the REAL finalize disposition the dispatcher extracted from the
+    /// backend's normalized finalize result (closed/released/kept/deliverable tab
+    /// sets), embedded verbatim so the durable evidence records what finalize
+    /// actually did rather than a constant.
     RecordFinalizeEvidence {
         session_id: String,
         turn_id: String,
         generation: Option<i64>,
-        status: String,
-        failures: Value,
+        outcome: Value,
         reply: oneshot::Sender<Result<(), String>>,
     },
     /// Record turn-ended evidence for the current turn (Task 10).
@@ -230,8 +234,7 @@ impl TaskStoreHandle {
                             session_id,
                             turn_id,
                             generation,
-                            status,
-                            failures,
+                            outcome,
                             reply,
                         } => {
                             let result = record_finalize_evidence(
@@ -239,8 +242,7 @@ impl TaskStoreHandle {
                                 &session_id,
                                 &turn_id,
                                 generation,
-                                &status,
-                                failures,
+                                outcome,
                             );
                             let _ = reply.send(result);
                         }
@@ -370,17 +372,16 @@ impl TaskStoreHandle {
     ///
     /// Atomically (on the actor thread) ensures the session's task and the
     /// `(session, turn)` segment exist — auto-creating and binding a task when the
-    /// session has none — then appends a `tabs_finalized` typed event. This is a
-    /// best-effort observability side effect: callers (the dispatcher's finalize
-    /// route) log and continue on `Err` so a store hiccup never fails the user's
-    /// finalize.
+    /// session has none — then appends a `tabs_finalized` typed event whose
+    /// `outcome` is the real finalize disposition. This is a best-effort
+    /// observability side effect: callers (the dispatcher's finalize route) log and
+    /// continue on `Err` so a store hiccup never fails the user's finalize.
     pub async fn record_finalize_evidence(
         &self,
         session_id: String,
         turn_id: String,
         generation: Option<i64>,
-        status: String,
-        failures: Value,
+        outcome: Value,
     ) -> Result<()> {
         let (reply, rx) = oneshot::channel();
         self.tx
@@ -388,8 +389,7 @@ impl TaskStoreHandle {
                 session_id,
                 turn_id,
                 generation,
-                status,
-                failures,
+                outcome,
                 reply,
             })
             .map_err(|_| anyhow!("task store actor closed"))?;
@@ -533,16 +533,16 @@ fn ensure_current_turn_segment(
 
 /// Ensure the current turn's segment and append a `tabs_finalized` typed event.
 ///
-/// The payload carries the resolved `taskId`/`segmentId` plus the finalize
-/// `status`/`failures` derived by the dispatcher from the backend's finalize
-/// result, so the durable episode records what finalize observed.
+/// The payload carries the resolved `taskId`/`segmentId` plus the real finalize
+/// `outcome` (the closed/released/kept/deliverable tab dispositions the dispatcher
+/// extracted from the backend's normalized finalize result), so the durable
+/// episode records what finalize actually did — not a constant.
 fn record_finalize_evidence(
     store: &TaskStore,
     session_id: &str,
     turn_id: &str,
     generation: Option<i64>,
-    status: &str,
-    failures: Value,
+    outcome: Value,
 ) -> Result<(), String> {
     let (task_id, segment) =
         ensure_current_turn_segment(store, session_id, turn_id, generation)?;
@@ -552,8 +552,7 @@ fn record_finalize_evidence(
         "segmentId": segment.segment_id,
         "sessionId": session_id,
         "turnId": turn_id,
-        "status": status,
-        "failures": failures,
+        "outcome": outcome,
         "at": now_millis(),
     });
     store

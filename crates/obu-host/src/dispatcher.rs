@@ -747,10 +747,10 @@ impl Dispatcher {
     ///   without turn authority);
     /// - the actor command errors → `tracing::warn!` and continue.
     ///
-    /// `status`/`failures` are derived from the backend's finalize `result`:
-    /// `status` is its `status` string when present (else `"ok"`, since a
-    /// successful finalize without an explicit status is a success), and
-    /// `failures` is its `failures` field when present (else an empty array).
+    /// The event records the REAL finalize disposition: [`finalize_outcome`]
+    /// pulls the closed/released/kept/deliverable tab sets out of the backend's
+    /// normalized finalize `result` and forwards them (camelCase) under the event's
+    /// `outcome` key, so the durable episode reflects what finalize actually did.
     async fn record_finalize_evidence(&self, ctx: &BackendRequestContext, result: &Value) {
         let Some(store) = self.inner.task_store.as_ref() else {
             return;
@@ -761,22 +761,12 @@ impl Dispatcher {
         ) else {
             return;
         };
-        let status = result
-            .get("status")
-            .and_then(Value::as_str)
-            .unwrap_or("ok")
-            .to_string();
-        let failures = result
-            .get("failures")
-            .cloned()
-            .unwrap_or_else(|| Value::Array(Vec::new()));
         if let Err(error) = store
             .record_finalize_evidence(
                 session_id.to_string(),
                 turn_id.to_string(),
                 ctx.trusted_kernel_generation,
-                status,
-                failures,
+                finalize_outcome(result),
             )
             .await
         {
@@ -1770,6 +1760,32 @@ fn is_task_method(method: &str) -> bool {
             | methods::TASKS_RESUME
             | methods::TASKS_RESUME_COMPLETE
     )
+}
+
+/// Project the real finalize disposition out of a backend's normalized
+/// `finalizeTabs` result into the `tabs_finalized` evidence `outcome` object.
+///
+/// The WebExtension backend's `normalize_finalize_response` returns the
+/// disposition under snake_case keys (`closed_tab_ids`, `released_tab_ids`,
+/// `kept_tabs`, `deliverable_tabs`); this lifts each (defaulting a missing one to
+/// an empty array) and re-keys it camelCase for the durable event. The values are
+/// the actual tabs finalize closed/released/kept/handed back, so the evidence is
+/// real data — not a constant. A non-object `result` (e.g. the default backend's
+/// `null`) yields all-empty arrays.
+fn finalize_outcome(result: &Value) -> Value {
+    let array_at = |snake: &str| -> Value {
+        result
+            .get(snake)
+            .filter(|value| value.is_array())
+            .cloned()
+            .unwrap_or_else(|| Value::Array(Vec::new()))
+    };
+    json!({
+        "closedTabIds": array_at("closed_tab_ids"),
+        "releasedTabIds": array_at("released_tab_ids"),
+        "keptTabs": array_at("kept_tabs"),
+        "deliverableTabs": array_at("deliverable_tabs"),
+    })
 }
 
 /// Build a [`TaskListFilter`] from `tasksList` params + the request context.
