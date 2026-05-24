@@ -495,6 +495,7 @@ impl JsRuntimeManager {
     ) -> Result<JsExecResult> {
         self.sync_module_dirs_to_kernel().await?;
         let mut result_rx = self.register_exec_waiter(exec_id).await?;
+        let generation = *self.kernel_generation.lock().await;
         let frame = json!({
             "type": "exec",
             "id": exec_id,
@@ -503,6 +504,9 @@ impl JsRuntimeManager {
                 "x-obu-turn-metadata": {
                     "session_id": self.options.session_id.clone(),
                     "turn_id": turn_id,
+                },
+                "x-obu-runtime-metadata": {
+                    "kernel_generation": generation,
                 }
             },
         });

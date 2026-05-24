@@ -18,6 +18,9 @@ pub struct BackendRequestContext {
     pub turn_id: Option<String>,
     /// Client-requested timeout in milliseconds.
     pub client_timeout_ms: Option<u64>,
+    /// Trusted kernel generation injected by node-repl via the frame-level
+    /// runtime envelope. Never populated from caller-supplied params.
+    pub trusted_kernel_generation: Option<i64>,
 }
 
 tokio::task_local! {

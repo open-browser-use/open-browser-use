@@ -22,6 +22,7 @@ fn test_context(session_id: &str) -> BackendRequestContext {
         session_id: Some(session_id.into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     }
 }
 
@@ -139,6 +140,7 @@ async fn cdp_current_selected_and_resume_use_only_active_session_tabs() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     registry
         .set_human_takeover("session", Some("turn"), true)
@@ -212,6 +214,7 @@ async fn cdp_finalize_tabs_applies_host_owned_lifecycle_semantics() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let agent = backend
@@ -365,6 +368,7 @@ async fn cdp_claim_user_tab_rejects_tab_owned_by_another_session() {
         session_id: Some("other-session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let error = backend
@@ -412,6 +416,7 @@ async fn cdp_claim_user_tab_allows_reclaiming_deliverable_from_previous_session(
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let claimed = backend
@@ -617,6 +622,7 @@ async fn cdp_goto_accepts_beforeunload_dialog() {
                 session_id: Some("session".into()),
                 turn_id: Some("turn".into()),
                 client_timeout_ms: None,
+                trusted_kernel_generation: None,
             },
             Some("about:blank".into()),
         )
@@ -664,6 +670,7 @@ async fn cdp_reload_uses_page_reload_dialog_policy_for_beforeunload() {
                 session_id: Some("session".into()),
                 turn_id: Some("turn".into()),
                 client_timeout_ms: None,
+                trusted_kernel_generation: None,
             },
             Some("about:blank".into()),
         )
@@ -707,6 +714,7 @@ async fn cdp_dialog_policy_reenables_page_after_tab_reattach() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     let created = backend
         .create_tab_with_context(&ctx, Some("about:blank".into()))
@@ -770,6 +778,7 @@ async fn cdp_goto_dismisses_confirm_dialog_with_structured_error() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     let created = backend
         .create_tab_with_context(&ctx, Some("about:blank".into()))
@@ -842,6 +851,7 @@ async fn cdp_close_accepts_beforeunload_dialog() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     let created = backend
         .create_tab_with_context(&ctx, Some("about:blank".into()))
@@ -871,6 +881,7 @@ async fn cdp_finalize_accepts_beforeunload_dialog_for_omitted_agent_tab() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     let created = backend
         .create_tab_with_context(&ctx, Some("about:blank".into()))
@@ -1929,6 +1940,7 @@ async fn cdp_wait_for_download_ignores_unrelated_frame_event() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let download = backend
@@ -1989,6 +2001,7 @@ async fn cdp_download_path_rejects_canceled_progress_without_timing_out() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let download = backend
@@ -2035,11 +2048,13 @@ async fn cdp_file_chooser_rejects_wrong_session_without_consuming() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     let other_ctx = BackendRequestContext {
         session_id: Some("other-session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let handle = backend
@@ -2150,6 +2165,7 @@ async fn assert_runtime_evaluate_dialog_requires_decision(dialog_type: &'static 
                 session_id: Some("session".into()),
                 turn_id: Some("turn".into()),
                 client_timeout_ms: None,
+                trusted_kernel_generation: None,
             },
             Some("about:blank".into()),
         )
@@ -2189,6 +2205,7 @@ async fn assert_runtime_evaluate_dialog_accepted(dialog_type: &'static str) {
                 session_id: Some("session".into()),
                 turn_id: Some("turn".into()),
                 client_timeout_ms: None,
+                trusted_kernel_generation: None,
             },
             Some("about:blank".into()),
         )

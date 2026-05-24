@@ -42,6 +42,19 @@ impl From<String> for Id {
     }
 }
 
+/// Frame-level runtime metadata, a trusted sibling of `params`.
+///
+/// This rides outside `params` so it cannot be spoofed by a raw peer. The
+/// host injects trusted values here; callers MUST NOT place these keys in
+/// `params` (task RPCs reject such attempts).
+#[derive(Debug, Clone, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub struct RequestRuntimeMeta {
+    /// Trusted kernel generation injected by node-repl.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub kernel_generation: Option<i64>,
+}
+
 /// JSON-RPC 2.0 request.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Request {
@@ -54,6 +67,9 @@ pub struct Request {
     /// Method params.
     #[serde(default, skip_serializing_if = "Value::is_null")]
     pub params: Value,
+    /// Frame-level trusted runtime metadata (sibling of `params`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub runtime: Option<RequestRuntimeMeta>,
 }
 
 impl Request {
@@ -64,6 +80,7 @@ impl Request {
             id: id.into(),
             method: method.into(),
             params,
+            runtime: None,
         }
     }
 }

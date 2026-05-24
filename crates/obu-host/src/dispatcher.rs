@@ -301,7 +301,7 @@ impl Dispatcher {
             let id = request.id.clone();
             let method = request.method.clone();
             let cancel_method = method.clone();
-            let timeout_ms = request_context(&request.params).client_timeout_ms;
+            let timeout_ms = request_context(&request).client_timeout_ms;
             let backend_owns_deadline =
                 timeout_ms.is_some() && dispatcher.inner.backend.owns_request_deadline(&method);
             let route = crate::backends::scope_client_timeout(timeout_ms, async move {
@@ -344,7 +344,10 @@ impl Dispatcher {
     }
 
     async fn route_request(&self, req: Request) -> Response {
-        let ctx = request_context(&req.params);
+        if let Err(error) = reject_user_runtime_metadata(&req.method, &req.params) {
+            return Response::err(req.id, error);
+        }
+        let ctx = request_context(&req);
         if !self.inner.backend.supports_method(&req.method) {
             let backend = self.inner.backend.kind().as_str();
             return Response::err(
@@ -1373,15 +1376,47 @@ fn is_tab_mutating_method(method: &str) -> bool {
     )
 }
 
-fn request_context(params: &Value) -> BackendRequestContext {
+fn request_context(req: &Request) -> BackendRequestContext {
     BackendRequestContext {
-        session_id: params_str(params, "session_id"),
-        turn_id: params_str(params, "turn_id"),
-        client_timeout_ms: params
+        session_id: params_str(&req.params, "session_id"),
+        turn_id: params_str(&req.params, "turn_id"),
+        client_timeout_ms: req
+            .params
             .get("client_timeout_ms")
-            .or_else(|| params.get("timeoutMs"))
+            .or_else(|| req.params.get("timeoutMs"))
             .and_then(Value::as_u64),
+        trusted_kernel_generation: req.runtime.as_ref().and_then(|meta| meta.kernel_generation),
     }
+}
+
+/// Reject any attempt to smuggle trusted runtime metadata through `params`.
+///
+/// `kernel_generation` and friends must ride in the frame-level `runtime`
+/// envelope, never inside caller-supplied `params`. Task RPCs reject a
+/// `runtime` or `_runtime` key in params so a raw peer cannot spoof the
+/// trusted value.
+fn reject_user_runtime_metadata(
+    method: &str,
+    params: &Value,
+) -> std::result::Result<(), ErrorObject> {
+    if matches!(
+        method,
+        methods::TASKS_RESUME
+            | methods::TASKS_RESUME_COMPLETE
+            | methods::TASKS_LIST
+            | methods::TASKS_EXPORT
+    ) {
+        if let Some(field) = ["runtime", "_runtime"]
+            .into_iter()
+            .find(|key| params.get(*key).is_some())
+        {
+            return Err(invalid_params("untrusted runtime metadata").with_data(json!({
+                "code": "untrusted_runtime_metadata",
+                "field": field
+            })));
+        }
+    }
+    Ok(())
 }
 
 fn invalid_params(message: &str) -> ErrorObject {
@@ -1456,6 +1491,7 @@ mod tests {
             session_id: Some("sess-1".into()),
             turn_id: None,
             client_timeout_ms: None,
+            trusted_kernel_generation: None,
         };
         let err = require_mutation_context(methods::RESUME_CONTROL, &ctx)
             .expect_err("resume without turn_id must be rejected");
@@ -1466,6 +1502,7 @@ mod tests {
             session_id: Some("sess-1".into()),
             turn_id: Some(String::new()),
             client_timeout_ms: None,
+            trusted_kernel_generation: None,
         };
         assert!(
             require_mutation_context(methods::RESUME_CONTROL, &ctx_empty).is_err(),
@@ -1477,6 +1514,7 @@ mod tests {
             session_id: None,
             turn_id: Some("turn-1".into()),
             client_timeout_ms: None,
+            trusted_kernel_generation: None,
         };
         assert!(
             require_mutation_context(methods::RESUME_CONTROL, &ctx_no_session).is_err(),
@@ -1491,6 +1529,7 @@ mod tests {
             session_id: Some("sess-1".into()),
             turn_id: Some("turn-1".into()),
             client_timeout_ms: None,
+            trusted_kernel_generation: None,
         };
         assert!(require_mutation_context(methods::RESUME_CONTROL, &ctx).is_ok());
     }

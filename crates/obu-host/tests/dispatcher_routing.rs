@@ -1276,6 +1276,30 @@ async fn browser_tabs_content_reports_policy_denied_redirect_per_url() {
     assert_eq!(results[1]["text"], "one");
 }
 
+#[tokio::test]
+async fn task_methods_reject_user_runtime_params() {
+    let response = one_request(
+        Dispatcher::new_for_test(),
+        json!({
+            "jsonrpc": "2.0",
+            "method": methods::TASKS_RESUME,
+            "params": {
+                "taskId": "task-1",
+                "session_id": "session-1",
+                "turn_id": "turn-1",
+                "_runtime": { "kernel_generation": 99 }
+            },
+            "id": 1,
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        response["error"]["data"]["code"],
+        "untrusted_runtime_metadata"
+    );
+}
+
 fn frame(value: serde_json::Value) -> bytes::Bytes {
     bytes::Bytes::from(serde_json::to_vec(&value).unwrap())
 }

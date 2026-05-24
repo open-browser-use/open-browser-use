@@ -794,11 +794,13 @@ mod tests {
             session_id: Some("session:with:colon".into()),
             turn_id: Some("turn".into()),
             client_timeout_ms: None,
+            trusted_kernel_generation: None,
         };
         let other_ctx = BackendRequestContext {
             session_id: Some("other:session".into()),
             turn_id: Some("turn".into()),
             client_timeout_ms: None,
+            trusted_kernel_generation: None,
         };
         let mut store = VisibleDomSnapshotStore::default();
         let nodes = vec![json!({ "node_id": "101" })];

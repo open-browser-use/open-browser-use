@@ -24,6 +24,7 @@ async fn webext_backend_normalizes_extension_tab_dtos() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: Some(1234),
+        trusted_kernel_generation: None,
     };
 
     let created = backend
@@ -62,6 +63,7 @@ async fn webext_backend_exposes_current_and_selected_with_ownership_boundary() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -128,6 +130,7 @@ async fn webext_backend_get_tabs_is_pure_observation_without_host_reconcile() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     let stale_tab = TabId::new("99");
     backend
@@ -175,6 +178,7 @@ async fn webext_backend_marks_tab_screenshot_as_overlay_suppressed() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -209,6 +213,7 @@ async fn webext_backend_preserves_host_tab_lifecycle_when_get_tabs_omits_state()
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     let deliverable_tab = TabId::new("42");
     backend
@@ -282,6 +287,7 @@ async fn webext_backend_rehydrates_deliverables_from_get_tabs_side_channel() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let listed = backend.list_tabs_with_context(&ctx).await.unwrap();
@@ -314,6 +320,7 @@ async fn webext_backend_rejects_non_decimal_tab_ids() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let error = backend
@@ -331,6 +338,7 @@ async fn webext_backend_normalizes_user_tabs_history_and_finalize() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let user_tabs = backend.list_user_tabs_with_context(&ctx).await.unwrap();
@@ -455,6 +463,7 @@ async fn webext_backend_rejects_claim_for_tab_owned_by_another_session() {
         session_id: Some("other-session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let error = backend
@@ -489,6 +498,7 @@ async fn webext_backend_rejects_non_active_host_records_before_direct_operations
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     for (tab_id, status) in [("7", TabStatus::Handoff), ("8", TabStatus::Deliverable)] {
         backend
@@ -551,6 +561,7 @@ async fn webext_backend_allows_reclaiming_deliverable_from_previous_session() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let claimed = backend
@@ -575,6 +586,7 @@ async fn webext_backend_routes_tab_cua_and_clipboard_via_execute_cdp() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let url = backend
@@ -625,6 +637,7 @@ async fn webext_backend_cua_click_waits_for_navigation_when_requested() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -709,6 +722,7 @@ async fn webext_backend_scroll_uses_real_cdp_input_before_script_fallback() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -747,6 +761,7 @@ async fn webext_backend_modified_scroll_uses_mouse_wheel_without_gesture() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -793,6 +808,7 @@ async fn webext_backend_supports_rich_clipboard_wire_items() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let read = backend
@@ -847,6 +863,7 @@ async fn webext_backend_rejects_invalid_rich_clipboard_items() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let error = backend
@@ -875,6 +892,7 @@ async fn webext_backend_rejects_rich_clipboard_validation_edges() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     let cases = [
         (
@@ -939,6 +957,7 @@ async fn webext_backend_detach_cleans_virtual_clipboard_state_and_injection() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -981,6 +1000,7 @@ async fn webext_backend_finalize_cleans_virtual_clipboard_state_before_backend_c
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -1036,6 +1056,7 @@ async fn webext_backend_tab_close_removes_host_registry_record_immediately() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -1155,6 +1176,7 @@ async fn webext_backend_type_uses_virtual_clipboard_paste() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -1187,6 +1209,7 @@ async fn webext_backend_dom_type_uses_virtual_clipboard_paste_after_focus() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -1222,6 +1245,7 @@ async fn webext_backend_keypress_routes_or_blocks_clipboard_shortcuts() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     let primary_modifier = if cfg!(target_os = "macos") {
         "Meta"
@@ -1330,6 +1354,7 @@ async fn webext_backend_dom_cua_uses_backend_node_ids() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let dom = backend
@@ -1405,6 +1430,7 @@ async fn webext_backend_dom_cua_scopes_node_ids_to_observation_snapshots() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let dom = backend
@@ -1489,6 +1515,7 @@ async fn webext_backend_dom_cua_observation_actions_consume_snapshot_scope() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     for (index, (method, mut params)) in [
@@ -1548,6 +1575,7 @@ async fn webext_backend_dom_cua_click_forwards_modifiers_to_mouse_events() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -1594,6 +1622,7 @@ async fn webext_backend_dom_cua_modified_scroll_uses_mouse_wheel() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -1642,6 +1671,7 @@ async fn webext_backend_dom_cua_keypress_modifiers_skip_focus_click() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -1697,6 +1727,7 @@ async fn webext_backend_dom_cua_rejects_node_outside_current_snapshot() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -1737,6 +1768,7 @@ async fn webext_backend_dom_cua_node_less_scroll_uses_viewport_space_center() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -1767,6 +1799,7 @@ async fn webext_backend_routes_locator_click_through_playwright_runtime() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -1822,6 +1855,7 @@ async fn webext_backend_playwright_fill_uses_shared_virtual_text_input_fallback(
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -1853,6 +1887,7 @@ async fn webext_backend_playwright_press_uses_shared_focus_runtime() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -1888,6 +1923,7 @@ async fn webext_backend_releases_drag_when_move_fails() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let error = backend
@@ -1991,6 +2027,7 @@ async fn webext_backend_accepts_alert_dialog_and_continues_operation() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     backend
         .create_tab_with_context(&ctx, Some("https://example.com".into()))
@@ -2072,6 +2109,7 @@ async fn webext_backend_records_extension_handled_beforeunload_without_duplicate
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     backend
         .create_tab_with_context(&ctx, Some("https://example.com".into()))
@@ -2139,6 +2177,7 @@ async fn webext_backend_dismisses_confirm_dialog_and_returns_structured_error() 
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     backend
         .create_tab_with_context(&ctx, Some("https://example.com".into()))
@@ -2212,6 +2251,7 @@ async fn webext_backend_runtime_evaluate_accepts_alert_dialog() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     backend
         .create_tab_with_context(&ctx, Some("https://example.com".into()))
@@ -2277,6 +2317,7 @@ async fn webext_backend_runtime_evaluate_accepts_beforeunload_dialog() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     backend
         .create_tab_with_context(&ctx, Some("https://example.com".into()))
@@ -2352,6 +2393,7 @@ async fn webext_backend_finalize_accepts_beforeunload_dialog_for_omitted_agent_t
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     backend
         .create_tab_with_context(&ctx, Some("https://example.com".into()))
@@ -2436,6 +2478,7 @@ async fn webext_backend_waits_for_file_chooser_events_and_sets_files() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let waiter_backend = backend.clone();
@@ -2526,11 +2569,13 @@ async fn webext_backend_rejects_handle_use_from_wrong_session_without_consuming(
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     let other_ctx = BackendRequestContext {
         session_id: Some("other-session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -2661,6 +2706,7 @@ async fn webext_backend_waits_for_download_change_path() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let waiter_backend = backend.clone();
@@ -2781,6 +2827,7 @@ async fn webext_backend_routes_media_download_helpers() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -2895,6 +2942,7 @@ async fn assert_webext_runtime_evaluate_dialog_requires_decision(dialog_type: &'
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     backend
         .create_tab_with_context(&ctx, Some("https://example.com".into()))

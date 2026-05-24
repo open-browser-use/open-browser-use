@@ -222,7 +222,10 @@ async fn exec_frames_include_obu_turn_metadata() {
     let result = manager
         .exec(
             r#"
-globalThis.obuRepl.requestMeta["x-obu-turn-metadata"]
+({
+    turn: globalThis.obuRepl.requestMeta["x-obu-turn-metadata"],
+    runtime: globalThis.obuRepl.requestMeta["x-obu-runtime-metadata"],
+})
 "#,
             None,
         )
@@ -230,14 +233,19 @@ globalThis.obuRepl.requestMeta["x-obu-turn-metadata"]
         .unwrap();
 
     assert_eq!(
-        result.result["session_id"],
+        result.result["turn"]["session_id"],
         json!("obu-session-for-metadata-test")
     );
     assert!(
-        result.result["turn_id"]
+        result.result["turn"]["turn_id"]
             .as_str()
             .unwrap()
             .starts_with("exec-")
+    );
+    assert!(
+        result.result["runtime"]["kernel_generation"].is_number(),
+        "runtime metadata must carry a numeric kernel_generation: {:#}",
+        result.result
     );
 }
 
