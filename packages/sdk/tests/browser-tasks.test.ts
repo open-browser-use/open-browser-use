@@ -4,10 +4,17 @@ import { Guards } from "../src/guards.js";
 import type { Transport } from "../src/wire/transport.js";
 import * as M from "../src/wire/methods.js";
 
+type FrameMeta = { runtime?: { kernel_generation?: number } } | undefined;
+
 class TaskTransport {
-  calls: Array<{ method: string; params: Record<string, unknown> }> = [];
-  async sendRequest<T>(method: string, params: Record<string, unknown>): Promise<T> {
-    this.calls.push({ method, params });
+  calls: Array<{ method: string; params: Record<string, unknown>; frameMeta: FrameMeta }> = [];
+  async sendRequest<T>(
+    method: string,
+    params: Record<string, unknown>,
+    _timeout?: number,
+    frameMeta?: FrameMeta,
+  ): Promise<T> {
+    this.calls.push({ method, params, frameMeta });
     if (method === M.TASKS_LIST) return [] as T;
     if (method === M.TASKS_EXPORT) return { task_id: "task-1", turns: [], events: [] } as T;
     if (method === M.TASKS_RESUME) {
@@ -51,6 +58,11 @@ describe("browser.tasks", () => {
     await expect(browser.tasks.list()).resolves.toEqual([]);
     await expect(browser.tasks.export("task-1")).resolves.toMatchObject({ task_id: "task-1" });
     expect(transport.calls.map((call) => call.method)).toEqual([M.TASKS_LIST, M.TASKS_EXPORT]);
+    // list/export are always-allowed reads and do not carry a trusted runtime
+    // envelope: they pass no frameMeta at all (Transport then omits top-level runtime).
+    for (const call of transport.calls) {
+      expect(call.frameMeta).toBeUndefined();
+    }
   });
 
   it("completes attached resume before post-resume observe", async () => {
@@ -71,5 +83,23 @@ describe("browser.tasks", () => {
       M.TAB_URL,
       M.TAB_TITLE,
     ]);
+
+    // F2 trust boundary: the trusted kernel_generation (installMeta injects 7)
+    // MUST ride the frame-level `runtime` envelope (4th arg of sendRequest),
+    // NEVER inside params. The host reads kernel_generation only from the
+    // envelope and rejects `runtime`/`_runtime` keys in params, so a leak into
+    // params would be a privilege-escalation gap. Lock both halves: the envelope
+    // carries the generation AND params is clean — on every task RPC that the
+    // resume flow drives with frameMeta.
+    const resumeRpcs = transport.calls.filter(
+      (call) => call.method === M.TASKS_RESUME || call.method === M.TASKS_RESUME_COMPLETE,
+    );
+    expect(resumeRpcs.length).toBeGreaterThan(0);
+    for (const call of resumeRpcs) {
+      expect(call.frameMeta?.runtime).toEqual({ kernel_generation: 7 });
+      expect(call.params).not.toHaveProperty("runtime");
+      expect(call.params).not.toHaveProperty("_runtime");
+      expect(call.params).not.toHaveProperty("kernel_generation");
+    }
   });
 });

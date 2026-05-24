@@ -59,7 +59,7 @@ export class BrowserTasks {
     const runtime = getRuntimeMeta();
     const begin = await this.transport.sendRequest<{
       resumeToken: string;
-      attemptId: string;
+      attemptId: string; // wire-shape doc only; resume() keys off resumeToken
       plan: unknown;
       episode: EpisodeExport;
     }>(M.TASKS_RESUME, withSessionMeta({ taskId }), opts.timeout, { runtime });
