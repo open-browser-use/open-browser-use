@@ -35,6 +35,9 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # MCP server
 rmcp = { version = "=1.5.0", default-features = false, features = ["server", "transport-io"] }
 
+# storage
+rusqlite = { version = "0.32", features = ["bundled"] }
+
 # crypto / env
 sha2 = "0.10"
 hex = "0.4"
