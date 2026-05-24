@@ -47,6 +47,23 @@ pub enum TaskState {
 }
 
 impl TaskState {
+    /// Every variant in declaration order. One canonical list, reused by the
+    /// unit tests and the cross-language vocab contract test.
+    pub const ALL: [TaskState; 12] = [
+        TaskState::Created,
+        TaskState::Running,
+        TaskState::WaitingForHuman,
+        TaskState::WaitingForEffect,
+        TaskState::PausedYielded,
+        TaskState::Resuming,
+        TaskState::RepairRequired,
+        TaskState::Blocked,
+        TaskState::Completed,
+        TaskState::Cancelling,
+        TaskState::Cancelled,
+        TaskState::Failed,
+    ];
+
     /// Stable lowercase-snake string for the variant.
     ///
     /// Used as the persisted `tasks.state` TEXT value in the durable task
@@ -337,20 +354,7 @@ mod tests {
 
     #[test]
     fn task_state_string_round_trips_every_variant() {
-        let all = [
-            TaskState::Created,
-            TaskState::Running,
-            TaskState::WaitingForHuman,
-            TaskState::WaitingForEffect,
-            TaskState::PausedYielded,
-            TaskState::Resuming,
-            TaskState::RepairRequired,
-            TaskState::Blocked,
-            TaskState::Completed,
-            TaskState::Cancelling,
-            TaskState::Cancelled,
-            TaskState::Failed,
-        ];
+        let all = TaskState::ALL;
         for state in all {
             let s = state.as_str();
             assert_eq!(
