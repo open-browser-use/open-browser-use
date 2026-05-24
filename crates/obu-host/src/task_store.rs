@@ -22,7 +22,69 @@ use crate::task_lifecycle::{SessionTurnEvidence, TaskState, control};
 /// Opening a store whose persisted version is newer than this constant fails
 /// rather than attempting a silent migration (stale-resource behavior after a
 /// host downgrade or partial upgrade).
-pub const TASK_STORE_SCHEMA_VERSION: u32 = 2;
+pub const TASK_STORE_SCHEMA_VERSION: u32 = 3;
+
+/// Summary of a task's most recent execution segment, for task listings.
+///
+/// Finding 5 (wire shape): this DTO is serialized by Task 8's task-list RPC, so
+/// it derives `serde::Serialize` with camelCase field renaming. Without the
+/// derive Task 8 cannot compile; without camelCase the wire silently emits
+/// snake_case keys instead of `segmentId`/`sessionId`/`turnId`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LastSegmentSummary {
+    /// Stable identifier of the segment.
+    pub segment_id: String,
+    /// Session that owned the segment.
+    pub session_id: String,
+    /// Turn the segment executed under.
+    pub turn_id: String,
+    /// Kernel generation recorded for the segment, if any.
+    pub generation: Option<i64>,
+}
+
+/// A row in a filtered/paginated task listing.
+///
+/// Finding 5 (wire shape): serialized by Task 8's task-list RPC with camelCase
+/// field renaming (`taskId`/`schemaVersion`/`segmentCount`/...). The
+/// `segment_count` and `event_cursor` are computed by correlated subqueries in
+/// [`TaskStore::list_tasks`] (Finding 4) so a multi-segment, multi-event task is
+/// not cartesian-overcounted.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct TaskSummary {
+    /// Task id.
+    pub task_id: String,
+    /// Human-meaningful label.
+    pub label: String,
+    /// Coarse task state (stable string form).
+    pub state: String,
+    /// Schema version recorded on the row.
+    pub schema_version: u32,
+    /// Creation timestamp (unix millis).
+    pub created_at: i64,
+    /// Number of execution segments recorded for the task.
+    pub segment_count: i64,
+    /// Highest task-level event cursor (0 if no events).
+    pub event_cursor: i64,
+    /// The task's most recent execution segment, if any.
+    pub last_segment: Option<LastSegmentSummary>,
+}
+
+/// Filter + pagination for [`TaskStore::list_tasks`].
+///
+/// Finding 4: `state` is an `IN (...)` filter, `scope_session_id` restricts to
+/// tasks bound to a session via `task_session_bindings`, and `limit` defaults to
+/// 100 when `<= 0` and is clamped to `[1, 500]`.
+#[derive(Debug, Clone, Default)]
+pub struct TaskListFilter {
+    /// Optional set of states to include (`tasks.state IN (...)`).
+    pub state: Option<Vec<String>>,
+    /// Page size; `<= 0` defaults to 100, then clamped to `[1, 500]`.
+    pub limit: i64,
+    /// Optional session scope: only tasks bound to this session.
+    pub scope_session_id: Option<String>,
+}
 
 /// Parameters for creating a new task row.
 #[derive(Debug, Clone)]
@@ -447,7 +509,47 @@ impl TaskStore {
              CREATE TABLE IF NOT EXISTS task_cancellation (
                  task_id      TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
                  requested_at INTEGER NOT NULL
-             );",
+             );
+             CREATE TABLE IF NOT EXISTS task_session_bindings (
+                 session_id TEXT PRIMARY KEY,
+                 task_id    TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                 updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE IF NOT EXISTS task_turn_bindings (
+                 session_id TEXT NOT NULL,
+                 turn_id    TEXT NOT NULL,
+                 task_id    TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                 segment_id TEXT NOT NULL,
+                 source     TEXT NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 PRIMARY KEY (session_id, turn_id),
+                 UNIQUE (task_id, session_id, turn_id)
+             );
+             CREATE TABLE IF NOT EXISTS task_resume_attempts (
+                 attempt_id     TEXT PRIMARY KEY,
+                 task_id        TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+                 session_id     TEXT NOT NULL,
+                 turn_id        TEXT NOT NULL,
+                 token_hash     TEXT NOT NULL,
+                 status         TEXT NOT NULL,
+                 generation     INTEGER NOT NULL,
+                 created_at     INTEGER NOT NULL,
+                 expires_at     INTEGER NOT NULL,
+                 completed_at   INTEGER,
+                 segment_id     TEXT,
+                 terminal_error TEXT
+             );
+             CREATE TABLE IF NOT EXISTS task_execution_owners (
+                 task_id    TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
+                 attempt_id TEXT NOT NULL REFERENCES task_resume_attempts(attempt_id) ON DELETE CASCADE,
+                 session_id TEXT NOT NULL,
+                 turn_id    TEXT NOT NULL,
+                 segment_id TEXT NOT NULL,
+                 started_at INTEGER NOT NULL
+             );
+             CREATE UNIQUE INDEX IF NOT EXISTS idx_task_resume_attempts_pending
+             ON task_resume_attempts(task_id)
+             WHERE status = 'pending';",
         )
         .context("run task store migrations")?;
 
@@ -492,6 +594,24 @@ impl TaskStore {
                     )
                     .context("migrate task_segments: add generation column (v1->v2)")?;
                 }
+                // v2 -> v3 (Finding 3): the brand-new v3 binding/resume tables are
+                // created by the `CREATE TABLE IF NOT EXISTS` batch above. But the
+                // pre-existing `task_segments` table may hold duplicate
+                // `(task_id, session_id, turn_id)` rows that would make the new
+                // UNIQUE index fail to build. Remove duplicates (keep the earliest
+                // row per group by MIN(rowid)) BEFORE the index is created below.
+                // Guarded on `on_disk < 3` so it only runs for stores predating v3.
+                if on_disk < 3 {
+                    tx.execute_batch(
+                        "DELETE FROM task_segments
+                         WHERE rowid NOT IN (
+                             SELECT MIN(rowid)
+                             FROM task_segments
+                             GROUP BY task_id, session_id, turn_id
+                         );",
+                    )
+                    .context("migrate task_segments: remove duplicate task/session/turn rows (v3)")?;
+                }
                 if on_disk < TASK_STORE_SCHEMA_VERSION {
                     tx.execute(
                         "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
@@ -501,6 +621,19 @@ impl TaskStore {
                 }
             }
         }
+
+        // Finding 3: create the UNIQUE index on the pre-existing `task_segments`
+        // table AFTER the version-resolution `match` so it runs for BOTH a fresh
+        // db and a migrated one (the migration arm above has already removed any
+        // duplicate `(task_id, session_id, turn_id)` rows that would make this
+        // fail). It is intentionally NOT in the initial `CREATE TABLE` batch:
+        // building it there would fail on open against an existing store with
+        // duplicates. Inside the same `tx`, so it commits atomically below.
+        tx.execute_batch(
+            "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_segments_task_session_turn
+             ON task_segments(task_id, session_id, turn_id);",
+        )
+        .context("create task_segments unique index (v3)")?;
 
         tx.commit().context("commit schema setup tx")?;
         Ok(())
@@ -768,11 +901,281 @@ impl TaskStore {
             .context("mark cancellation")?;
         Ok(())
     }
+
+    /// Whether a task row exists for `task_id`.
+    pub fn task_exists(&self, task_id: &str) -> Result<bool> {
+        let exists: Option<i64> = self
+            .conn
+            .query_row("SELECT 1 FROM tasks WHERE id = ?1", [task_id], |row| {
+                row.get(0)
+            })
+            .optional()
+            .context("check task exists")?;
+        Ok(exists.is_some())
+    }
+
+    /// Resolve the task currently bound to `session_id`, if any.
+    pub fn task_for_session(&self, session_id: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT task_id FROM task_session_bindings WHERE session_id = ?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("query task for session")
+    }
+
+    /// Resolve the task bound to a specific `(session_id, turn_id)`, if any.
+    pub fn task_for_turn(&self, session_id: &str, turn_id: &str) -> Result<Option<String>> {
+        self.conn
+            .query_row(
+                "SELECT task_id FROM task_turn_bindings WHERE session_id = ?1 AND turn_id = ?2",
+                rusqlite::params![session_id, turn_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .context("query task for turn")
+    }
+
+    /// Look up the execution segment for a specific `(task_id, session_id, turn_id)`.
+    ///
+    /// Returns the matching [`Segment`] or `None`. The `(task_id, session_id,
+    /// turn_id)` triple is unique (the v3 `idx_task_segments_task_session_turn`
+    /// index), so at most one row matches.
+    fn segment_for_turn(
+        &self,
+        task_id: &str,
+        session_id: &str,
+        turn_id: &str,
+    ) -> Result<Option<Segment>> {
+        self.conn
+            .query_row(
+                "SELECT segment_id, session_id, turn_id, generation
+                 FROM task_segments
+                 WHERE task_id = ?1 AND session_id = ?2 AND turn_id = ?3",
+                rusqlite::params![task_id, session_id, turn_id],
+                |row| {
+                    Ok(Segment {
+                        segment_id: row.get(0)?,
+                        session_id: row.get(1)?,
+                        turn_id: row.get(2)?,
+                        generation: row.get::<_, Option<i64>>(3)?,
+                    })
+                },
+            )
+            .optional()
+            .context("query segment for turn")
+    }
+
+    /// Ensure exactly one execution segment exists for `(task_id, session_id,
+    /// turn_id)`, returning it.
+    ///
+    /// Idempotent: re-calling with the same triple returns the existing segment
+    /// (same `segment_id`). A `(session_id, turn_id)` is owned by at most one
+    /// task; ensuring a segment for a turn already bound to a *different* task is
+    /// rejected with `task_turn_conflict`. On first creation the segment is
+    /// appended and the turn binding is recorded (source `ensure_turn_segment`).
+    pub fn ensure_turn_segment(
+        &self,
+        task_id: &str,
+        session_id: &str,
+        turn_id: &str,
+        generation: Option<i64>,
+    ) -> Result<Segment> {
+        if session_id.is_empty() || turn_id.is_empty() {
+            bail!("missing session_id or turn_id");
+        }
+        if let Some(existing_task) = self.task_for_turn(session_id, turn_id)? {
+            if existing_task != task_id {
+                bail!("task_turn_conflict");
+            }
+        }
+        if let Some(segment) = self.segment_for_turn(task_id, session_id, turn_id)? {
+            return Ok(segment);
+        }
+        let segment = match generation {
+            Some(value) => Segment::with_generation(session_id, turn_id, value),
+            None => Segment::new(session_id, turn_id),
+        };
+        self.append_segment(task_id, segment.clone())?;
+        self.bind_turn_task(
+            session_id,
+            turn_id,
+            task_id,
+            &segment.segment_id,
+            "ensure_turn_segment",
+        )?;
+        Ok(segment)
+    }
+
+    /// Bind `session_id` to `task_id` (upsert), recording the bind time.
+    pub fn bind_session_task(&self, session_id: &str, task_id: &str) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO task_session_bindings (session_id, task_id, updated_at)
+                 VALUES (?1, ?2, ?3)
+                 ON CONFLICT(session_id) DO UPDATE SET task_id = excluded.task_id, updated_at = excluded.updated_at",
+                rusqlite::params![session_id, task_id, now_millis()],
+            )
+            .context("bind session task")?;
+        Ok(())
+    }
+
+    /// Bind a `(session_id, turn_id)` to `task_id`/`segment_id` (upsert),
+    /// recording `source` and the bind time.
+    pub fn bind_turn_task(
+        &self,
+        session_id: &str,
+        turn_id: &str,
+        task_id: &str,
+        segment_id: &str,
+        source: &str,
+    ) -> Result<()> {
+        self.conn
+            .execute(
+                "INSERT INTO task_turn_bindings (session_id, turn_id, task_id, segment_id, source, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(session_id, turn_id) DO UPDATE SET
+                     task_id = excluded.task_id,
+                     segment_id = excluded.segment_id,
+                     source = excluded.source,
+                     created_at = excluded.created_at",
+                rusqlite::params![session_id, turn_id, task_id, segment_id, source, now_millis()],
+            )
+            .context("bind turn task")?;
+        Ok(())
+    }
+
+    /// Append a typed task-level event, enforcing that the JSON payload's
+    /// `"kind"` field matches `kind`.
+    ///
+    /// The payload's `kind` discriminator must equal the `kind` argument so the
+    /// stored event row and its JSON body cannot disagree; on mismatch the call
+    /// is rejected with `task event kind mismatch`. Returns the assigned
+    /// monotonic cursor (delegates to [`TaskStore::append_event`]).
+    pub fn append_typed_event(
+        &self,
+        task_id: &str,
+        kind: &str,
+        payload: serde_json::Value,
+    ) -> Result<i64> {
+        if payload.get("kind").and_then(serde_json::Value::as_str) != Some(kind) {
+            bail!("task event kind mismatch");
+        }
+        self.append_event(
+            task_id,
+            kind,
+            &serde_json::to_string(&payload).context("serialize task event payload")?,
+        )
+    }
+
+    /// Summarize a task's most recent execution segment, if any.
+    ///
+    /// "Most recent" mirrors [`TaskStore::segments`] ordering (`started_at`,
+    /// `rowid` ascending), so the last segment is the highest `(started_at,
+    /// rowid)` — selected here by ordering descending and taking the first row.
+    fn last_segment_summary(&self, task_id: &str) -> Result<Option<LastSegmentSummary>> {
+        self.conn
+            .query_row(
+                "SELECT segment_id, session_id, turn_id, generation
+                 FROM task_segments
+                 WHERE task_id = ?1
+                 ORDER BY started_at DESC, rowid DESC
+                 LIMIT 1",
+                [task_id],
+                |row| {
+                    Ok(LastSegmentSummary {
+                        segment_id: row.get(0)?,
+                        session_id: row.get(1)?,
+                        turn_id: row.get(2)?,
+                        generation: row.get::<_, Option<i64>>(3)?,
+                    })
+                },
+            )
+            .optional()
+            .context("query last segment summary")
+    }
+
+    /// List tasks with optional `state`/`scope_session_id` filters and pagination.
+    ///
+    /// Finding 4: `state` is applied as `tasks.state IN (...)`,
+    /// `scope_session_id` restricts to tasks bound to that session via
+    /// `task_session_bindings`, `limit` defaults to 100 when `<= 0` and is
+    /// clamped to `[1, 500]`, and `segment_count`/`event_cursor` are computed via
+    /// CORRELATED SUBQUERIES (not a `task_segments × task_events` join + COUNT,
+    /// which would cartesian-product and overcount). Rows are ordered newest
+    /// first (`created_at DESC, id ASC`). The most-recent segment is attached per
+    /// row via [`TaskStore::last_segment_summary`].
+    pub fn list_tasks(&self, filter: TaskListFilter) -> Result<Vec<TaskSummary>> {
+        let requested = if filter.limit <= 0 { 100 } else { filter.limit };
+        let limit = requested.clamp(1, 500);
+
+        let mut where_clauses: Vec<String> = Vec::new();
+        let mut params: Vec<Box<dyn rusqlite::ToSql>> = Vec::new();
+        if let Some(states) = filter.state.as_ref().filter(|s| !s.is_empty()) {
+            let placeholders = std::iter::repeat("?")
+                .take(states.len())
+                .collect::<Vec<_>>()
+                .join(", ");
+            where_clauses.push(format!("t.state IN ({placeholders})"));
+            for state in states {
+                params.push(Box::new(state.clone()));
+            }
+        }
+        if let Some(session_id) = filter.scope_session_id.as_ref() {
+            where_clauses.push(
+                "t.id IN (SELECT task_id FROM task_session_bindings WHERE session_id = ?)"
+                    .to_string(),
+            );
+            params.push(Box::new(session_id.clone()));
+        }
+        let where_sql = if where_clauses.is_empty() {
+            String::new()
+        } else {
+            format!("WHERE {}", where_clauses.join(" AND "))
+        };
+        params.push(Box::new(limit));
+
+        let sql = format!(
+            "SELECT t.id, t.label, t.state, t.schema_version, t.created_at,
+                    (SELECT COUNT(*) FROM task_segments s WHERE s.task_id = t.id) AS segment_count,
+                    (SELECT COALESCE(MAX(e.cursor), 0) FROM task_events e WHERE e.task_id = t.id) AS event_cursor
+             FROM tasks t
+             {where_sql}
+             ORDER BY t.created_at DESC, t.id ASC
+             LIMIT ?"
+        );
+        let mut stmt = self.conn.prepare(&sql).context("prepare list_tasks")?;
+        let param_refs: Vec<&dyn rusqlite::ToSql> = params.iter().map(|p| p.as_ref()).collect();
+        let rows = stmt
+            .query_map(param_refs.as_slice(), |row| {
+                Ok(TaskSummary {
+                    task_id: row.get(0)?,
+                    label: row.get(1)?,
+                    state: row.get(2)?,
+                    schema_version: row.get::<_, i64>(3)? as u32,
+                    created_at: row.get(4)?,
+                    segment_count: row.get(5)?,
+                    event_cursor: row.get(6)?,
+                    last_segment: None,
+                })
+            })
+            .context("query list_tasks")?;
+        let mut summaries = Vec::new();
+        for row in rows {
+            let mut summary = row.context("read task summary")?;
+            summary.last_segment = self.last_segment_summary(&summary.task_id)?;
+            summaries.push(summary);
+        }
+        Ok(summaries)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::json;
 
     /// Create an owner-only temp dir, mirroring how the host provisions its
     /// runtime directory (0o700) before handing it to the task store.
@@ -1191,6 +1594,70 @@ mod tests {
         assert_eq!(ep.task_id, task_id);
         assert_eq!(ep.turns.len(), 0);
         assert_eq!(ep.events.len(), 0);
+    }
+
+    #[test]
+    fn ensure_turn_segment_is_idempotent_and_turn_binding_is_unique() {
+        let (store, _dir) = open_temp_store();
+        let task_a = store.create_task(default_new_task()).unwrap();
+        let task_b = store.create_task(default_new_task()).unwrap();
+
+        let first = store.ensure_turn_segment(&task_a, "session-1", "turn-1", Some(7)).unwrap();
+        let second = store.ensure_turn_segment(&task_a, "session-1", "turn-1", Some(7)).unwrap();
+        assert_eq!(first.segment_id, second.segment_id);
+
+        let err = store.ensure_turn_segment(&task_b, "session-1", "turn-1", Some(7)).unwrap_err();
+        assert!(err.to_string().contains("task_turn_conflict"));
+    }
+
+    #[test]
+    fn session_binding_persists_across_store_reopen() {
+        let dir = owner_only_tempdir();
+        let store = TaskStore::open(dir.path()).unwrap();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        let segment = store.ensure_turn_segment(&task_id, "session-1", "turn-1", Some(3)).unwrap();
+        store.bind_session_task("session-1", &task_id).unwrap();
+        store.bind_turn_task("session-1", "turn-1", &task_id, &segment.segment_id, "auto").unwrap();
+        drop(store);
+
+        let reopened = TaskStore::open(dir.path()).unwrap();
+        assert_eq!(reopened.task_for_session("session-1").unwrap(), Some(task_id.clone()));
+        assert_eq!(reopened.task_for_turn("session-1", "turn-1").unwrap(), Some(task_id));
+    }
+
+    #[test]
+    fn list_tasks_orders_filters_and_reports_last_segment() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        let segment = store.ensure_turn_segment(&task_id, "session-1", "turn-1", Some(11)).unwrap();
+        let rows = store.list_tasks(TaskListFilter { state: None, limit: 100, scope_session_id: None }).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].task_id, task_id);
+        assert_eq!(rows[0].segment_count, 1);
+        assert_eq!(rows[0].last_segment.as_ref().unwrap().segment_id, segment.segment_id);
+    }
+
+    #[test]
+    fn task_events_require_json_payload_kind_to_match() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        let cursor = store
+            .append_typed_event(
+                &task_id,
+                "turn_ended",
+                json!({
+                    "kind": "turn_ended",
+                    "taskId": task_id,
+                    "segmentId": "segment-1",
+                    "sessionId": "session-1",
+                    "turnId": "turn-1",
+                    "at": 1
+                }),
+            )
+            .unwrap();
+        assert_eq!(cursor, 1);
+        let err = store.append_typed_event(&task_id, "turn_ended", json!({ "kind": "tabs_finalized" })).unwrap_err();
+        assert!(err.to_string().contains("task event kind mismatch"));
     }
 
     #[test]
