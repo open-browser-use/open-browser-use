@@ -2289,4 +2289,15 @@ describe("SDK wire-shape contracts", () => {
     expect(() => first.filter({ has: second })).toThrow("Locators must belong to the same tab");
     expect(transport.calls).toEqual([]);
   });
+
+  it("includes task methods with expected policy classification", () => {
+    expect(M.TASKS_LIST).toBe("tasksList");
+    expect(M.TASKS_EXPORT).toBe("tasksExport");
+    expect(M.TASKS_RESUME).toBe("tasksResume");
+    expect(M.TASKS_RESUME_COMPLETE).toBe("tasksResumeComplete");
+    expect(METHOD_CLASSIFICATION[M.TASKS_LIST]).toBe("always-allowed");
+    expect(METHOD_CLASSIFICATION[M.TASKS_EXPORT]).toBe("always-allowed");
+    expect(METHOD_CLASSIFICATION[M.TASKS_RESUME]).toBe("internal-lifecycle");
+    expect(METHOD_CLASSIFICATION[M.TASKS_RESUME_COMPLETE]).toBe("internal-lifecycle");
+  });
 });

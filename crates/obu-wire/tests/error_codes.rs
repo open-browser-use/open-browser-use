@@ -1,9 +1,10 @@
 use obu_wire::{
     ErrorCode, ErrorObject,
     error::{
-        ERR_CAPABILITY_TOKEN, ERR_CDP_FAILURE, ERR_CMD_DISALLOWED, ERR_DIALOG_REQUIRES_DECISION,
-        ERR_DISALLOWED, ERR_IO, ERR_NO_BACKEND, ERR_NOT_FOUND, ERR_NOT_IMPLEMENTED, ERR_OVERLOADED,
-        ERR_PAGE_CLOSED, ERR_PEER_AUTH, ERR_PROTOCOL, ERR_TAB_NOT_ATTACHED, ERR_TIMEOUT,
+        ERR_CAPABILITY_TOKEN, ERR_CDP_FAILURE, ERR_CMD_DISALLOWED, ERR_CONFLICT,
+        ERR_DIALOG_REQUIRES_DECISION, ERR_DISALLOWED, ERR_IO, ERR_NO_BACKEND, ERR_NOT_FOUND,
+        ERR_NOT_IMPLEMENTED, ERR_OVERLOADED, ERR_PAGE_CLOSED, ERR_PEER_AUTH, ERR_PROTOCOL,
+        ERR_TAB_NOT_ATTACHED, ERR_TIMEOUT,
     },
 };
 
@@ -30,6 +31,12 @@ fn error_object_serializes_with_data() {
     assert_eq!(v["code"], -32602);
     assert_eq!(v["message"], "bad arg");
     assert_eq!(v["data"]["field"], "source");
+}
+
+#[test]
+fn conflict_code_is_in_server_range() {
+    assert_eq!(ERR_CONFLICT, -1007);
+    assert!((-1099..=-1000).contains(&ERR_CONFLICT));
 }
 
 #[test]

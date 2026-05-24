@@ -24,6 +24,8 @@ pub const ERR_PROTOCOL: i32 = -1004;
 pub const ERR_NO_BACKEND: i32 = -1005;
 /// Peer has too many concurrent in-flight requests.
 pub const ERR_OVERLOADED: i32 = -1006;
+/// Request conflicts with an existing durable task/session/turn owner.
+pub const ERR_CONFLICT: i32 = -1007;
 /// Generic I/O failure.
 pub const ERR_IO: i32 = -1099;
 

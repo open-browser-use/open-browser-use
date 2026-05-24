@@ -34,6 +34,12 @@ pub const BROWSER_VISIBILITY_GET: &str = "browser_visibility_get";
 pub const TURN_ENDED: &str = "turnEnded";
 pub const YIELD_CONTROL: &str = "yieldControl";
 pub const RESUME_CONTROL: &str = "resumeControl";
+// tasks
+pub const TASKS_LIST: &str = "tasksList";
+pub const TASKS_EXPORT: &str = "tasksExport";
+pub const TASKS_RESUME: &str = "tasksResume";
+pub const TASKS_RESUME_COMPLETE: &str = "tasksResumeComplete";
+// lifecycle
 pub const CLEAR_LIFECYCLE_DIAGNOSTICS: &str = "clearLifecycleDiagnostics";
 pub const EXECUTE_UNHANDLED_COMMAND: &str = "executeUnhandledCommand";
 // playwright
@@ -128,6 +134,10 @@ pub const ALL_INBOUND_METHODS: &[&str] = &[
     TURN_ENDED,
     YIELD_CONTROL,
     RESUME_CONTROL,
+    TASKS_LIST,
+    TASKS_EXPORT,
+    TASKS_RESUME,
+    TASKS_RESUME_COMPLETE,
     CLEAR_LIFECYCLE_DIAGNOSTICS,
     EXECUTE_UNHANDLED_COMMAND,
     PLAYWRIGHT_LOCATOR_CLICK,
@@ -315,6 +325,26 @@ pub const BACKEND_METHOD_SUPPORT: &[(&str, BackendMethodSupport, BackendMethodSu
     ),
     (
         RESUME_CONTROL,
+        BackendMethodSupport::Implemented,
+        BackendMethodSupport::Implemented,
+    ),
+    (
+        TASKS_LIST,
+        BackendMethodSupport::Implemented,
+        BackendMethodSupport::Implemented,
+    ),
+    (
+        TASKS_EXPORT,
+        BackendMethodSupport::Implemented,
+        BackendMethodSupport::Implemented,
+    ),
+    (
+        TASKS_RESUME,
+        BackendMethodSupport::Implemented,
+        BackendMethodSupport::Implemented,
+    ),
+    (
+        TASKS_RESUME_COMPLETE,
         BackendMethodSupport::Implemented,
         BackendMethodSupport::Implemented,
     ),

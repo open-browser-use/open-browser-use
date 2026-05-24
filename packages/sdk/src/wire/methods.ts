@@ -34,6 +34,12 @@ export const BROWSER_VISIBILITY_GET = "browser_visibility_get" as const;
 export const TURN_ENDED = "turnEnded" as const;
 export const YIELD_CONTROL = "yieldControl" as const;
 export const RESUME_CONTROL = "resumeControl" as const;
+// tasks
+export const TASKS_LIST = "tasksList" as const;
+export const TASKS_EXPORT = "tasksExport" as const;
+export const TASKS_RESUME = "tasksResume" as const;
+export const TASKS_RESUME_COMPLETE = "tasksResumeComplete" as const;
+// lifecycle
 export const CLEAR_LIFECYCLE_DIAGNOSTICS = "clearLifecycleDiagnostics" as const;
 export const EXECUTE_UNHANDLED_COMMAND = "executeUnhandledCommand" as const;
 // playwright
@@ -128,6 +134,10 @@ export const ALL_INBOUND_METHODS = [
   TURN_ENDED,
   YIELD_CONTROL,
   RESUME_CONTROL,
+  TASKS_LIST,
+  TASKS_EXPORT,
+  TASKS_RESUME,
+  TASKS_RESUME_COMPLETE,
   CLEAR_LIFECYCLE_DIAGNOSTICS,
   EXECUTE_UNHANDLED_COMMAND,
   PLAYWRIGHT_LOCATOR_CLICK,

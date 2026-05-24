@@ -40,6 +40,13 @@ pub const METHOD_POLICY_CLASSIFICATIONS: &[(&str, MethodPolicyKind)] = &[
     (methods::TURN_ENDED, MethodPolicyKind::InternalLifecycle),
     (methods::YIELD_CONTROL, MethodPolicyKind::InternalLifecycle),
     (methods::RESUME_CONTROL, MethodPolicyKind::InternalLifecycle),
+    (methods::TASKS_LIST, MethodPolicyKind::AlwaysAllowed),
+    (methods::TASKS_EXPORT, MethodPolicyKind::AlwaysAllowed),
+    (methods::TASKS_RESUME, MethodPolicyKind::InternalLifecycle),
+    (
+        methods::TASKS_RESUME_COMPLETE,
+        MethodPolicyKind::InternalLifecycle,
+    ),
     (
         methods::CLEAR_LIFECYCLE_DIAGNOSTICS,
         MethodPolicyKind::InternalLifecycle,
