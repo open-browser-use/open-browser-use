@@ -51,6 +51,12 @@ impl TaskState {
     ///
     /// Used as the persisted `tasks.state` TEXT value in the durable task
     /// store; round-trips with [`TaskState::from_str`].
+    ///
+    /// FROZEN ON-DISK PERSISTENCE CONTRACT: these exact literals are written to
+    /// `tasks.state` and read back by existing DB rows. Do NOT rename a string
+    /// without a migration — renaming it in both `as_str` and `from_str` keeps
+    /// the round-trip test green while silently orphaning every row written
+    /// under the old string. See `task_state_wire_strings_are_stable`.
     pub fn as_str(&self) -> &'static str {
         use TaskState::*;
         match self {
@@ -354,6 +360,26 @@ mod tests {
             );
         }
         assert!(TaskState::from_str("not_a_state").is_err());
+    }
+
+    // Pins the exact persisted literals. The round-trip test only guards the
+    // as_str<->from_str bijection; a rename in BOTH arms would keep that green
+    // while orphaning existing DB rows. These literals are a frozen on-disk
+    // persistence contract — changing one requires a migration.
+    #[test]
+    fn task_state_wire_strings_are_stable() {
+        assert_eq!(TaskState::Created.as_str(), "created");
+        assert_eq!(TaskState::Running.as_str(), "running");
+        assert_eq!(TaskState::WaitingForHuman.as_str(), "waiting_for_human");
+        assert_eq!(TaskState::WaitingForEffect.as_str(), "waiting_for_effect");
+        assert_eq!(TaskState::PausedYielded.as_str(), "paused_yielded");
+        assert_eq!(TaskState::Resuming.as_str(), "resuming");
+        assert_eq!(TaskState::RepairRequired.as_str(), "repair_required");
+        assert_eq!(TaskState::Blocked.as_str(), "blocked");
+        assert_eq!(TaskState::Completed.as_str(), "completed");
+        assert_eq!(TaskState::Cancelling.as_str(), "cancelling");
+        assert_eq!(TaskState::Cancelled.as_str(), "cancelled");
+        assert_eq!(TaskState::Failed.as_str(), "failed");
     }
 
     #[test]
