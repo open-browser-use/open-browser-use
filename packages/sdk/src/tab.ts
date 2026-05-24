@@ -8,6 +8,7 @@ import { TabClipboard } from "./tab-clipboard.js";
 import {
   TabAct,
   actionId,
+  coordinateTargetCarriesVisualRevisions,
   type ActionEffect,
   type ActionResult,
   type AgentPointerState,
@@ -1546,8 +1547,27 @@ export class Tab {
       }
     }
     const target = action.target;
-    if (target.source === "coordinate" && target.visualRevision !== undefined) {
-      if (lifecycle.visualRevision !== undefined && target.visualRevision !== lifecycle.visualRevision) {
+    if (target.source === "coordinate" && lifecycle.visualRevision !== undefined) {
+      // This coordinate target binds to a VISUAL observation, so it MUST carry
+      // matching visual/annotation revision tokens to prove it is replaying
+      // against the same pixels + affordance layout. A target that drops the
+      // tokens cannot prove freshness, so reject it rather than execute against
+      // possibly-stale visual state. Gating on the lifecycle (not on the target
+      // supplying a token) is what closes the bypass: previously a target that
+      // omitted `visualRevision` skipped this block entirely.
+      if (!coordinateTargetCarriesVisualRevisions(target)) {
+        return {
+          ok: false,
+          detail: "coordinate target missing visual/annotation revision tokens for a visual observation",
+          data: {
+            observationId,
+            expected: lifecycle.visualRevision,
+            current: target.visualRevision,
+            changed: "visual",
+          },
+        };
+      }
+      if (target.visualRevision !== lifecycle.visualRevision) {
         return {
           ok: false,
           detail: "visual revision changed since observation",

@@ -693,6 +693,45 @@ describe("Tab environment-native action layer", () => {
     expect(transport.calls.map((call) => call.method)).not.toContain(M.CUA_CLICK);
   });
 
+  it("blocks coordinate replay that omits visual/annotation tokens for a visual observation (Finding 3)", async () => {
+    const transport = new FakeTransport();
+    const observationStore = new Map();
+    const tab = tabWithCapabilities(transport, { observationStore });
+    const observation = await tab.observe({
+      mode: "actionable",
+      includeText: false,
+      observationTtlMs: 60_000,
+    });
+    // The stored lifecycle is a VISUAL observation (carries visual revisions)...
+    const stored = observationStore.get(observation.observationId)!;
+    stored.visualRevision = "vis-1";
+    stored.annotationRevision = "ann-1";
+    transport.calls = [];
+
+    // ...but the coordinate target deliberately omits all visual/annotation
+    // tokens. It must be blocked (not silently executed), since it cannot prove
+    // it is replaying against the same pixels.
+    const blocked = await tab.step({
+      kind: "coordinate.click",
+      target: {
+        source: "coordinate",
+        x: 10,
+        y: 20,
+        observationId: observation.observationId,
+      },
+    });
+
+    expect(blocked).toMatchObject({
+      status: "blocked",
+      error: {
+        code: "stale_observation",
+        data: { changed: "visual" },
+      },
+      invalidatedObservations: [observation.observationId],
+    });
+    expect(transport.calls.map((call) => call.method)).not.toContain(M.CUA_CLICK);
+  });
+
   it("fails closed when required text revisions cannot be checked", async () => {
     const transport = new FakeTransport();
     const tab = tabWithCapabilities(transport);

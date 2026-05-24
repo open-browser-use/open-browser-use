@@ -75,6 +75,25 @@ describe("TabFlows.chooseFromMenu", () => {
     expect(states).toContain("reconciling");
     expect(states[states.length - 1]).toBe("succeeded");
   });
+
+  it("short-circuits without clicking an option when opening the menu fails (Finding 5)", async () => {
+    let observeCount = 0;
+    const stepCalls: EnvAction[] = [];
+    let seq = 0;
+    const flows = new TabFlows({
+      observe: async () => { observeCount += 1; seq += 1; return fakeObservation(seq); },
+      step: async (action) => { stepCalls.push(action); return fakeActionResult(action, "failed"); },
+    });
+    const result = await flows.chooseFromMenu({
+      trigger: { source: "locator", selector: "#menu" },
+      option: { text: "Option B" },
+    });
+    // only the trigger step ran; the option step was never dispatched
+    expect(stepCalls.length).toBe(1);
+    // only the pre-trigger observation happened — no boundary re-observe
+    expect(observeCount).toBe(1);
+    expect(result.toJSON().status).toBe("partial");
+  });
 });
 
 describe("TabFlows.submitAndObserve", () => {
@@ -118,6 +137,24 @@ describe("TabFlows.fillForm edge cases", () => {
     });
     const result = await flows.fillForm({ fields: [] });
     expect(result.toJSON().status).toBe("succeeded");
+  });
+
+  it("stops filling and does not submit after a failed field (Finding 5)", async () => {
+    let seq = 0;
+    const stepCalls: EnvAction[] = [];
+    const flows = new TabFlows({
+      observe: async () => { seq += 1; return fakeObservation(seq); },
+      // first field fill fails; everything after would succeed if reached
+      step: async (action) => { stepCalls.push(action); return fakeActionResult(action, stepCalls.length === 1 ? "failed" : "succeeded"); },
+    });
+    const result = await flows.fillForm({
+      fields: [{ name: "a", value: "1" }, { name: "b", value: "2" }],
+      submit: { source: "locator", selector: "button[type=submit]" },
+    });
+    // only the first field was attempted; the second field and submit never ran
+    expect(stepCalls.length).toBe(1);
+    expect(stepCalls.every((s) => s.kind === "locator.fill")).toBe(true);
+    expect(result.toJSON().status).toBe("partial");
   });
 });
 
@@ -169,7 +206,7 @@ describe("TabFlows.downloadAfterClick", () => {
     expect(states[states.length - 1]).toBe("succeeded");
   });
 
-  it("ends partial when the trigger click does not succeed", async () => {
+  it("does not wait for a download when the trigger click does not succeed (Finding 2)", async () => {
     let seq = 0;
     const flows = new TabFlows({
       observe: async () => { seq += 1; return fakeObservation(seq); },
@@ -177,9 +214,30 @@ describe("TabFlows.downloadAfterClick", () => {
     });
     const dl = await flows.downloadAfterClick(
       { trigger: { source: "locator", selector: "#dl" } },
-      { waitForDownload: async () => new Download(fakeTransport, "dl-3") },
+      // A never-resolving waiter: the flow must still resolve (to partial)
+      // WITHOUT awaiting it, proving the failed click abandons the waiter.
+      { waitForDownload: () => new Promise<Download>(() => {}) },
     );
     expect(dl.toJSON().status).toBe("partial");
+    expect(dl.download).toBeUndefined();
+  });
+
+  it("arms the download waiter before clicking the trigger (Finding 2)", async () => {
+    let seq = 0;
+    const order: string[] = [];
+    const flows = new TabFlows({
+      observe: async () => { seq += 1; return fakeObservation(seq); },
+      step: async (action) => { order.push("click"); return fakeActionResult(action); },
+    });
+    const dl = await flows.downloadAfterClick(
+      { trigger: { source: "locator", selector: "#dl" } },
+      { waitForDownload: async () => { order.push("wait"); return new Download(fakeTransport, "dl-x"); } },
+    );
+    // The waiter must be armed before the click so a synchronous download is not missed.
+    expect(order[0]).toBe("wait");
+    expect(order).toContain("click");
+    expect(dl.download).toBeInstanceOf(Download);
+    expect(dl.toJSON().status).toBe("succeeded");
   });
 });
 

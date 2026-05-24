@@ -44,8 +44,13 @@ export type DownloadAfterClickOptions = {
  * Result of {@link TabFlows.downloadAfterClick}: the high-level action result
  * with the existing host {@link Download} handle attached. The handle is a
  * process-local runtime object and is intentionally NOT part of `toJSON()`.
+ *
+ * `download` is OPTIONAL: it is present only when the trigger click succeeded
+ * and the download arrived. If the click failed/blocked the flow short-circuits
+ * to `partial` without waiting for a download that will never fire, so no handle
+ * is attached.
  */
-export type DownloadAfterClickResult = HighLevelActionResult & { download: Download };
+export type DownloadAfterClickResult = HighLevelActionResult & { download?: Download };
 
 export class TabFlows {
   constructor(private readonly deps: TabFlowsDeps) {}
@@ -70,6 +75,14 @@ export class TabFlows {
       traceValues: [{ kind: "selector", value: input.trigger.selector }],
       primitiveResult: triggerStep,
     });
+
+    // Short-circuit (Finding 5): if opening the menu did not succeed, do NOT
+    // cross the observation boundary to re-observe and click an option that
+    // cannot exist. Gate on the prerequisite step's status before proceeding.
+    if (triggerStep.status !== "succeeded") {
+      result.transition(triggerStep.status === "blocked" ? "blocked" : "partial");
+      return result;
+    }
 
     // BOUNDARY (Finding 14): re-observe the open menu; do NOT reuse pre-menu candidates.
     result.transition("observing");
@@ -191,7 +204,14 @@ export class TabFlows {
         traceValues: [{ kind: "text", field: field.name, value: field.value }],
         primitiveResult: step,
       });
-      if (step.status !== "succeeded") lastStatus = step.status;
+
+      // Short-circuit (Finding 5): a failed field fill means every subsequent
+      // field and the submit would operate on an unexpected form state, so stop
+      // here rather than crossing the next observe boundary or submitting.
+      if (step.status !== "succeeded") {
+        result.transition(step.status === "blocked" ? "blocked" : "partial");
+        return result;
+      }
 
       const isLastField = i === input.fields.length - 1;
       if (!isLastField || input.submit) {
@@ -247,6 +267,16 @@ export class TabFlows {
     result.transition("planning_steps");
     result.transition("preflighting_steps");
     result.transition("running_step");
+
+    // Arm the download waiter BEFORE the click: a download event fired
+    // synchronously by the click must not be missed in the window between the
+    // click resolving and us starting to wait (the arm-before-act race).
+    const downloadPromise = opts.waitForDownload();
+    // Register a rejection handler now so that if we abandon this waiter on a
+    // failed click below, its eventual rejection does not surface as an
+    // unhandled promise rejection.
+    downloadPromise.catch(() => {});
+
     const clickStep = await this.deps.step({
       kind: "locator.click",
       target: { ...input.trigger, observationId: before.observationId },
@@ -257,15 +287,24 @@ export class TabFlows {
       primitiveResult: clickStep,
     });
 
+    if (clickStep.status !== "succeeded") {
+      // The click did not succeed, so no download will follow. Abandon the
+      // armed waiter (its rejection is already swallowed above) instead of
+      // blocking on a download that will never arrive, and report partial with
+      // no `download` handle attached.
+      result.transition(clickStep.status === "blocked" ? "blocked" : "partial");
+      return result;
+    }
+
     // The click may navigate or mutate the page; await the existing host
-    // Download handle as the effect of the click.
+    // Download handle (armed above) as the effect of the click.
     result.transition("waiting_for_effect");
-    const download = await opts.waitForDownload();
+    const download = await downloadPromise;
 
     // BOUNDARY: re-observe after the download effect (observations.after).
     result.transition("reconciling");
     await this.deps.observe({ mode: "actionable" });
-    result.transition(clickStep.status === "succeeded" ? "succeeded" : "partial");
+    result.transition("succeeded");
 
     // Attach the existing Download handle as a process-local runtime field; it
     // is deliberately excluded from toJSON() since it is not serializable.
