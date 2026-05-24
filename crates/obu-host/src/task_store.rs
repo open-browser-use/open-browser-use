@@ -101,7 +101,7 @@ impl TaskStore {
             .with_context(|| format!("task store dir not owner-only: {}", dir.display()))?;
 
         let db_path = dir.join("tasks.db");
-        let conn = Connection::open(&db_path)
+        let mut conn = Connection::open(&db_path)
             .with_context(|| format!("open task store db: {}", db_path.display()))?;
 
         conn.pragma_update(None, "journal_mode", "WAL")
@@ -109,14 +109,23 @@ impl TaskStore {
         conn.pragma_update(None, "foreign_keys", "ON")
             .context("enable foreign_keys")?;
 
-        Self::run_migrations(&conn)?;
-        Self::check_schema_version(&conn)?;
+        Self::setup_schema(&mut conn)?;
 
         Ok(Self { conn })
     }
 
-    fn run_migrations(conn: &Connection) -> Result<()> {
-        conn.execute_batch(
+    /// Run migrations and record/check the schema version atomically.
+    ///
+    /// Everything happens inside a single transaction so a crash mid-setup
+    /// cannot leave tables without a recorded version (and so future
+    /// multi-statement migrations stay all-or-nothing). The version *check*
+    /// stays correct: on an existing db it reads the stored version and bails
+    /// if it is newer than supported; on a fresh db it writes the current
+    /// version inside the transaction.
+    fn setup_schema(conn: &mut Connection) -> Result<()> {
+        let tx = conn.transaction().context("begin schema setup tx")?;
+
+        tx.execute_batch(
             "CREATE TABLE IF NOT EXISTS meta (
                  key   TEXT PRIMARY KEY,
                  value TEXT NOT NULL
@@ -129,7 +138,7 @@ impl TaskStore {
                  created_at     INTEGER NOT NULL
              );
              CREATE TABLE IF NOT EXISTS task_segments (
-                 task_id    TEXT NOT NULL,
+                 task_id    TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
                  segment_id TEXT NOT NULL,
                  session_id TEXT NOT NULL,
                  turn_id    TEXT NOT NULL,
@@ -137,14 +146,14 @@ impl TaskStore {
                  PRIMARY KEY (task_id, segment_id)
              );
              CREATE TABLE IF NOT EXISTS task_checkpoints (
-                 task_id TEXT NOT NULL,
+                 task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
                  cursor  INTEGER NOT NULL,
                  payload TEXT NOT NULL,
                  at      INTEGER NOT NULL,
                  PRIMARY KEY (task_id, cursor)
              );
              CREATE TABLE IF NOT EXISTS task_events (
-                 task_id TEXT NOT NULL,
+                 task_id TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
                  cursor  INTEGER NOT NULL,
                  kind    TEXT NOT NULL,
                  payload TEXT NOT NULL,
@@ -152,22 +161,19 @@ impl TaskStore {
                  PRIMARY KEY (task_id, cursor)
              );
              CREATE TABLE IF NOT EXISTS task_resources (
-                 task_id     TEXT NOT NULL,
+                 task_id     TEXT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
                  resource_id TEXT NOT NULL,
                  kind        TEXT NOT NULL,
                  PRIMARY KEY (task_id, resource_id)
              );
              CREATE TABLE IF NOT EXISTS task_cancellation (
-                 task_id      TEXT PRIMARY KEY,
+                 task_id      TEXT PRIMARY KEY REFERENCES tasks(id) ON DELETE CASCADE,
                  requested_at INTEGER NOT NULL
              );",
         )
         .context("run task store migrations")?;
-        Ok(())
-    }
 
-    fn check_schema_version(conn: &Connection) -> Result<()> {
-        let stored: Option<String> = conn
+        let stored: Option<String> = tx
             .query_row(
                 "SELECT value FROM meta WHERE key = 'schema_version'",
                 [],
@@ -178,7 +184,7 @@ impl TaskStore {
 
         match stored {
             None => {
-                conn.execute(
+                tx.execute(
                     "INSERT INTO meta (key, value) VALUES ('schema_version', ?1)",
                     [TASK_STORE_SCHEMA_VERSION.to_string()],
                 )
@@ -195,6 +201,8 @@ impl TaskStore {
                 }
             }
         }
+
+        tx.commit().context("commit schema setup tx")?;
         Ok(())
     }
 
@@ -430,5 +438,24 @@ mod tests {
         store.mark_cancellation(&task_id).unwrap();
         // idempotent
         store.mark_cancellation(&task_id).unwrap();
+    }
+
+    #[test]
+    fn orphan_checkpoint_is_rejected_by_foreign_keys() {
+        let dir = owner_only_tempdir();
+        let store = TaskStore::open(dir.path()).unwrap();
+        // No create_task: this task_id has no parent row. With foreign_keys
+        // enforced, the child insert must be rejected.
+        let result = store.append_checkpoint(
+            "no-such-task",
+            Checkpoint {
+                cursor: 1,
+                payload: "orphan".into(),
+            },
+        );
+        assert!(
+            result.is_err(),
+            "orphan checkpoint should be rejected by foreign key constraint"
+        );
     }
 }
