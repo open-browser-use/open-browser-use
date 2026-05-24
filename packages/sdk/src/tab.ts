@@ -311,6 +311,22 @@ export class Tab {
   readonly read: TabRead;
   readonly playwright: TabPlaywright;
   readonly metadata: TabMetadata;
+  // Finding 10 / Task 5.6 — cross-process observation-id semantics.
+  //
+  // Observation ids and pointer state are PROCESS-LOCAL and NON-DURABLE: they
+  // live only in this in-memory map (or the equivalent runtimeContext store)
+  // for the lifetime of the current process. They are NOT persisted across a
+  // process / kernel / task-store boundary — the host task store deliberately
+  // does not store observation ids (Task 5.3). As a consequence:
+  //   - An id that is ABSENT from this store (e.g. one minted by a previous
+  //     process and replayed after a process/kernel loss) resolves to
+  //     `unknown_observation`, NOT `stale_observation`. The tab has simply
+  //     never heard of it.
+  //   - An id that is PRESENT but was created before the current
+  //     browser-control lifecycle (a runtime-lifecycle change within the SAME
+  //     process/epoch) resolves to `stale_observation`.
+  // A long-task resume must therefore re-observe and allocate a FRESH
+  // observation id rather than replay a persisted id from a prior process.
   #localObservations = new Map<string, ObservationLifecycle>();
   #pointerState: AgentPointerState | undefined;
 
