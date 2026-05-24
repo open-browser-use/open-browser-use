@@ -32,3 +32,12 @@ fn task_state_vocab_matches_fixture() {
         .collect();
     assert_eq!(got, fixture_set(&fixture(), "taskStates"));
 }
+
+#[test]
+fn resume_status_vocab_matches_fixture() {
+    let got: BTreeSet<String> = obu_host::task_lifecycle::resume_status::ALL
+        .iter()
+        .map(|s| s.to_string())
+        .collect();
+    assert_eq!(got, fixture_set(&fixture(), "resumeCompleteStatuses"));
+}

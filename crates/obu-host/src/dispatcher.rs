@@ -33,6 +33,7 @@ use crate::backends::{
 };
 use crate::error::{HostError, Result};
 use crate::methods;
+use crate::task_lifecycle::resume_status;
 use crate::task_store::TaskListFilter;
 use crate::task_store_actor::TaskStoreHandle;
 use crate::peer_lifecycle::{
@@ -711,14 +712,14 @@ impl Dispatcher {
             .to_string();
         let generation = require_trusted_generation(ctx)?;
         match status.as_str() {
-            "attached" => {
+            resume_status::ATTACHED => {
                 let outcome = store
                     .resume_complete_attached(token, generation)
                     .await
                     .map_err(|error| task_store_rpc_error(error.to_string()))?;
                 Ok(json!({ "status": "attached", "segment": outcome }))
             }
-            "blocked" | "attach_failed" | "observation_failed" => {
+            resume_status::BLOCKED | resume_status::ATTACH_FAILED | resume_status::OBSERVATION_FAILED => {
                 // Capture the REAL failure detail the SDK sends so it lands in
                 // durable evidence (terminal_error + the resume_attempt_blocked
                 // event), not a dropped `reason: null`. The SDK

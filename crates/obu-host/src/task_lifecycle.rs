@@ -231,6 +231,22 @@ pub mod control {
     pub const BLOCKED: &str = "blocked";
 }
 
+/// Wire status the SDK sends on `tasksResumeComplete`, matched by the host
+/// dispatcher. Single-sourced via `control-vocab.json` (`resumeCompleteStatuses`)
+/// and pinned by `control_vocab_contract::resume_status_vocab_matches_fixture`.
+pub mod resume_status {
+    /// Attach committed; the resumed segment is the attached authority.
+    pub const ATTACHED: &str = "attached";
+    /// Control transition was blocked; resume recorded as terminal-blocked.
+    pub const BLOCKED: &str = "blocked";
+    /// Attach failed before observe.
+    pub const ATTACH_FAILED: &str = "attach_failed";
+    /// Attach committed but the continuity probe failed.
+    pub const OBSERVATION_FAILED: &str = "observation_failed";
+    /// Every accepted resume-complete status.
+    pub const ALL: [&str; 4] = [ATTACHED, BLOCKED, ATTACH_FAILED, OBSERVATION_FAILED];
+}
+
 /// Returns whether `state` is supported by the session/turn `evidence`.
 ///
 /// This is the projection guard for Finding 8: it encodes the review's mapping
