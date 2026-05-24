@@ -1525,6 +1525,93 @@ mod tests {
         );
     }
 
+    // Finding 3: a real pre-v3 store may already hold duplicate
+    // `(task_id, session_id, turn_id)` task_segments rows. Opening it at v3 must
+    // (a) dedupe by keeping the earliest row (MIN(rowid)) per group, then (b)
+    // build the UNIQUE index `idx_task_segments_task_session_turn` successfully —
+    // proving both that the dedupe SQL removed the right rows and that the index
+    // is live afterward. Seeds a v2-shaped db (meta '2', task_segments with the
+    // `generation` column added by the v1->v2 ALTER) holding TWO duplicate rows.
+    #[test]
+    fn opens_and_dedupes_duplicate_segments_then_enforces_unique_index_v3() {
+        let dir = owner_only_tempdir();
+        let db_path = dir.path().join("tasks.db");
+        // Construct a v2-shaped db by hand: task_segments carries `generation`
+        // (the column the v1->v2 migration ALTERs in), meta schema_version '2'.
+        // Two task_segments rows share (task_id, session_id, turn_id) but differ
+        // in segment_id; inserted in order so 'seg-early' gets the lower rowid.
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 CREATE TABLE tasks (
+                     id             TEXT PRIMARY KEY,
+                     label          TEXT NOT NULL,
+                     state          TEXT NOT NULL,
+                     schema_version INTEGER NOT NULL,
+                     created_at     INTEGER NOT NULL
+                 );
+                 CREATE TABLE task_segments (
+                     task_id    TEXT NOT NULL,
+                     segment_id TEXT NOT NULL,
+                     session_id TEXT NOT NULL,
+                     turn_id    TEXT NOT NULL,
+                     started_at INTEGER NOT NULL,
+                     generation INTEGER,
+                     PRIMARY KEY (task_id, segment_id)
+                 );
+                 INSERT INTO meta (key, value) VALUES ('schema_version', '2');
+                 INSERT INTO tasks (id, label, state, schema_version, created_at)
+                     VALUES ('task-1', 'l', 'created', 2, 0);
+                 INSERT INTO task_segments (task_id, segment_id, session_id, turn_id, started_at, generation)
+                     VALUES ('task-1', 'seg-early', 's1', 't1', 0, NULL);
+                 INSERT INTO task_segments (task_id, segment_id, session_id, turn_id, started_at, generation)
+                     VALUES ('task-1', 'seg-late', 's1', 't1', 0, NULL);",
+            )
+            .unwrap();
+            // Sanity: both duplicate rows exist before migration.
+            let count: i64 = conn
+                .query_row("SELECT COUNT(*) FROM task_segments", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(count, 2, "seed must contain two duplicate segment rows");
+        }
+
+        // Opening at v3 triggers the dedupe + unique-index migration.
+        let store = TaskStore::open(dir.path()).unwrap();
+
+        // (1) schema_version is now 3.
+        let version: String = store
+            .conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, TASK_STORE_SCHEMA_VERSION.to_string());
+
+        // (2) Exactly one segment survives, and it is the EARLIEST (MIN(rowid))
+        // row — proving the dedupe kept the right one.
+        let segs = store.segments("task-1").unwrap();
+        assert_eq!(segs.len(), 1, "dedupe must collapse to a single segment");
+        assert_eq!(
+            segs[0].segment_id, "seg-early",
+            "dedupe must keep the earliest (lowest-rowid) segment"
+        );
+
+        // (3) The unique index is LIVE: a direct INSERT of another row with the
+        // same (task_id, session_id, turn_id) now violates the index and fails.
+        let dup_insert = store.conn.execute(
+            "INSERT INTO task_segments (task_id, segment_id, session_id, turn_id, started_at, generation)
+             VALUES ('task-1', 'seg-new', 's1', 't1', 0, NULL)",
+            [],
+        );
+        assert!(
+            dup_insert.is_err(),
+            "post-migration unique index must reject a duplicate (task_id, session_id, turn_id)"
+        );
+    }
+
     // Finding 4: a long task spans multiple turns (one segment per resume), so
     // its episode export is segmented by turn: one section per `(session,turn)`
     // segment, in resume order, linked by task-level events. Every section
