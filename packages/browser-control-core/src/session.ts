@@ -1,5 +1,8 @@
-export type TabOrigin = "agent" | "user";
-export type TabStatus = "active" | "handoff" | "deliverable";
+export const TAB_ORIGINS = ["agent", "user"] as const;
+export type TabOrigin = (typeof TAB_ORIGINS)[number];
+
+export const TAB_STATUSES = ["active", "handoff", "deliverable"] as const;
+export type TabStatus = (typeof TAB_STATUSES)[number];
 
 export type SessionTab = {
   tabId: number;
