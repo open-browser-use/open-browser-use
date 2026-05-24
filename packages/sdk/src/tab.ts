@@ -1757,15 +1757,11 @@ function observationStatus(
     }
   }
   if (mode === "visual") {
-    // A visual observation without a composed annotation graph is degraded but
-    // not useless (the planning sections may still be present). Treat an
-    // omitted/failed `annotations` section as partial, a blocked one as
-    // partial too — it never fails the whole observation on its own.
-    if (
-      sections.annotations.status === "omitted"
-      || sections.annotations.status === "failed"
-      || sections.annotations.status === "blocked"
-    ) {
+    // The producer assigns `annotations` only "present" or "omitted". A visual
+    // observation with an omitted annotation graph is degraded but not useless
+    // (the planning sections may still be present), so it is partial — never
+    // failed on its own.
+    if (sections.annotations.status === "omitted") {
       return "partial";
     }
   }
