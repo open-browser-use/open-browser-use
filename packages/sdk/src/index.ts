@@ -99,6 +99,8 @@ export type {
   ScreenshotForModelOptions,
   ScreenshotForModelResult,
   ScreenshotOptions,
+  AnnotatedVisualObservation,
+  VisualAnnotation,
   DomCuaObservation,
   ObservationActionFamily,
   ObservationLifecycle,

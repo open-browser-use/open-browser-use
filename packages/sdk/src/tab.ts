@@ -198,6 +198,7 @@ export type TabObservation = {
     text: ObservationSectionStatus;
     domCua: ObservationSectionStatus;
     screenshot: ObservationSectionStatus;
+    annotations: ObservationSectionStatus;
     diagnostics: ObservationSectionStatus;
   };
   tab: {
@@ -219,6 +220,7 @@ export type TabObservation = {
   text?: TabSnapshotTextResult;
   domCua?: DomCuaObservation;
   screenshot?: ScreenshotForModelResult;
+  visual?: AnnotatedVisualObservation;
   diagnostics: {
     advisories: string[];
     sectionErrors: Record<string, string>;
@@ -233,6 +235,32 @@ export type TabObservation = {
 export type DomCuaObservation = {
   text?: string;
   snapshot?: unknown;
+};
+
+/**
+ * A single annotated affordance: a DOM-CUA node's identity, its on-screen
+ * bounds, and an optional human-readable label (its tag today).
+ */
+export type VisualAnnotation = {
+  nodeId: string;
+  bounds: { x: number; y: number; width: number; height: number };
+  label?: string;
+};
+
+/**
+ * Payload for `TabObservation.visual` in `mode: "visual"`. It is NOT a
+ * separate observation envelope (Finding 6): it rides inside `TabObservation`
+ * alongside `screenshot`/`domCua`. It pairs a screenshot reference with the
+ * viewport it was taken in and an annotation graph derived from DOM-CUA node
+ * bounds, plus the revisions that the freshness check uses to invalidate
+ * stale coordinate actions.
+ */
+export type AnnotatedVisualObservation = {
+  screenshot: ScreenshotForModelResult;
+  viewport: NonNullable<TabSnapshotTextResult["viewport"]>;
+  annotations: VisualAnnotation[];
+  visualRevision: string;
+  annotationRevision: string;
 };
 
 type ActionExecutionResult = {
@@ -432,6 +460,42 @@ export class Tab {
       }
     }
 
+    // Compose the annotated-visual payload (Findings 6 + 11). The screenshot
+    // capture and DOM-CUA affordance reads above are the `reading_backend`
+    // work; assembling the annotation graph + bounds here is `composing_snapshot`
+    // work — both ride the EXISTING ObserveRequestState trace, no new states.
+    // Rule: annotations are "present" only when we have BOTH a screenshot AND
+    // DOM-CUA node bounds — an annotated visual needs an image to draw on and
+    // affordances to draw. Otherwise the section stays "omitted" (→ partial in
+    // visual mode).
+    let visual: AnnotatedVisualObservation | undefined;
+    let visualRevision: string | undefined;
+    let annotationRevision: string | undefined;
+    if (mode === "visual") {
+      const annotations = annotationsFromDomCua(domCua?.snapshot);
+      if (screenshot !== undefined && text?.viewport !== undefined && annotations.length > 0) {
+        visualRevision = observationPageStateHash({ screenshot, viewport: text.viewport });
+        annotationRevision = observationPageStateHash({ annotations });
+        visual = {
+          screenshot,
+          viewport: text.viewport,
+          annotations,
+          visualRevision,
+          annotationRevision,
+        };
+        sections.annotations = { status: "present" };
+      } else {
+        sections.annotations = {
+          status: "omitted",
+          reason: screenshot === undefined
+            ? "screenshot_unavailable"
+            : annotations.length === 0
+              ? "no_dom_cua_affordances"
+              : "viewport_unavailable",
+        };
+      }
+    }
+
     const pageStateHash = observationPageStateHash({
       tabId: this.id,
       url: tab.url,
@@ -454,6 +518,8 @@ export class Tab {
       ...(text?.viewport !== undefined ? { viewportRevision: observationPageStateHash({ viewport: text.viewport }) } : {}),
       ...(text?.focus !== undefined ? { focusRevision: observationPageStateHash({ focus: text.focus }) } : {}),
       ...(domCuaRevision !== undefined ? { domCuaRevision } : {}),
+      ...(visualRevision !== undefined ? { visualRevision } : {}),
+      ...(annotationRevision !== undefined ? { annotationRevision } : {}),
     };
     const diagnostics = {
       advisories,
@@ -491,6 +557,7 @@ export class Tab {
       ...(text !== undefined ? { text } : {}),
       ...(domCua !== undefined ? { domCua } : {}),
       ...(screenshot !== undefined ? { screenshot } : {}),
+      ...(visual !== undefined ? { visual } : {}),
       diagnostics,
     };
   }
@@ -1662,6 +1729,7 @@ function initialObservationSections(
     screenshot: (opts.includeScreenshot ?? mode === "visual")
       ? { status: "omitted", reason: "not_read_yet" }
       : { status: "omitted", reason: "not_requested" },
+    annotations: { status: "omitted", reason: "not_implemented_initial_observe" },
     diagnostics: { status: "present" },
   };
 }
@@ -1686,6 +1754,19 @@ function observationStatus(
       && sections.screenshot.status !== "present"
     ) {
       return "failed";
+    }
+  }
+  if (mode === "visual") {
+    // A visual observation without a composed annotation graph is degraded but
+    // not useless (the planning sections may still be present). Treat an
+    // omitted/failed `annotations` section as partial, a blocked one as
+    // partial too — it never fails the whole observation on its own.
+    if (
+      sections.annotations.status === "omitted"
+      || sections.annotations.status === "failed"
+      || sections.annotations.status === "blocked"
+    ) {
+      return "partial";
     }
   }
   const values = Object.values(sections);
@@ -1714,6 +1795,38 @@ function domCuaRevisionFromSnapshot(snapshot: unknown): string {
     }
   }
   return observationPageStateHash({ domCua: snapshot });
+}
+
+/**
+ * Derive a visual annotation graph from a DOM-CUA visible-dom snapshot. Each
+ * node that carries numeric `bounds` becomes one annotation keyed by its
+ * `node_id`, labelled by its tag. Nodes without bounds are skipped.
+ */
+function annotationsFromDomCua(snapshot: unknown): VisualAnnotation[] {
+  if (!isRecord(snapshot) || !Array.isArray(snapshot.nodes)) return [];
+  const annotations: VisualAnnotation[] = [];
+  for (const node of snapshot.nodes) {
+    if (!isRecord(node)) continue;
+    const bounds = node.bounds;
+    if (!isRecord(bounds)) continue;
+    const { x, y, width, height } = bounds;
+    if (
+      typeof x !== "number"
+      || typeof y !== "number"
+      || typeof width !== "number"
+      || typeof height !== "number"
+    ) {
+      continue;
+    }
+    const nodeId = node.node_id;
+    if (typeof nodeId !== "string" && typeof nodeId !== "number") continue;
+    annotations.push({
+      nodeId: String(nodeId),
+      bounds: { x, y, width, height },
+      ...(typeof node.tag === "string" ? { label: node.tag } : {}),
+    });
+  }
+  return annotations;
 }
 
 export function markTabRuntimeContextStale(
