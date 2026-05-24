@@ -104,20 +104,20 @@ export class BrowserTasks {
     // persisted one (Finding 10).
     const observeOpts: { includeText: false; timeout?: number } = { includeText: false };
     if (opts.timeout !== undefined) observeOpts.timeout = opts.timeout;
-    try {
-      const observation = await control.tab.observe(observeOpts);
-      return {
-        status: "resumed",
-        plan: begin.plan,
-        episode: begin.episode,
-        tab: control.tab,
-        observation,
-        segment: complete.segment,
-      };
-    } catch (error) {
+
+    // Commit a terminal observation_failed and return the soft-failure result.
+    // Both the degraded-probe path (observe resolved but the continuity sections
+    // errored) and the hard-throw path (observe threw for a non-section/setup
+    // reason) funnel through here so the completion + return shape is identical.
+    // `wireError` rides the tasksResumeComplete envelope; `error` is surfaced to
+    // the caller.
+    const completeObservationFailed = async (
+      wireError: { code: string; message: string },
+      error: unknown,
+    ): Promise<BrowserTaskResumeResult> => {
       await this.transport.sendRequest(
         M.TASKS_RESUME_COMPLETE,
-        withSessionMeta({ taskId, resumeToken: begin.resumeToken, status: "observation_failed", error: normalizeError(error) }),
+        withSessionMeta({ taskId, resumeToken: begin.resumeToken, status: "observation_failed", error: wireError }),
         opts.timeout,
         { runtime },
       );
@@ -129,6 +129,40 @@ export class BrowserTasks {
         segment: complete.segment,
         error,
       };
+    };
+
+    try {
+      const observation = await control.tab.observe(observeOpts);
+      // Tab.observe() is fault-tolerant: #observeSection swallows per-section
+      // transport failures and records them in diagnostics.sectionErrors, so a
+      // failed url/title probe resolves a DEGRADED observation rather than
+      // throwing (observation.status can even stay "succeeded" because
+      // sections.tab is "present" on metadata alone). The only precise signal of
+      // a failed continuity probe is a `tab.`-prefixed sectionErrors key
+      // (sectionErrors["tab.url"] / ["tab.title"] — tab.ts:391/405); a blanket
+      // status check would false-positive on benign "partial" from skipped
+      // optional sections. Detect that here so the attach-before-observe design
+      // can report a failed probe instead of masking it as "resumed".
+      const probeErrors = Object.entries(observation.diagnostics.sectionErrors).filter(([key]) =>
+        key.startsWith("tab."),
+      );
+      if (probeErrors.length > 0) {
+        const summary = Object.fromEntries(probeErrors);
+        return await completeObservationFailed(
+          { code: "observation_failed", message: JSON.stringify(summary) },
+          { code: "observation_failed", message: JSON.stringify(summary), sectionErrors: summary },
+        );
+      }
+      return {
+        status: "resumed",
+        plan: begin.plan,
+        episode: begin.episode,
+        tab: control.tab,
+        observation,
+        segment: complete.segment,
+      };
+    } catch (error) {
+      return await completeObservationFailed(normalizeError(error), error);
     }
   }
 }

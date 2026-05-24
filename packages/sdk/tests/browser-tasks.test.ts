@@ -102,4 +102,35 @@ describe("browser.tasks", () => {
       expect(call.params).not.toHaveProperty("kernel_generation");
     }
   });
+
+  it("returns resumed_observation_failed after attached commit when observe fails", async () => {
+    installMeta();
+    // Tab.observe() is fault-tolerant: a failed tab.url section is swallowed into
+    // diagnostics.sectionErrors rather than thrown, so this only trips
+    // resumed_observation_failed if resume() inspects the degraded observation.
+    class FailingObserveTransport extends TaskTransport {
+      override async sendRequest<T>(
+        method: string,
+        params: Record<string, unknown>,
+        _timeout?: number,
+        frameMeta?: FrameMeta,
+      ): Promise<T> {
+        if (method === M.TAB_URL) throw new Error("observe boom");
+        return await super.sendRequest<T>(method, params, _timeout, frameMeta);
+      }
+    }
+    const transport = new FailingObserveTransport();
+    const browser = new Browser(
+      transport as unknown as Transport,
+      { type: "webextension", name: "chrome" },
+      { type: "webextension", name: "chrome", socketPath: "/tmp/sock" },
+      new Guards(),
+    );
+    const result = await browser.tasks.resume("task-1");
+    expect(result.status).toBe("resumed_observation_failed");
+    expect(transport.calls.map((c) => c.method)).toContain(M.TASKS_RESUME_COMPLETE);
+    expect(
+      transport.calls.filter((c) => c.method === M.TASKS_RESUME_COMPLETE).at(-1)?.params,
+    ).toMatchObject({ status: "observation_failed" });
+  });
 });
