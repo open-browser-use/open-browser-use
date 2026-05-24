@@ -12,6 +12,21 @@ importers:
         specifier: 5.7.3
         version: 5.7.3
 
+  packages/browser-control-core:
+    devDependencies:
+      '@types/node':
+        specifier: 22.10.5
+        version: 22.10.5
+      tsup:
+        specifier: 8.3.5
+        version: 8.3.5(postcss@8.5.14)(tsx@4.19.2)(typescript@5.7.3)
+      typescript:
+        specifier: 5.7.3
+        version: 5.7.3
+      vitest:
+        specifier: 3.0.4
+        version: 3.0.4(@types/node@22.10.5)(tsx@4.19.2)
+
   packages/cli:
     dependencies:
       jsonc-parser:
