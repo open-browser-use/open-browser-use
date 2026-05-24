@@ -168,7 +168,7 @@ pub struct EpisodeExport {
 /// Each segment marks one execution of a task bound to a single MCP turn: a
 /// long task accumulates one segment per resume, so a task that runs across
 /// several turns has several segments recorded in resume order.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Segment {
     /// Stable identifier for the segment.
     pub segment_id: String,
@@ -215,6 +215,110 @@ impl Segment {
             generation: Some(generation),
         }
     }
+}
+
+/// Outcome of [`TaskStore::begin_resume_attempt`].
+///
+/// `resume_token` is `Some` **only** when this call created a fresh attempt: the
+/// store never re-derives a wire token for an already-pending attempt (it only
+/// persists the token's SHA-256 hash, never the raw token), so an idempotent
+/// retry returns `resume_token: None`. `created` records whether this call
+/// inserted a new attempt (and therefore appended a `resume_attempt_started`
+/// event) versus matched an existing pending attempt.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumeAttemptBegin {
+    /// Stable id of the (new or existing) pending attempt.
+    pub attempt_id: String,
+    /// Raw wire token, present only when this call created the attempt.
+    pub resume_token: Option<String>,
+    /// Attempt expiry (unix millis).
+    pub expires_at: i64,
+    /// Whether this call created a new attempt (vs. matched an existing one).
+    pub created: bool,
+}
+
+/// The single active execution owner of a task, if one is currently attached.
+///
+/// At most one owner exists per task (the `task_execution_owners.task_id`
+/// primary key), so a task that has crossed into execution has exactly one
+/// owning `(session_id, turn_id)` and segment, attributed to the attempt that
+/// attached it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ActiveExecutionOwner {
+    /// Owned task.
+    pub task_id: String,
+    /// Attempt that attached this owner.
+    pub attempt_id: String,
+    /// Session that owns the active execution.
+    pub session_id: String,
+    /// Turn that owns the active execution.
+    pub turn_id: String,
+    /// Segment recorded for the active execution.
+    pub segment_id: String,
+}
+
+/// Outcome of [`TaskStore::complete_resume_attached`].
+///
+/// Carries the (idempotently created) execution [`Segment`] the attempt attached
+/// to, plus the attempt/task ids for the caller to record.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ResumeAttachedOutcome {
+    /// Attempt that attached.
+    pub attempt_id: String,
+    /// Task the attempt belongs to.
+    pub task_id: String,
+    /// Execution segment the attempt attached to.
+    pub segment: Segment,
+}
+
+/// A pending resume attempt for a task.
+///
+/// The partial unique index `idx_task_resume_attempts_pending` guarantees at
+/// most one `status='pending'` row per task, so this is the at-most-one
+/// outstanding attempt that [`TaskStore::begin_resume_attempt`] reconciles
+/// against for idempotency and cross-session conflict detection.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PendingResumeAttempt {
+    /// Stable attempt id.
+    pub attempt_id: String,
+    /// Session that opened the attempt.
+    pub session_id: String,
+    /// Turn the attempt is bound to.
+    pub turn_id: String,
+    /// Attempt expiry (unix millis).
+    pub expires_at: i64,
+}
+
+/// A resume attempt resolved by token for completion (attach/block).
+///
+/// Used internally by [`TaskStore::complete_resume_attached`] and
+/// [`TaskStore::complete_resume_blocked`]: it carries the attempt's identity and
+/// owning `(session_id, turn_id)` so the caller can materialize the turn segment
+/// and execution owner. `generation` is the generation recorded when the attempt
+/// began (retained for completeness; attach uses the caller-supplied generation).
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct AttachableAttempt {
+    attempt_id: String,
+    task_id: String,
+    session_id: String,
+    turn_id: String,
+    generation: i64,
+}
+
+/// Generate a fresh raw resume token (a random UUIDv4 in simple/hyphenless form).
+fn resume_token() -> String {
+    uuid::Uuid::new_v4().simple().to_string()
+}
+
+/// Hash a raw resume token for at-rest storage.
+///
+/// The store persists only this SHA-256 hex digest in
+/// `task_resume_attempts.token_hash`; the raw token is never written to disk, so
+/// a leaked database cannot be used to forge a resume.
+fn token_hash(token: &str) -> String {
+    use sha2::{Digest, Sha256};
+    let digest = Sha256::digest(token.as_bytes());
+    format!("{digest:x}")
 }
 
 /// A task loaded back from the durable store.
@@ -1170,6 +1274,327 @@ impl TaskStore {
         }
         Ok(summaries)
     }
+
+    /// Return the single `status='pending'` resume attempt for `task_id`, if any.
+    ///
+    /// The partial unique index `idx_task_resume_attempts_pending` guarantees at
+    /// most one pending row per task, so this is a `query_row` returning `None`
+    /// when there is no outstanding attempt.
+    fn pending_resume_attempt(&self, task_id: &str) -> Result<Option<PendingResumeAttempt>> {
+        self.conn
+            .query_row(
+                "SELECT attempt_id, session_id, turn_id, expires_at
+                 FROM task_resume_attempts
+                 WHERE task_id = ?1 AND status = 'pending'",
+                [task_id],
+                |row| {
+                    Ok(PendingResumeAttempt {
+                        attempt_id: row.get(0)?,
+                        session_id: row.get(1)?,
+                        turn_id: row.get(2)?,
+                        expires_at: row.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .context("query pending resume attempt")
+    }
+
+    /// Return the active execution owner of `task_id`, if one is attached.
+    ///
+    /// Reads the at-most-one `task_execution_owners` row (keyed by `task_id`).
+    pub fn active_execution_owner(&self, task_id: &str) -> Result<Option<ActiveExecutionOwner>> {
+        self.conn
+            .query_row(
+                "SELECT task_id, attempt_id, session_id, turn_id, segment_id
+                 FROM task_execution_owners
+                 WHERE task_id = ?1",
+                [task_id],
+                |row| {
+                    Ok(ActiveExecutionOwner {
+                        task_id: row.get(0)?,
+                        attempt_id: row.get(1)?,
+                        session_id: row.get(2)?,
+                        turn_id: row.get(3)?,
+                        segment_id: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .context("query active execution owner")
+    }
+
+    /// Begin (or idempotently re-confirm) a resume attempt for `task_id`.
+    ///
+    /// Reconciles against the at-most-one outstanding pending attempt (the
+    /// partial unique index). If a pending attempt for the *same*
+    /// `(session_id, turn_id)` already exists, returns it with
+    /// `resume_token: None` and `created: false` (idempotent retry — the raw
+    /// token was never persisted, so it cannot be re-derived here). If a pending
+    /// attempt exists for a *different* `(session_id, turn_id)`, or the task
+    /// already has an active execution owner, fails with `task_resume_conflict`.
+    ///
+    /// Otherwise inserts a fresh `status='pending'` attempt storing only the
+    /// token's SHA-256 hash, appends a `resume_attempt_started` event, and
+    /// returns the raw token once (`resume_token: Some`, `created: true`).
+    pub fn begin_resume_attempt(
+        &self,
+        task_id: &str,
+        session_id: &str,
+        turn_id: &str,
+        generation: i64,
+        ttl_ms: i64,
+    ) -> Result<ResumeAttemptBegin> {
+        if let Some(existing) = self.pending_resume_attempt(task_id)? {
+            if existing.session_id == session_id && existing.turn_id == turn_id {
+                return Ok(ResumeAttemptBegin {
+                    attempt_id: existing.attempt_id,
+                    resume_token: None,
+                    expires_at: existing.expires_at,
+                    created: false,
+                });
+            }
+            bail!("task_resume_conflict");
+        }
+        if self.active_execution_owner(task_id)?.is_some() {
+            bail!("task_resume_conflict");
+        }
+        let attempt_id = uuid::Uuid::new_v4().to_string();
+        let token = resume_token();
+        let now = now_millis();
+        let expires_at = now + ttl_ms;
+        self.conn
+            .execute(
+                "INSERT INTO task_resume_attempts
+                 (attempt_id, task_id, session_id, turn_id, token_hash, status, generation, created_at, expires_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7, ?8)",
+                rusqlite::params![
+                    attempt_id,
+                    task_id,
+                    session_id,
+                    turn_id,
+                    token_hash(&token),
+                    generation,
+                    now,
+                    expires_at
+                ],
+            )
+            .context("insert resume attempt")?;
+        self.append_typed_event(
+            task_id,
+            "resume_attempt_started",
+            serde_json::json!({
+                "kind": "resume_attempt_started",
+                "attemptId": attempt_id,
+                "taskId": task_id,
+                "sessionId": session_id,
+                "turnId": turn_id,
+                "generation": generation,
+                "startedAt": now,
+                "expiresAt": expires_at
+            }),
+        )?;
+        Ok(ResumeAttemptBegin {
+            attempt_id,
+            resume_token: Some(token),
+            expires_at,
+            created: true,
+        })
+    }
+
+    /// Rotate the wire token of a still-`pending` attempt, returning the new raw
+    /// token.
+    ///
+    /// Used by Task 8's actor after a host restart, when the in-memory raw token
+    /// for a persisted pending attempt is gone: rotation mints a fresh token,
+    /// stores only its hash, and extends the expiry. It deliberately does NOT
+    /// append a `resume_attempt_started` event (the attempt already started — a
+    /// second start event would double-count). Fails with `invalid_resume_attempt`
+    /// if no pending attempt matches `attempt_id`.
+    pub fn rotate_resume_attempt_token(&self, attempt_id: &str) -> Result<String> {
+        let token = resume_token();
+        let updated = self
+            .conn
+            .execute(
+                "UPDATE task_resume_attempts
+                 SET token_hash = ?1, expires_at = MAX(expires_at, ?2)
+                 WHERE attempt_id = ?3 AND status = 'pending'",
+                rusqlite::params![token_hash(&token), now_millis() + 60_000, attempt_id],
+            )
+            .context("rotate resume attempt token")?;
+        if updated != 1 {
+            bail!("invalid_resume_attempt");
+        }
+        Ok(token)
+    }
+
+    /// Look up an attempt by raw token, accepting `pending` OR already-`attached`.
+    ///
+    /// Returns the matching [`AttachableAttempt`] for the row whose stored
+    /// `token_hash` matches `token`, or `None` if no such pending/attached
+    /// attempt exists. Accepting `attached` (not just `pending`) is what makes
+    /// [`TaskStore::complete_resume_attached`] idempotent: a second attach with
+    /// the same token still finds the row.
+    fn attempt_by_token_for_attach(&self, token: &str) -> Result<Option<AttachableAttempt>> {
+        self.conn
+            .query_row(
+                "SELECT attempt_id, task_id, session_id, turn_id, generation
+                 FROM task_resume_attempts
+                 WHERE token_hash = ?1 AND status IN ('pending', 'attached')",
+                [token_hash(token)],
+                |row| {
+                    Ok(AttachableAttempt {
+                        attempt_id: row.get(0)?,
+                        task_id: row.get(1)?,
+                        session_id: row.get(2)?,
+                        turn_id: row.get(3)?,
+                        generation: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .context("query resume attempt by token")
+    }
+
+    /// Complete a resume attempt by attaching it to an execution segment.
+    ///
+    /// Idempotent: looks up the attempt by raw token (accepting pending OR
+    /// already-attached), idempotently materializes the turn segment via
+    /// [`TaskStore::ensure_turn_segment`], upserts the at-most-one
+    /// `task_execution_owners` row for the task, and marks the attempt
+    /// `status='attached'` with `completed_at`/`segment_id`. Calling twice with
+    /// the same token returns the SAME segment and does not create a second
+    /// owner or segment. Fails with `invalid_resume_token` if no
+    /// pending/attached attempt matches the token.
+    pub fn complete_resume_attached(
+        &self,
+        token: &str,
+        generation: i64,
+    ) -> Result<ResumeAttachedOutcome> {
+        let AttachableAttempt {
+            attempt_id,
+            task_id,
+            session_id,
+            turn_id,
+            generation: _,
+        } = match self.attempt_by_token_for_attach(token)? {
+            Some(attempt) => attempt,
+            None => bail!("invalid_resume_token"),
+        };
+
+        // Idempotent: same (task, session, turn) returns the same segment.
+        let segment =
+            self.ensure_turn_segment(&task_id, &session_id, &turn_id, Some(generation))?;
+
+        // Upsert the single execution owner for the task (keyed by task_id).
+        self.conn
+            .execute(
+                "INSERT INTO task_execution_owners
+                 (task_id, attempt_id, session_id, turn_id, segment_id, started_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)
+                 ON CONFLICT(task_id) DO UPDATE SET
+                     attempt_id = excluded.attempt_id,
+                     session_id = excluded.session_id,
+                     turn_id = excluded.turn_id,
+                     segment_id = excluded.segment_id,
+                     started_at = excluded.started_at",
+                rusqlite::params![
+                    task_id,
+                    attempt_id,
+                    session_id,
+                    turn_id,
+                    segment.segment_id,
+                    now_millis()
+                ],
+            )
+            .context("upsert task execution owner")?;
+
+        // Mark the attempt attached (idempotent: re-running sets the same values).
+        self.conn
+            .execute(
+                "UPDATE task_resume_attempts
+                 SET status = 'attached', completed_at = ?1, segment_id = ?2
+                 WHERE attempt_id = ?3",
+                rusqlite::params![now_millis(), segment.segment_id, attempt_id],
+            )
+            .context("mark resume attempt attached")?;
+
+        Ok(ResumeAttachedOutcome {
+            attempt_id,
+            task_id,
+            segment,
+        })
+    }
+
+    /// Complete a resume attempt as blocked: record the reason and emit an event,
+    /// without creating a segment or execution owner.
+    ///
+    /// Looks up the attempt by raw token, marks it `status='blocked'` with
+    /// `completed_at` and the caller-supplied `payload` stored as JSON in
+    /// `terminal_error`, then appends a `resume_attempt_blocked` event. The
+    /// caller's `payload` need not carry a `"kind"` field: this method builds the
+    /// full typed-event body (`kind` + `taskId`/`attemptId`/`at` merged with the
+    /// caller's fields) before appending, so [`TaskStore::append_typed_event`]'s
+    /// kind-match invariant holds. No segment and no owner are created. Fails
+    /// with `invalid_resume_token` if no pending/attached attempt matches.
+    pub fn complete_resume_blocked(
+        &self,
+        token: &str,
+        payload: serde_json::Value,
+    ) -> Result<()> {
+        let AttachableAttempt {
+            attempt_id,
+            task_id,
+            ..
+        } = match self.attempt_by_token_for_attach(token)? {
+            Some(attempt) => attempt,
+            None => bail!("invalid_resume_token"),
+        };
+
+        let now = now_millis();
+        let terminal_error =
+            serde_json::to_string(&payload).context("serialize blocked resume payload")?;
+        self.conn
+            .execute(
+                "UPDATE task_resume_attempts
+                 SET status = 'blocked', completed_at = ?1, terminal_error = ?2
+                 WHERE attempt_id = ?3",
+                rusqlite::params![now, terminal_error, attempt_id],
+            )
+            .context("mark resume attempt blocked")?;
+
+        // Build the full typed-event body: append_typed_event requires
+        // payload["kind"] == "resume_attempt_blocked", but the caller's payload
+        // carries only descriptive fields (e.g. reason/status). Start from the
+        // caller's object (if any) and overlay the required discriminator + ids.
+        let mut event = match payload {
+            serde_json::Value::Object(map) => map,
+            other => {
+                let mut map = serde_json::Map::new();
+                map.insert("payload".to_string(), other);
+                map
+            }
+        };
+        event.insert(
+            "kind".to_string(),
+            serde_json::Value::String("resume_attempt_blocked".to_string()),
+        );
+        event.insert(
+            "taskId".to_string(),
+            serde_json::Value::String(task_id.clone()),
+        );
+        event.insert(
+            "attemptId".to_string(),
+            serde_json::Value::String(attempt_id.clone()),
+        );
+        event.insert("at".to_string(), serde_json::Value::Number(now.into()));
+        self.append_typed_event(
+            &task_id,
+            "resume_attempt_blocked",
+            serde_json::Value::Object(event),
+        )?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -1764,5 +2189,41 @@ mod tests {
             result.is_err(),
             "orphan checkpoint should be rejected by foreign key constraint"
         );
+    }
+
+    #[test]
+    fn resume_begin_is_idempotent_and_conflicts_across_sessions() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        let first = store.begin_resume_attempt(&task_id, "session-1", "turn-1", 7, 60_000).unwrap();
+        let retry = store.begin_resume_attempt(&task_id, "session-1", "turn-1", 7, 60_000).unwrap();
+        assert_eq!(first.attempt_id, retry.attempt_id);
+        assert!(first.resume_token.is_some());
+        assert!(retry.resume_token.is_none());
+        let err = store.begin_resume_attempt(&task_id, "session-2", "turn-1", 7, 60_000).unwrap_err();
+        assert!(err.to_string().contains("task_resume_conflict"));
+    }
+
+    #[test]
+    fn resume_attached_is_idempotent_and_creates_active_owner() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        let attempt = store.begin_resume_attempt(&task_id, "session-1", "turn-1", 7, 60_000).unwrap();
+        let token = attempt.resume_token.as_deref().unwrap();
+        let first = store.complete_resume_attached(token, 7).unwrap();
+        let retry = store.complete_resume_attached(token, 7).unwrap();
+        assert_eq!(first.segment.segment_id, retry.segment.segment_id);
+        assert_eq!(store.active_execution_owner(&task_id).unwrap().unwrap().attempt_id, attempt.attempt_id);
+    }
+
+    #[test]
+    fn blocked_resume_records_event_and_does_not_create_segment() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        let attempt = store.begin_resume_attempt(&task_id, "session-1", "turn-1", 7, 60_000).unwrap();
+        store.complete_resume_blocked(attempt.resume_token.as_deref().unwrap(), json!({ "status": "blocked", "reason": "no_active_tab" })).unwrap();
+        assert_eq!(store.segments(&task_id).unwrap().len(), 0);
+        assert!(store.active_execution_owner(&task_id).unwrap().is_none());
+        assert_eq!(store.events(&task_id).unwrap().last().unwrap().kind, "resume_attempt_blocked");
     }
 }
