@@ -1,4 +1,5 @@
 import { BrowserTabs } from "./browser_tabs.js";
+import { BrowserTasks } from "./browser-tasks.js";
 import { BrowserUser } from "./browser_user.js";
 import { Guards } from "./guards.js";
 import { withSessionMeta } from "./session-meta.js";
@@ -223,6 +224,7 @@ export class Browser {
   private readonly tabRuntimeContext: TabRuntimeContext;
   readonly guards: Guards;
   readonly tabs: BrowserTabs;
+  readonly tasks: BrowserTasks;
   readonly user: BrowserUser;
   readonly capabilityRegistry: BrowserCapabilityRegistry;
   readonly viewport?: BrowserViewport;
@@ -251,6 +253,7 @@ export class Browser {
     };
     this.guards = guards;
     this.tabs = new BrowserTabs(transport, guards, this.tabRuntimeContext);
+    this.tasks = new BrowserTasks(transport, (opts) => this.resumeControlResult(opts));
     this.user = new BrowserUser(transport, guards, (method) => this.supports(method), info.type, this.tabRuntimeContext);
     this.capabilityRegistry = new BrowserCapabilityRegistry(this.capabilities);
     if (capabilityAdvertised(this.capabilities, "viewport") && this.supports(M.BROWSER_VIEWPORT_SET)) {

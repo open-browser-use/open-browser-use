@@ -86,6 +86,7 @@ export class Transport {
     method: string,
     params: Record<string, unknown> = {},
     timeoutMs: number = DEFAULT_TIMEOUT_MS,
+    frameMeta?: { runtime?: { kernel_generation?: number } },
   ): Promise<R> {
     if (this.#closed) {
       throw new ObuError(
@@ -96,11 +97,17 @@ export class Transport {
     }
 
     const id = this.#nextId++;
+    // The trusted runtime metadata (Finding F2) travels as a TOP-LEVEL `runtime`
+    // field of the JSON-RPC frame — a sibling of `params`, never merged into it.
+    // The host reads kernel_generation from this envelope and rejects
+    // `runtime`/`_runtime` inside params. `runtime` is omitted entirely when no
+    // frameMeta.runtime is supplied so existing requests stay byte-identical.
     const payload = {
       jsonrpc: "2.0",
       id,
       method,
       params: { ...params, client_timeout_ms: timeoutMs },
+      ...(frameMeta?.runtime !== undefined ? { runtime: frameMeta.runtime } : {}),
     };
 
     const response = new Promise<R>((resolve, reject) => {
