@@ -23,3 +23,4 @@ pub mod socket;
 pub mod tab_state;
 pub mod task_lifecycle;
 pub mod task_store;
+pub mod task_store_actor;
