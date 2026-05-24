@@ -84,6 +84,119 @@ fn allowed_transitions(state: TaskState) -> &'static [TaskState] {
     }
 }
 
+/// Host-side projection of session/turn truth used to gate task state.
+///
+/// Finding 8: the long-task [`TaskState`] is **not** a second source of truth —
+/// it is a *projection* over what the session and turn lifecycle actually
+/// assert. This struct carries the minimal evidence the host can observe about
+/// the session/turn backing a task, and [`task_state_allowed`] decides which
+/// task states that evidence can legally support.
+///
+/// The richer mapping rows from the review table (the SDK's
+/// `resumeControlResult()`, session-lifecycle and turn-lifecycle strings) are
+/// not available to the host in Rust; they are *projected* onto the host
+/// through the [`control_state`](Self::control_state) carrier using the
+/// documented string values in [`control`]. For example, the SDK's
+/// `resumeControlResult().repair.status == "repair_required"` is surfaced to
+/// the host as `control_state == Some("repair_required")`.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct SessionTurnEvidence {
+    /// Id of the turn currently backing the task, if any. `None` means no turn
+    /// presently anchors the task (part of the "missing continuity proof").
+    pub current_turn_id: Option<String>,
+    /// Whether the backing turn is open (accepting work) for this segment.
+    pub turn_open: bool,
+    /// Whether the tab is currently commandable (attached, alive, accepting
+    /// browser-side effects).
+    pub tab_commandable: bool,
+    /// Whether the segment backing this task is the attached browser-side-effect
+    /// authority. At most one segment may be attached at a time (Task 5.4
+    /// enforces uniqueness at the store level); here a task whose segment is not
+    /// the attached authority cannot be [`TaskState::Running`].
+    pub segment_attached: bool,
+    /// Projected session/turn control state. See [`control`] for the accepted
+    /// values and the lifecycle truths they stand in for. `None` means no
+    /// special control state is asserted.
+    pub control_state: Option<String>,
+}
+
+/// Documented [`SessionTurnEvidence::control_state`] string values.
+///
+/// These are the host-side projection of session/turn lifecycle truth. Each
+/// constant maps a richer SDK/session/turn condition onto a single string the
+/// host can carry and match (Finding 8).
+pub mod control {
+    /// Session control was handed to a human (SDK session lifecycle
+    /// `human_takeover` / an explicit human decision gate). Enables
+    /// [`super::TaskState::WaitingForHuman`].
+    pub const HUMAN_TAKEOVER: &str = "human_takeover";
+    /// Task voluntarily yielded: persisted session lifecycle `human_takeover`
+    /// **and** turn lifecycle `yielded`. Enables
+    /// [`super::TaskState::PausedYielded`].
+    pub const YIELDED: &str = "yielded";
+    /// Resumption in progress: session lifecycle `resuming { repairPlanId }`
+    /// plus a `resumeControlResult()`. Enables [`super::TaskState::Resuming`].
+    pub const RESUMING: &str = "resuming";
+    /// `resumeControlResult().repair.status == "repair_required"`. Enables
+    /// [`super::TaskState::RepairRequired`].
+    pub const REPAIR_REQUIRED: &str = "repair_required";
+    /// `resumeControlResult().status == "blocked"`. Enables
+    /// [`super::TaskState::Blocked`].
+    pub const BLOCKED: &str = "blocked";
+}
+
+/// Returns whether `state` is supported by the session/turn `evidence`.
+///
+/// This is the projection guard for Finding 8: it encodes the review's mapping
+/// table from task state to required session/turn evidence. It does **not**
+/// decide whether a *transition* is legal (that is [`TaskLifecycle::transition`])
+/// — it decides whether the observed session/turn truth can back a task being
+/// *in* `state` at all.
+///
+/// Mapping:
+/// - [`TaskState::Running`] — there is a current turn id, the turn is open for
+///   this segment, the tab is commandable, and the segment is the attached
+///   browser-side-effect authority. (A task may span many turns, but only the
+///   segment that is the attached authority can be `Running`.)
+/// - [`TaskState::WaitingForHuman`] — `control_state == "human_takeover"`.
+/// - [`TaskState::PausedYielded`] — `control_state == "yielded"` (projects
+///   session `human_takeover` + turn `yielded`).
+/// - [`TaskState::Resuming`] — `control_state == "resuming"`.
+/// - [`TaskState::RepairRequired`] — `control_state == "repair_required"`.
+/// - [`TaskState::Blocked`] — `control_state == "blocked"`, **or** there is no
+///   continuity proof at all (no backing turn and no attached segment), i.e.
+///   nothing proves a segment/turn still anchors the task.
+/// - All other states ([`TaskState::Created`], [`TaskState::WaitingForEffect`],
+///   [`TaskState::Cancelling`], [`TaskState::Completed`],
+///   [`TaskState::Cancelled`], [`TaskState::Failed`]) are not gated by
+///   session/turn evidence in the review table — they are internal,
+///   transitional, or terminal and do not assert browser authority — so they
+///   return `true`.
+pub fn task_state_allowed(state: TaskState, evidence: &SessionTurnEvidence) -> bool {
+    use TaskState::*;
+    let control = evidence.control_state.as_deref();
+    match state {
+        Running => {
+            evidence.current_turn_id.is_some()
+                && evidence.turn_open
+                && evidence.tab_commandable
+                && evidence.segment_attached
+        }
+        WaitingForHuman => control == Some(control::HUMAN_TAKEOVER),
+        PausedYielded => control == Some(control::YIELDED),
+        Resuming => control == Some(control::RESUMING),
+        RepairRequired => control == Some(control::REPAIR_REQUIRED),
+        Blocked => {
+            control == Some(control::BLOCKED)
+                // Missing continuity proof: nothing backs the task — no turn
+                // anchors it and no segment is the attached authority.
+                || (evidence.current_turn_id.is_none() && !evidence.segment_attached)
+        }
+        // Not gated by session/turn evidence (internal/transitional/terminal).
+        Created | WaitingForEffect | Cancelling | Completed | Cancelled | Failed => true,
+    }
+}
+
 /// Tracks the current [`TaskState`] of a long task and enforces legal
 /// transitions.
 #[derive(Debug, Clone)]
@@ -270,5 +383,195 @@ mod tests {
         let mut t = TaskLifecycle::new();
         assert!(t.transition(TaskState::Completed).is_err());
         assert_eq!(t.state(), TaskState::Created);
+    }
+
+    // Finding 8: task state is a projection over session/turn evidence.
+    #[test]
+    fn running_requires_open_turn_and_commandable_tab() {
+        let ev = SessionTurnEvidence {
+            current_turn_id: Some("t1".into()),
+            turn_open: true,
+            tab_commandable: true,
+            segment_attached: true,
+            control_state: None,
+        };
+        assert!(task_state_allowed(TaskState::Running, &ev));
+        let no_turn = SessionTurnEvidence {
+            current_turn_id: None,
+            turn_open: false,
+            tab_commandable: true,
+            segment_attached: true,
+            control_state: None,
+        };
+        assert!(
+            !task_state_allowed(TaskState::Running, &no_turn),
+            "running needs an open turn"
+        );
+
+        let takeover = SessionTurnEvidence {
+            control_state: Some("human_takeover".into()),
+            ..no_turn.clone()
+        };
+        assert!(task_state_allowed(TaskState::WaitingForHuman, &takeover));
+    }
+
+    /// Evidence with a control_state set but no turn/segment backing — useful
+    /// for exercising the control-state-gated rows in isolation.
+    fn control_only(state: &str) -> SessionTurnEvidence {
+        SessionTurnEvidence {
+            control_state: Some(state.into()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn waiting_for_human_requires_human_takeover() {
+        assert!(task_state_allowed(
+            TaskState::WaitingForHuman,
+            &control_only(control::HUMAN_TAKEOVER)
+        ));
+        // Wrong control state, and the empty default, are both rejected.
+        assert!(!task_state_allowed(
+            TaskState::WaitingForHuman,
+            &control_only(control::YIELDED)
+        ));
+        assert!(!task_state_allowed(
+            TaskState::WaitingForHuman,
+            &SessionTurnEvidence::default()
+        ));
+    }
+
+    #[test]
+    fn paused_yielded_requires_yielded() {
+        assert!(task_state_allowed(
+            TaskState::PausedYielded,
+            &control_only(control::YIELDED)
+        ));
+        assert!(!task_state_allowed(
+            TaskState::PausedYielded,
+            &control_only(control::HUMAN_TAKEOVER)
+        ));
+        assert!(!task_state_allowed(
+            TaskState::PausedYielded,
+            &SessionTurnEvidence::default()
+        ));
+    }
+
+    #[test]
+    fn resuming_requires_resuming_control_state() {
+        assert!(task_state_allowed(
+            TaskState::Resuming,
+            &control_only(control::RESUMING)
+        ));
+        assert!(!task_state_allowed(
+            TaskState::Resuming,
+            &control_only(control::BLOCKED)
+        ));
+        assert!(!task_state_allowed(
+            TaskState::Resuming,
+            &SessionTurnEvidence::default()
+        ));
+    }
+
+    #[test]
+    fn repair_required_requires_repair_required_control_state() {
+        assert!(task_state_allowed(
+            TaskState::RepairRequired,
+            &control_only(control::REPAIR_REQUIRED)
+        ));
+        assert!(!task_state_allowed(
+            TaskState::RepairRequired,
+            &control_only(control::RESUMING)
+        ));
+    }
+
+    #[test]
+    fn blocked_via_explicit_control_state() {
+        assert!(task_state_allowed(
+            TaskState::Blocked,
+            &control_only(control::BLOCKED)
+        ));
+    }
+
+    #[test]
+    fn blocked_via_missing_continuity_proof() {
+        // No backing turn AND no attached segment => nothing proves a
+        // segment/turn anchors the task, so Blocked is allowed even without an
+        // explicit "blocked" control_state.
+        let no_proof = SessionTurnEvidence {
+            current_turn_id: None,
+            turn_open: false,
+            tab_commandable: false,
+            segment_attached: false,
+            control_state: None,
+        };
+        assert!(task_state_allowed(TaskState::Blocked, &no_proof));
+
+        // If a turn still anchors the task (continuity proof present), Blocked
+        // is not implied by evidence alone.
+        let has_turn = SessionTurnEvidence {
+            current_turn_id: Some("t9".into()),
+            ..no_proof.clone()
+        };
+        assert!(!task_state_allowed(TaskState::Blocked, &has_turn));
+
+        // Likewise, an attached segment is continuity proof.
+        let has_segment = SessionTurnEvidence {
+            segment_attached: true,
+            ..no_proof
+        };
+        assert!(!task_state_allowed(TaskState::Blocked, &has_segment));
+    }
+
+    #[test]
+    fn ungated_states_always_allowed() {
+        let empty = SessionTurnEvidence::default();
+        for state in [
+            TaskState::Created,
+            TaskState::WaitingForEffect,
+            TaskState::Cancelling,
+            TaskState::Completed,
+            TaskState::Cancelled,
+            TaskState::Failed,
+        ] {
+            assert!(
+                task_state_allowed(state, &empty),
+                "{state:?} is not gated by session/turn evidence and should be allowed",
+            );
+        }
+    }
+
+    // Finding 8 invariant: a task may span multiple turns, but at most one
+    // segment is the active browser-side-effect authority at a time. Modeled at
+    // the evidence level: of two turns whose evidence is identical except that
+    // only one has `segment_attached: true`, at most one can be `Running`. (Task
+    // 5.4 enforces the single-segment uniqueness at the store level.)
+    #[test]
+    fn at_most_one_segment_is_running_authority() {
+        let attached = SessionTurnEvidence {
+            current_turn_id: Some("turn-a".into()),
+            turn_open: true,
+            tab_commandable: true,
+            segment_attached: true,
+            control_state: None,
+        };
+        let detached = SessionTurnEvidence {
+            current_turn_id: Some("turn-b".into()),
+            turn_open: true,
+            tab_commandable: true,
+            segment_attached: false,
+            control_state: None,
+        };
+
+        let running_count = [&attached, &detached]
+            .into_iter()
+            .filter(|ev| task_state_allowed(TaskState::Running, ev))
+            .count();
+        assert_eq!(
+            running_count, 1,
+            "only the attached-authority segment may back a Running task"
+        );
+        assert!(task_state_allowed(TaskState::Running, &attached));
+        assert!(!task_state_allowed(TaskState::Running, &detached));
     }
 }
