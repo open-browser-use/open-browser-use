@@ -291,6 +291,96 @@ async fn concurrent_resume_same_task_returns_conflict() {
     assert_eq!(second["error"]["data"]["code"], "task_resume_conflict");
 }
 
+/// A blocked resume completion must persist the SDK's REAL failure detail into
+/// durable evidence, not a dropped `reason: null`.
+///
+/// The SDK (packages/sdk/src/browser-tasks.ts) commits a terminal
+/// `tasksResumeComplete` with `{ status:"blocked", repair: <repairPlan> }` (and
+/// `error: <wireError>` for attach_failed/observation_failed) — it never sends
+/// `reason`. We begin a resume (extracting the `resumeToken` the begin result
+/// returns), complete it as `blocked` with a concrete `repair` object, then read
+/// the durable `resume_attempt_blocked` event back via `tasksExport` and assert
+/// the recorded payload round-tripped that exact `repair` — proving the detail
+/// reached storage rather than being silently discarded.
+#[tokio::test]
+async fn resume_complete_blocked_persists_real_repair_detail() {
+    let dispatcher = finalize_dispatcher("session-a", "turn-a");
+    let task_id = create_task_via_finalize(&dispatcher, "session-a", "turn-a").await;
+
+    let begin = dispatch_resume(&dispatcher, &task_id, "session-b", "turn-b", 7).await;
+    let resume_token = begin["result"]["resumeToken"]
+        .as_str()
+        .expect("begin returns a resumeToken")
+        .to_string();
+
+    let repair = json!({ "action": "reauthenticate", "url": "https://login.example.test/" });
+    let complete = dispatch_resume_complete(
+        &dispatcher,
+        json!({
+            "taskId": task_id,
+            "session_id": "session-b",
+            "turn_id": "turn-b",
+            "resumeToken": resume_token,
+            "status": "blocked",
+            "repair": repair,
+        }),
+        7,
+    )
+    .await;
+    assert!(complete.get("error").is_none(), "complete failed: {complete:#}");
+    assert_eq!(complete["result"]["status"], "blocked");
+
+    // Read the durable evidence back: the resume_attempt_blocked event's payload
+    // string must carry the real `repair`, NOT `reason: null`.
+    let export = dispatch_for_test(
+        &dispatcher,
+        methods::TASKS_EXPORT,
+        json!({ "taskId": task_id }),
+    )
+    .await;
+    let events = export["result"]["events"]
+        .as_array()
+        .expect("events array");
+    let blocked = events
+        .iter()
+        .find(|event| event["kind"] == "resume_attempt_blocked")
+        .expect("a resume_attempt_blocked event");
+    let payload: Value =
+        serde_json::from_str(blocked["payload"].as_str().expect("payload is a string"))
+            .expect("payload parses as json");
+
+    assert_eq!(payload["status"], "blocked");
+    assert_eq!(
+        payload["repair"], repair,
+        "blocked evidence must carry the SDK's real repair plan; payload: {payload:#}"
+    );
+    // The dropped-detail bug persisted `reason: null` instead of `repair`.
+    assert!(
+        payload.get("reason").is_none(),
+        "stale `reason` key must be gone; payload: {payload:#}"
+    );
+}
+
+/// Send a `tasksResumeComplete` with a trusted generation envelope (sibling of
+/// `params`), mirroring how the SDK commits the terminal completion.
+async fn dispatch_resume_complete(
+    dispatcher: &Dispatcher,
+    params: Value,
+    generation: i64,
+) -> Value {
+    dispatch_frame_for_test(
+        dispatcher,
+        json!({
+            "jsonrpc": "2.0",
+            "method": methods::TASKS_RESUME_COMPLETE,
+            "params": params,
+            "runtime": { "kernel_generation": generation },
+            "id": 1,
+        }),
+    )
+    .await
+}
+
 /// Resume with a trusted generation envelope at the frame top level (a sibling of
 /// `params`). Reuses `dispatch_frame_for_test` (the existing raw-frame helper) so
 /// the `runtime` envelope rides the wire exactly as the SDK sends it.

@@ -719,11 +719,21 @@ impl Dispatcher {
                 Ok(json!({ "status": "attached", "segment": outcome }))
             }
             "blocked" | "attach_failed" | "observation_failed" => {
-                let reason = params
-                    .get("reason")
-                    .cloned()
-                    .unwrap_or(Value::Null);
-                let payload = json!({ "status": status, "reason": reason });
+                // Capture the REAL failure detail the SDK sends so it lands in
+                // durable evidence (terminal_error + the resume_attempt_blocked
+                // event), not a dropped `reason: null`. The SDK
+                // (packages/sdk/src/browser-tasks.ts) sends `repair` for a
+                // blocked control transition and `error` for attach_failed /
+                // observation_failed; we forward whichever is present.
+                let mut detail = serde_json::Map::new();
+                detail.insert("status".to_string(), json!(status));
+                if let Some(repair) = params.get("repair") {
+                    detail.insert("repair".to_string(), repair.clone());
+                }
+                if let Some(error) = params.get("error") {
+                    detail.insert("error".to_string(), error.clone());
+                }
+                let payload = Value::Object(detail);
                 store
                     .resume_complete_blocked(token, payload)
                     .await

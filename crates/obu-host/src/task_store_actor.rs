@@ -41,19 +41,16 @@ pub struct TaskStoreHandle {
 /// carried as `String` so the SQLite-bound error does not have to cross the
 /// thread boundary as a non-`Send` type.
 ///
-/// Task 8 wires the full set of task-RPC variants: existence checks, episode
-/// export, and resume begin/attach/block. Every variant carries JSON-safe
-/// inputs and replies with either a serializable DTO or a pre-built
-/// [`serde_json::Value`] (for variants that must consult store-private types
-/// the dispatcher does not import).
+/// Task 8 wires the full set of task-RPC variants: episode export and resume
+/// begin/attach/block. Every variant carries JSON-safe inputs and replies with
+/// either a serializable DTO or a pre-built [`serde_json::Value`] (for variants
+/// that must consult store-private types the dispatcher does not import).
+/// Existence checks are not a standalone command — they run synchronously on
+/// the actor thread inside `Export` and `resume_begin` (see `store.task_exists`).
 enum TaskStoreCommand {
     ListTasks {
         filter: TaskListFilter,
         reply: oneshot::Sender<Result<Vec<TaskSummary>, String>>,
-    },
-    TaskExists {
-        task_id: String,
-        reply: oneshot::Sender<Result<bool, String>>,
     },
     Export {
         task_id: String,
@@ -156,11 +153,6 @@ impl TaskStoreHandle {
                         TaskStoreCommand::ListTasks { filter, reply } => {
                             let _ = reply
                                 .send(store.list_tasks(filter).map_err(|error| error.to_string()));
-                        }
-                        TaskStoreCommand::TaskExists { task_id, reply } => {
-                            let _ = reply.send(
-                                store.task_exists(&task_id).map_err(|error| error.to_string()),
-                            );
                         }
                         TaskStoreCommand::Export { task_id, reply } => {
                             // §13: export of an unknown id must surface an
@@ -276,17 +268,6 @@ impl TaskStoreHandle {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(TaskStoreCommand::ListTasks { filter, reply })
-            .map_err(|_| anyhow!("task store actor closed"))?;
-        rx.await
-            .map_err(|_| anyhow!("task store actor closed"))?
-            .map_err(anyhow::Error::msg)
-    }
-
-    /// Whether a task row with `task_id` exists, via the actor thread.
-    pub async fn task_exists(&self, task_id: String) -> Result<bool> {
-        let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(TaskStoreCommand::TaskExists { task_id, reply })
             .map_err(|_| anyhow!("task store actor closed"))?;
         rx.await
             .map_err(|_| anyhow!("task store actor closed"))?
