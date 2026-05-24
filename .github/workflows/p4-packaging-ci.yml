@@ -39,6 +39,9 @@ jobs:
       - name: Install JS dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Control vocab generation check
+        run: pnpm check:control-vocab
+
       - name: Typecheck
         run: pnpm -r typecheck
 
