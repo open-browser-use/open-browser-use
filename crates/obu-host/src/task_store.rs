@@ -220,8 +220,16 @@ pub fn plan_task_resume(
 
     let segments = match store.segments(task_id) {
         Ok(segments) => segments,
-        // Conservative: on a DB read error we cannot prove continuity.
-        Err(_) => return recover,
+        // Conservative: on a DB read error we cannot prove continuity. Surface
+        // the error so an operator keeps the signal, then default to recovery.
+        Err(e) => {
+            tracing::warn!(
+                task_id = %task_id,
+                error = %e,
+                "plan_task_resume: failed to read segments; defaulting to store recovery"
+            );
+            return recover;
+        }
     };
 
     match segments.last().and_then(|seg| seg.generation) {
