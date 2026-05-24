@@ -661,6 +661,12 @@ impl TaskStore {
     /// events are what *link* a long task's per-turn execution segments together
     /// (e.g. a `"resumed"` or `"segment_started"` marker) and are surfaced by
     /// [`TaskStore::export_episode`]. Returns the assigned cursor.
+    ///
+    /// The `event_cursor + 1` assignment assumes single-writer ownership of the
+    /// store (one `&self` connection, owner-local, single-process), which is what
+    /// makes the cursor sequence gap-free. If a second writer ever raced, the
+    /// `PRIMARY KEY (task_id, cursor)` constraint surfaces the collision as an
+    /// INSERT error rather than silent corruption.
     pub fn append_event(&self, task_id: &str, kind: &str, payload: &str) -> Result<i64> {
         let cursor = self.event_cursor(task_id)? + 1;
         self.conn
@@ -1147,7 +1153,7 @@ mod tests {
         }
 
         // Task-level linking events are exported alongside the sections.
-        assert!(ep.events.len() >= 1, "linking events must be exported");
+        assert_eq!(ep.events.len(), 1, "exactly the one appended event is exported");
         assert!(
             ep.events
                 .iter()
