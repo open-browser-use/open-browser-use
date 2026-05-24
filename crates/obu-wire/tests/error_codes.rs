@@ -68,3 +68,23 @@ fn ranges_are_disjoint() {
         assert!((-1299..=-1200).contains(&code));
     }
 }
+
+#[test]
+fn generated_codes_have_exact_values() {
+    assert_eq!(ERR_TIMEOUT, -1000);
+    assert_eq!(ERR_NOT_FOUND, -1001);
+    assert_eq!(ERR_DISALLOWED, -1002);
+    assert_eq!(ERR_NOT_IMPLEMENTED, -1003);
+    assert_eq!(ERR_PROTOCOL, -1004);
+    assert_eq!(ERR_NO_BACKEND, -1005);
+    assert_eq!(ERR_OVERLOADED, -1006);
+    assert_eq!(ERR_CONFLICT, -1007);
+    assert_eq!(ERR_IO, -1099);
+    assert_eq!(ERR_PEER_AUTH, -1100);
+    assert_eq!(ERR_CAPABILITY_TOKEN, -1101);
+    assert_eq!(ERR_CMD_DISALLOWED, -1102);
+    assert_eq!(ERR_PAGE_CLOSED, -1200);
+    assert_eq!(ERR_CDP_FAILURE, -1201);
+    assert_eq!(ERR_TAB_NOT_ATTACHED, -1202);
+    assert_eq!(ERR_DIALOG_REQUIRES_DECISION, -1203);
+}
