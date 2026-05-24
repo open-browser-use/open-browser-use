@@ -15,6 +15,8 @@ use anyhow::{Context, Result, bail};
 use obu_wire::runtime_dir::validate_owner_only_dir;
 use rusqlite::{Connection, OptionalExtension};
 
+use crate::task_lifecycle::{SessionTurnEvidence, TaskState, control};
+
 /// On-disk schema version for the durable task store.
 ///
 /// Opening a store whose persisted version is newer than this constant fails
@@ -74,8 +76,9 @@ pub struct LoadedTask {
     pub id: String,
     /// Human-meaningful label.
     pub label: String,
-    /// Coarse task state, stored as a string.
-    pub state: String,
+    /// Coarse task state. Persisted as a stable string (see
+    /// [`TaskState::as_str`]) and parsed back on load.
+    pub state: TaskState,
     /// Schema version recorded on the row.
     pub schema_version: u32,
     /// Creation timestamp (unix millis).
@@ -131,6 +134,71 @@ pub fn record_resume_segment(
     let segment = Segment::new(session_id, turn_id);
     store.append_segment(task_id, segment.clone())?;
     Ok(segment)
+}
+
+/// Outcome of a [`cancel_task`] call.
+///
+/// Finding 9 splits the *task-record* cancellation (always performed: the task
+/// reaches a terminal [`TaskState::Cancelled`]) from the *act* of releasing
+/// browser resources (only authorized in trusted contexts). This struct carries
+/// the cleanup *decision*: whether the caller is authorized to release tabs.
+/// The actual CDP/tab-closing side effect lives in the dispatcher/backend and is
+/// out of scope here.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct CleanupOutcome {
+    /// Whether browser resources may be released as part of this cancellation.
+    ///
+    /// `false` when a human currently holds control (human takeover / yielded):
+    /// cancellation records a terminal task state without releasing tabs while
+    /// a human holds control (Finding 9). `true` in trusted contexts (trusted
+    /// stop, host shutdown, repair, or explicit user-approved cleanup), encoded
+    /// here as the absence of a human-present control state.
+    pub cleaned_browser_resources: bool,
+}
+
+/// Returns whether browser cleanup is authorized given the session/turn
+/// `evidence`.
+///
+/// Finding 9: cancellation records a terminal task state without releasing tabs
+/// while a human holds control. Cleanup is therefore gated OFF when the
+/// `control_state` projects a human-present state (`human_takeover` or
+/// `yielded`), and authorized otherwise (trusted contexts: trusted stop, host
+/// shutdown, repair, or explicit user-approved cleanup).
+fn browser_cleanup_authorized(evidence: &SessionTurnEvidence) -> bool {
+    !matches!(
+        evidence.control_state.as_deref(),
+        Some(control::HUMAN_TAKEOVER) | Some(control::YIELDED)
+    )
+}
+
+/// Cancel a task: record a terminal task state and decide cleanup authority.
+///
+/// This SPLITS the task-record cancellation from the browser-cleanup act
+/// (Finding 9):
+///
+/// 1. The task record is always driven to terminal [`TaskState::Cancelled`] and
+///    a cancellation marker is recorded, stopping future side effects.
+/// 2. Browser cleanup is only *authorized* in trusted contexts. While a human
+///    holds control (human takeover / yielded), cleanup is gated OFF so tabs are
+///    not closed/released out from under the human.
+///
+/// The returned [`CleanupOutcome::cleaned_browser_resources`] is the cleanup
+/// *decision*, not the act: this store-level function holds no live browser
+/// handle. The actual tab-closing belongs to the dispatcher/backend.
+pub fn cancel_task(
+    store: &TaskStore,
+    task_id: &str,
+    evidence: &SessionTurnEvidence,
+) -> Result<CleanupOutcome> {
+    // Record the terminal task state and the cancellation marker. The lifecycle
+    // conceptually passes through Cancelling -> Cancelled; the store persists
+    // the final terminal Cancelled state.
+    store.mark_cancellation(task_id)?;
+    store.set_state(task_id, TaskState::Cancelled)?;
+
+    Ok(CleanupOutcome {
+        cleaned_browser_resources: browser_cleanup_authorized(evidence),
+    })
 }
 
 impl TaskStore {
@@ -260,7 +328,7 @@ impl TaskStore {
                 rusqlite::params![
                     id,
                     new_task.label,
-                    "created",
+                    TaskState::Created.as_str(),
                     new_task.schema_version,
                     now_millis(),
                 ],
@@ -288,6 +356,10 @@ impl TaskStore {
             .optional()
             .context("query task row")?
             .with_context(|| format!("task not found: {task_id}"))?;
+
+        let state: TaskState = state
+            .parse()
+            .with_context(|| format!("parse persisted task state for {task_id}"))?;
 
         let mut stmt = self
             .conn
@@ -390,6 +462,25 @@ impl TaskStore {
             .context("query event cursor")?
             .flatten();
         Ok(cursor.unwrap_or(0))
+    }
+
+    /// Update a task's persisted coarse state.
+    ///
+    /// Writes the stable string form (see [`TaskState::as_str`]) into the
+    /// `tasks.state` column. Errors if the task row does not exist so a stray
+    /// id cannot silently no-op.
+    pub fn set_state(&self, task_id: &str, state: TaskState) -> Result<()> {
+        let updated = self
+            .conn
+            .execute(
+                "UPDATE tasks SET state = ?2 WHERE id = ?1",
+                rusqlite::params![task_id, state.as_str()],
+            )
+            .context("update task state")?;
+        if updated == 0 {
+            bail!("task not found: {task_id}");
+        }
+        Ok(())
     }
 
     /// Record a cancellation request for a task (idempotent).
@@ -585,6 +676,53 @@ mod tests {
         store.mark_cancellation(&task_id).unwrap();
         // idempotent
         store.mark_cancellation(&task_id).unwrap();
+    }
+
+    // Finding 9: cancellation records a terminal task state without releasing
+    // tabs while a human holds control.
+    #[test]
+    fn cancel_during_human_takeover_does_not_clean_browser() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        let cleanup =
+            cancel_task(&store, &task_id, &SessionTurnEvidence::human_takeover()).unwrap();
+        assert_eq!(store.load_task(&task_id).unwrap().state, TaskState::Cancelled);
+        assert!(
+            !cleanup.cleaned_browser_resources,
+            "must not clean browser during human takeover"
+        );
+    }
+
+    // Finding 9: in trusted contexts (no human-present control state) cancel is
+    // authorized to release browser resources.
+    #[test]
+    fn cancel_in_trusted_context_authorizes_browser_cleanup() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        // Default evidence carries no human-present control_state => trusted.
+        let cleanup = cancel_task(&store, &task_id, &SessionTurnEvidence::default()).unwrap();
+        assert_eq!(store.load_task(&task_id).unwrap().state, TaskState::Cancelled);
+        assert!(
+            cleanup.cleaned_browser_resources,
+            "trusted-context cancel must authorize browser cleanup"
+        );
+    }
+
+    // A voluntarily yielded human-present state is also gated off.
+    #[test]
+    fn cancel_during_yielded_does_not_clean_browser() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        let yielded = SessionTurnEvidence {
+            control_state: Some(control::YIELDED.into()),
+            ..Default::default()
+        };
+        let cleanup = cancel_task(&store, &task_id, &yielded).unwrap();
+        assert_eq!(store.load_task(&task_id).unwrap().state, TaskState::Cancelled);
+        assert!(
+            !cleanup.cleaned_browser_resources,
+            "must not clean browser while a human holds control (yielded)"
+        );
     }
 
     #[test]

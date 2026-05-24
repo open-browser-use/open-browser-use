@@ -8,6 +8,8 @@
 //! explicit [`TaskState::Cancelling`] step before [`TaskState::Cancelled`]
 //! (Finding 9).
 
+use std::str::FromStr;
+
 use anyhow::{bail, Result};
 
 /// Coarse lifecycle state of a long-running host task.
@@ -42,6 +44,53 @@ pub enum TaskState {
     Cancelled,
     /// Task failed irrecoverably. Terminal.
     Failed,
+}
+
+impl TaskState {
+    /// Stable lowercase-snake string for the variant.
+    ///
+    /// Used as the persisted `tasks.state` TEXT value in the durable task
+    /// store; round-trips with [`TaskState::from_str`].
+    pub fn as_str(&self) -> &'static str {
+        use TaskState::*;
+        match self {
+            Created => "created",
+            Running => "running",
+            WaitingForHuman => "waiting_for_human",
+            WaitingForEffect => "waiting_for_effect",
+            PausedYielded => "paused_yielded",
+            Resuming => "resuming",
+            RepairRequired => "repair_required",
+            Blocked => "blocked",
+            Completed => "completed",
+            Cancelling => "cancelling",
+            Cancelled => "cancelled",
+            Failed => "failed",
+        }
+    }
+}
+
+impl FromStr for TaskState {
+    type Err = anyhow::Error;
+
+    fn from_str(s: &str) -> Result<Self> {
+        use TaskState::*;
+        Ok(match s {
+            "created" => Created,
+            "running" => Running,
+            "waiting_for_human" => WaitingForHuman,
+            "waiting_for_effect" => WaitingForEffect,
+            "paused_yielded" => PausedYielded,
+            "resuming" => Resuming,
+            "repair_required" => RepairRequired,
+            "blocked" => Blocked,
+            "completed" => Completed,
+            "cancelling" => Cancelling,
+            "cancelled" => Cancelled,
+            "failed" => Failed,
+            other => bail!("unknown task state: {other:?}"),
+        })
+    }
 }
 
 /// Returns the set of states reachable in one step from `state`.
@@ -118,6 +167,20 @@ pub struct SessionTurnEvidence {
     /// values and the lifecycle truths they stand in for. `None` means no
     /// special control state is asserted.
     pub control_state: Option<String>,
+}
+
+impl SessionTurnEvidence {
+    /// Evidence projecting that a human currently holds session control
+    /// (`control_state == "human_takeover"`). All other fields default.
+    ///
+    /// While a human holds control, `cancel_task` records a terminal task
+    /// state but must NOT release browser resources (Finding 9).
+    pub fn human_takeover() -> Self {
+        Self {
+            control_state: Some(control::HUMAN_TAKEOVER.into()),
+            ..Default::default()
+        }
+    }
 }
 
 /// Documented [`SessionTurnEvidence::control_state`] string values.
@@ -264,6 +327,40 @@ mod tests {
         // illegal transition rejected
         let mut bad = TaskLifecycle::new();
         assert!(bad.transition(TaskState::Completed).is_err());
+    }
+
+    #[test]
+    fn task_state_string_round_trips_every_variant() {
+        let all = [
+            TaskState::Created,
+            TaskState::Running,
+            TaskState::WaitingForHuman,
+            TaskState::WaitingForEffect,
+            TaskState::PausedYielded,
+            TaskState::Resuming,
+            TaskState::RepairRequired,
+            TaskState::Blocked,
+            TaskState::Completed,
+            TaskState::Cancelling,
+            TaskState::Cancelled,
+            TaskState::Failed,
+        ];
+        for state in all {
+            let s = state.as_str();
+            assert_eq!(
+                TaskState::from_str(s).unwrap(),
+                state,
+                "round-trip failed for {state:?} via {s:?}"
+            );
+        }
+        assert!(TaskState::from_str("not_a_state").is_err());
+    }
+
+    #[test]
+    fn human_takeover_evidence_projects_human_control() {
+        let ev = SessionTurnEvidence::human_takeover();
+        assert_eq!(ev.control_state.as_deref(), Some(control::HUMAN_TAKEOVER));
+        assert!(task_state_allowed(TaskState::WaitingForHuman, &ev));
     }
 
     #[test]
