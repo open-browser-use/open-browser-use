@@ -44,7 +44,7 @@ try {
   assert.match(version.stdout.trim(), /^\d+\.\d+\.\d+/);
   const shellenv = run(obu, ["shellenv", "sh"], { HOME: home });
   assert.match(shellenv.stdout, new RegExp(`export OBU_INSTALL_DIR='${escapeRegExp(installDir)}';`));
-  assert.match(shellenv.stdout, /export PATH="\$\{OBU_INSTALL_DIR\}\/bin\$\{PATH\+:\$PATH\}";/);
+  assert.match(shellenv.stdout, /case ":\$\{PATH\}:" in \*:"\$\{OBU_INSTALL_DIR\}\/bin":\*\) ;; \*\) export PATH="\$\{OBU_INSTALL_DIR\}\/bin:\$PATH" ;; esac/);
 
   const mcpConfig = run(obu, ["mcp-config", "--agent=codex-cli", "--print"], { HOME: home });
   const config = JSON.parse(mcpConfig.stdout);
@@ -120,12 +120,12 @@ try {
     PATH: shellenvPath,
     SHELL: "/bin/zsh",
   });
-  assert.match(shellenvInstall.stdout, /Next steps:/);
-  assert.match(shellenvInstall.stdout, /obu" shellenv zsh/);
-  assert.match(shellenvInstall.stdout, /\.zprofile/);
+  assert.match(shellenvInstall.stdout, /Activate in this shell:\s+\. ".*\/env"/);
+  await access(path.join(shellenvInstallDir, "env"));
+  assert.match(await readFile(path.join(shellenvHome, ".zshrc"), "utf8"), /open-browser-use installer \(managed v1\)/);
+  assert.match(await readFile(path.join(shellenvHome, ".zprofile"), "utf8"), /\. ".*\/env"/);
   await assert.rejects(() => access(path.join(shellenvBin, "obu")), { code: "ENOENT" });
   await assert.rejects(() => access(path.join(process.cwd(), "obu")), { code: "ENOENT" });
-  await assert.rejects(() => access(path.join(shellenvHome, ".zprofile")), { code: "ENOENT" });
   const shellenvObu = path.join(shellenvInstallDir, "bin", "obu");
   const shellenvFish = run(shellenvObu, ["shellenv", "fish"], { HOME: shellenvHome });
   assert.match(shellenvFish.stdout, /fish_add_path --global --move --path /);
@@ -145,9 +145,10 @@ try {
     PATH: "/usr/bin:/bin",
     SHELL: "",
   });
-  assert.match(profileOnlyInstall.stdout, /Next steps:/);
-  assert.match(profileOnlyInstall.stdout, /\.profile/);
-  await assert.rejects(() => access(path.join(profileOnlyHome, ".profile")), { code: "ENOENT" });
+  assert.match(profileOnlyInstall.stdout, /Activate in this shell:\s+\. ".*\/env"/);
+  await access(path.join(profileOnlyInstallDir, "env"));
+  assert.match(await readFile(path.join(profileOnlyHome, ".profile"), "utf8"), /open-browser-use installer \(managed v1\)/);
+  assert.match(await readFile(path.join(profileOnlyHome, ".profile"), "utf8"), /\. ".*\/env"/);
   await access(path.join(profileOnlyInstallDir, "bin", "obu"));
 
   const releaseManifestInstallDir = path.join(temp, "release-manifest-install");
@@ -168,7 +169,7 @@ try {
   assert.match(releaseManifestInstall.stdout, /checksum: ok/);
   assert.match(releaseManifestInstall.stdout, /extract: /);
   assert.match(releaseManifestInstall.stdout, /shim: wrote /);
-  assert.match(releaseManifestInstall.stdout, /path: skipped shellenv instructions/);
+  assert.match(releaseManifestInstall.stdout, /path: skipped \(modify-path disabled\)/);
   await access(path.join(releaseManifestInstallDir, "bin", "obu"));
   await assert.rejects(() => access(path.join(releaseManifestHome, ".profile")), { code: "ENOENT" });
 
