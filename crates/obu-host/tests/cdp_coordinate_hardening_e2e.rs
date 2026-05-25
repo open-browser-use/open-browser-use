@@ -90,3 +90,47 @@ async fn force_click_bypasses_hit_test() {
         .unwrap();
     assert_eq!(probe["result"]["value"], true);
 }
+
+#[tokio::test]
+#[ignore = "requires Chromium with --remote-debugging-port; set OBU_CDP_URL"]
+async fn screenshot_is_coordinate_valid_and_pixel_hits_element() {
+    let cdp_url =
+        std::env::var("OBU_CDP_URL").unwrap_or_else(|_| "http://127.0.0.1:9223".to_string());
+    let page = "data:text/html,<button id='b' style='position:fixed;left:40px;top:50px;width:60px;height:30px' onclick='window._=1'>x</button>";
+    let (backend, tab_id) = open(&cdp_url, page).await;
+    let shot = backend
+        .tab_command_with_context(
+            &ctx(),
+            methods::TAB_SCREENSHOT,
+            json!({ "tab_id": tab_id, "fullPage": false, "timeout_ms": 5_000 }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(shot["coordinateValid"], true);
+    // Click the element center in screenshot/visualViewport px and confirm it fired.
+    backend
+        .execute_cdp(
+            &tab_id,
+            "Input.dispatchMouseEvent",
+            json!({ "type": "mousePressed", "x": 70, "y": 65, "button": "left", "clickCount": 1 }),
+        )
+        .await
+        .unwrap();
+    backend
+        .execute_cdp(
+            &tab_id,
+            "Input.dispatchMouseEvent",
+            json!({ "type": "mouseReleased", "x": 70, "y": 65, "button": "left", "clickCount": 1 }),
+        )
+        .await
+        .unwrap();
+    let probe = backend
+        .execute_cdp(
+            &tab_id,
+            "Runtime.evaluate",
+            json!({ "expression": "window._ === 1", "returnByValue": true }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(probe["result"]["value"], true);
+}

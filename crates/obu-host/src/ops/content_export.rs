@@ -109,6 +109,32 @@ pub(crate) fn screenshot_cdp_params(params: &Value) -> Value {
     Value::Object(cdp_params)
 }
 
+/// Annotate a screenshot result with whether its pixels are valid for coordinate
+/// clicking (viewport capture at scale 1.0 == `VISUAL_VIEWPORT` CSS px).
+///
+/// `cdp_params` always carries an explicit `captureBeyondViewport` (produced by
+/// `screenshot_cdp_params`), so the `false` default below only guards direct
+/// callers and never decides the real screenshot path.
+pub(crate) fn coordinate_annotation(cdp_params: &Value) -> Value {
+    let capture_beyond = cdp_params
+        .get("captureBeyondViewport")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
+    let scale = cdp_params
+        .get("clip")
+        .and_then(|clip| clip.get("scale"))
+        .and_then(Value::as_f64)
+        .unwrap_or(1.0);
+    // Coordinate clicking requires an unscaled viewport capture: exactly scale 1.0.
+    let coordinate_valid = !capture_beyond && (scale - 1.0).abs() < f64::EPSILON;
+    json!({
+        // camelCase `coordinateSpace` matches the host's existing point contract
+        // (dom_cua_runtime.rs) — keep the key identical across surfaces.
+        "coordinateSpace": crate::coordinate_space::VISUAL_VIEWPORT,
+        "coordinateValid": coordinate_valid,
+    })
+}
+
 pub(crate) fn cdp_data<'a>(result: &'a Value, method: &str) -> Result<&'a str> {
     result
         .get("data")
@@ -139,11 +165,18 @@ where
     B: ContentExportBackend,
 {
     let mime_type = screenshot_mime_type(&cdp_params);
+    let annotation = coordinate_annotation(&cdp_params);
     let result = backend
         .capture_screenshot_cdp(ctx, tab_id, cdp_params)
         .await?;
     let data = cdp_data(&result, "Page.captureScreenshot")?;
-    Ok(base64_payload(data, mime_type))
+    let mut payload = base64_payload(data, mime_type);
+    if let (Some(object), Some(fields)) = (payload.as_object_mut(), annotation.as_object()) {
+        for (key, value) in fields {
+            object.insert(key.clone(), value.clone());
+        }
+    }
+    Ok(payload)
 }
 
 async fn export_html<B>(backend: &B, ctx: &BackendRequestContext, tab_id: &str) -> Result<Value>
@@ -287,5 +320,26 @@ mod tests {
                 .len()
                 > 8
         );
+    }
+
+    #[test]
+    fn coordinate_annotation_marks_viewport_scale1_as_valid() {
+        // Default observation screenshot (no fullPage) → viewport capture, scale 1 → valid.
+        let viewport = coordinate_annotation(&screenshot_cdp_params(&json!({ "fullPage": false })));
+        assert_eq!(
+            viewport["coordinateSpace"],
+            crate::coordinate_space::VISUAL_VIEWPORT
+        );
+        assert_eq!(viewport["coordinateValid"], true);
+
+        // Full-page capture (captureBeyondViewport true) → not coordinate-valid.
+        let full = coordinate_annotation(&screenshot_cdp_params(&json!({ "fullPage": true })));
+        assert_eq!(full["coordinateValid"], false);
+
+        // Down-scaled clip → not coordinate-valid.
+        let scaled = coordinate_annotation(&screenshot_cdp_params(
+            &json!({ "fullPage": false, "clip": { "x": 0, "y": 0, "width": 10, "height": 10, "scale": 0.5 } }),
+        ));
+        assert_eq!(scaled["coordinateValid"], false);
     }
 }
