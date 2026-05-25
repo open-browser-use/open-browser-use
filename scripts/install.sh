@@ -123,6 +123,47 @@ validate_payload_retention() {
   return 0
 }
 
+artifact_source_is_remote() {
+  if [ -n "$ARTIFACT" ]; then
+    case "$ARTIFACT" in http://*|https://*) return 0 ;; *) return 1 ;; esac
+  fi
+  case "$RELEASE_BASE_URL" in http://*|https://*) return 0 ;; *) return 1 ;; esac
+}
+
+warn_low_disk() {
+  dir="$1"
+  avail_kb="$(df -Pk "$dir" 2>/dev/null | awk 'NR==2 {print $4}')"
+  case "$avail_kb" in
+    ''|*[!0-9]*) return 0 ;;
+  esac
+  if [ "$avail_kb" -lt 614400 ]; then
+    echo "warning: only $((avail_kb / 1024)) MB free at $dir; install needs ~600 MB" >&2
+  fi
+}
+
+preflight() {
+  command -v tar >/dev/null 2>&1 || { echo "install failed: tar is required" >&2; exit 2; }
+  if ! command -v sha256sum >/dev/null 2>&1 && ! command -v shasum >/dev/null 2>&1; then
+    echo "install failed: sha256sum or shasum is required" >&2
+    exit 2
+  fi
+  if artifact_source_is_remote; then
+    command -v curl >/dev/null 2>&1 || {
+      echo "install failed: curl is required to download a release artifact (or pass --artifact <local file>)" >&2
+      exit 2
+    }
+  fi
+  ancestor="$INSTALL_DIR"
+  while [ ! -e "$ancestor" ] && [ "$ancestor" != "/" ] && [ "$ancestor" != "." ]; do
+    ancestor="$(dirname "$ancestor")"
+  done
+  if [ ! -w "$ancestor" ]; then
+    echo "install failed: $ancestor is not writable" >&2
+    exit 1
+  fi
+  warn_low_disk "$ancestor"
+}
+
 prune_old_payloads() {
   payloads_dir="$1"
   active_payload="$2"
@@ -569,6 +610,8 @@ USAGE
 done
 
 validate_payload_retention "$PAYLOAD_RETENTION" || exit $?
+
+preflight
 
 TMP_DIR="$(mktemp -d "${TMPDIR:-/tmp}/obu-install.XXXXXX")"
 PAYLOAD_STAGE_DIR=""

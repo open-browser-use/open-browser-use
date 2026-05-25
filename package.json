@@ -31,6 +31,7 @@
     "smoke:curl-install": "node scripts/curl-install-smoke.mjs",
     "smoke:install-path-config": "node scripts/install-path-config-smoke.mjs",
     "smoke:install-refresh-safety": "node scripts/install-refresh-safety-smoke.mjs",
+    "smoke:install-network": "node scripts/install-network-smoke.mjs",
     "smoke:cargo-dist": "node scripts/cargo-dist-smoke.mjs",
     "smoke:mcp-stdio-clean": "node scripts/mcp-stdio-clean-smoke.mjs",
     "smoke:mcp-client-compat": "cargo test -p obu-node-repl --test mcp_stdio mcp_stdio_client_compat_profiles_preserve_structured_content_resources_and_progress",
