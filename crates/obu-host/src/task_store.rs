@@ -427,11 +427,10 @@ pub struct ResumePlan {
 ///   from the durable store and re-observe
 ///   (`recover_from_store: true, requires_fresh_observation: true`).
 ///
-/// `current_kernel_generation` is a parameter precisely so the eventual
-/// task-resume RPC handler can pass `browser_status`'s `kernel_generation`
-/// (added by Task 1.2) straight through — no `TaskStore` is wired into the live
-/// dispatcher request path here (that resume route is unbuilt; see the Task 5.7
-/// scoping note).
+/// `current_kernel_generation` is a parameter so the live task-resume RPC
+/// handler can pass `browser_status`'s `kernel_generation` straight through.
+/// The resume route IS wired: `task_store_actor::resume_begin` calls this
+/// function and returns the resulting [`ResumePlan`] to the SDK.
 ///
 /// Returns a [`ResumePlan`] directly (not a `Result`): on the unlikely event
 /// that reading segments fails, it conservatively returns the recover-from-store
