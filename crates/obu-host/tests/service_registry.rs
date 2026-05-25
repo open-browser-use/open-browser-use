@@ -283,6 +283,9 @@ fn removing_or_detaching_tab_cleans_associated_handles() {
 #[test]
 fn consumed_file_chooser_reports_specific_stale_reason() {
     let registry = ServiceRegistry::default();
+    // Give the owning session a current turn so the handle backfills owner_turn_id
+    // and the agent-facing stale description can surface the turn proof.
+    registry.touch_session("session", Some("turn-7")).unwrap();
     let id = FileChooserId("chooser-1".into());
     registry
         .insert_file_chooser(
@@ -304,6 +307,10 @@ fn consumed_file_chooser_reports_specific_stale_reason() {
     assert!(message.contains("already consumed by setFiles"));
     assert!(message.contains("owner_tab=t1"));
     assert!(message.contains("owner_session=session"));
+    // GAP-10 observable: the closed terminal state and owning-turn proof
+    // (Task 14 write-only fields) are now surfaced to the agent.
+    assert!(message.contains("terminal_state=consumed"));
+    assert!(message.contains("owner_turn=turn-7"));
 }
 
 #[test]

@@ -163,6 +163,8 @@ pub struct StaleHandleState {
     pub tab_id: TabId,
     /// Owning browser-control session, when known.
     pub owner_session_id: Option<String>,
+    /// Owning turn id at acquisition (turn proof), when known.
+    pub owner_turn_id: Option<String>,
     /// Original creation time.
     pub created_at: SystemTime,
     /// Time when the handle became stale.
@@ -1137,7 +1139,7 @@ fn stale_handle_snapshot(
         handle_id,
         tab_id: state.tab_id.0.clone(),
         owner_session_id: state.owner_session_id.clone(),
-        owner_turn_id: None,
+        owner_turn_id: state.owner_turn_id.clone(),
         kind,
         state: state.terminal_state,
     }
@@ -1300,6 +1302,7 @@ fn record_stale_file_chooser_locked(
             reason: reason.clone(),
             tab_id: state.tab_id.clone(),
             owner_session_id: state.owner_session_id.clone(),
+            owner_turn_id: state.owner_turn_id.clone(),
             created_at: state.created_at,
             stale_at: SystemTime::now(),
             terminal_state,
@@ -1329,6 +1332,7 @@ fn record_stale_download_locked(
             reason: reason.clone(),
             tab_id: state.tab_id.clone(),
             owner_session_id: state.owner_session_id.clone(),
+            owner_turn_id: state.owner_turn_id.clone(),
             created_at: state.created_at,
             stale_at: SystemTime::now(),
             terminal_state,
@@ -1366,6 +1370,10 @@ fn describe_stale_handle(kind: &str, id: &str, state: &StaleHandleState) -> Stri
     );
     if let Some(session_id) = state.owner_session_id.as_deref() {
         message.push_str(&format!("; owner_session={session_id}"));
+    }
+    message.push_str(&format!("; terminal_state={}", state.terminal_state.as_str()));
+    if let Some(owner_turn_id) = state.owner_turn_id.as_deref() {
+        message.push_str(&format!("; owner_turn={owner_turn_id}"));
     }
     if let Ok(age) = state.stale_at.duration_since(state.created_at) {
         message.push_str(&format!("; age_ms={}", age.as_millis()));
