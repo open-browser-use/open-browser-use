@@ -103,4 +103,17 @@ impl DomCuaRuntimeBackend for CdpBackend {
             .await
             .map_err(HostError::from)
     }
+
+    async fn session_for_visible_dom_node(
+        &self,
+        ctx: &BackendRequestContext,
+        tab_id: &str,
+        observation_id: Option<&str>,
+        node_id: &str,
+    ) -> Option<String> {
+        self.visible_dom_nodes
+            .lock()
+            .await
+            .session_for_node(ctx, tab_id, observation_id, node_id)
+    }
 }

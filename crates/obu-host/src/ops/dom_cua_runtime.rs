@@ -68,6 +68,17 @@ pub(crate) trait DomCuaRuntimeBackend {
             "execute_dom_cdp_on_session is not supported by this backend".into(),
         ))
     }
+
+    /// The OOPIF session owning a snapshot node, or None for a top-level node.
+    async fn session_for_visible_dom_node(
+        &self,
+        _ctx: &BackendRequestContext,
+        _tab_id: &str,
+        _observation_id: Option<&str>,
+        _node_id: &str,
+    ) -> Option<String> {
+        None
+    }
 }
 
 pub(crate) async fn run<B>(
@@ -344,7 +355,7 @@ async fn collect_visible_dom_nodes<B: DomCuaRuntimeBackend + Sync>(
     backend: &B,
     ctx: &BackendRequestContext,
     tab_id: &str,
-    session_id: Option<&str>,
+    session: Option<&str>,
     node: &Value,
     viewport: Rect,
     nodes: &mut Vec<Value>,
@@ -356,7 +367,7 @@ async fn collect_visible_dom_nodes<B: DomCuaRuntimeBackend + Sync>(
         }
         if let Some(backend_node_id) = node.get("backendNodeId").and_then(Value::as_i64)
             && let Some(rect) =
-                box_model_rect(backend, ctx, tab_id, session_id, backend_node_id).await?
+                box_model_rect(backend, ctx, tab_id, session, backend_node_id).await?
             && rect.width > 0.0
             && rect.height > 0.0
             && rect.intersects(viewport)
@@ -367,7 +378,7 @@ async fn collect_visible_dom_nodes<B: DomCuaRuntimeBackend + Sync>(
             // NOTE: assumes backendNodeId is unique across the top-level + OOPIF
             // sessions of a tab (Chromium assigns them in the browser process); the
             // site-isolated probe (tests/oopif_e2e.rs) validates this end-to-end.
-            if let (Some(sid), Some(object)) = (session_id, entry.as_object_mut()) {
+            if let (Some(sid), Some(object)) = (session, entry.as_object_mut()) {
                 object.insert("session_id".into(), json!(sid));
             }
             nodes.push(entry);
@@ -397,32 +408,55 @@ async fn node_action_point<B: DomCuaRuntimeBackend + Sync>(
         .validate_visible_dom_node(ctx, tab_id, observation_id, node_id)
         .await?;
     let backend_node_id = dom_cua::backend_node_id(node_id)?;
-    let _ = backend
-        .execute_dom_cdp(
-            ctx,
-            tab_id,
-            "DOM.scrollIntoViewIfNeeded",
-            json!({ "backendNodeId": backend_node_id }),
-        )
+    let session = backend
+        .session_for_visible_dom_node(ctx, tab_id, observation_id, node_id)
         .await;
+    let session = session.as_deref();
+    let _ = dom_cdp_routed(
+        backend,
+        ctx,
+        tab_id,
+        session,
+        "DOM.scrollIntoViewIfNeeded",
+        json!({ "backendNodeId": backend_node_id }),
+    )
+    .await;
     let viewport = viewport_rect(backend, ctx, tab_id).await?;
     if let Some(point) =
-        content_quad_action_point(backend, ctx, tab_id, backend_node_id, viewport).await?
+        content_quad_action_point(backend, ctx, tab_id, session, backend_node_id, viewport).await?
     {
-        return verify_action_point(backend, ctx, tab_id, backend_node_id, point.0, point.1)
-            .await?
-            .into_point();
+        return finalize_node_action_point(backend, ctx, tab_id, session, backend_node_id, point)
+            .await;
     }
     if let Some(point) =
-        box_model_action_point(backend, ctx, tab_id, backend_node_id, viewport).await?
+        box_model_action_point(backend, ctx, tab_id, session, backend_node_id, viewport).await?
     {
-        return verify_action_point(backend, ctx, tab_id, backend_node_id, point.0, point.1)
-            .await?
-            .into_point();
+        return finalize_node_action_point(backend, ctx, tab_id, session, backend_node_id, point)
+            .await;
     }
     Err(HostError::Protocol(format!(
         "node_outside_viewport_after_scroll: DOM-CUA node {node_id} has no reliable visible action point"
     )))
+}
+
+/// Top-level nodes get Plan A's occlusion hit-verify; OOPIF nodes (session is
+/// Some) trust their owning-session quad geometry — `verify_action_point` runs
+/// the hit-test on the TOP-LEVEL session, which cannot resolve an OOPIF
+/// `backendNodeId`, and the point is already root-frame-composed (spec I5).
+async fn finalize_node_action_point<B: DomCuaRuntimeBackend + Sync>(
+    backend: &B,
+    ctx: &BackendRequestContext,
+    tab_id: &str,
+    session: Option<&str>,
+    backend_node_id: i64,
+    point: (f64, f64),
+) -> Result<(f64, f64)> {
+    if session.is_some() {
+        return Ok(point);
+    }
+    verify_action_point(backend, ctx, tab_id, backend_node_id, point.0, point.1)
+        .await?
+        .into_point()
 }
 
 async fn verify_action_point<B: DomCuaRuntimeBackend + Sync>(
@@ -484,21 +518,48 @@ fn collect_backend_node_ids(node: &Value, out: &mut std::collections::HashSet<i6
     }
 }
 
+/// Run a DOM CDP command on a node's owning session: the OOPIF session when
+/// `session` is `Some`, otherwise the tab's top-level session.
+async fn dom_cdp_routed<B: DomCuaRuntimeBackend + Sync>(
+    backend: &B,
+    ctx: &BackendRequestContext,
+    tab_id: &str,
+    session: Option<&str>,
+    method: &str,
+    params: Value,
+) -> Result<Value> {
+    match session {
+        Some(session_id) => {
+            backend
+                .execute_dom_cdp_on_session(ctx, session_id, method, params)
+                .await
+        }
+        None => backend.execute_dom_cdp(ctx, tab_id, method, params).await,
+    }
+}
+
+// Branch 4a (OOPIF design): an OOPIF session's quads/box-model are composed to
+// root-frame coords, so the existing `action_point_from_*` math (which subtracts
+// the top-level visual-viewport origin) is correct at scale 1. The pinch-zoom
+// case (4b) is gated on the site-isolated probe (tests/oopif_e2e.rs); do not add
+// frame composition until the probe records that outcome.
 async fn content_quad_action_point<B: DomCuaRuntimeBackend + Sync>(
     backend: &B,
     ctx: &BackendRequestContext,
     tab_id: &str,
+    session: Option<&str>,
     backend_node_id: i64,
     viewport: Rect,
 ) -> Result<Option<(f64, f64)>> {
-    let result = match backend
-        .execute_dom_cdp(
-            ctx,
-            tab_id,
-            "DOM.getContentQuads",
-            json!({ "backendNodeId": backend_node_id }),
-        )
-        .await
+    let result = match dom_cdp_routed(
+        backend,
+        ctx,
+        tab_id,
+        session,
+        "DOM.getContentQuads",
+        json!({ "backendNodeId": backend_node_id }),
+    )
+    .await
     {
         Ok(result) => result,
         Err(_) => return Ok(None),
@@ -510,17 +571,19 @@ async fn box_model_action_point<B: DomCuaRuntimeBackend + Sync>(
     backend: &B,
     ctx: &BackendRequestContext,
     tab_id: &str,
+    session: Option<&str>,
     backend_node_id: i64,
     viewport: Rect,
 ) -> Result<Option<(f64, f64)>> {
-    let result = match backend
-        .execute_dom_cdp(
-            ctx,
-            tab_id,
-            "DOM.getBoxModel",
-            json!({ "backendNodeId": backend_node_id }),
-        )
-        .await
+    let result = match dom_cdp_routed(
+        backend,
+        ctx,
+        tab_id,
+        session,
+        "DOM.getBoxModel",
+        json!({ "backendNodeId": backend_node_id }),
+    )
+    .await
     {
         Ok(result) => result,
         Err(_) => return Ok(None),
@@ -535,29 +598,16 @@ async fn box_model_rect<B: DomCuaRuntimeBackend + Sync>(
     session: Option<&str>,
     backend_node_id: i64,
 ) -> Result<Option<Rect>> {
-    let result = match session {
-        Some(session_id) => {
-            backend
-                .execute_dom_cdp_on_session(
-                    ctx,
-                    session_id,
-                    "DOM.getBoxModel",
-                    json!({ "backendNodeId": backend_node_id }),
-                )
-                .await
-        }
-        None => {
-            backend
-                .execute_dom_cdp(
-                    ctx,
-                    tab_id,
-                    "DOM.getBoxModel",
-                    json!({ "backendNodeId": backend_node_id }),
-                )
-                .await
-        }
-    };
-    let result = match result {
+    let result = match dom_cdp_routed(
+        backend,
+        ctx,
+        tab_id,
+        session,
+        "DOM.getBoxModel",
+        json!({ "backendNodeId": backend_node_id }),
+    )
+    .await
+    {
         Ok(result) => result,
         Err(_) => return Ok(None),
     };
@@ -714,5 +764,147 @@ mod hit_verify_tests {
             .await
             .unwrap();
         assert_eq!(point, (20.0, 20.0));
+    }
+}
+
+#[cfg(test)]
+mod oopif_routing_tests {
+    use std::sync::Mutex;
+
+    use async_trait::async_trait;
+    use serde_json::{Value, json};
+
+    use crate::backends::BackendRequestContext;
+    use crate::error::Result;
+
+    use super::*;
+
+    #[derive(Default)]
+    struct FakeDomCuaRouting {
+        calls: Mutex<Vec<(String, String)>>, // (session_id or "TOP", method)
+    }
+
+    #[async_trait]
+    impl DomCuaRuntimeBackend for FakeDomCuaRouting {
+        async fn execute_dom_cdp(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            method: &str,
+            _p: Value,
+        ) -> Result<Value> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push(("TOP".into(), method.into()));
+            match method {
+                "Page.getLayoutMetrics" => Ok(
+                    json!({ "cssVisualViewport": { "pageX": 0, "pageY": 0, "clientWidth": 100, "clientHeight": 100 } }),
+                ),
+                "DOM.scrollIntoViewIfNeeded" => Ok(Value::Null),
+                // If the OOPIF verify-skip regressed, verify_action_point would run
+                // HERE on the top-level session: a non-matching hit (999) + a subtree
+                // that lacks it makes verify return Occluded -> node_action_point Err.
+                "DOM.getNodeForLocation" => Ok(json!({ "backendNodeId": 999 })),
+                "DOM.describeNode" => Ok(json!({ "node": { "backendNodeId": 8, "children": [] } })),
+                _ => Ok(json!({})),
+            }
+        }
+        async fn execute_dom_cdp_on_session(
+            &self,
+            _c: &BackendRequestContext,
+            session_id: &str,
+            method: &str,
+            _p: Value,
+        ) -> Result<Value> {
+            self.calls
+                .lock()
+                .unwrap()
+                .push((session_id.into(), method.into()));
+            match method {
+                "DOM.getContentQuads" => Ok(json!({ "quads": [[10, 10, 30, 10, 30, 30, 10, 30]] })),
+                "DOM.getNodeForLocation" => Ok(json!({ "backendNodeId": 8 })),
+                "DOM.describeNode" => Ok(json!({ "node": { "backendNodeId": 8, "children": [] } })),
+                _ => Ok(json!({})),
+            }
+        }
+        async fn oopif_sessions_for_tab(&self, _t: &str) -> Vec<String> {
+            vec!["OOPIF-A".into()]
+        }
+        async fn session_for_visible_dom_node(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+            _n: &str,
+        ) -> Option<String> {
+            Some("OOPIF-A".into())
+        }
+        async fn dispatch_coordinate_cua(
+            &self,
+            _c: &BackendRequestContext,
+            _m: &str,
+            _p: Value,
+        ) -> Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn remember_visible_dom_nodes(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+            _n: &[Value],
+        ) {
+        }
+        async fn validate_visible_dom_node(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+            _n: &str,
+        ) -> Result<()> {
+            Ok(())
+        }
+        async fn forget_visible_dom_snapshot(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+        ) {
+        }
+    }
+
+    fn ctx() -> BackendRequestContext {
+        BackendRequestContext {
+            session_id: Some("s".into()),
+            turn_id: Some("t".into()),
+            client_timeout_ms: None,
+            trusted_kernel_generation: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn oopif_node_geometry_routes_to_owning_session() {
+        let backend = FakeDomCuaRouting::default();
+        let point = node_action_point(&backend, &ctx(), "42", Some("obs"), "8")
+            .await
+            .unwrap();
+        assert_eq!(point, (20.0, 20.0));
+        let calls = backend.calls.lock().unwrap();
+        assert!(
+            calls
+                .iter()
+                .any(|(s, m)| s == "OOPIF-A" && m == "DOM.getContentQuads"),
+            "getContentQuads must route to the OOPIF session, got {calls:?}"
+        );
+        // OOPIF nodes skip the top-level occlusion verify (it can't resolve an OOPIF
+        // backendNodeId). If the skip regressed, the top-level getNodeForLocation
+        // (999 + non-containing subtree) would occlude and the unwrap() above panics.
+        assert!(
+            !calls
+                .iter()
+                .any(|(s, m)| s == "TOP" && m == "DOM.getNodeForLocation"),
+            "OOPIF nodes must skip the top-level occlusion verify, got {calls:?}"
+        );
     }
 }
