@@ -52,6 +52,7 @@ for (const script of [
   "smoke:cdp-dirty-form-live",
   "smoke:webext-dirty-form-live",
   "make:extension-store-artifact",
+  "make:extension-artifact",
 ]) {
   assert.equal(typeof rootPackage.scripts?.[script], "string", `missing package script ${script}`);
 }
@@ -119,6 +120,8 @@ assert.match(workflow, /install-refresh-safety-smoke\.mjs/);
 assert.match(workflow, /setup-local-spine-smoke\.mjs/);
 assert.match(workflow, /actions\/upload-artifact@v4/);
 assert.match(workflow, /open-browser-use-\$\{\{ matrix\.target \}\}-curl/);
+assert.match(workflow, /make-extension-artifact\.mjs/);
+assert.match(workflow, /name: open-browser-use-extension\b/);
 assertNoWindows([workflow]);
 
 const setupWebext = await text("scripts/setup-webext-e2e.mjs");
@@ -163,6 +166,8 @@ assert.match(releaseChecklist, /doctor --strict.*warnings.*failures/is);
 assert.match(releaseChecklist, /Chrome Web Store Gate/);
 assert.match(releaseChecklist, /storeExtensionId/);
 assert.match(releaseChecklist, /make-extension-store-artifact\.mjs/);
+assert.match(releaseChecklist, /open-browser-use-extension\.zip/);
+assert.match(releaseChecklist, /make-extension-artifact\.mjs/);
 assert.match(releaseChecklist, /smoke:mcp-client-compat/);
 assert.match(releaseChecklist, /smoke:cdp-dirty-form-live/);
 assert.match(releaseChecklist, /smoke:webext-dirty-form-live/);

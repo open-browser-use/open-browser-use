@@ -123,6 +123,15 @@ jobs:
           name: open-browser-use-current-curl
           path: dist/curl/*
 
+      - name: Make extension artifact
+        run: node scripts/make-extension-artifact.mjs
+
+      - name: Upload extension artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-browser-use-extension
+          path: dist/extension/*
+
       - name: Setup WebExtension smoke
         env:
           OBU_WEBEXT_E2E_AUTO_INSTALL: "1"

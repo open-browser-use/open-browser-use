@@ -1,214 +1,166 @@
-# open-browser-use
+<div align="center">
 
-open-browser-use is an open computer-use stack for local agents. It includes the Rust
-host daemon, the `obu-node-repl` native-pipe broker integration, the
-agent-facing `@open-browser-use/sdk`, a raw CDP backend, and a Chromium MV3 extension path
-for driving an installed browser profile without `--remote-debugging-port`.
+<img src="open-browser-use-readme-preview-wide.png" alt="open-browser-use — agent browser tool, agentic RL ready" width="820">
 
-## Workspace
+<h1>open-browser-use</h1>
 
-| Path | Purpose |
-| --- | --- |
-| `crates/obu-wire` | Shared JSON-RPC framing, envelopes, and error constants. |
-| `crates/obu-host` | Per-session broker daemon and browser backend dispatcher. |
-| `crates/obu-node-repl` | MCP JavaScript runtime with trusted SDK/native-pipe support. |
-| `packages/sdk` | Agent-facing TypeScript SDK. |
-| `packages/cli` | User-facing setup, readiness, and diagnostics commands such as `obu verify`. |
-| `packages/extension` | Chromium MV3 extension and dev native-host manifest writer. |
-| `docs/install.md` | Preview install, setup, and agent wiring guide. |
+<p><b>Open-source Browser Use — give your local AI agent a real browser.</b></p>
 
-## Install Preview
+<p>
+  <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square">
+  <img alt="Status: public preview" src="https://img.shields.io/badge/status-public%20preview-orange?style=flat-square">
+  <img alt="Platforms: macOS and Linux" src="https://img.shields.io/badge/platforms-macOS%20%C2%B7%20Linux-lightgrey?style=flat-square">
+  <br>
+  <img alt="Built with Rust" src="https://img.shields.io/badge/Rust-000000?style=flat-square&logo=rust&logoColor=white">
+  <img alt="Built with TypeScript" src="https://img.shields.io/badge/TypeScript-3178C6?style=flat-square&logo=typescript&logoColor=white">
+  <img alt="Model Context Protocol" src="https://img.shields.io/badge/MCP-server-7C3AED?style=flat-square">
+</p>
 
-P4a release packaging is macOS/Linux preview work. Until the public npm scope is
-verified, use local or GitHub Release artifacts rather than documenting npm as
-live. The curl-style preview path is GitHub Release assets, not a dedicated
-website URL. The planned release repository name is `open-browser-use`.
+<p>
+  <a href="#install-current-preview">Install</a> ·
+  <a href="#quickstart">Quickstart</a>  · 
+  <a href="#what-your-agent-can-do">What it can do</a>  · 
+  <a href="#how-it-works">How it works</a>  · 
+  <a href="#agentic-rl-environment">Agentic RL</a>  · 
+  <a href="#local-by-default">Local by default</a>
+</p>
 
-Local npm tarball smoke:
+</div>
 
-```bash
-pnpm -r build
-node scripts/assemble-payload.mjs --allow-current-node
-node scripts/stage-npm-packages.mjs --payload dist/payload/current
-node scripts/package-local-smoke.mjs --target all --static --expect-payload current
-node scripts/npm-pack-smoke.mjs --target current
+---
+
+Your coding agent can reason, plan, and write code. But the moment a task lives behind a login, inside a dashboard with no API, or in a clicky multi-step web form, it hits a wall: plenty of brain, no hands on the browser. **open-browser-use gives it those hands** — driving *your* real, already-signed-in browser, entirely on your own machine.
+
+## Your agent has a brain, but no hands
+
+We love telling agents to "just handle it." The trouble is that so much of *it* lives in a browser tab:
+
+- "Download every invoice from my email this quarter and add them up."
+- "Reorder my usual groceries from the store I'm already logged into."
+- "Pull the numbers off this dashboard — it has no export button."
+- "Fill out this application using the details from that PDF."
+
+None of these are hard to *think* about. They're hard because the agent can't *touch* the page. open-browser-use closes that gap, and tries to do it the friendly way:
+
+- **Your real browser, your sessions.** It drives the Chrome you already use, with your logins and cookies — not a fresh, logged-out robot browser. So it can do your *actual* errands.
+- **Local and private.** Everything runs on your machine. No cloud, no account, nothing phones home.
+- **Works with the agents you already have.** Codex, Claude Code, Cursor, Gemini CLI, VS Code, and more — over the Model Context Protocol (MCP).
+- **Open source**, MIT licensed.
+
+## Install (current preview)
+
+open-browser-use is a **macOS / Linux public preview** — the Chrome Web Store listing isn't live yet, so the extension ships through GitHub Releases. You set up one thing by hand: the browser extension. Your AI agent installs and connects everything else.
+
+1. **[Download the extension](https://github.com/open-browser-use/open-browser-use/releases/latest/download/open-browser-use-extension.zip)** from the latest release, then unzip it.
+2. **Load it into your browser:** open `chrome://extensions` (Chrome or another Chromium browser), turn on **Developer mode**, click **Load unpacked**, and select the unzipped folder. Pin it — its popup is how you connect your agent next.
+
+> [!NOTE]
+> Once the Chrome Web Store listing is live you'll add the extension straight from the Store — no download or unzip. For per-platform notes and troubleshooting, see [docs/install.md](docs/install.md) and [docs/troubleshooting.md](docs/troubleshooting.md).
+
+## Quickstart
+
+With the extension loaded, connecting it to your coding agent takes about a minute — no config files to hand-edit:
+
+1. **Open the extension popup** and click **Copy for agent**.
+2. **Paste it into your coding agent** (Codex, Claude Code, Cursor, Gemini CLI, …).
+3. The agent **sets up the open-browser-use MCP server and connects to your browser.** That's it.
+
+> [!TIP]
+> Then just ask, in plain language:
+> *"Open my GitHub notifications and summarize what actually needs my attention."*
+
+## What your agent can do
+
+Under the hood, your agent calls one `js` tool and writes against a Playwright-shaped SDK (the `agent` global). A whole turn of browser work is about this small:
+
+```js
+const browser = await agent.browsers.get("chrome");
+const tab = await browser.tabs.current();
+await tab.attach();                                   // take control of the tab
+await tab.goto("https://news.ycombinator.com");
+await tab.getByRole("link", { name: "new" }).click();
+display(await tab.locator("h1").innerText());         // surface a result
+await browser.turnEnded();                            // hand control back, keep the session
 ```
 
-Local curl-style artifact smoke:
+From there it can:
 
-```bash
-node scripts/make-curl-artifact.mjs
-node scripts/curl-install-smoke.mjs
+| Capability                         | What that means                                                                                                             |
+| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
+| **Act on elements**          | Click, fill, type, press, select, hover — addressed by role, text, or CSS (the resilient Playwright way).                  |
+| **Click by sight or DOM id** | Vision/coordinate and DOM-addressed modalities for when there's no clean selector — including across cross-origin iframes. |
+| **Read & extract**           | Text, tables, attributes, and screenshots.                                                                                  |
+| **Files & dialogs**          | Uploads, downloads, alerts, and confirms.                                                                                   |
+| **Tabs, sessions & resume**  | Juggle multiple tabs and sessions, and resume long tasks across turns without losing its place.                             |
+
+## How it works
+
+Your agent talks to open-browser-use as an MCP server. It writes JavaScript through a single `js` tool, which runs in a persistent Node runtime where `agent` is the SDK. Those calls travel as JSON-RPC over a capability-gated, owner-only Unix socket to **`obu-host`** — a per-session broker that drives your browser through one of two backends:
+
+```
+your agent
+   │  MCP over stdio              (the `js` tool; you write JS, the SDK is `agent`)
+   ▼
+obu-node-repl                     (MCP server + the Node runtime it spawns)
+   │  JSON-RPC over an owner-only Unix socket   (capability-gated)
+   ▼
+obu-host                          (per-session broker daemon)
+   ├─▶ WebExtension backend ─▶ your everyday Chrome        (MV3 + native messaging, no debug port)
+   └─▶ CDP backend          ─▶ Chrome with remote debugging   (OBU_CDP_URL)
 ```
 
-For real release payloads, pass `--node-root /path/to/node-22.22-or-newer` to
-`scripts/assemble-payload.mjs`; `--allow-current-node` is only for local smoke
-payloads.
+- **WebExtension backend** — drives a normally-installed Chrome through the open-browser-use extension. No `--remote-debugging-port`, your real profile and logins intact. This is the default for everyday use.
+- **CDP backend** — attaches to any Chrome started with remote debugging (`OBU_CDP_URL`). Ideal for headless and scripted runs.
 
-See [docs/install.md](docs/install.md), [docs/troubleshooting.md](docs/troubleshooting.md),
-and [docs/release-checklist.md](docs/release-checklist.md). Chrome Web Store
-submission notes live in
-[docs/chrome-web-store-review-pack.md](docs/chrome-web-store-review-pack.md).
+> [!IMPORTANT]
+> Everything stays on your machine. `obu-host`'s socket is owner-only and authenticated by OS user, and only trusted SDK code holds the capability token to reach it — open-browser-use never calls out to a remote service.
 
-Project source is MIT licensed. See [LICENSE](LICENSE).
+| Path                              | What it is                                                                                                            |
+| --------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `crates/obu-wire`               | Shared JSON-RPC framing, envelopes, and error codes.                                                                  |
+| `crates/obu-node-repl`          | The MCP server: spawns the Node runtime (where the SDK runs) and brokers its capability-gated socket to `obu-host`. |
+| `crates/obu-host`               | The per-session broker daemon and the CDP / WebExtension backends.                                                    |
+| `packages/sdk`                  | The agent-facing, Playwright-shaped TypeScript SDK (`@open-browser-use/sdk`).                                       |
+| `packages/browser-control-core` | Pure protocol types, planners, and fixtures shared by the SDK and extension.                                          |
+| `packages/cli`                  | The `obu` command line — `setup`, `verify`, `doctor`, and agent MCP wiring.                                  |
+| `packages/extension`            | The Chromium MV3 extension and its native-host bridge.                                                                |
 
-Third-party notices for vendored and packaged runtime components are in
-[LICENSE-THIRD-PARTY.md](LICENSE-THIRD-PARTY.md).
+## Agentic RL environment
 
-## Build and Test
+open-browser-use is built to double as an **environment for training and evaluating browser agents**, not just to run them. The reinforcement-learning core already exists; what's left is the harness around it.
 
-```bash
-cargo test --workspace
-pnpm -C packages/sdk build
-pnpm -C packages/sdk typecheck
-pnpm -C packages/sdk test
-pnpm -C packages/cli build
-pnpm -C packages/cli test
-pnpm -C packages/extension build
-pnpm -C packages/extension test
-```
+**Already in place**
 
-Wire method names, SDK guard classifications, host policy classifications, and
-backend support states are sourced from `wire/methods.json`. After adding or
-changing a wire method, regenerate the TS/Rust tables and run the currentness
-check:
+- **An env-shaped action/observation loop.** `tab.observe()` returns a typed `TabObservation`; `tab.step(action)` takes a typed `EnvAction` and returns an `ActionResult`. `EnvAction` spans **13 action kinds** across three addressing modes — `locator.*`, `dom_cua.*`, and `coordinate.*` — each with an optional capability `policy`.
+- **Rich, structured step results.** `ActionResult` reports an `ActionEffect` (`navigation`, `dom_changed`, `download_started`, `no_visible_change`, …), `invalidatedObservations`, handles, advisories, and a structured `error` — enough signal to drive a learner or a verifier.
+- **Durable episodes with recovery.** Sessions carry ownership arbitration, stale-handle diagnostics, owner-turn proofs, and `resume`, so long episodes survive crashes and reconnects. Tasks export to `EpisodeExport { task_id, turns, events }`.
+- **High-level helpers** (`tab.act.*`, `tab.flows`, `tab.read`) layered on the same primitives.
 
-```bash
-pnpm generate:wire-methods
-pnpm check:wire-methods
-```
+**Not there yet** — there's no single `Environment` facade exposing a formal, sampleable `reset/step/observe/close`; `browser.reset()` only resets the viewport (the backend attaches to a browser rather than launching a disposable one); and there's no built-in verifier substrate, reward-bearing trajectory schema, parallel rollout fleet, or Python / network (HTTP/gRPC) client — today the surface is MCP-stdio plus the native-pipe broker.
 
-Coverage entry points:
+### Roadmap to a trainable environment
 
-```bash
-pnpm coverage:sdk
-pnpm coverage:extension
-pnpm coverage:rust
-pnpm coverage
-```
+Ordered by the critical path to *"can you actually train against it"*:
 
-`pnpm coverage:sdk` writes the Vitest HTML report to
-`packages/sdk/coverage/`. `pnpm coverage:extension` writes the c8 HTML report to
-`packages/extension/coverage/` for the built MV3 JavaScript. `pnpm coverage:rust`
-requires `cargo-llvm-cov`; install it with `cargo install cargo-llvm-cov
---locked` if the command is missing. By default the Rust coverage script prints
-a summary; pass cargo-llvm-cov flags through the script for other formats, for
-example:
+- [ ] **Env facade + language-neutral protocol + Python client** *(keystone)* — converge `reset/step/observe/close` behind an HTTP/gRPC surface (or adapters for common RL frameworks) so an external trainer can drive rollouts at scale.
+- [ ] **Clean, seeded `reset()`** — let the backend launch a disposable browser with a fresh profile and fixed start URL, torn down at episode end. This single capability unlocks both reset *and* parallelism.
+- [ ] **Verifier substrate (RLVR)** — a deterministic assertion library (`url_contains`, `text_visible`, `dom_query`, `download_produced`, JS predicate) plus `episode.evaluate({ assertions })`.
+- [ ] **Training-ready trajectory schema** — type `EpisodeExport.turns` into `(obs, action, effect, reward, done)` records with standard JSONL / Hugging Face dataset export.
+- [ ] **Parallel rollout fleet** — a pool of N isolated browsers with async stepping (builds on clean reset).
+- [ ] **Determinism & reproducibility** — seeding, optional network record/replay, and fixed task instances with content hashing to detect live-web drift.
 
-```bash
-pnpm coverage:rust -- --html
-```
+## Local by default
 
-Ignored CDP E2E tests require a Chromium instance with remote debugging enabled:
+open-browser-use never calls a remote URL or product-policy service. SDK guards and host policy run locally and are permissive by default. Tighten them with environment variables when you need to:
 
-```bash
-"/Applications/Google Chrome.app/Contents/MacOS/Google Chrome" \
-  --headless \
-  --remote-debugging-port=9223 \
-  --user-data-dir="$(mktemp -d /tmp/obu-chrome.XXXXXX)" \
-  --no-first-run \
-  --no-default-browser-check \
-  --remote-allow-origins='*' \
-  about:blank
+| Variable                                                                      | Effect                                                               |
+| ----------------------------------------------------------------------------- | -------------------------------------------------------------------- |
+| `OBU_HOST_POLICY_DENY_ORIGINS`                                              | Block navigation and current-origin commands for the listed origins. |
+| `OBU_HOST_POLICY_DENY_CDP_METHODS`                                          | Block specific raw CDP methods (`*` blocks all).                   |
+| `OBU_HOST_POLICY_BLOCK_HISTORY` / `_BLOCK_DOWNLOADS` / `_BLOCK_UPLOADS` | Block history reads, downloads, or uploads.                          |
+| `OBU_GUARD_MODE=disabled`                                                   | Local/testing bypass for all guard and policy checks.                |
 
-cargo build -p obu-node-repl
-OBU_CDP_URL=http://127.0.0.1:9223 \
-  cargo test -p obu-host --test e2e_node_repl_to_chromium -- --ignored
-```
-
-Or run the scripted gate, which starts headless Chrome on `9223` when one is not
-already listening:
-
-```bash
-scripts/p2-e2e.sh
-```
-
-WebExtension development installs use the fixed unpacked extension ID from
-`packages/extension/public/manifest.json` and a native-messaging manifest:
-
-```bash
-cargo build -p obu-host
-pnpm -C packages/extension build
-pnpm -C packages/extension dev:manifest -- --browser chrome
-```
-
-Load `packages/extension/dist` unpacked, then run `obu-node-repl`; Chromium
-family calls such as `agent.browsers.get("chrome")` prefer the discovered
-WebExtension backend. The ignored end-to-end helper is:
-
-```bash
-scripts/p3-webext-e2e.sh
-```
-
-For that helper, use Chrome for Testing or Chromium. Branded Google Chrome is
-kept for the manual `chrome://extensions` path and is rejected by the scripted
-E2E unless `OBU_WEBEXT_E2E_ALLOW_BRANDED=1` is set. To prepare a local Chrome
-for Testing binary in `~/.cache/open-browser-use-browsers`, run:
-
-```bash
-scripts/ensure-chrome-for-testing.sh
-```
-
-The scripted gate can also install/use that binary automatically:
-
-```bash
-OBU_WEBEXT_E2E_AUTO_INSTALL=1 scripts/p3-webext-e2e.sh
-```
-
-To verify browser/profile/extension/native-host setup and reconnect state for a
-selected agent/browser pair, build the CLI and run `obu verify`:
-
-```bash
-pnpm -C packages/cli build
-node packages/cli/dist/index.js verify --agent=codex-cli --browser chrome
-node packages/cli/dist/index.js verify --agent=codex-cli --browser chrome --json
-node packages/cli/dist/index.js verify --repair --agent=codex-cli --browser chrome
-```
-
-`obu verify` returns one readiness result and one next action. Use
-`doctor browser` as a lower-level diagnostic when you need browser-only details.
-`verify --repair` delegates browser-side repair to `doctor browser`, refreshes
-agent MCP wiring for the selected agent, and then re-evaluates readiness for the
-same target.
-The browser doctor JSON output includes runtime descriptor lifecycle diagnostics
-from `getInfo`; stale session reasons, compact deliverable tab summaries, and
-deliverable recovery hints are also summarized in the human report. A reachable
-runtime descriptor is reported as `WARN`, not `PASS`, when host lifecycle
-diagnostics contain stale sessions, tabs, file chooser handles, or download
-handles. Browser doctor repair performs conservative local repairs: it can
-regenerate an invalid native-host manifest through a wrapper script, create the
-runtime descriptor directory, and chmod descriptor directories/files back to
-owner-only modes. It can also remove stale WebExtension runtime descriptors
-whose recorded process is gone, whose socket path is clearly invalid, whose
-descriptor auth is rejected, or whose `getInfo` probe is inconsistent. When a
-live descriptor reports stale lifecycle diagnostics, repair asks the host to
-clear those acknowledged stale diagnostic tombstones and then probes again.
-Inside the SDK, `agent.browsers.diagnostics()` returns ignored runtime
-descriptor reasons surfaced by `obu-node-repl`, and no-backend errors include
-those reasons before pointing back to `obu verify`. Durable tabs
-finalized as deliverables can be inspected and reclaimed with
-`await browser.deliverables()` and each returned handle's `claim()` method.
-Acknowledged stale lifecycle diagnostics can also be cleared from host apps with
-`await browser.clearLifecycleDiagnostics()`.
-For extension-side debugging, open the extension popup, enable **Debug logs**,
-reproduce the issue, then click **Copy** to collect the local JSON debug report.
-
-## Local Host Policy
-
-open-browser-use does not call a remote URL or product-policy service. SDK guards and
-`obu-host` policy are local and permissive by default. Deployments that need a
-stricter local host policy can opt in with environment variables:
-
-| Variable | Effect |
-| --- | --- |
-| `OBU_HOST_POLICY_DENY_ORIGINS` | Comma/semicolon-delimited URL origins blocked for navigation and current-origin commands, for example `https://example.com;https://admin.example`. |
-| `OBU_HOST_POLICY_DENY_CDP_METHODS` | Comma/semicolon-delimited raw CDP methods to block. Use `*` to block all raw CDP. |
-| `OBU_HOST_POLICY_BLOCK_HISTORY` | Blocks browser history reads when set to `1`, `true`, `yes`, or `on`. |
-| `OBU_HOST_POLICY_BLOCK_DOWNLOADS` | Blocks download commands when set to `1`, `true`, `yes`, or `on`. |
-| `OBU_HOST_POLICY_BLOCK_UPLOADS` | Blocks upload commands when set to `1`, `true`, `yes`, or `on`. |
-| `OBU_GUARD_MODE=disabled` | Local/testing bypass for SDK and host policy checks. |
-
-SDK callers can install local hooks per browser handle:
+SDK callers can also install per-browser `Guards` hooks for navigation, downloads, uploads, history, and raw CDP — they run in your local agent process and make no network request:
 
 ```ts
 import { Guards } from "@open-browser-use/sdk";
@@ -218,25 +170,33 @@ const browser = await agent.browsers.get("chrome", {
     checkNavigation(url) {
       if (url.startsWith("https://admin.example/")) throw new Error("navigation blocked");
     },
-    checkDownload(tabId, url) {
-      if (url?.endsWith(".exe")) throw new Error(`download blocked for tab ${tabId ?? "unknown"}`);
-    },
-    checkUpload(_tabId, paths) {
-      if (paths.some((path) => path.includes("/secrets/"))) throw new Error("upload blocked");
-    },
   }),
 });
 ```
 
-The SDK hook surface covers navigation targets, current-origin commands,
-history, downloads, uploads, and raw CDP calls. Hooks run in the local agent
-process; the default implementation makes no network policy request.
+## Build and test
 
-## Third-party Notices
+```bash
+cargo test --workspace
+pnpm install --frozen-lockfile
+pnpm -r build && pnpm -r test
+```
 
-open-browser-use project source is MIT licensed. Release payloads also carry
-third-party components under their upstream licenses. The repository currently
-bundles Apache-2.0 Playwright InjectedScript in
-`crates/obu-host/vendored/playwright-injected.js`; see
-[LICENSE-THIRD-PARTY.md](LICENSE-THIRD-PARTY.md) for the upstream license text
-and pinned source details.
+Wire method names, SDK guard classes, host policy classes, and backend support states all come from `wire/methods.json`. After changing a wire method, regenerate the TS/Rust tables and run the currentness check:
+
+```bash
+pnpm generate:wire-methods
+pnpm check:wire-methods
+```
+
+Packaging, coverage, and the ignored CDP / WebExtension end-to-end gates have their own scripts and setup; see [docs/install.md](docs/install.md), [docs/troubleshooting.md](docs/troubleshooting.md), and [docs/release-checklist.md](docs/release-checklist.md).
+
+## License and notices
+
+open-browser-use is MIT licensed — see [LICENSE](LICENSE). Release payloads also carry third-party components under their upstream licenses; details are in [LICENSE-THIRD-PARTY.md](LICENSE-THIRD-PARTY.md).
+
+---
+
+<div align="center">
+<sub>Built with Rust + TypeScript · driven over the Model Context Protocol · macOS / Linux public preview</sub>
+</div>

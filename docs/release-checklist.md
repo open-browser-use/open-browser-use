@@ -188,6 +188,19 @@ uploading GitHub Release assets, verify `manifest.json`, `manifest.tsv`,
 `install.sh`, every artifact tarball, and every `.sha256` file are present in
 the same asset set.
 
+Also attach the standalone unpacked extension `open-browser-use-extension.zip`
+(plus its `.sha256`) to the GitHub Release, alongside the tarballs and
+`install.sh`. The `p4-packaging` CI job builds it (via
+`node scripts/make-extension-artifact.mjs`) and uploads it as the
+`open-browser-use-extension` workflow artifact, but attaching it to the Release
+is a manual promotion step like the other assets — CI does not publish Release
+assets on its own. The README links it at the stable URL
+`releases/latest/download/open-browser-use-extension.zip`, so keep that filename
+stable across releases. It must be the unpacked-dev build (manifest `key`
+present, id `fblnfcjnjklpgnmfnngcihbcgojnpadj`); `make-extension-artifact.mjs`
+fails if the zip is a store-channel build, so the id stays fixed and the agent's
+native-host wiring matches.
+
 ## Chrome Web Store Gate
 
 Chrome Web Store release is a separate gate from the unpacked preview payload.
