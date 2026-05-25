@@ -22,6 +22,7 @@ pub mod ensure_injected;
 pub mod error;
 pub mod execute;
 pub mod injected_script;
+pub(crate) mod oopif;
 pub mod playwright;
 pub mod targets;
 pub mod transport;
@@ -33,6 +34,7 @@ pub struct CdpBackend {
     dialog_traces: DialogTraceStore,
     download_dir: tempfile::TempDir,
     visible_dom_nodes: Arc<Mutex<VisibleDomSnapshotStore>>,
+    oopif_sessions: Arc<Mutex<oopif::OopifSessionMap>>,
 }
 
 impl CdpBackend {
@@ -57,12 +59,59 @@ impl CdpBackend {
             )
             .await
             .map_err(HostError::from)?;
+        let oopif_sessions = Arc::new(Mutex::new(oopif::OopifSessionMap::default()));
+        {
+            let oopif_sessions = oopif_sessions.clone();
+            let consumer_transport = transport.clone();
+            let mut events = transport.subscribe_events();
+            // OOPIF session consumer. Subscribed here in `connect` — synchronously,
+            // before any `attach` arms `Target.setAutoAttach` — so no `attachedToTarget`
+            // is missed (a broadcast receiver buffers from its subscribe point). The
+            // task holds a strong `transport` clone (needed to send the re-arm command)
+            // and is intentionally process-lived: `CdpBackend` lives for the whole
+            // process, so the task parks on `recv()` until the bus closes at shutdown.
+            // (Breaking this self-pin + resyncing the map on `Lagged` is tracked for the
+            // task that makes the map load-bearing.)
+            tokio::spawn(async move {
+                loop {
+                    let event = match events.recv().await {
+                        Ok(event) => event,
+                        Err(tokio::sync::broadcast::error::RecvError::Lagged(dropped)) => {
+                            tracing::warn!(
+                                dropped,
+                                "OOPIF event consumer lagged; session map may be stale"
+                            );
+                            continue;
+                        }
+                        Err(_) => break, // bus closed
+                    };
+                    let changed = oopif_sessions.lock().await.apply_event(&event);
+                    if changed
+                        && event.method == "Target.attachedToTarget"
+                        && let Some(child) = event.params.get("sessionId").and_then(Value::as_str)
+                    {
+                        // Re-arm auto-attach on the child so nested OOPIFs attach too.
+                        if let Err(error) = consumer_transport
+                            .send_command(
+                                "Target.setAutoAttach",
+                                json!({ "autoAttach": true, "flatten": true, "waitForDebuggerOnStart": false }),
+                                Some(child),
+                            )
+                            .await
+                        {
+                            tracing::debug!(child, ?error, "re-arm setAutoAttach failed (child may have detached)");
+                        }
+                    }
+                }
+            });
+        }
         Ok(Self {
             transport,
             registry,
             dialog_traces: DialogTraceStore::default(),
             download_dir,
             visible_dom_nodes: Arc::new(Mutex::new(VisibleDomSnapshotStore::default())),
+            oopif_sessions,
         })
     }
 
@@ -74,6 +123,10 @@ impl CdpBackend {
     /// CDP transport.
     pub fn transport(&self) -> &Arc<transport::CdpTransport> {
         &self.transport
+    }
+
+    pub(crate) fn oopif_sessions(&self) -> &Arc<Mutex<oopif::OopifSessionMap>> {
+        &self.oopif_sessions
     }
 
     pub(crate) async fn forget_visible_dom_tab_state(&self, tab_id: &str) {

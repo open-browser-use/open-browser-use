@@ -1,0 +1,157 @@
+//! Cross-process (OOPIF) session tracking. Without `Target.setAutoAttach`, OOPIF
+//! DOM is invisible to the single top-level session; this map records the child
+//! sessions so DOM geometry can be routed to the frame that owns a node.
+
+use std::collections::HashMap;
+
+use crate::backends::cdp::transport::CdpEvent;
+
+/// Max OOPIF frame-tree depth we walk before assuming a malformed parent chain.
+/// Real cross-process nesting is far shallower; this only guards against a cycle.
+const MAX_FRAME_DEPTH: usize = 64;
+
+/// One attached out-of-process frame session.
+#[derive(Debug, Clone)]
+pub(crate) struct OopifSession {
+    pub session_id: String,
+    pub parent_session_id: Option<String>,
+    pub target_id: String,
+    pub url: String,
+}
+
+/// Frame→session map, keyed by the child session id.
+#[derive(Debug, Default)]
+pub(crate) struct OopifSessionMap {
+    by_session: HashMap<String, OopifSession>,
+}
+
+impl OopifSessionMap {
+    /// Apply a `Target.attachedToTarget` / `Target.detachedFromTarget` event.
+    /// Returns true if the map changed.
+    pub(crate) fn apply_event(&mut self, event: &CdpEvent) -> bool {
+        match event.method.as_str() {
+            "Target.attachedToTarget" => {
+                let info = &event.params["targetInfo"];
+                let ty = info.get("type").and_then(|v| v.as_str()).unwrap_or("");
+                // Only out-of-process *frames* go in the map. Workers/service-workers
+                // are not frames; `page` targets are attached explicitly elsewhere.
+                if ty != "iframe" {
+                    return false;
+                }
+                let Some(session_id) = event.params.get("sessionId").and_then(|v| v.as_str())
+                else {
+                    return false;
+                };
+                self.by_session.insert(
+                    session_id.to_string(),
+                    OopifSession {
+                        session_id: session_id.to_string(),
+                        parent_session_id: event.session_id.clone(),
+                        target_id: info
+                            .get("targetId")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                        url: info
+                            .get("url")
+                            .and_then(|v| v.as_str())
+                            .unwrap_or_default()
+                            .to_string(),
+                    },
+                );
+                true
+            }
+            "Target.detachedFromTarget" => {
+                let Some(session_id) = event.params.get("sessionId").and_then(|v| v.as_str())
+                else {
+                    return false;
+                };
+                self.by_session.remove(session_id).is_some()
+            }
+            _ => false,
+        }
+    }
+
+    /// All OOPIF sessions whose ancestor chain roots at `top_level_session`.
+    pub(crate) fn sessions_for_tab(&self, top_level_session: &str) -> Vec<String> {
+        self.by_session
+            .values()
+            .filter(|s| self.roots_at(s, top_level_session))
+            .map(|s| s.session_id.clone())
+            .collect()
+    }
+
+    fn roots_at(&self, session: &OopifSession, root: &str) -> bool {
+        let mut parent = session.parent_session_id.as_deref();
+        let mut hops = 0;
+        while let Some(p) = parent {
+            if p == root {
+                return true;
+            }
+            parent = self
+                .by_session
+                .get(p)
+                .and_then(|s| s.parent_session_id.as_deref());
+            hops += 1;
+            if hops > MAX_FRAME_DEPTH {
+                return false; // cycle guard
+            }
+        }
+        false
+    }
+
+    pub(crate) fn session_count(&self) -> usize {
+        self.by_session.len()
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use serde_json::json;
+
+    use super::*;
+    use crate::backends::cdp::transport::CdpEvent;
+
+    fn attached(parent: &str, child: &str, target: &str, ty: &str) -> CdpEvent {
+        CdpEvent {
+            session_id: Some(parent.to_string()),
+            method: "Target.attachedToTarget".to_string(),
+            params: json!({
+                "sessionId": child,
+                "waitingForDebugger": false,
+                "targetInfo": { "targetId": target, "type": ty, "url": "http://b.test/inner" }
+            }),
+        }
+    }
+
+    #[test]
+    fn tracks_iframe_sessions_and_ignores_non_iframe() {
+        let mut map = OopifSessionMap::default();
+        assert!(map.apply_event(&attached("PAGE", "C1", "T1", "iframe")));
+        assert!(!map.apply_event(&attached("PAGE", "W1", "T2", "worker"))); // not a frame target
+        assert_eq!(map.session_count(), 1);
+    }
+
+    #[test]
+    fn resolves_descendant_sessions_for_a_tab() {
+        let mut map = OopifSessionMap::default();
+        map.apply_event(&attached("PAGE", "C1", "T1", "iframe")); // child of page
+        map.apply_event(&attached("C1", "C2", "T2", "iframe")); // grandchild
+        let mut sessions = map.sessions_for_tab("PAGE");
+        sessions.sort();
+        assert_eq!(sessions, vec!["C1".to_string(), "C2".to_string()]);
+    }
+
+    #[test]
+    fn detach_removes_the_session() {
+        let mut map = OopifSessionMap::default();
+        map.apply_event(&attached("PAGE", "C1", "T1", "iframe"));
+        let detached = CdpEvent {
+            session_id: Some("PAGE".into()),
+            method: "Target.detachedFromTarget".into(),
+            params: json!({ "sessionId": "C1" }),
+        };
+        assert!(map.apply_event(&detached));
+        assert_eq!(map.session_count(), 0);
+    }
+}
