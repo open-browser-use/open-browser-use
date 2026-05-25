@@ -11,8 +11,8 @@ use crate::backends::BackendRequestContext;
 use crate::error::{HostError, Result};
 use crate::methods;
 use crate::ops::action_point::{
-    ActionPointResolution, RESOLUTION_NO_CLICKABLE_BOX, RESOLUTION_OCCLUDED,
-    RESOLUTION_OUTSIDE_VIEWPORT, RESOLUTION_TRANSFORMED_FRAME_UNSUPPORTED,
+    ActionPointResolution, RESOLUTION_CROSS_ORIGIN_UNREACHABLE, RESOLUTION_NO_CLICKABLE_BOX,
+    RESOLUTION_OCCLUDED, RESOLUTION_OUTSIDE_VIEWPORT, RESOLUTION_TRANSFORMED_FRAME_UNSUPPORTED,
 };
 use crate::ops::cua as cua_ops;
 
@@ -275,6 +275,13 @@ pub(crate) fn map_resolve_action_point_result(value: &Value) -> Result<(f64, f64
             RESOLUTION_TRANSFORMED_FRAME_UNSUPPORTED => {
                 ActionPointResolution::TransformedFrameUnsupported
             }
+            RESOLUTION_CROSS_ORIGIN_UNREACHABLE => ActionPointResolution::CrossOriginUnreachable {
+                reason: value
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("cross-origin frame is not reachable via the selector path")
+                    .to_string(),
+            },
             other => {
                 return Err(HostError::CdpFailure(format!(
                     "resolveActionPoint returned unknown resolution: {other}"
@@ -1565,6 +1572,23 @@ mod resolve_map_tests {
                 data: Some(data), ..
             } => assert_eq!(data["resolution"], "outside_viewport"),
             other => panic!("expected outside_viewport rpc error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cross_origin_unreachable_maps_to_resolution_error() {
+        let error = map_resolve_action_point_result(
+            &json!({ "resolution": "cross_origin_unreachable", "reason": "no session for frame" }),
+        )
+        .unwrap_err();
+        match error {
+            HostError::Rpc {
+                data: Some(data), ..
+            } => {
+                assert_eq!(data["resolution"], "cross_origin_unreachable");
+                assert_eq!(data["reason"], "no session for frame");
+            }
+            other => panic!("expected cross_origin_unreachable rpc error, got {other:?}"),
         }
     }
 

@@ -233,7 +233,8 @@ async function evaluateOnPage(functionSource, arg) {
 }
 
 async function resolveActionPoint(selector, arg) {
-  return await evaluateOnSelector(selector, async (element, injected, options, scope) => {
+  try {
+    return await evaluateOnSelector(selector, async (element, injected, options, scope) => {
     const requiredStates = options.requiredStates || [];
     const waitForAnimationFrame = () => new Promise((resolve) => {
       const view = element.ownerDocument?.defaultView;
@@ -334,7 +335,13 @@ async function resolveActionPoint(selector, arg) {
       occludedBy = verdict.by;
     }
     return { resolution: "occluded", by: occludedBy || "unknown element" };
-  }, arg);
+    }, arg);
+  } catch (error) {
+    if (error && error.message === unsupportedFrameAccessMessage) {
+      return { resolution: "cross_origin_unreachable", reason: error.message };
+    }
+    throw error;
+  }
 }
 "#
 }
