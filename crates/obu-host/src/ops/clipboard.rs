@@ -262,6 +262,9 @@ mod tests {
 
     #[test]
     fn text_to_clipboard_html_escapes_rich_text() {
-        assert_eq!(text_to_clipboard_html("a<b>&\n"), "a&lt;b&gt;&amp;<br>");
+        assert_eq!(
+            text_to_clipboard_html("a<b>&\"\n"),
+            "a&lt;b&gt;&amp;&quot;<br>"
+        );
     }
 }

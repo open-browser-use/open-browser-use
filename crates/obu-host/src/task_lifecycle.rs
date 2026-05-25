@@ -448,10 +448,16 @@ mod tests {
 
     #[test]
     fn control_projection_documents_core_origin() {
+        let mut origins = std::collections::BTreeSet::new();
         for projection in super::ControlProjection::ALL {
+            let origin = projection.core_lifecycle_origin();
             assert!(
-                !projection.core_lifecycle_origin().is_empty(),
+                !origin.is_empty(),
                 "{projection:?} must document its core lifecycle origin"
+            );
+            assert!(
+                origins.insert(origin),
+                "{projection:?} duplicates an existing core lifecycle origin: {origin:?}"
             );
         }
     }
