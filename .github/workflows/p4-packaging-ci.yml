@@ -39,6 +39,18 @@ jobs:
       - name: Install JS dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Install ShellCheck
+        run: brew install shellcheck
+
+      - name: Lint installer
+        run: shellcheck scripts/install.sh
+
+      - name: Installer PATH-config smoke
+        run: node scripts/install-path-config-smoke.mjs
+
+      - name: Installer network smoke
+        run: node scripts/install-network-smoke.mjs
+
       - name: Control vocab generation check
         run: pnpm check:control-vocab
 
