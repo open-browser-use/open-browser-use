@@ -63,6 +63,7 @@ async fn targets_attach_and_execute_cdp_work_against_fake_browser() {
             "Target.getTargets",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
             "Page.enable",
             "Runtime.evaluate",
         ],
@@ -570,6 +571,7 @@ async fn tab_commands_navigate_and_export_content_against_fake_browser() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
             "Page.enable",
             "Page.navigate",
             "Page.enable",
@@ -757,9 +759,11 @@ async fn cdp_dialog_policy_reenables_page_after_tab_reattach() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
             "Target.detachFromTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
             "Page.enable",
             "Page.navigate",
         ]
@@ -943,6 +947,7 @@ async fn cua_click_dispatches_raw_cdp_mouse_events() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
             "Page.enable",
             "Input.dispatchMouseEvent",
             "Input.dispatchMouseEvent",
@@ -1184,6 +1189,7 @@ async fn cua_click_waits_for_navigation_when_requested() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
             "Page.enable",
             "Input.dispatchMouseEvent",
             "Input.dispatchMouseEvent",
@@ -1215,6 +1221,7 @@ async fn cua_commands_validate_payloads_and_dispatch_expected_input_events() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
         ],
     )
     .await;
@@ -1349,6 +1356,7 @@ async fn cdp_cua_input_sequences_enable_page_once_per_command() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
         ],
     )
     .await;
@@ -1621,6 +1629,7 @@ async fn playwright_click_routes_through_injected_runtime_and_cua() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
             "Page.enable",
             "Runtime.evaluate",
             "Page.enable",
@@ -1653,6 +1662,7 @@ async fn playwright_fill_uses_shared_text_input_fallback() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
         ],
     )
     .await;
@@ -1707,6 +1717,7 @@ async fn playwright_press_uses_shared_focus_runtime_before_keyboard_events() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
         ],
     )
     .await;
@@ -1781,6 +1792,7 @@ async fn playwright_locator_click_forwards_navigation_wait_to_cua() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
             "Page.enable",
             "Runtime.evaluate",
             "Page.enable",
@@ -1895,6 +1907,7 @@ async fn file_chooser_wait_returns_handle_and_set_files_uses_backend_node() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
             "Page.enable",
             "DOM.enable",
             "Page.setInterceptFileChooserDialog",
