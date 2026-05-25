@@ -213,4 +213,14 @@ mod tests {
         let input = "- button \"Press [ref=here]\" [ref=e5]";
         assert_eq!(prune_aria_snapshot(input), "- button \"Press\"");
     }
+
+    // A wrapper carrying both a state and a ref annotation (the
+    // `generic [active] [ref=e1]:` shape observed in real snapshots) must still
+    // be recognized as bare and collapsed: annotations consumed, children
+    // hoisted, child refs stripped, unnamed img dropped.
+    #[test]
+    fn collapses_wrapper_with_state_and_ref_annotations() {
+        let input = "- generic [active] [ref=e1]:\n  - button \"Go\" [ref=e2]\n  - img";
+        assert_eq!(prune_aria_snapshot(input), "- button \"Go\"");
+    }
 }
