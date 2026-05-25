@@ -33,6 +33,10 @@ try {
   await bashProfileWrittenWhenPresent();
   await fishCoverage();
   await zdotdirMissingDirCovered();
+  await optOutsSkipAllWrites();
+  await activationHintPrinted();
+  await legacyLineWarnedNotRemoved();
+  await nonFatalOnUnwritableProfile();
   console.log("install path-config smoke passed");
 } finally {
   await rm(temp, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
@@ -146,4 +150,62 @@ async function zdotdirMissingDirCovered() {
 
   // The installer must create the missing ZDOTDIR and source the env file from .zshrc there.
   assert.equal(await fileContains(path.join(zdotdir, ".zshrc"), SENTINEL), true, "ZDOTDIR/.zshrc not created");
+}
+
+async function optOutsSkipAllWrites() {
+  const artifact = await makeArtifact(path.join(temp, "optout-art"), "open-browser-use-optout", "v1");
+  const cases = [
+    { name: "flag", extraArgs: ["--no-modify-path"], env: {} },
+    { name: "env", extraArgs: [], env: { OBU_NO_MODIFY_PATH: "1" } },
+    { name: "unmanaged", extraArgs: [], env: { OBU_UNMANAGED_INSTALL: "1" } },
+  ];
+  for (const c of cases) {
+    const dir = path.join(temp, `optout-${c.name}`);
+    await mkdir(dir, { recursive: true });
+    const installDir = path.join(dir, "install");
+    const home = path.join(dir, "home");
+    await mkdir(home, { recursive: true });
+    install({ artifact, installDir }, { home, env: c.env, extraArgs: c.extraArgs });
+    await assert.rejects(() => access(path.join(installDir, "env")), { code: "ENOENT" }, `${c.name}: env file should be absent`);
+    await assert.rejects(() => access(path.join(home, ".profile")), { code: "ENOENT" }, `${c.name}: .profile should be untouched`);
+  }
+}
+
+async function activationHintPrinted() {
+  const dir = path.join(temp, "activation");
+  await mkdir(dir, { recursive: true });
+  const installDir = path.join(dir, "install");
+  const home = path.join(dir, "home");
+  await mkdir(home, { recursive: true });
+  const artifact = await makeArtifact(dir, "open-browser-use-act", "v1");
+  const result = install({ artifact, installDir }, { home });
+  assert.match(result.stdout, new RegExp(`Activate in this shell:\\s+\\. "${installDir.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}/env"`));
+}
+
+async function legacyLineWarnedNotRemoved() {
+  const dir = path.join(temp, "legacy");
+  await mkdir(dir, { recursive: true });
+  const installDir = path.join(dir, "install");
+  const home = path.join(dir, "home");
+  await mkdir(home, { recursive: true });
+  const legacy = `eval "$(${installDir}/bin/obu shellenv bash)"\n`;
+  await writeFile(path.join(home, ".profile"), legacy, "utf8");
+  const artifact = await makeArtifact(dir, "open-browser-use-legacy", "v1");
+  const result = install({ artifact, installDir }, { home });
+  assert.match(result.stderr + result.stdout, /older 'obu shellenv' line/);
+  assert.equal(await fileContains(path.join(home, ".profile"), "obu shellenv bash"), true, "legacy line must NOT be removed");
+}
+
+async function nonFatalOnUnwritableProfile() {
+  const dir = path.join(temp, "nonfatal");
+  await mkdir(dir, { recursive: true });
+  const installDir = path.join(dir, "install");
+  const home = path.join(dir, "home");
+  await mkdir(home, { recursive: true });
+  await writeFile(path.join(home, ".profile"), "# locked\n", "utf8");
+  await chmod(path.join(home, ".profile"), 0o444);
+  const artifact = await makeArtifact(dir, "open-browser-use-nf", "v1");
+  const result = install({ artifact, installDir }, { home, allowFailure: true });
+  assert.equal(result.status, 0, "install must succeed even if a profile is unwritable");
+  await access(path.join(installDir, "bin", "obu")); // payload still active
 }

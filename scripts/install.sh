@@ -383,57 +383,12 @@ resolve_release_artifact() {
   fi
 }
 
-shell_quote() {
-  printf "'%s'" "$(printf '%s' "$1" | sed "s/'/'\\\\''/g")"
-}
-
-shell_double_quote() {
-  printf '"%s"' "$(printf '%s' "$1" | sed 's/[\\`"$]/\\&/g')"
-}
-
 detect_shell_name() {
   if [ -n "${SHELL:-}" ]; then
     basename "$SHELL"
   else
     printf '%s\n' "sh"
   fi
-}
-
-shellenv_shell_arg() {
-  case "$1" in
-    bash|zsh|fish)
-      printf '%s\n' "$1"
-      ;;
-    *)
-      printf '%s\n' "sh"
-      ;;
-  esac
-}
-
-shell_profile_path() {
-  shell_name="$1"
-  [ -n "${HOME:-}" ] || return 1
-  os_name="$(uname -s 2>/dev/null || true)"
-  case "$shell_name:$os_name" in
-    zsh:Darwin)
-      printf '%s\n' "${ZDOTDIR:-"$HOME"}/.zprofile"
-      ;;
-    zsh:*)
-      printf '%s\n' "${ZDOTDIR:-"$HOME"}/.zshrc"
-      ;;
-    bash:Darwin)
-      printf '%s\n' "$HOME/.bash_profile"
-      ;;
-    bash:*)
-      printf '%s\n' "$HOME/.bashrc"
-      ;;
-    fish:*)
-      printf '%s\n' "$HOME/.config/fish/config.fish"
-      ;;
-    *)
-      printf '%s\n' "${ENV:-"$HOME/.profile"}"
-      ;;
-  esac
 }
 
 write_env_file() {
@@ -535,65 +490,33 @@ configure_path() {
   return 0
 }
 
-print_path_next_steps() {
-  [ "$NO_MODIFY_PATH" -eq 0 ] || { log_verbose "path: skipped shellenv instructions"; return 0; }
-  [ "$UNMANAGED" != "1" ] || { log_verbose "path: skipped shellenv instructions"; return 0; }
+should_modify_path() {
+  [ "$NO_MODIFY_PATH" -eq 0 ] || return 1
+  [ "$UNMANAGED" != "1" ] || return 1
+  [ "${OBU_NO_MODIFY_PATH:-0}" != "1" ] || return 1
+  return 0
+}
 
-  shell_name="$(detect_shell_name)"
-  shell_arg="$(shellenv_shell_arg "$shell_name")"
-  profile="$(shell_profile_path "$shell_name" || true)"
-  quoted_obu="$(shell_double_quote "$INSTALL_DIR/bin/obu")"
-
-  if [ -n "$profile" ]; then
-    quoted_profile="$(shell_quote "$profile")"
-    if [ "$shell_arg" = "fish" ]; then
-      shellenv_line="$quoted_obu shellenv fish | source"
-      if [ -f "$profile" ] && grep -F "$shellenv_line" "$profile" >/dev/null 2>&1; then
-        if command -v obu >/dev/null 2>&1; then
-          log_verbose "path: shellenv already configured"
-          return 0
-        fi
-        echo
-        echo "Next steps:"
-        echo "  Add open-browser-use to your current shell:"
-        echo "    $shellenv_line"
-        log_verbose "path: printed shellenv activation"
-        return 0
-      fi
-      echo
-      echo "Next steps:"
-      echo "  Add open-browser-use to your fish environment:"
-      echo "    mkdir -p $(shell_quote "$(dirname "$profile")")"
-      echo "    echo '$shellenv_line' >> $quoted_profile"
-      echo "    $shellenv_line"
-    else
-      shellenv_line="eval \"\$($quoted_obu shellenv $shell_arg)\""
-      if [ -f "$profile" ] && grep -F "$shellenv_line" "$profile" >/dev/null 2>&1; then
-        if command -v obu >/dev/null 2>&1; then
-          log_verbose "path: shellenv already configured"
-          return 0
-        fi
-        echo
-        echo "Next steps:"
-        echo "  Add open-browser-use to your current shell:"
-        echo "    $shellenv_line"
-        log_verbose "path: printed shellenv activation"
-        return 0
-      fi
-      echo
-      echo "Next steps:"
-      echo "  Add open-browser-use to your shell environment:"
-      echo "    echo '$shellenv_line' >> $quoted_profile"
-      echo "    $shellenv_line"
+warn_legacy_shellenv_line() {
+  zdotdir="${ZDOTDIR:-$HOME}"
+  for profile in "$HOME/.profile" "$HOME/.bashrc" "$HOME/.bash_profile" "$zdotdir/.zshrc" "$zdotdir/.zprofile"; do
+    [ -f "$profile" ] || continue
+    if grep -F "obu shellenv" "$profile" >/dev/null 2>&1; then
+      echo "Note: $profile contains an older 'obu shellenv' line; it is superseded by '. \"$INSTALL_DIR/env\"' and can be removed." >&2
     fi
+  done
+}
+
+print_path_activation() {
+  shell_name="$(detect_shell_name)"
+  echo
+  echo "Added open-browser-use to your shell profile(s)."
+  if [ "$shell_name" = "fish" ]; then
+    echo "  Activate in this shell:  source \"${XDG_CONFIG_HOME:-$HOME/.config}/fish/conf.d/obu.fish\""
   else
-    shellenv_line="eval \"\$($quoted_obu shellenv $shell_arg)\""
-    echo
-    echo "Next steps:"
-    echo "  Add open-browser-use to your current shell:"
-    echo "    $shellenv_line"
+    echo "  Activate in this shell:  . \"$INSTALL_DIR/env\""
   fi
-  log_verbose "path: printed shellenv instructions"
+  warn_legacy_shellenv_line
 }
 
 while [ "$#" -gt 0 ]; do
@@ -859,4 +782,9 @@ if [ -n "$SELECTED_TARGET" ]; then
 fi
 echo "open-browser-use installed at $INSTALL_DIR"
 echo "Run: $INSTALL_DIR/bin/obu bootstrap --yes --all --agents=auto"
-configure_path
+if should_modify_path; then
+  configure_path
+  print_path_activation
+else
+  log_verbose "path: skipped (modify-path disabled)"
+fi
