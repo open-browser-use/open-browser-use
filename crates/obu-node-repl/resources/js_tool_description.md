@@ -107,6 +107,12 @@ Fast browser work rules:
   `reconcile_state: "timed_out_pending_reconcile"`. Re-observe page/tab state
   (snapshot or a cheap locator read) before retrying the action, so a late
   success is not duplicated.
+- If a click or hover fails with `error.data.resolution`, the point could not be
+  safely actioned and nothing was dispatched: `occluded` means another element
+  covers the target (scroll or dismiss the overlay, target a different element,
+  or pass `force: true` to bypass the hit-test); `outside_viewport` means it is
+  off-screen (scroll it into view); `no_clickable_box` means it has no visible
+  box to click.
 
 Safety confirmation taxonomy:
 - Handoff-required: payment submission, account deletion, irreversible purchase,
