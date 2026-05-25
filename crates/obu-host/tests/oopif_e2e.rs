@@ -127,6 +127,33 @@ async fn probe_oopif_quads_are_top_level() {
     );
 }
 
+#[tokio::test]
+#[ignore = "requires Chromium with --site-per-process --host-resolver-rules=MAP *.test 127.0.0.1 on 9223; set OBU_CDP_URL"]
+async fn playwright_selector_clicks_into_oopif() {
+    let cdp_url =
+        std::env::var("OBU_CDP_URL").unwrap_or_else(|_| "http://127.0.0.1:9223".to_string());
+    let port = spawn_cross_site_fixture().await;
+    let (backend, tab_id) = open_outer(&cdp_url, port).await;
+    backend
+        .playwright_command_with_context(
+            &ctx(),
+            methods::PLAYWRIGHT_LOCATOR_CLICK,
+            json!({
+                "tab_id": tab_id,
+                "selector": "iframe >> internal:control=enter-frame >> #inner",
+                "timeout_ms": 8_000
+            }),
+        )
+        .await
+        .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    assert_eq!(
+        read_inner_hits(&backend, &tab_id).await,
+        1,
+        "Playwright cross-origin click did not land"
+    );
+}
+
 /// The inner (cross-origin) page mirrors its click counter into `document.title`.
 /// `Target.getTargets` exposes every target's `title`, so we read the iframe
 /// target whose url contains `/inner` — no cross-origin frame eval required.
