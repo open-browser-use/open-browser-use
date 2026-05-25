@@ -253,6 +253,19 @@ impl ControlProjection {
             Self::Blocked => "blocked",
         }
     }
+
+    /// The core session/turn lifecycle condition this projection stands in for.
+    /// Exhaustive — adding a `ControlProjection` variant forces a documented
+    /// origin, keeping the cross-layer map honest.
+    pub fn core_lifecycle_origin(self) -> &'static str {
+        match self {
+            Self::HumanTakeover => "session human_takeover",
+            Self::Yielded => "session human_takeover + turn yielded",
+            Self::Resuming => "session resuming { repairPlanId }",
+            Self::RepairRequired => "resumeControlResult().repair.status == repair_required",
+            Self::Blocked => "resumeControlResult().status == blocked",
+        }
+    }
 }
 
 /// Wire status the SDK sends on `tasksResumeComplete`, matched by the host
@@ -431,6 +444,16 @@ mod tests {
         let ev = SessionTurnEvidence::human_takeover();
         assert_eq!(ev.control_state, Some(ControlProjection::HumanTakeover));
         assert!(task_state_allowed(TaskState::WaitingForHuman, &ev));
+    }
+
+    #[test]
+    fn control_projection_documents_core_origin() {
+        for projection in super::ControlProjection::ALL {
+            assert!(
+                !projection.core_lifecycle_origin().is_empty(),
+                "{projection:?} must document its core lifecycle origin"
+            );
+        }
     }
 
     #[test]
