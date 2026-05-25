@@ -125,7 +125,7 @@ impl DomCuaRuntimeBackend for CdpBackend {
     ) -> Result<Option<(f64, f64)>> {
         let mut offset = (0.0_f64, 0.0_f64);
         let mut current = session_id.to_string();
-        for _ in 0..32 {
+        for _ in 0..super::oopif::MAX_FRAME_DEPTH {
             let frame_and_parent = self
                 .oopif_sessions()
                 .lock()

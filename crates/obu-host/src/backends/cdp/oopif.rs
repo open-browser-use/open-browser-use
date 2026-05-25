@@ -8,7 +8,7 @@ use crate::backends::cdp::transport::CdpEvent;
 
 /// Max OOPIF frame-tree depth we walk before assuming a malformed parent chain.
 /// Real cross-process nesting is far shallower; this only guards against a cycle.
-const MAX_FRAME_DEPTH: usize = 64;
+pub(crate) const MAX_FRAME_DEPTH: usize = 64;
 
 /// One attached out-of-process frame session.
 #[derive(Debug, Clone)]
@@ -79,6 +79,24 @@ impl OopifSessionMap {
             .filter(|s| self.roots_at(s, top_level_session))
             .map(|s| s.session_id.clone())
             .collect()
+    }
+
+    /// Drop every OOPIF session whose ancestor chain roots at `top_level_session`.
+    /// Mirrors the per-tab cleanup the webext backend performs on tab close: the
+    /// map is normally kept current by `Target.detachedFromTarget`, but a dropped
+    /// or `Lagged` detach event would otherwise leak the tab's child sessions, so
+    /// clearing on close bounds the map to live tabs. Returns the number removed.
+    pub(crate) fn forget_tab(&mut self, top_level_session: &str) -> usize {
+        let stale: Vec<String> = self
+            .by_session
+            .values()
+            .filter(|session| self.roots_at(session, top_level_session))
+            .map(|session| session.session_id.clone())
+            .collect();
+        for session_id in &stale {
+            self.by_session.remove(session_id);
+        }
+        stale.len()
     }
 
     /// The OOPIF session owning the frame whose devtools `frameId` is `frame_id`.
@@ -182,5 +200,17 @@ mod tests {
         };
         assert!(map.apply_event(&detached));
         assert_eq!(map.session_count(), 0);
+    }
+
+    #[test]
+    fn forget_tab_drops_only_sessions_rooted_at_that_tab() {
+        let mut map = OopifSessionMap::default();
+        map.apply_event(&attached("PAGE-A", "A1", "TA1", "iframe"));
+        map.apply_event(&attached("A1", "A2", "TA2", "iframe")); // grandchild under PAGE-A
+        map.apply_event(&attached("PAGE-B", "B1", "TB1", "iframe")); // a different tab
+        assert_eq!(map.forget_tab("PAGE-A"), 2);
+        assert_eq!(map.session_count(), 1);
+        // The other tab's session is untouched.
+        assert_eq!(map.session_for_frame("TB1").as_deref(), Some("B1"));
     }
 }

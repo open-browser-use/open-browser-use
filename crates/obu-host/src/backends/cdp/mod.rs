@@ -134,6 +134,15 @@ impl CdpBackend {
             .lock()
             .await
             .forget_tab_for_any_session(tab_id);
+        // Prune the tab's OOPIF sessions too. `close_tab` calls this before
+        // removing the registry record, so the top-level session is still
+        // resolvable here; clearing it bounds the map to live tabs even if a
+        // `Target.detachedFromTarget` was dropped or `Lagged`.
+        if let Ok(Some(record)) = self.registry().get(&crate::tab_state::TabId::new(tab_id))
+            && let Some(top_level) = record.cdp_session_id.as_deref()
+        {
+            self.oopif_sessions().lock().await.forget_tab(top_level);
+        }
     }
 
     /// Per-session download directory.

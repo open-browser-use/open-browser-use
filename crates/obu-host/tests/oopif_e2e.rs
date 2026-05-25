@@ -111,7 +111,7 @@ async fn wait_for_hits(hits: &AtomicI64) -> i64 {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 #[ignore = "requires Chromium with --site-per-process --host-resolver-rules=MAP *.test 127.0.0.1 on 9223; set OBU_CDP_URL"]
-async fn probe_oopif_quads_are_top_level() {
+async fn oopif_dom_cua_click_lands_via_frame_offset_composition() {
     let cdp_url =
         std::env::var("OBU_CDP_URL").unwrap_or_else(|_| "http://127.0.0.1:9223".to_string());
     let (port, hits) = spawn_cross_site_fixture().await;
