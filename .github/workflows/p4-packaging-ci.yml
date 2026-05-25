@@ -42,6 +42,9 @@ jobs:
       - name: Control vocab generation check
         run: pnpm check:control-vocab
 
+      - name: Descriptor vocab generation check
+        run: pnpm check:descriptor-vocab
+
       - name: Typecheck
         run: pnpm -r typecheck
 
