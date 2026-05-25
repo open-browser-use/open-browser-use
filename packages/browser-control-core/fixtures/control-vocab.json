@@ -32,5 +32,12 @@
   "coordinateSpaces": [
     "visualViewport",
     "layoutViewport"
+  ],
+  "sessionControlProjections": [
+    "human_takeover",
+    "yielded",
+    "resuming",
+    "repair_required",
+    "blocked"
   ]
 }

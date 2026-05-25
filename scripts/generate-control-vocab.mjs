@@ -17,6 +17,7 @@ const manifest = {
   tabOrigins: [...core.TAB_ORIGINS],
   tabStatuses: [...core.TAB_STATUSES],
   coordinateSpaces: [...core.COORDINATE_SPACES],
+  sessionControlProjections: [...core.SESSION_CONTROL_PROJECTIONS],
 };
 const content = JSON.stringify(manifest, null, 2) + "\n";
 

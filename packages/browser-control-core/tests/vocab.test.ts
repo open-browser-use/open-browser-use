@@ -5,6 +5,7 @@ import {
   TAB_ORIGINS,
   TAB_STATUSES,
   COORDINATE_SPACES,
+  SESSION_CONTROL_PROJECTIONS,
 } from "../src/index.js";
 
 describe("control vocabularies", () => {
@@ -27,5 +28,15 @@ describe("control vocabularies", () => {
 
   it("pins coordinate spaces", () => {
     expect([...COORDINATE_SPACES]).toEqual(["visualViewport", "layoutViewport"]);
+  });
+
+  it("pins session control projections in order", () => {
+    expect([...SESSION_CONTROL_PROJECTIONS]).toEqual([
+      "human_takeover",
+      "yielded",
+      "resuming",
+      "repair_required",
+      "blocked",
+    ]);
   });
 });
