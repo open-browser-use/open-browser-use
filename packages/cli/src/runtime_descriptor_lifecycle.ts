@@ -1,4 +1,5 @@
-export type RuntimeDescriptorLifecycleState = "fresh" | "stale" | "invalid";
+export const RUNTIME_DESCRIPTOR_READ_STATES = ["fresh", "stale", "invalid"] as const;
+export type RuntimeDescriptorLifecycleState = (typeof RUNTIME_DESCRIPTOR_READ_STATES)[number];
 
 export type RuntimeDescriptorSetupLifecycleState = "missing" | "unreadable" | "invalid" | "no_descriptor";
 
@@ -87,6 +88,14 @@ export const runtimeDescriptorReasonApplicability: RuntimeDescriptorReasonApplic
   { reason_code: "descriptor_dir_permissions", owners: ["cli"], product_outcome: "setup_missing" },
   { reason_code: "descriptor_missing", owners: ["cli", "node_repl"], product_outcome: "setup_missing" },
 ];
+
+/** Reason codes that originate in node-repl and cross to the CLI. Single source
+ *  for `descriptor-vocab.json`; pinned in Rust by `descriptor_vocab_contract`. */
+export function runtimeDescriptorReaderReasonCodes(): RuntimeDescriptorLifecycleReasonCode[] {
+  return runtimeDescriptorReasonApplicability
+    .filter((r) => r.owners.includes("node_repl") && r.product_outcome !== "setup_missing")
+    .map((r) => r.reason_code) as RuntimeDescriptorLifecycleReasonCode[];
+}
 
 const staleReasonCodes = new Set<RuntimeDescriptorLifecycleReasonCode>([
   "descriptor_process_not_alive",

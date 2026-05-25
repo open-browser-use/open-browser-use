@@ -5,8 +5,10 @@ import {
   planRuntimeDescriptorFailure,
   planRuntimeDescriptorFresh,
   planRuntimeDescriptorSetupFailure,
+  RUNTIME_DESCRIPTOR_READ_STATES,
   runtimeDescriptorLifecycleNextAction,
   runtimeDescriptorLifecycleProductError,
+  runtimeDescriptorReaderReasonCodes,
   runtimeDescriptorReasonApplicability,
   summarizeRuntimeDescriptorFailures,
 } from "./runtime_descriptor_lifecycle.js";
@@ -129,4 +131,22 @@ test("runtime descriptor reason applicability documents CLI and Node parity", ()
   }
   assert.deepEqual(mapped.get("descriptor_browser_kind_mismatch")?.owners, ["cli", "browser_popup"]);
   assert.deepEqual(mapped.get("descriptor_extension_id_mismatch")?.owners, ["cli", "browser_popup"]);
+});
+
+test("reader reason codes are exactly the node_repl-owned lifecycle codes", () => {
+  assert.deepEqual([...runtimeDescriptorReaderReasonCodes()].sort(), [
+    "descriptor_file_invalid",
+    "descriptor_json_invalid",
+    "descriptor_probe_failed",
+    "descriptor_process_not_alive",
+    "descriptor_socket_invalid",
+    "sdk_auth_token_missing",
+    "socket_path_missing",
+    "unsupported_descriptor_type",
+    "unsupported_schema_version",
+  ]);
+});
+
+test("read states are the closed triad", () => {
+  assert.deepEqual([...RUNTIME_DESCRIPTOR_READ_STATES], ["fresh", "stale", "invalid"]);
 });
