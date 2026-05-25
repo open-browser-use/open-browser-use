@@ -75,6 +75,13 @@ Fast browser work rules:
 - Use `tab.dom_cua.text()` when you need the DOM-CUA visible-node list in a
   compact LLM-readable form while still keeping node ids valid for DOM-CUA
   click/type calls from the current snapshot.
+- There is no `tab.dev.logs()`. `tab.dev.cdp(...)` is request/response only, so
+  CDP events such as `Log.entryAdded` / `Runtime.consoleAPICalled` are not
+  delivered back; `Log.enable` / `Runtime.enable` alone will not surface logs.
+  To read page console output, first install a buffer with a
+  `tab.dev.cdp("Runtime.evaluate", ...)` call that overrides `console.*` to push
+  into a page global, then poll that global with more `Runtime.evaluate` calls.
+  Keep the returned payloads small.
 - Avoid broad browser-boundary loops such as `all()` followed by many
   uncached `getAttribute()` or `innerText()` calls. Use `locator.all()` for
   batched collection reads, one constrained locator, or one page-side
