@@ -2898,6 +2898,363 @@ fn runtime_expression<'a>(
         .unwrap()
 }
 
+/// Transport for the OOPIF (out-of-process iframe) parity tests. Records every
+/// `executeCdp` request (so the `target` routing can be asserted) and serves a
+/// two-frame topology: a top-level document with no in-process iframe children
+/// plus an OOPIF child session (`CHILD-1`) that owns a single button.
+#[derive(Default)]
+struct OopifBridgeTransport {
+    calls: Mutex<Vec<(String, Value)>>,
+}
+
+impl OopifBridgeTransport {
+    /// The `target.sessionId` an `executeCdp` request was addressed to (the
+    /// OOPIF child session), or `None` for a top-level (`{ tabId }`) command.
+    fn cdp_target_session(params: &Value) -> Option<String> {
+        params
+            .get("target")
+            .and_then(|target| target.get("sessionId"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    }
+}
+
+#[async_trait]
+impl ExtensionTransport for OopifBridgeTransport {
+    async fn request(&self, method: &str, params: Value) -> Result<Value> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((method.to_string(), params.clone()));
+        if method != "executeCdp" {
+            return Ok(match method {
+                "createTab" => json!({
+                    "tab": { "tabId": 42, "url": "https://shop.test/", "title": "Shop" }
+                }),
+                _ => Value::Null,
+            });
+        }
+        let cdp_method = params
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let command_params = params.get("commandParams").cloned().unwrap_or(Value::Null);
+        let session = Self::cdp_target_session(&params);
+        let backend_node_id = command_params.get("backendNodeId").and_then(Value::as_i64);
+        let node_id = command_params.get("nodeId").and_then(Value::as_i64);
+        // `DOM.getDocument` is used by two paths: DOM-CUA enumeration (depth -1,
+        // backendNodeId tree) and the Playwright resolver (depth 0, nodeId root).
+        let is_shallow_document = command_params.get("depth").and_then(Value::as_i64) == Some(0);
+        Ok(match (cdp_method, session.as_deref()) {
+            // Playwright runtime mount check + cross-origin action-point resolution.
+            ("Runtime.evaluate", _) => {
+                let expr = command_params
+                    .get("expression")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if expr.contains("__obuPlaywrightInjected") {
+                    json!({ "result": { "value": true } })
+                } else if expr.contains("resolveActionPoint") {
+                    // In-page resolution can't reach the cross-origin frame; this is
+                    // the signal that drives the cross-session CDP fallback.
+                    json!({ "result": { "value": { "resolution": "cross_origin_unreachable", "reason": "oopif" } } })
+                } else {
+                    json!({ "result": { "value": "" } })
+                }
+            }
+            ("Page.getLayoutMetrics", _) => json!({
+                "visualViewport": { "pageX": 0, "pageY": 0, "clientWidth": 800, "clientHeight": 600 }
+            }),
+            // Playwright resolver: top-level document root (nodeId form).
+            ("DOM.getDocument", None) if is_shallow_document => json!({
+                "root": { "nodeId": 1 }
+            }),
+            // Playwright resolver: OOPIF child document root (nodeId form).
+            ("DOM.getDocument", Some("CHILD-1")) if is_shallow_document => json!({
+                "root": { "nodeId": 800 }
+            }),
+            // Playwright resolver: querySelector on each session.
+            ("DOM.querySelector", None) => json!({ "nodeId": 2 }), // the <iframe>
+            ("DOM.querySelector", Some("CHILD-1")) => json!({ "nodeId": 810 }), // inner button
+            // Playwright resolver: describeNode -> frameId (top) / backendNodeId (child).
+            ("DOM.describeNode", None) if node_id == Some(2) => json!({
+                "node": { "frameId": "FRAME-1" }
+            }),
+            ("DOM.describeNode", Some("CHILD-1")) if node_id == Some(810) => json!({
+                "node": { "backendNodeId": 900 }
+            }),
+            // Playwright resolver: the iframe's root-frame box (by top-level nodeId).
+            ("DOM.getBoxModel", None) if node_id == Some(2) => json!({
+                "model": { "content": [40, 50, 140, 50, 140, 150, 40, 150], "width": 100, "height": 100 }
+            }),
+            // Top-level document: only the agent overlay, no in-process iframe nodes.
+            ("DOM.getDocument", None) => json!({
+                "root": { "nodeName": "HTML", "backendNodeId": 1, "children": [] }
+            }),
+            // OOPIF child document: one cross-origin button (backendNodeId 900).
+            ("DOM.getDocument", Some("CHILD-1")) => json!({
+                "root": {
+                    "nodeName": "HTML",
+                    "backendNodeId": 800,
+                    "children": [
+                        { "nodeName": "BUTTON", "backendNodeId": 900, "attributes": ["aria-label", "Buy"] }
+                    ]
+                }
+            }),
+            // The OOPIF button's frame-local box (branch 4c: frame-local geometry).
+            ("DOM.getBoxModel", Some("CHILD-1")) if backend_node_id == Some(900) => json!({
+                "model": { "content": [10, 10, 30, 10, 30, 30, 10, 30], "width": 20, "height": 20 }
+            }),
+            ("DOM.getContentQuads", Some("CHILD-1")) if backend_node_id == Some(900) => json!({
+                "quads": [[10, 10, 30, 10, 30, 30, 10, 30]]
+            }),
+            ("DOM.scrollIntoViewIfNeeded", _) => Value::Null,
+            // Frame-chain offset: the OOPIF's owning <iframe> sits at (40,50) in the
+            // root frame; resolved on the PARENT (top-level) session.
+            ("DOM.getFrameOwner", None) => json!({ "backendNodeId": 500 }),
+            ("DOM.getBoxModel", None) if backend_node_id == Some(500) => json!({
+                "model": { "content": [40, 50, 140, 50, 140, 150, 40, 150], "width": 100, "height": 100 }
+            }),
+            ("Input.dispatchMouseEvent", _) => json!({}),
+            _ => json!({}),
+        })
+    }
+}
+
+/// `onCDPEvent` payload for an OOPIF `Target.attachedToTarget` under `tab_id`,
+/// matching the shape the extension forwards (child id in `params.sessionId`,
+/// owning tab in `source.tabId`).
+fn oopif_attached_event(tab_id: i64, child_session: &str, frame_id: &str) -> Value {
+    json!({
+        "session_id": "session",
+        "source": { "tabId": tab_id },
+        "method": "Target.attachedToTarget",
+        "params": {
+            "sessionId": child_session,
+            "waitingForDebugger": false,
+            "targetInfo": { "targetId": frame_id, "type": "iframe", "url": "https://oop.test/inner" }
+        }
+    })
+}
+
+fn oopif_ctx() -> BackendRequestContext {
+    BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+        trusted_kernel_generation: None,
+    }
+}
+
+/// Count OOPIF-tagged nodes in a fresh visible-DOM snapshot. The session map is
+/// `pub(crate)`, so the integration test observes its state through the public
+/// snapshot path: an OOPIF session is enumerated iff it is in the map.
+async fn oopif_node_count(backend: &WebExtensionBackend, ctx: &BackendRequestContext) -> usize {
+    let snapshot = backend
+        .cua_command_with_context(ctx, "dom_cua_get_visible_dom", json!({ "tab_id": "42" }))
+        .await
+        .unwrap();
+    snapshot["nodes"]
+        .as_array()
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter(|node| node["session_id"] == "CHILD-1")
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+#[tokio::test]
+async fn webext_forwarded_attach_and_detach_events_drive_the_oopif_session_map() {
+    let transport = Arc::new(OopifBridgeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = oopif_ctx();
+    backend
+        .create_tab_with_context(&ctx, Some("https://shop.test/".into()))
+        .await
+        .unwrap();
+
+    // No OOPIF nodes until the extension forwards an attach event.
+    assert_eq!(oopif_node_count(&backend, &ctx).await, 0);
+
+    backend.handle_notification("onCDPEvent", oopif_attached_event(42, "CHILD-1", "FRAME-1"));
+    assert_eq!(
+        oopif_node_count(&backend, &ctx).await,
+        1,
+        "attachedToTarget should add the OOPIF session to the map"
+    );
+
+    // A detach for the child prunes it back out.
+    backend.handle_notification(
+        "onCDPEvent",
+        json!({
+            "session_id": "session",
+            "source": { "tabId": 42 },
+            "method": "Target.detachedFromTarget",
+            "params": { "sessionId": "CHILD-1" }
+        }),
+    );
+    assert_eq!(
+        oopif_node_count(&backend, &ctx).await,
+        0,
+        "detachedFromTarget should prune the OOPIF session from the map"
+    );
+}
+
+#[tokio::test]
+async fn webext_dom_cua_snapshot_enumerates_oopif_nodes_via_child_session() {
+    let transport = Arc::new(OopifBridgeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = oopif_ctx();
+    backend
+        .create_tab_with_context(&ctx, Some("https://shop.test/".into()))
+        .await
+        .unwrap();
+    backend.handle_notification("onCDPEvent", oopif_attached_event(42, "CHILD-1", "FRAME-1"));
+
+    let snapshot = backend
+        .cua_command_with_context(&ctx, "dom_cua_get_visible_dom", json!({ "tab_id": "42" }))
+        .await
+        .unwrap();
+
+    // The cross-origin button is in the snapshot, tagged with its owning session.
+    let nodes = snapshot["nodes"].as_array().expect("nodes array");
+    let oopif_node = nodes
+        .iter()
+        .find(|node| node["session_id"] == "CHILD-1")
+        .expect("OOPIF node must be enumerated into the snapshot");
+    assert_eq!(oopif_node["node_id"], "900");
+
+    // Its document was fetched on the CHILD-1 session, not the top-level tab.
+    let calls = transport.calls.lock().unwrap();
+    assert!(
+        calls.iter().any(|(method, params)| {
+            method == "executeCdp"
+                && params["method"] == "DOM.getDocument"
+                && params["target"]["sessionId"] == "CHILD-1"
+        }),
+        "OOPIF DOM.getDocument must route to the child session"
+    );
+}
+
+#[tokio::test]
+async fn webext_dom_cua_click_routes_geometry_to_oopif_session_and_composes_offset() {
+    let transport = Arc::new(OopifBridgeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = oopif_ctx();
+    backend
+        .create_tab_with_context(&ctx, Some("https://shop.test/".into()))
+        .await
+        .unwrap();
+    backend.handle_notification("onCDPEvent", oopif_attached_event(42, "CHILD-1", "FRAME-1"));
+
+    backend
+        .cua_command_with_context(&ctx, "dom_cua_get_visible_dom", json!({ "tab_id": "42" }))
+        .await
+        .unwrap();
+    let result = backend
+        .cua_command_with_context(
+            &ctx,
+            "dom_cua_click",
+            json!({ "tab_id": "42", "node_id": "900" }),
+        )
+        .await
+        .unwrap();
+
+    // Frame-local centroid (20,20) + the <iframe>'s root-frame content top-left
+    // (40,50) = (60,70). Branch 4c: OOPIF quads are frame-local, so the click path
+    // composes oopif_root_offset before dispatching on the top-level session.
+    assert_eq!(result["point"]["x"], 60.0);
+    assert_eq!(result["point"]["y"], 70.0);
+
+    let calls = transport.calls.lock().unwrap();
+    // Geometry routed to the OOPIF session.
+    assert!(
+        calls.iter().any(|(method, params)| {
+            method == "executeCdp"
+                && params["method"] == "DOM.getContentQuads"
+                && params["target"]["sessionId"] == "CHILD-1"
+        }),
+        "getContentQuads must route to the OOPIF child session"
+    );
+    // Frame-owner offset resolved on the PARENT (top-level) session.
+    assert!(
+        calls.iter().any(|(method, params)| {
+            method == "executeCdp"
+                && params["method"] == "DOM.getFrameOwner"
+                && params["target"].get("sessionId").is_none()
+        }),
+        "DOM.getFrameOwner must resolve on the top-level (parent) session"
+    );
+    // The click dispatched on the top-level tab at the composed point.
+    let press = calls
+        .iter()
+        .find(|(method, params)| {
+            method == "executeCdp"
+                && params["method"] == "Input.dispatchMouseEvent"
+                && params["commandParams"]["type"] == "mousePressed"
+        })
+        .expect("a mousePressed event should be dispatched");
+    assert_eq!(press.1["commandParams"]["x"], 60.0);
+    assert_eq!(press.1["commandParams"]["y"], 70.0);
+}
+
+#[tokio::test]
+async fn webext_playwright_cross_origin_click_routes_through_child_session() {
+    let transport = Arc::new(OopifBridgeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = oopif_ctx();
+    backend
+        .create_tab_with_context(&ctx, Some("https://shop.test/".into()))
+        .await
+        .unwrap();
+    backend.handle_notification("onCDPEvent", oopif_attached_event(42, "CHILD-1", "FRAME-1"));
+
+    backend
+        .playwright_command_with_context(
+            &ctx,
+            "playwright_locator_click",
+            json!({
+                "tab_id": "42",
+                "selector": "iframe >> internal:control=enter-frame >> #buy"
+            }),
+        )
+        .await
+        .unwrap();
+
+    let calls = transport.calls.lock().unwrap();
+    // The inner element is resolved on the OOPIF child session.
+    assert!(
+        calls.iter().any(|(method, params)| {
+            method == "executeCdp"
+                && params["method"] == "DOM.querySelector"
+                && params["target"]["sessionId"] == "CHILD-1"
+        }),
+        "the inner selector must be queried on the OOPIF child session"
+    );
+    // Its geometry is read on the OOPIF child session.
+    assert!(
+        calls.iter().any(|(method, params)| {
+            method == "executeCdp"
+                && params["method"] == "DOM.getContentQuads"
+                && params["target"]["sessionId"] == "CHILD-1"
+        }),
+        "the inner element's quads must be read on the OOPIF child session"
+    );
+    // Frame-local centroid (20,20) + iframe root-frame top-left (40,50) = (60,70).
+    let press = calls
+        .iter()
+        .find(|(method, params)| {
+            method == "executeCdp"
+                && params["method"] == "Input.dispatchMouseEvent"
+                && params["commandParams"]["type"] == "mousePressed"
+        })
+        .expect("a mousePressed event should be dispatched");
+    assert_eq!(press.1["commandParams"]["x"], 60.0);
+    assert_eq!(press.1["commandParams"]["y"], 70.0);
+}
+
 #[derive(Default)]
 struct FakeTransport {
     calls: Mutex<Vec<(String, Value)>>,

@@ -1,5 +1,7 @@
 //! WebExtension/native-messaging browser backend.
 
+mod oopif;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -8,6 +10,7 @@ use async_trait::async_trait;
 use serde_json::{Map, Value, json};
 use tokio::sync::{Mutex, broadcast};
 
+use crate::backends::webext::oopif::WebextOopifSessionMap;
 use crate::backends::{BackendKind, BackendRequestContext, BrowserBackend, cdp::ensure_injected};
 use crate::error::{HostError, Result};
 use crate::methods;
@@ -43,6 +46,12 @@ pub struct WebExtensionBackend {
     extension_diagnostics: Arc<StdMutex<Value>>,
     visible_dom_nodes: Arc<Mutex<VisibleDomSnapshotStore>>,
     virtual_clipboard_scripts: Arc<Mutex<HashMap<String, String>>>,
+    /// OOPIF (out-of-process iframe) child sessions, populated from the
+    /// `Target.attachedToTarget` events the extension forwards as `onCDPEvent`.
+    /// A `std` mutex (not `tokio`) because the ingress — `handle_notification` —
+    /// is synchronous; readers clone what they need out and drop the guard before
+    /// any `.await`, so the lock is never held across a suspension point.
+    oopif_sessions: Arc<StdMutex<WebextOopifSessionMap>>,
 }
 
 impl WebExtensionBackend {
@@ -60,6 +69,7 @@ impl WebExtensionBackend {
             extension_diagnostics: Arc::new(StdMutex::new(json!({}))),
             visible_dom_nodes: Arc::new(Mutex::new(VisibleDomSnapshotStore::default())),
             virtual_clipboard_scripts: Arc::new(Mutex::new(HashMap::new())),
+            oopif_sessions: Arc::new(StdMutex::new(WebextOopifSessionMap::default())),
         }
     }
 
@@ -124,12 +134,27 @@ impl WebExtensionBackend {
         if !matches!(method.as_str(), "onCDPEvent" | "onDownloadChange") {
             return;
         }
+        // OOPIF auto-attach bookkeeping: `Target.attachedToTarget` /
+        // `Target.detachedFromTarget` are forwarded as `onCDPEvent` and carry the
+        // owning `tabId` in `source`, so the session map keys by tab directly.
+        // Applied before the broadcast so the map is current independent of any
+        // event subscriber.
+        if method == "onCDPEvent"
+            && let Ok(mut map) = self.oopif_sessions.lock()
+        {
+            map.apply_cdp_event(&params);
+        }
         let _ = self.event_tx.send(ExtensionNotification { method, params });
     }
 
     /// Shared per-backend service registry.
     pub fn registry(&self) -> &Arc<ServiceRegistry> {
         &self.registry
+    }
+
+    /// OOPIF child-session map, populated from forwarded `attachedToTarget` events.
+    pub(crate) fn oopif_sessions(&self) -> &Arc<StdMutex<WebextOopifSessionMap>> {
+        &self.oopif_sessions
     }
 
     /// Recent handled native-dialog traces.
@@ -855,6 +880,49 @@ async fn execute_cdp_raw_with_options(
         .await
 }
 
+/// Execute a CDP command addressed to a specific OOPIF child session.
+///
+/// WebExtension `executeCdp` is addressed by `{ tabId, sessionId }`: the
+/// extension passes that `target` straight to `chrome.debugger.sendCommand`,
+/// which routes to the flattened child session. The owning `tabId` is recovered
+/// from the OOPIF session map (the shared runtime hands the backend only the
+/// child `session_id`). Geometry-only commands never open dialogs, so this skips
+/// the dialog-policy loop.
+async fn execute_cdp_on_session_with_context(
+    backend: &WebExtensionBackend,
+    ctx: &BackendRequestContext,
+    cdp_session_id: &str,
+    method: &str,
+    params: Value,
+) -> Result<Value> {
+    backend.ensure_active()?;
+    WebExtensionBackend::require_session_context(ctx, "executeCdp")?;
+    let tab_id = backend
+        .oopif_sessions()
+        .lock()
+        .map_err(|_| HostError::Protocol("OOPIF session map poisoned".into()))?
+        .tab_for_session(cdp_session_id)
+        .ok_or_else(|| {
+            HostError::Protocol(format!(
+                "no attached tab owns OOPIF session {cdp_session_id}"
+            ))
+        })?;
+    let mut request = Map::new();
+    request.insert("session_id".into(), json!(ctx.session_id.clone()));
+    request.insert("turn_id".into(), json!(ctx.turn_id.clone()));
+    request.insert(
+        "target".into(),
+        json!({ "tabId": tab_id, "sessionId": cdp_session_id }),
+    );
+    request.insert("method".into(), Value::String(method.to_string()));
+    request.insert("commandParams".into(), params);
+    request.insert("timeoutMs".into(), json!(ctx.client_timeout_ms));
+    backend
+        .transport("executeCdp")?
+        .request("executeCdp", Value::Object(request))
+        .await
+}
+
 async fn execute_cdp_with_dialog_policy(
     backend: &WebExtensionBackend,
     ctx: &BackendRequestContext,
@@ -1105,7 +1173,49 @@ impl PlaywrightRuntimeBackend for WebExtensionBackend {
         )
         .await
     }
+
+    async fn playwright_top_level_session(&self, tab_id: &str) -> Option<String> {
+        // WebExtension has no explicit top-level CDP session id — `chrome.debugger`
+        // addresses the page by `tabId` alone. Encode the tab in a sentinel so
+        // `execute_playwright_cdp_on_session` can route a top-level command by
+        // `{ tabId }` while OOPIF child commands route by `{ tabId, sessionId }`.
+        let parsed = parse_tab_id(tab_id).ok()?;
+        Some(format!("{WEBEXT_TOP_SESSION_PREFIX}{parsed}"))
+    }
+
+    async fn playwright_oopif_session_for_frame(&self, frame_id: &str) -> Option<String> {
+        // CDP target ids are unique per browser process, so a frameId resolves to
+        // at most one OOPIF session regardless of tab; scan all tabs' sessions.
+        self.oopif_sessions()
+            .lock()
+            .ok()?
+            .session_for_any_frame(frame_id)
+    }
+
+    async fn execute_playwright_cdp_on_session(
+        &self,
+        ctx: &BackendRequestContext,
+        session_id: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        match session_id.strip_prefix(WEBEXT_TOP_SESSION_PREFIX) {
+            // Top-level: route by tabId only (no child sessionId).
+            Some(tab_id) => {
+                execute_cdp_raw_with_context(self, ctx, parse_tab_id(tab_id)?, method, params).await
+            }
+            // OOPIF child session: route by { tabId, sessionId }.
+            None => {
+                execute_cdp_on_session_with_context(self, ctx, session_id, method, params).await
+            }
+        }
+    }
 }
+
+/// Sentinel prefix for the WebExtension "top-level session" placeholder. The
+/// page has no real CDP session id in the extension transport, so the tab id is
+/// carried here and decoded by `execute_playwright_cdp_on_session`.
+const WEBEXT_TOP_SESSION_PREFIX: &str = "webext-top:";
 
 #[async_trait]
 impl PlaywrightTextInputBackend for WebExtensionBackend {
@@ -1740,6 +1850,121 @@ impl DomCuaRuntimeBackend for WebExtensionBackend {
             .await
             .forget_snapshot(ctx, tab_id, observation_id);
     }
+
+    async fn oopif_sessions_for_tab(&self, tab_id: &str) -> Vec<String> {
+        let Ok(parsed_tab_id) = parse_tab_id(tab_id) else {
+            return Vec::new();
+        };
+        self.oopif_sessions()
+            .lock()
+            .map(|map| map.sessions_for_tab(parsed_tab_id))
+            .unwrap_or_default()
+    }
+
+    async fn execute_dom_cdp_on_session(
+        &self,
+        ctx: &BackendRequestContext,
+        session_id: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        execute_cdp_on_session_with_context(self, ctx, session_id, method, params).await
+    }
+
+    async fn session_for_visible_dom_node(
+        &self,
+        ctx: &BackendRequestContext,
+        tab_id: &str,
+        observation_id: Option<&str>,
+        node_id: &str,
+    ) -> Option<String> {
+        self.visible_dom_nodes
+            .lock()
+            .await
+            .session_for_node(ctx, tab_id, observation_id, node_id)
+    }
+
+    async fn oopif_root_offset(
+        &self,
+        ctx: &BackendRequestContext,
+        session_id: &str,
+    ) -> Result<Option<(f64, f64)>> {
+        // The owning tab is constant for an OOPIF subtree; resolve it once.
+        let Some(tab_id) = self
+            .oopif_sessions()
+            .lock()
+            .ok()
+            .and_then(|map| map.tab_for_session(session_id))
+        else {
+            return Ok(None);
+        };
+        let mut offset = (0.0_f64, 0.0_f64);
+        let mut current = session_id.to_string();
+        for _ in 0..WebextOopifSessionMap::max_frame_depth() {
+            let Some((frame_id, parent_session)) = self
+                .oopif_sessions()
+                .lock()
+                .ok()
+                .and_then(|map| map.frame_and_parent(tab_id, &current))
+            else {
+                break;
+            };
+            // The owning `<iframe>` element lives in the PARENT frame. In webext
+            // the parent is either another OOPIF session (`Some`) or the top-level
+            // page — which has no explicit CDP session id and is addressed by
+            // `tabId` alone (`None`). Resolve the owner box on whichever that is.
+            let owner = execute_oopif_parent_cdp(
+                self,
+                ctx,
+                tab_id,
+                parent_session.as_deref(),
+                "DOM.getFrameOwner",
+                json!({ "frameId": frame_id }),
+            )
+            .await?;
+            let Some(backend_node_id) = owner.get("backendNodeId").and_then(Value::as_i64) else {
+                break;
+            };
+            let box_model = execute_oopif_parent_cdp(
+                self,
+                ctx,
+                tab_id,
+                parent_session.as_deref(),
+                "DOM.getBoxModel",
+                json!({ "backendNodeId": backend_node_id }),
+            )
+            .await?;
+            if let Some(rect) = dom_cua::rect_from_box_model(&box_model) {
+                offset.0 += rect.x;
+                offset.1 += rect.y;
+            }
+            // Walk up. A `None` parent is the top-level page: the chain ends there.
+            let Some(parent_session) = parent_session else {
+                break;
+            };
+            current = parent_session;
+        }
+        Ok(Some(offset))
+    }
+}
+
+/// Run a DOM command on an OOPIF frame's PARENT, routing by the parent's nature:
+/// an OOPIF parent session (`Some`, `{ tabId, sessionId }`) or the top-level page
+/// (`None`, `{ tabId }` — webext has no explicit top-level CDP session id).
+async fn execute_oopif_parent_cdp(
+    backend: &WebExtensionBackend,
+    ctx: &BackendRequestContext,
+    tab_id: i64,
+    parent_session: Option<&str>,
+    method: &str,
+    params: Value,
+) -> Result<Value> {
+    match parent_session {
+        Some(session_id) => {
+            execute_cdp_on_session_with_context(backend, ctx, session_id, method, params).await
+        }
+        None => execute_cdp_raw_with_context(backend, ctx, tab_id, method, params).await,
+    }
 }
 
 async fn write_virtual_clipboard_items(
@@ -2071,6 +2296,13 @@ async fn forget_tab_state(
         .lock()
         .await
         .forget_tab(ctx, tab_id);
+    // Drop any OOPIF child sessions tracked for this tab; detach can race ahead of
+    // (or supersede) the `Target.detachedFromTarget` events that would prune them.
+    if let Ok(parsed_tab_id) = parse_tab_id(tab_id)
+        && let Ok(mut map) = backend.oopif_sessions().lock()
+    {
+        map.forget_tab(parsed_tab_id);
+    }
     let key = dom_cua::snapshot_key(ctx, tab_id);
     backend.virtual_clipboard_scripts.lock().await.remove(&key);
 }

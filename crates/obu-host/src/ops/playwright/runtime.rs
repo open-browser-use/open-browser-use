@@ -61,9 +61,12 @@ pub(crate) trait PlaywrightRuntimeBackend {
         None
     }
 
-    /// Run a CDP command on a specific session (top-level or OOPIF). Default: unsupported.
+    /// Run a CDP command on a specific session (top-level or OOPIF). Default:
+    /// unsupported. `ctx` carries the session/turn the WebExtension transport
+    /// needs to address `executeCdp`; the raw-socket CDP backend ignores it.
     async fn execute_playwright_cdp_on_session(
         &self,
+        _ctx: &BackendRequestContext,
         _session_id: &str,
         _method: &str,
         _params: Value,
@@ -380,7 +383,7 @@ where
     // A selector that crosses into a cross-origin (OOPIF) frame can't be resolved
     // in-page: try the cross-session CDP path before surfacing the typed error.
     if point.get("resolution").and_then(Value::as_str) == Some(RESOLUTION_CROSS_ORIGIN_UNREACHABLE)
-        && let Some(xy) = resolve_cross_origin_action_point(backend, tab_id, selector).await?
+        && let Some(xy) = resolve_cross_origin_action_point(backend, ctx, tab_id, selector).await?
     {
         return Ok(xy);
     }
@@ -401,6 +404,7 @@ where
 ///   the top-level session) is added to compose the final point.
 async fn resolve_cross_origin_action_point<B>(
     backend: &B,
+    ctx: &BackendRequestContext,
     tab_id: &str,
     selector: &str,
 ) -> Result<Option<(f64, f64)>>
@@ -416,7 +420,7 @@ where
 
     // Viewport (top-level) for the final intersection/centroid math.
     let metrics = backend
-        .execute_playwright_cdp_on_session(&top_session, "Page.getLayoutMetrics", json!({}))
+        .execute_playwright_cdp_on_session(ctx, &top_session, "Page.getLayoutMetrics", json!({}))
         .await?;
     let Ok(viewport) = dom_cua::viewport_rect_from_layout_metrics(&metrics) else {
         return Ok(None);
@@ -425,7 +429,7 @@ where
     // Resolve the iframe element on the top-level session -> its content frameId.
     // The iframe's top-level node_id is reused below for its root-frame box.
     let Some((frame_id, iframe_node_id)) =
-        query_frame_id(backend, &top_session, &frame_selector).await?
+        query_frame_id(backend, ctx, &top_session, &frame_selector).await?
     else {
         return Ok(None);
     };
@@ -435,7 +439,7 @@ where
 
     // Resolve the inner element on the OOPIF session -> its backendNodeId.
     let Some(backend_node_id) =
-        query_backend_node_id(backend, &oopif_session, &inner_selector).await?
+        query_backend_node_id(backend, ctx, &oopif_session, &inner_selector).await?
     else {
         return Ok(None);
     };
@@ -443,6 +447,7 @@ where
     // Geometry on the OOPIF session (branch 4c: FRAME-LOCAL quads).
     let quads = backend
         .execute_playwright_cdp_on_session(
+            ctx,
             &oopif_session,
             "DOM.getContentQuads",
             json!({ "backendNodeId": backend_node_id }),
@@ -456,6 +461,7 @@ where
     // content top-left (resolved on the top-level session) so the dispatch lands.
     let iframe_box = backend
         .execute_playwright_cdp_on_session(
+            ctx,
             &top_session,
             "DOM.getBoxModel",
             json!({ "nodeId": iframe_node_id }),
@@ -473,17 +479,19 @@ where
 /// root-frame box-model (branch 4c frame-offset composition).
 async fn query_frame_id<B>(
     backend: &B,
+    ctx: &BackendRequestContext,
     session: &str,
     frame_selector: &str,
 ) -> Result<Option<(String, i64)>>
 where
     B: PlaywrightRuntimeBackend + Sync,
 {
-    let Some(node_id) = query_node_id(backend, session, frame_selector).await? else {
+    let Some(node_id) = query_node_id(backend, ctx, session, frame_selector).await? else {
         return Ok(None);
     };
     let described = backend
         .execute_playwright_cdp_on_session(
+            ctx,
             session,
             "DOM.describeNode",
             json!({ "nodeId": node_id }),
@@ -497,15 +505,21 @@ where
 }
 
 /// `DOM.querySelector` then read the matched node's `backendNodeId`.
-async fn query_backend_node_id<B>(backend: &B, session: &str, selector: &str) -> Result<Option<i64>>
+async fn query_backend_node_id<B>(
+    backend: &B,
+    ctx: &BackendRequestContext,
+    session: &str,
+    selector: &str,
+) -> Result<Option<i64>>
 where
     B: PlaywrightRuntimeBackend + Sync,
 {
-    let Some(node_id) = query_node_id(backend, session, selector).await? else {
+    let Some(node_id) = query_node_id(backend, ctx, session, selector).await? else {
         return Ok(None);
     };
     let described = backend
         .execute_playwright_cdp_on_session(
+            ctx,
             session,
             "DOM.describeNode",
             json!({ "nodeId": node_id }),
@@ -520,12 +534,17 @@ where
 /// `DOM.getDocument` (depth 0) for the root node id, then `DOM.querySelector`.
 /// Returns `Ok(None)` if the selector matches nothing OR is not valid CSS (the
 /// CDP call erroring is treated as "unresolvable", not fatal).
-async fn query_node_id<B>(backend: &B, session: &str, selector: &str) -> Result<Option<i64>>
+async fn query_node_id<B>(
+    backend: &B,
+    ctx: &BackendRequestContext,
+    session: &str,
+    selector: &str,
+) -> Result<Option<i64>>
 where
     B: PlaywrightRuntimeBackend + Sync,
 {
     let document = backend
-        .execute_playwright_cdp_on_session(session, "DOM.getDocument", json!({ "depth": 0 }))
+        .execute_playwright_cdp_on_session(ctx, session, "DOM.getDocument", json!({ "depth": 0 }))
         .await?;
     let Some(root_node_id) = document
         .get("root")
@@ -536,6 +555,7 @@ where
     };
     match backend
         .execute_playwright_cdp_on_session(
+            ctx,
             session,
             "DOM.querySelector",
             json!({ "nodeId": root_node_id, "selector": selector }),
@@ -1889,6 +1909,7 @@ mod oopif_resolver_tests {
 
         async fn execute_playwright_cdp_on_session(
             &self,
+            _ctx: &BackendRequestContext,
             session_id: &str,
             method: &str,
             _params: Value,
@@ -1921,11 +1942,21 @@ mod oopif_resolver_tests {
         }
     }
 
+    fn ctx() -> BackendRequestContext {
+        BackendRequestContext {
+            session_id: Some("s".into()),
+            turn_id: Some("t".into()),
+            client_timeout_ms: None,
+            trusted_kernel_generation: None,
+        }
+    }
+
     #[tokio::test]
     async fn cross_origin_selector_resolves_to_inner_point() {
         let fake = FakeOopifBackend::new();
         let point = resolve_cross_origin_action_point(
             &fake,
+            &ctx(),
             "t",
             "iframe >> internal:control=enter-frame >> #inner",
         )
@@ -1943,6 +1974,7 @@ mod oopif_resolver_tests {
         };
         let point = resolve_cross_origin_action_point(
             &fake,
+            &ctx(),
             "t",
             "iframe >> internal:control=enter-frame >> #inner",
         )

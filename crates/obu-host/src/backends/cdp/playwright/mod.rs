@@ -84,6 +84,7 @@ impl PlaywrightRuntimeBackend for CdpBackend {
 
     async fn execute_playwright_cdp_on_session(
         &self,
+        _ctx: &BackendRequestContext,
         session_id: &str,
         method: &str,
         params: Value,
