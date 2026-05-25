@@ -19,6 +19,7 @@
     "check:error-codes": "node scripts/generate-error-codes.mjs --check",
     "generate:control-vocab": "tsx scripts/generate-control-vocab.mjs",
     "check:control-vocab": "tsx scripts/generate-control-vocab.mjs --check",
+    "check:state-continuity": "cargo test -p obu-host --test e2e_node_repl_to_webextension fake_webextension_node_repl_preserves_shopping_state_across_cells",
     "make:extension-store-artifact": "node scripts/make-extension-store-artifact.mjs",
     "fetch:node-runtime": "node scripts/fetch-node-runtime.mjs",
     "make:curl-artifact": "node scripts/make-curl-artifact.mjs",
