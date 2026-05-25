@@ -1105,6 +1105,8 @@ where
     .await?;
     let dom_snapshot_text = match value.as_str() {
         Some(text) => super::aria_prune::prune_aria_snapshot(text),
+        // Non-string value (error / unexpected eval shape) → empty snapshot,
+        // matching the SDK's `typeof … === "string" ? … : ""` coercion.
         None => String::new(),
     };
     Ok(json!({ "domSnapshot": dom_snapshot_text, "source": "playwright_dom_snapshot" }))

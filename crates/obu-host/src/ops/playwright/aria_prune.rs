@@ -204,4 +204,13 @@ mod tests {
     fn empty_input_returns_empty() {
         assert_eq!(prune_aria_snapshot(""), "");
     }
+
+    // Pins the documented limitation: a literal ` [ref=` inside an accessible
+    // name is mis-stripped (the name is truncated). Asserted so the behavior is
+    // intentional and any future change is regression-visible.
+    #[test]
+    fn ref_token_inside_accessible_name_is_truncated_known_limitation() {
+        let input = "- button \"Press [ref=here]\" [ref=e5]";
+        assert_eq!(prune_aria_snapshot(input), "- button \"Press\"");
+    }
 }
