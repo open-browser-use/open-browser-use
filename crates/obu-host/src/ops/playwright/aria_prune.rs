@@ -1,12 +1,13 @@
 //! Token-lean post-processing of Playwright `mode:"ai"` ARIA snapshots.
 //!
-//! Mirrors Codex Desktop's `AL()`: drop unnamed `img` nodes, collapse
-//! semantically-empty `generic`/`listitem`/`group` wrappers (hoisting their
-//! children), and strip `[ref=…]`/`[cursor=…]` annotations. OBU addresses
-//! elements via Playwright locators / dom_cua node ids, never ARIA refs, so
-//! stripping refs is lossless for the model-facing snapshot.
+//! Drops unnamed `img` nodes, collapses semantically-empty
+//! `generic`/`listitem`/`group` wrappers (hoisting their children), and strips
+//! `[ref=…]`/`[cursor=…]` annotations. OBU addresses elements via Playwright
+//! locators / dom_cua node ids, never ARIA refs, so stripping refs is lossless
+//! for the model-facing snapshot. Output is normalized to 2-space indentation
+//! (matching the `mode:"ai"` producer) and blank lines are dropped.
 //!
-//! Known limitations (both shared with Codex's regex-based `AL()`):
+//! Known limitations:
 //! - An accessible name containing the literal ` [ref=` is mis-stripped.
 //! - Pruning recurses to tree depth; a pathologically deep tree could overflow.
 
@@ -17,6 +18,7 @@ struct Node {
 
 /// Prune a `mode:"ai"` ARIA snapshot. Non-snapshot text is returned unchanged.
 pub(crate) fn prune_aria_snapshot(text: &str) -> String {
+    // Only transform genuine snapshots; pass error/status strings through unchanged.
     let looks_like_snapshot =
         text.starts_with("- ") || text.contains("\n- ") || text.contains("\n  - ");
     if !looks_like_snapshot {
@@ -57,8 +59,8 @@ fn parse_forest(lines: &[(i64, &str)], pos: &mut usize, parent_indent: i64) -> V
     out
 }
 
-/// Post-order prune mirroring Codex `k1()`: drop unnamed img, collapse
-/// generic/listitem/group wrappers (hoist children), strip ref/cursor.
+/// Post-order prune: drop unnamed img, collapse generic/listitem/group
+/// wrappers (hoist children), strip ref/cursor annotations.
 fn prune_forest(nodes: Vec<Node>) -> Vec<Node> {
     let mut out = Vec::new();
     for node in nodes {
@@ -87,7 +89,7 @@ fn serialize_forest(nodes: &[Node], depth: usize, out: &mut Vec<String>) {
     }
 }
 
-/// Remove ` [ref=…]` and ` [cursor=…]` annotations (Codex `PL()`).
+/// Remove ` [ref=…]` and ` [cursor=…]` annotations.
 fn strip_annotations(line: &str) -> String {
     let without_ref = remove_annotation(line, " [ref=");
     remove_annotation(&without_ref, " [cursor=")
@@ -115,7 +117,6 @@ fn remove_annotation(line: &str, marker: &str) -> String {
 
 /// True when `line` is `- <role>` followed only by ` [..]` groups and an
 /// optional trailing `:` (i.e. a bare wrapper with no accessible name).
-/// Mirrors Codex `NL()` (img) / `DL()` (generic|listitem|group).
 fn is_bare_role(line: &str, role: &str) -> bool {
     let Some(rest) = line.strip_prefix("- ") else {
         return false;
@@ -192,5 +193,15 @@ mod tests {
         let input = "- banner:\n  - generic:\n    - img\n    - link \"Home\" [ref=e2] [cursor=pointer]\n- main:\n  - heading \"Title\" [level=1]\n  - list:\n    - listitem:\n      - link \"One\" [ref=e7]\n    - listitem:\n      - link \"Two\" [ref=e8]\n  - img \"Chart\"";
         let expected = "- banner:\n  - link \"Home\"\n- main:\n  - heading \"Title\" [level=1]\n  - list:\n    - link \"One\"\n    - link \"Two\"\n  - img \"Chart\"";
         assert_eq!(prune_aria_snapshot(input), expected);
+    }
+
+    #[test]
+    fn prunes_to_empty_when_all_nodes_dropped() {
+        assert_eq!(prune_aria_snapshot("- img"), "");
+    }
+
+    #[test]
+    fn empty_input_returns_empty() {
+        assert_eq!(prune_aria_snapshot(""), "");
     }
 }
