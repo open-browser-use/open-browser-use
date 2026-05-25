@@ -42,6 +42,39 @@ use crate::socket::{Listener, unix::UnixSockListener};
 type NativeReader = FramedRead<Stdin, FrameCodec>;
 type NativeWriter = FramedWrite<Stdout, FrameCodec>;
 
+/// Closed projection of a pending extension request's reconcile state. Derived
+/// from the request's timeout evidence; surfaced in transport diagnostics so the
+/// agent can distinguish "timed out, may still complete late" from a hard fail.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ReconcileState {
+    /// In flight, not yet timed out.
+    InFlight,
+    /// Timed out; the responder was dropped and a late completion may still
+    /// arrive and be recorded in diagnostics. Re-observe before retrying.
+    TimedOutPendingReconcile,
+}
+
+impl ReconcileState {
+    /// Every variant.
+    pub const ALL: [ReconcileState; 2] = [Self::InFlight, Self::TimedOutPendingReconcile];
+
+    /// Stable snake_case string used in transport diagnostics.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::InFlight => "in_flight",
+            Self::TimedOutPendingReconcile => "timed_out_pending_reconcile",
+        }
+    }
+
+    /// Project the state from a pending request's timeout evidence.
+    fn from_pending(timed_out_at_unix_ms: Option<u64>) -> Self {
+        match timed_out_at_unix_ms {
+            Some(_) => Self::TimedOutPendingReconcile,
+            None => Self::InFlight,
+        }
+    }
+}
+
 const MIN_EXTENSION_VERSION: &str = "0.1.0";
 const DEFAULT_EXTENSION_REQUEST_TIMEOUT_MS: u64 = 30_000;
 const MAX_EXTENSION_TRANSPORT_DIAGNOSTICS: usize = 20;
@@ -383,6 +416,7 @@ impl NativeExtensionTransport {
                     "started_at_unix_ms": pending.started_at_unix_ms,
                     "timeout_ms": pending.timeout_ms,
                     "timed_out_at_unix_ms": pending.timed_out_at_unix_ms,
+                    "reconcile_state": ReconcileState::from_pending(pending.timed_out_at_unix_ms).as_str(),
                     "awaiting_late_completion": pending
                         .responder
                         .as_ref()
@@ -805,6 +839,17 @@ mod tests {
         assert_eq!(closed["request_id"], 9);
         assert_eq!(closed["method"], "goto");
         assert_eq!(closed["error_message"], "native port closed");
+    }
+
+    #[test]
+    fn reconcile_state_strings_are_closed_and_stable() {
+        use super::ReconcileState;
+        assert_eq!(ReconcileState::ALL.len(), 2);
+        assert_eq!(ReconcileState::InFlight.as_str(), "in_flight");
+        assert_eq!(
+            ReconcileState::TimedOutPendingReconcile.as_str(),
+            "timed_out_pending_reconcile"
+        );
     }
 
     fn pending_request(method: &str) -> PendingExtensionRequest {

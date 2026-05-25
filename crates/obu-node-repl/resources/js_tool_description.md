@@ -102,6 +102,11 @@ Fast browser work rules:
 - Native `alert` and `beforeunload` dialogs on controlled tabs are auto-accepted.
   Native `confirm` and `prompt` dialogs are dismissed and fail the operation with
   `ObuError.code === -1203` and `error.data.code === "dialog_requires_decision"`.
+- If a browser call fails with a timeout, the extension request may still
+  complete late: it is recorded in transport diagnostics with
+  `reconcile_state: "timed_out_pending_reconcile"`. Re-observe page/tab state
+  (snapshot or a cheap locator read) before retrying the action, so a late
+  success is not duplicated.
 
 Safety confirmation taxonomy:
 - Handoff-required: payment submission, account deletion, irreversible purchase,
