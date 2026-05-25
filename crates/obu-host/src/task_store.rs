@@ -15,7 +15,7 @@ use anyhow::{Context, Result, bail};
 use obu_wire::runtime_dir::validate_owner_only_dir;
 use rusqlite::{Connection, OptionalExtension};
 
-use crate::task_lifecycle::{SessionTurnEvidence, TaskState, control};
+use crate::task_lifecycle::{ControlProjection, SessionTurnEvidence, TaskState};
 
 /// On-disk schema version for the durable task store.
 ///
@@ -504,8 +504,8 @@ pub struct CleanupOutcome {
 /// shutdown, repair, or explicit user-approved cleanup).
 fn browser_cleanup_authorized(evidence: &SessionTurnEvidence) -> bool {
     !matches!(
-        evidence.control_state.as_deref(),
-        Some(control::HUMAN_TAKEOVER) | Some(control::YIELDED)
+        evidence.control_state,
+        Some(ControlProjection::HumanTakeover) | Some(ControlProjection::Yielded)
     )
 }
 
@@ -1821,7 +1821,7 @@ mod tests {
         let (store, _dir) = open_temp_store();
         let task_id = store.create_task(default_new_task()).unwrap();
         let yielded = SessionTurnEvidence {
-            control_state: Some(control::YIELDED.into()),
+            control_state: Some(ControlProjection::Yielded),
             ..Default::default()
         };
         let cleanup = cancel_task(&store, &task_id, &yielded).unwrap();

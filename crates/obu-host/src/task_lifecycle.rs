@@ -168,9 +168,9 @@ fn allowed_transitions(state: TaskState) -> &'static [TaskState] {
 /// `resumeControlResult()`, session-lifecycle and turn-lifecycle strings) are
 /// not available to the host in Rust; they are *projected* onto the host
 /// through the [`control_state`](Self::control_state) carrier using the
-/// documented string values in [`control`]. For example, the SDK's
+/// documented variants of [`ControlProjection`]. For example, the SDK's
 /// `resumeControlResult().repair.status == "repair_required"` is surfaced to
-/// the host as `control_state == Some("repair_required")`.
+/// the host as `control_state == Some(ControlProjection::RepairRequired)`.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct SessionTurnEvidence {
     /// Id of the turn currently backing the task, if any. `None` means no turn
@@ -186,49 +186,73 @@ pub struct SessionTurnEvidence {
     /// enforces uniqueness at the store level); here a task whose segment is not
     /// the attached authority cannot be [`TaskState::Running`].
     pub segment_attached: bool,
-    /// Projected session/turn control state. See [`control`] for the accepted
-    /// values and the lifecycle truths they stand in for. `None` means no
-    /// special control state is asserted.
-    pub control_state: Option<String>,
+    /// Projected session/turn control state. See [`ControlProjection`] for the
+    /// accepted values and the lifecycle truths they stand in for. `None` means
+    /// no special control state is asserted.
+    pub control_state: Option<ControlProjection>,
 }
 
 impl SessionTurnEvidence {
     /// Evidence projecting that a human currently holds session control
-    /// (`control_state == "human_takeover"`). All other fields default.
+    /// (`control_state == Some(ControlProjection::HumanTakeover)`). All other
+    /// fields default.
     ///
     /// While a human holds control, `cancel_task` records a terminal task
     /// state but must NOT release browser resources (Finding 9).
     pub fn human_takeover() -> Self {
         Self {
-            control_state: Some(control::HUMAN_TAKEOVER.into()),
+            control_state: Some(ControlProjection::HumanTakeover),
             ..Default::default()
         }
     }
 }
 
-/// Documented [`SessionTurnEvidence::control_state`] string values.
+/// Host-side projection of session/turn lifecycle truth (Finding 8).
 ///
-/// These are the host-side projection of session/turn lifecycle truth. Each
-/// constant maps a richer SDK/session/turn condition onto a single string the
-/// host can carry and match (Finding 8).
-pub mod control {
-    /// Session control was handed to a human (SDK session lifecycle
-    /// `human_takeover` / an explicit human decision gate). Enables
-    /// [`super::TaskState::WaitingForHuman`].
-    pub const HUMAN_TAKEOVER: &str = "human_takeover";
-    /// Task voluntarily yielded: persisted session lifecycle `human_takeover`
-    /// **and** turn lifecycle `yielded`. Enables
-    /// [`super::TaskState::PausedYielded`].
-    pub const YIELDED: &str = "yielded";
-    /// Resumption in progress: session lifecycle `resuming { repairPlanId }`
-    /// plus a `resumeControlResult()`. Enables [`super::TaskState::Resuming`].
-    pub const RESUMING: &str = "resuming";
+/// **Not** a second source of truth: a closed, typed projection of the richer
+/// session/turn lifecycle that stays authoritative in the SDK/extension. Each
+/// variant stands in for a documented core lifecycle condition (see
+/// `docs/lifecycle-cross-layer-map.md`). The variant set is single-sourced from
+/// core's `SESSION_CONTROL_PROJECTIONS` and pinned by
+/// `control_vocab_contract::control_projection_vocab_matches_fixture`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ControlProjection {
+    /// Session control handed to a human. Enables [`TaskState::WaitingForHuman`].
+    HumanTakeover,
+    /// Task voluntarily yielded (session `human_takeover` + turn `yielded`).
+    /// Enables [`TaskState::PausedYielded`].
+    Yielded,
+    /// Resumption in progress (session `resuming { repairPlanId }`). Enables
+    /// [`TaskState::Resuming`].
+    Resuming,
     /// `resumeControlResult().repair.status == "repair_required"`. Enables
-    /// [`super::TaskState::RepairRequired`].
-    pub const REPAIR_REQUIRED: &str = "repair_required";
-    /// `resumeControlResult().status == "blocked"`. Enables
-    /// [`super::TaskState::Blocked`].
-    pub const BLOCKED: &str = "blocked";
+    /// [`TaskState::RepairRequired`].
+    RepairRequired,
+    /// `resumeControlResult().status == "blocked"`. Enables [`TaskState::Blocked`].
+    Blocked,
+}
+
+impl ControlProjection {
+    /// Every variant in declaration order; reused by tests and the vocab contract.
+    pub const ALL: [ControlProjection; 5] = [
+        Self::HumanTakeover,
+        Self::Yielded,
+        Self::Resuming,
+        Self::RepairRequired,
+        Self::Blocked,
+    ];
+
+    /// Stable snake_case string, matching core's `SESSION_CONTROL_PROJECTIONS`.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::HumanTakeover => "human_takeover",
+            Self::Yielded => "yielded",
+            Self::Resuming => "resuming",
+            Self::RepairRequired => "repair_required",
+            Self::Blocked => "blocked",
+        }
+    }
 }
 
 /// Wire status the SDK sends on `tasksResumeComplete`, matched by the host
@@ -260,12 +284,12 @@ pub mod resume_status {
 ///   this segment, the tab is commandable, and the segment is the attached
 ///   browser-side-effect authority. (A task may span many turns, but only the
 ///   segment that is the attached authority can be `Running`.)
-/// - [`TaskState::WaitingForHuman`] — `control_state == "human_takeover"`.
-/// - [`TaskState::PausedYielded`] — `control_state == "yielded"` (projects
-///   session `human_takeover` + turn `yielded`).
-/// - [`TaskState::Resuming`] — `control_state == "resuming"`.
-/// - [`TaskState::RepairRequired`] — `control_state == "repair_required"`.
-/// - [`TaskState::Blocked`] — `control_state == "blocked"`, **or** there is no
+/// - [`TaskState::WaitingForHuman`] — `control_state == Some(ControlProjection::HumanTakeover)`.
+/// - [`TaskState::PausedYielded`] — `control_state == Some(ControlProjection::Yielded)`
+///   (projects session `human_takeover` + turn `yielded`).
+/// - [`TaskState::Resuming`] — `control_state == Some(ControlProjection::Resuming)`.
+/// - [`TaskState::RepairRequired`] — `control_state == Some(ControlProjection::RepairRequired)`.
+/// - [`TaskState::Blocked`] — `control_state == Some(ControlProjection::Blocked)`, **or** there is no
 ///   continuity proof at all (no backing turn and no attached segment), i.e.
 ///   nothing proves a segment/turn still anchors the task.
 /// - All other states ([`TaskState::Created`], [`TaskState::WaitingForEffect`],
@@ -276,7 +300,7 @@ pub mod resume_status {
 ///   return `true`.
 pub fn task_state_allowed(state: TaskState, evidence: &SessionTurnEvidence) -> bool {
     use TaskState::*;
-    let control = evidence.control_state.as_deref();
+    let control = evidence.control_state;
     match state {
         Running => {
             evidence.current_turn_id.is_some()
@@ -284,12 +308,12 @@ pub fn task_state_allowed(state: TaskState, evidence: &SessionTurnEvidence) -> b
                 && evidence.tab_commandable
                 && evidence.segment_attached
         }
-        WaitingForHuman => control == Some(control::HUMAN_TAKEOVER),
-        PausedYielded => control == Some(control::YIELDED),
-        Resuming => control == Some(control::RESUMING),
-        RepairRequired => control == Some(control::REPAIR_REQUIRED),
+        WaitingForHuman => control == Some(ControlProjection::HumanTakeover),
+        PausedYielded => control == Some(ControlProjection::Yielded),
+        Resuming => control == Some(ControlProjection::Resuming),
+        RepairRequired => control == Some(ControlProjection::RepairRequired),
         Blocked => {
-            control == Some(control::BLOCKED)
+            control == Some(ControlProjection::Blocked)
                 // Missing continuity proof: nothing backs the task — no turn
                 // anchors it and no segment is the attached authority.
                 || (evidence.current_turn_id.is_none() && !evidence.segment_attached)
@@ -405,7 +429,7 @@ mod tests {
     #[test]
     fn human_takeover_evidence_projects_human_control() {
         let ev = SessionTurnEvidence::human_takeover();
-        assert_eq!(ev.control_state.as_deref(), Some(control::HUMAN_TAKEOVER));
+        assert_eq!(ev.control_state, Some(ControlProjection::HumanTakeover));
         assert!(task_state_allowed(TaskState::WaitingForHuman, &ev));
     }
 
@@ -552,7 +576,7 @@ mod tests {
         );
 
         let takeover = SessionTurnEvidence {
-            control_state: Some("human_takeover".into()),
+            control_state: Some(ControlProjection::HumanTakeover),
             ..no_turn.clone()
         };
         assert!(task_state_allowed(TaskState::WaitingForHuman, &takeover));
@@ -560,9 +584,9 @@ mod tests {
 
     /// Evidence with a control_state set but no turn/segment backing — useful
     /// for exercising the control-state-gated rows in isolation.
-    fn control_only(state: &str) -> SessionTurnEvidence {
+    fn control_only(state: ControlProjection) -> SessionTurnEvidence {
         SessionTurnEvidence {
-            control_state: Some(state.into()),
+            control_state: Some(state),
             ..Default::default()
         }
     }
@@ -571,12 +595,12 @@ mod tests {
     fn waiting_for_human_requires_human_takeover() {
         assert!(task_state_allowed(
             TaskState::WaitingForHuman,
-            &control_only(control::HUMAN_TAKEOVER)
+            &control_only(ControlProjection::HumanTakeover)
         ));
         // Wrong control state, and the empty default, are both rejected.
         assert!(!task_state_allowed(
             TaskState::WaitingForHuman,
-            &control_only(control::YIELDED)
+            &control_only(ControlProjection::Yielded)
         ));
         assert!(!task_state_allowed(
             TaskState::WaitingForHuman,
@@ -588,11 +612,11 @@ mod tests {
     fn paused_yielded_requires_yielded() {
         assert!(task_state_allowed(
             TaskState::PausedYielded,
-            &control_only(control::YIELDED)
+            &control_only(ControlProjection::Yielded)
         ));
         assert!(!task_state_allowed(
             TaskState::PausedYielded,
-            &control_only(control::HUMAN_TAKEOVER)
+            &control_only(ControlProjection::HumanTakeover)
         ));
         assert!(!task_state_allowed(
             TaskState::PausedYielded,
@@ -604,11 +628,11 @@ mod tests {
     fn resuming_requires_resuming_control_state() {
         assert!(task_state_allowed(
             TaskState::Resuming,
-            &control_only(control::RESUMING)
+            &control_only(ControlProjection::Resuming)
         ));
         assert!(!task_state_allowed(
             TaskState::Resuming,
-            &control_only(control::BLOCKED)
+            &control_only(ControlProjection::Blocked)
         ));
         assert!(!task_state_allowed(
             TaskState::Resuming,
@@ -620,11 +644,11 @@ mod tests {
     fn repair_required_requires_repair_required_control_state() {
         assert!(task_state_allowed(
             TaskState::RepairRequired,
-            &control_only(control::REPAIR_REQUIRED)
+            &control_only(ControlProjection::RepairRequired)
         ));
         assert!(!task_state_allowed(
             TaskState::RepairRequired,
-            &control_only(control::RESUMING)
+            &control_only(ControlProjection::Resuming)
         ));
     }
 
@@ -632,7 +656,7 @@ mod tests {
     fn blocked_via_explicit_control_state() {
         assert!(task_state_allowed(
             TaskState::Blocked,
-            &control_only(control::BLOCKED)
+            &control_only(ControlProjection::Blocked)
         ));
     }
 
