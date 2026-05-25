@@ -4,8 +4,9 @@ use serde_json::Value;
 
 use crate::backends::cdp::CdpBackend;
 use crate::backends::{BackendRequestContext, BrowserBackend};
-use crate::error::Result;
+use crate::error::{HostError, Result};
 use crate::ops::dom_cua_runtime::{self, DomCuaRuntimeBackend};
+use crate::tab_state::TabId;
 
 /// Dispatch a DOM-CUA command through CDP DOM geometry plus coordinate CUA input.
 pub async fn run(
@@ -75,5 +76,31 @@ impl DomCuaRuntimeBackend for CdpBackend {
             .lock()
             .await
             .forget_snapshot(ctx, tab_id, observation_id);
+    }
+
+    async fn oopif_sessions_for_tab(&self, tab_id: &str) -> Vec<String> {
+        let Ok(Some(record)) = self.registry().get(&TabId::new(tab_id)) else {
+            return Vec::new();
+        };
+        let Some(top_level) = record.cdp_session_id else {
+            return Vec::new();
+        };
+        self.oopif_sessions()
+            .lock()
+            .await
+            .sessions_for_tab(&top_level)
+    }
+
+    async fn execute_dom_cdp_on_session(
+        &self,
+        _ctx: &BackendRequestContext,
+        session_id: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        self.transport()
+            .send_command(method, params, Some(session_id))
+            .await
+            .map_err(HostError::from)
     }
 }

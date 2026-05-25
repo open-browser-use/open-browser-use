@@ -49,6 +49,7 @@ pub(crate) fn snapshot_key(ctx: &BackendRequestContext, tab_id: &str) -> String 
 #[derive(Debug, Clone)]
 struct VisibleDomSnapshotRecord {
     node_ids: HashSet<String>,
+    node_sessions: HashMap<String, String>,
     created_at: Instant,
     last_used_at: Instant,
 }
@@ -107,10 +108,19 @@ impl VisibleDomSnapshotStore {
     ) {
         let now = Instant::now();
         self.prune_expired(now);
+        let node_sessions = nodes
+            .iter()
+            .filter_map(|node| {
+                let id = node.get("node_id").and_then(Value::as_str)?;
+                let session = node.get("session_id").and_then(Value::as_str)?;
+                Some((id.to_string(), session.to_string()))
+            })
+            .collect();
         self.entries.insert(
             VisibleDomSnapshotKey::new(ctx, tab_id, observation_id),
             VisibleDomSnapshotRecord {
                 node_ids: snapshot_node_ids(nodes),
+                node_sessions,
                 created_at: now,
                 last_used_at: now,
             },
@@ -140,6 +150,17 @@ impl VisibleDomSnapshotStore {
             )));
         }
         Ok(())
+    }
+
+    pub(crate) fn session_for_node(
+        &self,
+        ctx: &BackendRequestContext,
+        tab_id: &str,
+        observation_id: Option<&str>,
+        node_id: &str,
+    ) -> Option<String> {
+        let key = VisibleDomSnapshotKey::new(ctx, tab_id, observation_id);
+        self.entries.get(&key)?.node_sessions.get(node_id).cloned()
     }
 
     pub(crate) fn forget_snapshot(
@@ -786,6 +807,38 @@ mod tests {
         assert!(!is_hidden_subtree(
             &json!({ "nodeName": "BUTTON", "attributes": ["aria-label", "Save"] })
         ));
+    }
+
+    #[test]
+    fn snapshot_store_records_node_session() {
+        let ctx = BackendRequestContext {
+            session_id: Some("s".into()),
+            turn_id: Some("t".into()),
+            client_timeout_ms: None,
+            trusted_kernel_generation: None,
+        };
+        let mut store = VisibleDomSnapshotStore::default();
+        store.remember(
+            &ctx,
+            "tab:1",
+            Some("obs"),
+            &[json!({ "node_id": "10", "session_id": "OOPIF-A" })],
+        );
+        assert!(
+            store
+                .validate_node(&ctx, "tab:1", Some("obs"), "10")
+                .is_ok()
+        );
+        assert_eq!(
+            store
+                .session_for_node(&ctx, "tab:1", Some("obs"), "10")
+                .as_deref(),
+            Some("OOPIF-A")
+        );
+        assert_eq!(
+            store.session_for_node(&ctx, "tab:1", Some("obs"), "999"),
+            None
+        );
     }
 
     #[test]

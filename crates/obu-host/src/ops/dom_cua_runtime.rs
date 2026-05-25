@@ -48,6 +48,26 @@ pub(crate) trait DomCuaRuntimeBackend {
         tab_id: &str,
         observation_id: Option<&str>,
     );
+
+    /// OOPIF session ids for this tab. Default: none (same-process-only backends).
+    async fn oopif_sessions_for_tab(&self, _tab_id: &str) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Run a DOM command on a specific (OOPIF) session id. Default: unsupported.
+    /// Only reached when `oopif_sessions_for_tab` returns sessions, so the default
+    /// is unreachable for backends that don't override `oopif_sessions_for_tab`.
+    async fn execute_dom_cdp_on_session(
+        &self,
+        _ctx: &BackendRequestContext,
+        _session_id: &str,
+        _method: &str,
+        _params: Value,
+    ) -> Result<Value> {
+        Err(HostError::NotImplemented(
+            "execute_dom_cdp_on_session is not supported by this backend".into(),
+        ))
+    }
 }
 
 pub(crate) async fn run<B>(
@@ -95,7 +115,39 @@ async fn visible_dom<B: DomCuaRuntimeBackend + Sync>(
         .get("root")
         .ok_or_else(|| HostError::Protocol("DOM.getDocument missing root".into()))?;
     let mut nodes = Vec::new();
-    collect_visible_dom_nodes(backend, ctx, tab_id, root, viewport, &mut nodes).await?;
+    collect_visible_dom_nodes(backend, ctx, tab_id, None, root, viewport, &mut nodes).await?;
+    // Each OOPIF session is enumerated against the SAME top-level `viewport`: an
+    // OOPIF session's box-model is composed to root-frame coordinates, so its rects
+    // already live in the top-level viewport space (OOPIF design premise, validated
+    // by the site-isolated probe). Do not subtract a frame offset here.
+    for session_id in backend.oopif_sessions_for_tab(tab_id).await {
+        let Ok(document) = backend
+            .execute_dom_cdp_on_session(
+                ctx,
+                &session_id,
+                "DOM.getDocument",
+                json!({ "depth": -1, "pierce": true }),
+            )
+            .await
+        else {
+            // A flaky child frame must not blank the whole snapshot; skip it, but
+            // leave a breadcrumb — the feature's failure mode is "nodes absent".
+            tracing::debug!(session_id = %session_id, "OOPIF DOM.getDocument failed; its nodes are absent from this snapshot");
+            continue;
+        };
+        if let Some(root) = document.get("root") {
+            collect_visible_dom_nodes(
+                backend,
+                ctx,
+                tab_id,
+                Some(&session_id),
+                root,
+                viewport,
+                &mut nodes,
+            )
+            .await?;
+        }
+    }
     backend
         .remember_visible_dom_nodes(ctx, tab_id, observation_id, &nodes)
         .await;
@@ -292,6 +344,7 @@ async fn collect_visible_dom_nodes<B: DomCuaRuntimeBackend + Sync>(
     backend: &B,
     ctx: &BackendRequestContext,
     tab_id: &str,
+    session_id: Option<&str>,
     node: &Value,
     viewport: Rect,
     nodes: &mut Vec<Value>,
@@ -302,12 +355,21 @@ async fn collect_visible_dom_nodes<B: DomCuaRuntimeBackend + Sync>(
             continue;
         }
         if let Some(backend_node_id) = node.get("backendNodeId").and_then(Value::as_i64)
-            && let Some(rect) = box_model_rect(backend, ctx, tab_id, backend_node_id).await?
+            && let Some(rect) =
+                box_model_rect(backend, ctx, tab_id, session_id, backend_node_id).await?
             && rect.width > 0.0
             && rect.height > 0.0
             && rect.intersects(viewport)
-            && let Some(entry) = dom_cua::snapshot_entry(node, backend_node_id, rect)
+            && let Some(mut entry) = dom_cua::snapshot_entry(node, backend_node_id, rect)
         {
+            // Tag OOPIF nodes with their owning session so geometry routes there in
+            // Task 4; top-level nodes stay untagged (session_for_node -> None).
+            // NOTE: assumes backendNodeId is unique across the top-level + OOPIF
+            // sessions of a tab (Chromium assigns them in the browser process); the
+            // site-isolated probe (tests/oopif_e2e.rs) validates this end-to-end.
+            if let (Some(sid), Some(object)) = (session_id, entry.as_object_mut()) {
+                object.insert("session_id".into(), json!(sid));
+            }
             nodes.push(entry);
         }
         for key in ["children", "shadowRoots", "pseudoElements"] {
@@ -470,17 +532,32 @@ async fn box_model_rect<B: DomCuaRuntimeBackend + Sync>(
     backend: &B,
     ctx: &BackendRequestContext,
     tab_id: &str,
+    session: Option<&str>,
     backend_node_id: i64,
 ) -> Result<Option<Rect>> {
-    let result = match backend
-        .execute_dom_cdp(
-            ctx,
-            tab_id,
-            "DOM.getBoxModel",
-            json!({ "backendNodeId": backend_node_id }),
-        )
-        .await
-    {
+    let result = match session {
+        Some(session_id) => {
+            backend
+                .execute_dom_cdp_on_session(
+                    ctx,
+                    session_id,
+                    "DOM.getBoxModel",
+                    json!({ "backendNodeId": backend_node_id }),
+                )
+                .await
+        }
+        None => {
+            backend
+                .execute_dom_cdp(
+                    ctx,
+                    tab_id,
+                    "DOM.getBoxModel",
+                    json!({ "backendNodeId": backend_node_id }),
+                )
+                .await
+        }
+    };
+    let result = match result {
         Ok(result) => result,
         Err(_) => return Ok(None),
     };
