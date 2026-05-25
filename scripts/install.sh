@@ -596,7 +596,8 @@ Environment:
   OBU_ARTIFACT_SHA256   Expected artifact SHA-256
   OBU_RELEASE_BASE_URL   Release asset base URL with manifest.tsv or manifest.json
   OBU_TARGET             Override target triple from release manifest
-  OBU_UNMANAGED_INSTALL Skip shellenv PATH integration instructions
+  OBU_NO_MODIFY_PATH     Set to 1 to skip PATH configuration (same as --no-modify-path)
+  OBU_UNMANAGED_INSTALL  Set to 1 for an unmanaged install (also skips PATH configuration)
   OBU_PAYLOAD_RETENTION  Number of recent payloads to keep after activation; 0 disables pruning
 USAGE
       exit 0
