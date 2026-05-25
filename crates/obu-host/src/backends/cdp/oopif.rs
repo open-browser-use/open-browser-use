@@ -81,6 +81,15 @@ impl OopifSessionMap {
             .collect()
     }
 
+    /// The OOPIF session owning the frame whose devtools `frameId` is `frame_id`.
+    /// For auto-attached OOPIFs the child target's `target_id` equals that frameId.
+    pub(crate) fn session_for_frame(&self, frame_id: &str) -> Option<String> {
+        self.by_session
+            .values()
+            .find(|session| session.target_id == frame_id)
+            .map(|session| session.session_id.clone())
+    }
+
     fn roots_at(&self, session: &OopifSession, root: &str) -> bool {
         let mut parent = session.parent_session_id.as_deref();
         let mut hops = 0;
@@ -140,6 +149,14 @@ mod tests {
         let mut sessions = map.sessions_for_tab("PAGE");
         sessions.sort();
         assert_eq!(sessions, vec!["C1".to_string(), "C2".to_string()]);
+    }
+
+    #[test]
+    fn resolves_session_by_frame_id() {
+        let mut map = OopifSessionMap::default();
+        map.apply_event(&attached("PAGE", "C1", "FRAME-1", "iframe"));
+        assert_eq!(map.session_for_frame("FRAME-1").as_deref(), Some("C1"));
+        assert_eq!(map.session_for_frame("missing"), None);
     }
 
     #[test]

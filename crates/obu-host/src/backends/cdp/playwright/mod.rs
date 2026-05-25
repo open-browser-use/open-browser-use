@@ -69,6 +69,30 @@ impl PlaywrightRuntimeBackend for CdpBackend {
         )
         .await
     }
+
+    async fn playwright_top_level_session(&self, tab_id: &str) -> Option<String> {
+        let record = self.registry().get(&TabId::new(tab_id)).ok().flatten()?;
+        record.cdp_session_id
+    }
+
+    async fn playwright_oopif_session_for_frame(&self, frame_id: &str) -> Option<String> {
+        self.oopif_sessions()
+            .lock()
+            .await
+            .session_for_frame(frame_id)
+    }
+
+    async fn execute_playwright_cdp_on_session(
+        &self,
+        session_id: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        self.transport()
+            .send_command(method, params, Some(session_id))
+            .await
+            .map_err(HostError::from)
+    }
 }
 
 #[async_trait]

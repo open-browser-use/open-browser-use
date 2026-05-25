@@ -49,6 +49,28 @@ pub(crate) trait PlaywrightRuntimeBackend {
         tab_id: &str,
         expression: String,
     ) -> Result<Value>;
+
+    /// The tab's top-level CDP session id (None for backends without sessions).
+    async fn playwright_top_level_session(&self, _tab_id: &str) -> Option<String> {
+        None
+    }
+
+    /// The OOPIF session owning the frame whose devtools frameId is `frame_id`.
+    async fn playwright_oopif_session_for_frame(&self, _frame_id: &str) -> Option<String> {
+        None
+    }
+
+    /// Run a CDP command on a specific session (top-level or OOPIF). Default: unsupported.
+    async fn execute_playwright_cdp_on_session(
+        &self,
+        _session_id: &str,
+        _method: &str,
+        _params: Value,
+    ) -> Result<Value> {
+        Err(HostError::NotImplemented(
+            "execute_playwright_cdp_on_session is not supported by this backend".into(),
+        ))
+    }
 }
 
 #[async_trait]
@@ -299,6 +321,21 @@ pub(crate) fn map_resolve_action_point_result(value: &Value) -> Result<(f64, f64
         .and_then(Value::as_f64)
         .ok_or_else(|| HostError::CdpFailure("resolveActionPoint missing y".into()))?;
     Ok((x, y))
+}
+
+/// Split a Playwright selector at the FIRST cross-frame hop into
+/// `(frame-locator selector, in-frame selector)`. Returns `None` when there is no
+/// `enter-frame` hop. Used by the OOPIF resolver to run the frame part on the
+/// top-level session and the remainder on the owning OOPIF session.
+pub(crate) fn split_first_enter_frame(selector: &str) -> Option<(String, String)> {
+    const MARKER: &str = " >> internal:control=enter-frame >> ";
+    let index = selector.find(MARKER)?;
+    let frame = selector[..index].trim().to_string();
+    let inner = selector[index + MARKER.len()..].trim().to_string();
+    if frame.is_empty() || inner.is_empty() {
+        return None;
+    }
+    Some((frame, inner))
 }
 
 pub(crate) async fn resolve_action_point<B>(
@@ -1598,5 +1635,24 @@ mod resolve_map_tests {
             map_resolve_action_point_result(&json!({})).unwrap_err(),
             HostError::CdpFailure(_)
         ));
+    }
+
+    #[test]
+    fn splits_selector_at_first_enter_frame() {
+        assert_eq!(
+            super::split_first_enter_frame("iframe >> internal:control=enter-frame >> #inner"),
+            Some(("iframe".to_string(), "#inner".to_string()))
+        );
+        assert_eq!(super::split_first_enter_frame("#plain-css"), None);
+        // Only the FIRST hop splits; nested remainder is preserved verbatim.
+        assert_eq!(
+            super::split_first_enter_frame(
+                "a >> internal:control=enter-frame >> b >> internal:control=enter-frame >> c"
+            ),
+            Some((
+                "a".to_string(),
+                "b >> internal:control=enter-frame >> c".to_string()
+            ))
+        );
     }
 }
