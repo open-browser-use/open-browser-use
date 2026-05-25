@@ -1,10 +1,10 @@
 <div align="center">
 
-<img src="open-browser-use-readme-preview-wide.png" alt="open-browser-use — agent browser tool, agentic RL ready" width="820">
-
 <h1>open-browser-use</h1>
 
 <p><b>Open-source Browser Use — give your local AI agent a real browser.</b></p>
+
+<img src="open-browser-use-readme-preview-wide.png" alt="open-browser-use — agent browser tool, agentic RL ready" width="820">
 
 <p>
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square">
@@ -115,6 +115,9 @@ obu-host                          (per-session broker daemon)
 > [!IMPORTANT]
 > Everything stays on your machine. `obu-host`'s socket is owner-only and authenticated by OS user, and only trusted SDK code holds the capability token to reach it — open-browser-use never calls out to a remote service.
 
+<details>
+<summary><b>Repo layout</b> — where each piece lives</summary>
+
 | Path                              | What it is                                                                                                            |
 | --------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
 | `crates/obu-wire`               | Shared JSON-RPC framing, envelopes, and error codes.                                                                  |
@@ -124,6 +127,8 @@ obu-host                          (per-session broker daemon)
 | `packages/browser-control-core` | Pure protocol types, planners, and fixtures shared by the SDK and extension.                                          |
 | `packages/cli`                  | The `obu` command line — `setup`, `verify`, `doctor`, and agent MCP wiring.                                  |
 | `packages/extension`            | The Chromium MV3 extension and its native-host bridge.                                                                |
+
+</details>
 
 ## Agentic RL environment
 
