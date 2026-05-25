@@ -1,5 +1,6 @@
 //! Shared browser operation implementations.
 
+pub(crate) mod action_point;
 pub(crate) mod clipboard;
 pub(crate) mod content_export;
 pub(crate) mod cua;
