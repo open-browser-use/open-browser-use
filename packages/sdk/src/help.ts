@@ -40,7 +40,7 @@ Tab:
   .playwright.elementInfo({x,y}) / .playwright.elementScreenshot({x,y}) -> point-level inspection
   .evaluate(expressionOrFn, {maxJsonBytes?}) -> capped JSON-safe page result
   .snapshotText({maxItems?, maxTextLength?}) -> compact page text summary
-  .cua.click() / .dblclick() / .scroll() / .type() / .keypress() / .drag() / .dragPath() / .move() / .get_visible_screenshot()
+  .cua.click() / .dblclick() / .scroll() / .type() / .keypress() / .drag() / .dragPath() / .move() / .download_media() / .get_visible_screenshot()
   .clipboard.readText() / .writeText() / .read() / .write()
   .dom_cua.get_visible_dom({format:"text"}) / .dom_cua.text() -> LLM-readable visible DOM-CUA
   .dev.cdp(method, params)

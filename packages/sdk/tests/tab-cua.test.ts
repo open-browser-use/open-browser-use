@@ -118,4 +118,19 @@ describe("TabCua", () => {
       },
     ]);
   });
+
+  it("sends coordinate download_media with tab id and timeout", async () => {
+    const transport = new FakeTransport();
+    const cua = new TabCua(transport as unknown as Transport, "tab-1");
+
+    await cua.download_media(40, 50, { timeout: 900 });
+
+    expect(transport.calls).toEqual([
+      {
+        method: M.CUA_DOWNLOAD_MEDIA,
+        params: { tab_id: "tab-1", x: 40, y: 50 },
+        timeout: 900,
+      },
+    ]);
+  });
 });

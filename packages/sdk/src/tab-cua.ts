@@ -106,6 +106,10 @@ export class TabCua {
     await this.#send(M.CUA_MOVE, { x, y, modifiers: opts.modifiers }, opts.timeout);
   }
 
+  async download_media(x: number, y: number, opts: TabCuaTimeoutOptions = {}): Promise<void> {
+    await this.#send(M.CUA_DOWNLOAD_MEDIA, { x, y }, opts.timeout);
+  }
+
   async get_visible_screenshot(opts: TabCuaTimeoutOptions = {}): Promise<Image> {
     const method = M.TAB_SCREENSHOT;
     this.ensureCommandable(method);
