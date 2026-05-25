@@ -233,4 +233,35 @@ mod tests {
             ClipboardShortcut::None
         );
     }
+
+    #[test]
+    fn validate_clipboard_items_normalizes_rich_mime_item() {
+        let items = json!([{
+            "entries": [
+                { "mime_type": "text/plain", "text": "hello" },
+                { "mime_type": "text/html", "base64": "PGI+aGVsbG88L2I+" },
+            ],
+        }]);
+        let validated = validate_clipboard_items(Some(&items)).expect("rich-mime item validates");
+        assert_eq!(validated.len(), 1);
+        let entries = validated[0]["entries"].as_array().unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(entries[0]["mime_type"], "text/plain");
+        assert_eq!(entries[0]["text"], "hello");
+        assert_eq!(entries[1]["mime_type"], "text/html");
+        assert_eq!(entries[1]["base64"], "PGI+aGVsbG88L2I+");
+    }
+
+    #[test]
+    fn validate_clipboard_entry_rejects_both_text_and_base64() {
+        let items = json!([{ "entries": [
+            { "mime_type": "text/plain", "text": "x", "base64": "eA==" },
+        ] }]);
+        assert!(validate_clipboard_items(Some(&items)).is_err());
+    }
+
+    #[test]
+    fn text_to_clipboard_html_escapes_rich_text() {
+        assert_eq!(text_to_clipboard_html("a<b>&\n"), "a&lt;b&gt;&amp;<br>");
+    }
 }
