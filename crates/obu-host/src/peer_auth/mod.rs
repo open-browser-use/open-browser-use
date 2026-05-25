@@ -14,7 +14,8 @@ pub mod unix;
 /// Peer-auth operating mode.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PeerAuthMode {
-    /// Default mode. Phase 2 macOS signing checks refine this later.
+    /// Default mode: same-user OS-credential (uid) gate plus the optional
+    /// capability token. macOS code-signing enforcement is not yet implemented.
     Auto,
     /// Strict mode. For the current Unix UID gate this is equivalent to auto.
     Strict,

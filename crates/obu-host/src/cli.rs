@@ -12,7 +12,7 @@ pub struct Cli {
     #[arg(long, env = "OBU_HOST_SOCKET_PATH")]
     pub socket: Option<PathBuf>,
 
-    /// Session identifier. Defaults to a fresh UUIDv4 once the listener is wired.
+    /// Session identifier. Defaults to a fresh UUIDv4 when omitted.
     #[arg(long, env = "OBU_SESSION_ID")]
     pub session_id: Option<String>,
 
@@ -31,10 +31,6 @@ pub struct Cli {
     /// Peer-auth mode: auto, strict, or off.
     #[arg(long, env = "OBU_PEER_AUTH", default_value = "auto")]
     pub peer_auth: String,
-
-    /// macOS allow-list override as semicolon-separated team_id:bundle_id pairs.
-    #[arg(long, env = "OBU_PEER_AUTH_ALLOWLIST")]
-    pub peer_auth_allowlist: Option<String>,
 
     /// Tracing filter.
     #[arg(long, env = "OBU_LOG", default_value = "info")]
