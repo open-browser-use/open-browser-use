@@ -72,3 +72,18 @@ fn coordinate_space_vocab_matches_fixture() {
         .collect();
     assert_eq!(got, fixture_set(&fixture(), "coordinateSpaces"));
 }
+
+#[test]
+fn control_projection_vocab_matches_fixture() {
+    use obu_host::task_lifecycle::ControlProjection;
+    let got: BTreeSet<String> = ControlProjection::ALL
+        .iter()
+        .map(|p| p.as_str().to_string())
+        .collect();
+    assert_eq!(got, fixture_set(&fixture(), "sessionControlProjections"));
+    // `as_str` (what the host uses) and the `serde::Serialize` derive must not
+    // drift; pinning `as_str` to the fixture transitively guarantees serde too.
+    for projection in ControlProjection::ALL {
+        assert_eq!(serde_str(&projection), projection.as_str());
+    }
+}
