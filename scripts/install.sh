@@ -284,7 +284,7 @@ try_download_to() {
   case "$src" in
     http://*|https://*)
       command -v curl >/dev/null 2>&1 || return 127
-      curl -fsSL "$src" -o "$dest"
+      curl -fsSL --retry 3 --retry-delay 2 --retry-connrefused -C - "$src" -o "$dest"
       ;;
     file://*)
       cp "${src#file://}" "$dest"

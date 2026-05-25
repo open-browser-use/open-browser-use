@@ -1,9 +1,36 @@
 #!/usr/bin/env node
 import assert from "node:assert/strict";
-import { access, mkdir, mkdtemp, readdir, rm, symlink, chmod } from "node:fs/promises";
+import { access, mkdir, mkdtemp, readdir, readFile, rm, symlink, chmod } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createServer } from "node:http";
+import { createHash } from "node:crypto";
+import { spawn } from "node:child_process";
 import { makeArtifact, run, installerPath } from "./lib/curl-install-harness.mjs";
+
+// Async sibling of the harness's synchronous run(). The retry test serves the
+// installer from an in-process HTTP server, so it cannot use spawnSync: that
+// would block this event loop and the server could never answer curl. Awaiting
+// an async spawn keeps the loop free to serve manifest + artifact requests.
+function runAsync(command, args, env = {}, options = {}) {
+  return new Promise((resolve, reject) => {
+    const child = spawn(command, args, { env: { ...process.env, ...env }, stdio: ["ignore", "pipe", "pipe"] });
+    let stdout = "";
+    let stderr = "";
+    child.stdout.setEncoding("utf8");
+    child.stderr.setEncoding("utf8");
+    child.stdout.on("data", (chunk) => { stdout += chunk; });
+    child.stderr.on("data", (chunk) => { stderr += chunk; });
+    child.on("error", reject);
+    child.on("exit", (status) => {
+      if (!options.allowFailure && status !== 0) {
+        reject(new Error(`${command} ${args.join(" ")} failed:\n${stderr}\n${stdout}`));
+        return;
+      }
+      resolve({ status, stdout, stderr });
+    });
+  });
+}
 
 const temp = await mkdtemp(path.join(os.tmpdir(), "obu-net-"));
 
@@ -87,6 +114,43 @@ async function unwritableRootAborts() {
   assert.match(result.stderr, /not writable/);
 }
 
-// Implemented in Task 6 (download retry/resume). Stubbed here so the preflight
-// cases run; replaced with a real fail-then-succeed HTTP test next task.
-async function downloadRetriesTransientFailure() {}
+async function downloadRetriesTransientFailure() {
+  const dir = path.join(temp, "retry");
+  await mkdir(dir, { recursive: true });
+  const artifact = await makeArtifact(dir, "open-browser-use-retry", "v1");
+  const bytes = await readFile(artifact);
+  const sha = createHash("sha256").update(bytes).digest("hex");
+  const fileName = "open-browser-use-retry.tar.gz";
+
+  let artifactHits = 0;
+  const server = createServer((req, res) => {
+    if (req.url === "/manifest.tsv") {
+      res.writeHead(200, { "content-type": "text/tab-separated-values" });
+      res.end(`target\tfile\tsha256\tsize\ndarwin-arm64\t${fileName}\t${sha}\t${bytes.length}\n`);
+      return;
+    }
+    if (req.url === `/${fileName}`) {
+      artifactHits += 1;
+      if (artifactHits === 1) { res.writeHead(503); res.end("try later"); return; }
+      res.writeHead(200, { "content-type": "application/gzip" });
+      res.end(bytes);
+      return;
+    }
+    res.writeHead(404); res.end();
+  });
+  await new Promise((resolve) => server.listen(0, "127.0.0.1", resolve));
+  const { port } = server.address();
+  try {
+    await runAsync("sh", [
+      installerPath, "--install-dir", path.join(dir, "install"), "--no-modify-path",
+    ], {
+      HOME: path.join(dir, "home"),
+      OBU_RELEASE_BASE_URL: `http://127.0.0.1:${port}`,
+      OBU_TARGET: "darwin-arm64",
+    });
+    await access(path.join(dir, "install", "bin", "obu"));
+    assert.ok(artifactHits >= 2, `expected a retry, saw ${artifactHits} artifact request(s)`);
+  } finally {
+    server.close();
+  }
+}
