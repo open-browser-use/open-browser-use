@@ -18,7 +18,9 @@ type BrowserDebuggerControllerOptions = {
   requireSessionTab(sessionParams: SessionParams, tabId: number): SessionTab;
   attachDebugger(tabId: number): Promise<void>;
   detachDebugger(tabId: number): Promise<void>;
-  sendDebuggerCommand(tabId: number, method: string, commandParams?: unknown): Promise<unknown>;
+  // `sessionId` (Chrome 125+) routes the command to a flattened child target
+  // (e.g. an out-of-process iframe) under the tab's debugger connection.
+  sendDebuggerCommand(tabId: number, method: string, commandParams?: unknown, sessionId?: string): Promise<unknown>;
   activateOverlay(tabId: number, sessionParams: SessionParams, savedCursor?: CursorTarget): Promise<void>;
   allowCdpInput(tabId: number, sessionParams: SessionParams, bypass: CdpInputBypass): Promise<void>;
   sendCursorEvent(tabId: number, sessionParams: SessionParams, event: CursorVisualEvent): Promise<void>;
@@ -90,9 +92,12 @@ export class BrowserDebuggerController {
       throw new Error("executeCdp requires method");
     }
     const method = params.method;
+    // A `target.sessionId` routes this command to a flattened OOPIF child session
+    // (Chrome 125+) rather than the tab's top-level session.
+    const sessionId = oopifSessionIdFromParams(params);
     const timeoutMs = timeoutMsFromParams(params);
     const suppressAgentOverlayForCapture = shouldSuppressAgentOverlayForCdpCapture(params);
-    this.options.appendDebugLog("debug", "cdp.execute", { method, tabId, timeoutMs });
+    this.options.appendDebugLog("debug", "cdp.execute", { method, tabId, sessionId, timeoutMs });
     await this.options.activateOverlay(tabId, sessionParams, row.lastCursor);
     const inputBypass = cdpInputBypassFromParams(params);
     if (inputBypass) {
@@ -103,7 +108,7 @@ export class BrowserDebuggerController {
       await this.options.sendCursorEvent(tabId, sessionParams, cursorEvent);
     }
     const sendCommand = () => withTimeout(
-      this.options.sendDebuggerCommand(tabId, method, params.commandParams),
+      this.options.sendDebuggerCommand(tabId, method, params.commandParams, sessionId),
       timeoutMs,
       `executeCdp ${method} timed out after ${timeoutMs}ms`,
     );
@@ -175,6 +180,15 @@ function requireTabId(params: unknown): number {
   const target = isRecord(params.target) ? params.target.tabId : undefined;
   if (typeof target === "number" && Number.isInteger(target)) return target;
   throw new Error("tabId must be an integer");
+}
+
+/// The optional OOPIF child `sessionId` carried in `params.target`, or undefined
+/// for a top-level command. The host adds it to route into an out-of-process
+/// iframe; the extension passes it straight to `chrome.debugger.sendCommand`.
+function oopifSessionIdFromParams(params: unknown): string | undefined {
+  if (!isRecord(params) || !isRecord(params.target)) return undefined;
+  const sessionId = params.target.sessionId;
+  return typeof sessionId === "string" && sessionId.length > 0 ? sessionId : undefined;
 }
 
 function requiredNumber(params: unknown, key: string): number {

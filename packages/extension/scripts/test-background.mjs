@@ -668,6 +668,15 @@ const cdp = await hostRequest(port, "executeCdp", {
 });
 assert.deepEqual(cdp.result, { ok: true });
 assert.equal(calls.debuggerAttach[0].target.tabId, 1);
+// Attaching the debugger arms OOPIF auto-attach so out-of-process iframes attach
+// as flattened child sessions on this connection.
+const autoAttachCommand = calls.debuggerSendCommand.find(
+  (call) => call.method === "Target.setAutoAttach" && call.target.tabId === 1 && call.target.sessionId === undefined,
+);
+assert.ok(autoAttachCommand, "attach must issue Target.setAutoAttach on the tab session");
+assert.equal(autoAttachCommand.commandParams.flatten, true);
+assert.equal(autoAttachCommand.commandParams.autoAttach, true);
+assert.equal(autoAttachCommand.commandParams.waitForDebuggerOnStart, false);
 
 const messagesBeforeScreenshot = calls.tabsSendMessage.length;
 const screenshotCdp = await hostRequest(port, "executeCdp", {
@@ -1123,6 +1132,46 @@ const cdpEvent = await waitFor(() =>
 );
 assert.equal(cdpEvent.params.session_id, "session");
 assert.equal(cdpEvent.params.source.tabId, 1);
+
+// An auto-attached OOPIF child: the forwarded onCDPEvent carries the child CDP
+// sessionId, and auto-attach is re-armed on the child so nested OOPIFs attach.
+const attachRearmStart = calls.debuggerSendCommand.length;
+debuggerEvents.emit({ tabId: 1 }, "Target.attachedToTarget", {
+  sessionId: "OOPIF-CHILD",
+  waitingForDebugger: false,
+  targetInfo: { targetId: "FRAME-1", type: "iframe", url: "https://oop.test/inner" },
+});
+const attachEvent = await waitFor(() =>
+  port.sent.find(
+    (message) => message.method === "onCDPEvent" && message.params?.method === "Target.attachedToTarget",
+  ),
+);
+assert.equal(attachEvent.params.session_id, "session");
+assert.equal(attachEvent.params.source.tabId, 1);
+const rearm = await waitFor(() =>
+  calls.debuggerSendCommand
+    .slice(attachRearmStart)
+    .find((call) => call.method === "Target.setAutoAttach" && call.target.sessionId === "OOPIF-CHILD"),
+);
+assert.equal(rearm.commandParams.flatten, true);
+
+// A DOM event originating from the OOPIF child session forwards source.sessionId
+// so the host can key its OOPIF session map and route session-addressed commands.
+debuggerEvents.emit(
+  { tabId: 1, sessionId: "OOPIF-CHILD" },
+  "DOM.documentUpdated",
+  {},
+);
+const childEvent = await waitFor(() =>
+  port.sent.find(
+    (message) =>
+      message.method === "onCDPEvent" &&
+      message.params?.method === "DOM.documentUpdated" &&
+      message.params?.source?.sessionId === "OOPIF-CHILD",
+  ),
+);
+assert.equal(childEvent.params.source.tabId, 1);
+assert.equal(childEvent.params.source.sessionId, "OOPIF-CHILD");
 
 const dialogEventStart = port.sent.length;
 const dialogHandleStart = calls.debuggerSendCommand.length;

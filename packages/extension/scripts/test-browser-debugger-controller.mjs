@@ -60,6 +60,38 @@ import { BrowserDebuggerController } from "../dist/browser_debugger_controller.j
   assert.deepEqual(harness.calls.debuggerCommands, [[4, "Page.captureScreenshot", { format: "png" }]]);
 }
 
+// A top-level command carries no OOPIF child sessionId.
+{
+  const harness = createHarness();
+
+  await harness.controller.executeCdp({
+    ...baseParams(),
+    method: "DOM.getDocument",
+    commandParams: { depth: -1 },
+  });
+
+  assert.deepEqual(harness.calls.debuggerCommandSessions, [undefined]);
+}
+
+// A `target.sessionId` routes the command to the flattened OOPIF child session.
+{
+  const harness = createHarness();
+
+  await harness.controller.executeCdp({
+    ...baseParams(),
+    target: { tabId: 4, sessionId: "OOPIF-CHILD" },
+    method: "DOM.getContentQuads",
+    commandParams: { backendNodeId: 900 },
+  });
+
+  assert.deepEqual(harness.calls.debuggerCommands, [[4, "DOM.getContentQuads", { backendNodeId: 900 }]]);
+  assert.deepEqual(
+    harness.calls.debuggerCommandSessions,
+    ["OOPIF-CHILD"],
+    "executeCdp must forward target.sessionId to sendDebuggerCommand",
+  );
+}
+
 {
   const harness = createHarness({
     moveMouseResult: { visible: true, arrived: true, sequence: 44 },
@@ -101,6 +133,7 @@ function createHarness(overrides = {}) {
     attach: [],
     detach: [],
     debuggerCommands: [],
+    debuggerCommandSessions: [],
     activate: [],
     inputBypass: [],
     cursorEvents: [],
@@ -122,8 +155,9 @@ function createHarness(overrides = {}) {
     detachDebugger: async (tabId) => {
       calls.detach.push(tabId);
     },
-    sendDebuggerCommand: async (tabId, method, commandParams) => {
+    sendDebuggerCommand: async (tabId, method, commandParams, sessionId) => {
       calls.debuggerCommands.push([tabId, method, commandParams]);
+      calls.debuggerCommandSessions.push(sessionId);
       return { ok: true };
     },
     activateOverlay: async (tabId, _sessionParams, savedCursor) => {

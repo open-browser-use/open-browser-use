@@ -199,10 +199,10 @@ const browserSessionController = new BrowserSessionController({
 const browserDebuggerController = new BrowserDebuggerController({
   sessionFor,
   requireSessionTab: (sessionParams, tabId) => browserSessionController.requireSessionTab(sessionParams, tabId),
-  attachDebugger: (tabId) => chrome.debugger.attach({ tabId }, "1.3"),
+  attachDebugger: (tabId) => attachDebuggerWithOopifAutoAttach(tabId),
   detachDebugger: (tabId) => chrome.debugger.detach({ tabId }),
-  sendDebuggerCommand: (tabId, method, commandParams) =>
-    chrome.debugger.sendCommand({ tabId }, method, commandParams),
+  sendDebuggerCommand: (tabId, method, commandParams, sessionId) =>
+    chrome.debugger.sendCommand(debuggerTarget(tabId, sessionId), method, commandParams),
   activateOverlay: (tabId, sessionParams, savedCursor) => overlayCoordinator.activate(tabId, sessionParams, savedCursor),
   allowCdpInput: (tabId, sessionParams, bypass) => overlayCoordinator.allowCdpInput(tabId, sessionParams, bypass),
   sendCursorEvent: (tabId, sessionParams, event) => overlayCoordinator.sendCursorEvent(tabId, sessionParams, event),
@@ -366,13 +366,21 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   if (!Number.isInteger(tabId)) return;
   const owner = findSessionForTab(tabId!);
   if (!owner || !owner.session.attachedTabIds.has(tabId!)) return;
-  appendDebugLog("debug", "debugger.event", { method, tabId });
+  // The CDP child session id (Chrome 125+) for events from a flattened OOPIF
+  // target; absent for top-level page events. Forwarded so the host can key its
+  // OOPIF session map and route session-addressed commands back.
+  const childSessionId = typeof source.sessionId === "string" ? source.sessionId : undefined;
+  const eventSource = childSessionId === undefined ? { tabId } : { tabId, sessionId: childSessionId };
+  appendDebugLog("debug", "debugger.event", { method, tabId, sessionId: childSessionId });
+  // Re-arm auto-attach on each newly-attached OOPIF child so nested
+  // out-of-process iframes attach too (mirrors the raw-CDP backend's re-arm).
+  maybeRearmOopifAutoAttach(tabId!, method, params);
   browserDownloadController.handleCdpEvent(owner.sessionId, tabId!, method, params);
   const safeDialogAction = safeDialogAutoAction(method, params);
   if (safeDialogAction) {
     sendNotification("onCDPEvent", {
       session_id: owner.sessionId,
-      source: { tabId },
+      source: eventSource,
       method,
       params,
       handledByExtension: safeDialogAction,
@@ -388,7 +396,7 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   if (closeDecisionAction) {
     sendNotification("onCDPEvent", {
       session_id: owner.sessionId,
-      source: { tabId },
+      source: eventSource,
       method,
       params,
       handledByExtension: closeDecisionAction.handledByExtension,
@@ -405,11 +413,57 @@ chrome.debugger.onEvent.addListener((source, method, params) => {
   }
   sendNotification("onCDPEvent", {
     session_id: owner.sessionId,
-    source: { tabId },
+    source: eventSource,
     method,
     params,
   });
 });
+
+// `Target.setAutoAttach{flatten}` params, shared by the attach-time arm and the
+// per-child re-arm. `flatten:true` routes child (OOPIF) sessions over the same
+// `chrome.debugger` connection; `waitForDebuggerOnStart:false` lets them run.
+const OOPIF_AUTO_ATTACH_PARAMS = {
+  autoAttach: true,
+  flatten: true,
+  waitForDebuggerOnStart: false,
+} as const;
+
+/// A `chrome.debugger` target, optionally addressed to a flattened child session.
+function debuggerTarget(tabId: number, sessionId?: string): { tabId: number; sessionId?: string } {
+  return sessionId === undefined ? { tabId } : { tabId, sessionId };
+}
+
+/// Attach the debugger to a tab, then arm `Target.setAutoAttach{flatten}` so
+/// out-of-process iframes attach as flattened child sessions on this connection.
+async function attachDebuggerWithOopifAutoAttach(tabId: number): Promise<void> {
+  await chrome.debugger.attach({ tabId }, "1.3");
+  try {
+    await chrome.debugger.sendCommand({ tabId }, "Target.setAutoAttach", OOPIF_AUTO_ATTACH_PARAMS);
+  } catch (error) {
+    // A page with no cross-origin frames still works; OOPIF support is simply
+    // unavailable until a future re-attach. Don't fail the attach over it.
+    appendDebugLog("warn", "debugger.setAutoAttach.failed", { tabId, message: errorMessage(error) });
+  }
+}
+
+/// When a flattened OOPIF child attaches, re-arm auto-attach on it so nested
+/// out-of-process iframes attach too. Mirrors the raw-CDP backend's re-arm.
+function maybeRearmOopifAutoAttach(tabId: number, method: string, params: unknown): void {
+  if (method !== "Target.attachedToTarget" || !isRecord(params)) return;
+  const targetInfo = isRecord(params.targetInfo) ? params.targetInfo : undefined;
+  if (targetInfo?.type !== "iframe") return;
+  const childSessionId = typeof params.sessionId === "string" ? params.sessionId : undefined;
+  if (childSessionId === undefined) return;
+  void chrome.debugger
+    .sendCommand(debuggerTarget(tabId, childSessionId), "Target.setAutoAttach", OOPIF_AUTO_ATTACH_PARAMS)
+    .catch((error) => {
+      appendDebugLog("debug", "debugger.setAutoAttach.rearm.failed", {
+        tabId,
+        sessionId: childSessionId,
+        message: errorMessage(error),
+      });
+    });
+}
 
 function safeDialogAutoAction(method: string, params: unknown): { defaultAction: "accept"; accept: true } | undefined {
   if (method !== "Page.javascriptDialogOpening" || !isRecord(params)) return undefined;
