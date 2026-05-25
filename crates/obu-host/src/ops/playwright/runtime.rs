@@ -1103,7 +1103,11 @@ where
         timeout_ms(&params),
     )
     .await?;
-    Ok(json!({ "domSnapshot": value, "source": "playwright_dom_snapshot" }))
+    let dom_snapshot_text = match value.as_str() {
+        Some(text) => super::aria_prune::prune_aria_snapshot(text),
+        None => String::new(),
+    };
+    Ok(json!({ "domSnapshot": dom_snapshot_text, "source": "playwright_dom_snapshot" }))
 }
 
 pub(crate) async fn wait_for_selector_state<B>(
@@ -1614,6 +1618,23 @@ mod tests {
         assert!(expression.contains("overlay.hidden = true"));
         assert!(expression.contains("incrementalAriaSnapshot"));
         assert!(expression.contains("finally"));
+    }
+
+    #[tokio::test]
+    async fn dom_snapshot_prunes_aria_tree() {
+        let raw = "- generic:\n  - button \"Save\" [ref=e5]\n  - img";
+        let backend = FakeCommandBackend::new(vec![json!(raw)], false);
+
+        let result = dom_snapshot(
+            &backend,
+            &BackendRequestContext::default(),
+            json!({ "tab_id": "tab-1", "timeout_ms": 1 }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result["domSnapshot"].as_str().unwrap(), "- button \"Save\"");
+        assert_eq!(result["source"], json!("playwright_dom_snapshot"));
     }
 
     #[tokio::test]
