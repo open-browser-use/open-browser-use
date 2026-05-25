@@ -79,6 +79,19 @@ pub(crate) trait DomCuaRuntimeBackend {
     ) -> Option<String> {
         None
     }
+
+    /// Root-frame content-area offset (x, y) of the OOPIF owning `session_id`,
+    /// summed across the frame's `<iframe>` ancestor chain. `Ok(None)` for backends
+    /// without OOPIF support. OOPIF `getContentQuads` returns FRAME-LOCAL coords
+    /// (empirically — the zero-composition hypothesis is false), so this offset is
+    /// added to land a top-level dispatch on the correct pixel.
+    async fn oopif_root_offset(
+        &self,
+        _ctx: &BackendRequestContext,
+        _session_id: &str,
+    ) -> Result<Option<(f64, f64)>> {
+        Ok(None)
+    }
 }
 
 pub(crate) async fn run<B>(
@@ -127,10 +140,12 @@ async fn visible_dom<B: DomCuaRuntimeBackend + Sync>(
         .ok_or_else(|| HostError::Protocol("DOM.getDocument missing root".into()))?;
     let mut nodes = Vec::new();
     collect_visible_dom_nodes(backend, ctx, tab_id, None, root, viewport, &mut nodes).await?;
-    // Each OOPIF session is enumerated against the SAME top-level `viewport`: an
-    // OOPIF session's box-model is composed to root-frame coordinates, so its rects
-    // already live in the top-level viewport space (OOPIF design premise, validated
-    // by the site-isolated probe). Do not subtract a frame offset here.
+    // Each OOPIF session is enumerated against the SAME top-level `viewport`. An
+    // OOPIF session's box-model is FRAME-LOCAL (branch 4c, confirmed by the
+    // site-isolated probe); the reported `bounds` here are therefore frame-local
+    // and the viewport intersection is approximate. The click/scroll path composes
+    // the frame chain's root offset onto the action POINT in
+    // `finalize_node_action_point`, which is what actually lands the dispatch.
     for session_id in backend.oopif_sessions_for_tab(tab_id).await {
         let Ok(document) = backend
             .execute_dom_cdp_on_session(
@@ -442,7 +457,9 @@ async fn node_action_point<B: DomCuaRuntimeBackend + Sync>(
 /// Top-level nodes get Plan A's occlusion hit-verify; OOPIF nodes (session is
 /// Some) trust their owning-session quad geometry — `verify_action_point` runs
 /// the hit-test on the TOP-LEVEL session, which cannot resolve an OOPIF
-/// `backendNodeId`, and the point is already root-frame-composed (spec I5).
+/// `backendNodeId`. OOPIF `getContentQuads` returns FRAME-LOCAL coords (branch
+/// 4c, confirmed by the site-isolated probe), so the frame chain's root offset
+/// is added before returning.
 async fn finalize_node_action_point<B: DomCuaRuntimeBackend + Sync>(
     backend: &B,
     ctx: &BackendRequestContext,
@@ -451,8 +468,17 @@ async fn finalize_node_action_point<B: DomCuaRuntimeBackend + Sync>(
     backend_node_id: i64,
     point: (f64, f64),
 ) -> Result<(f64, f64)> {
-    if session.is_some() {
-        return Ok(point);
+    if let Some(session_id) = session {
+        // OOPIF point is frame-local (getContentQuads on the OOPIF session returns
+        // frame-local coords — branch 4c, confirmed by the site-isolated probe).
+        // Add the frame chain's root offset so the top-level dispatch lands on the
+        // right pixel. Skip the top-level occlusion verify (it can't resolve an
+        // OOPIF backendNodeId).
+        let composed = match backend.oopif_root_offset(ctx, session_id).await? {
+            Some((ox, oy)) => (point.0 + ox, point.1 + oy),
+            None => point,
+        };
+        return Ok(composed);
     }
     verify_action_point(backend, ctx, tab_id, backend_node_id, point.0, point.1)
         .await?
@@ -538,11 +564,11 @@ async fn dom_cdp_routed<B: DomCuaRuntimeBackend + Sync>(
     }
 }
 
-// Branch 4a (OOPIF design): an OOPIF session's quads/box-model are composed to
-// root-frame coords, so the existing `action_point_from_*` math (which subtracts
-// the top-level visual-viewport origin) is correct at scale 1. The pinch-zoom
-// case (4b) is gated on the site-isolated probe (tests/oopif_e2e.rs); do not add
-// frame composition until the probe records that outcome.
+// Branch 4c (empirical, site-isolated probe): an OOPIF session's quads/box-model
+// are FRAME-LOCAL, not root-composed. This helper returns the frame-local point
+// at scale 1 (the `action_point_from_*` math subtracts the top-level
+// visual-viewport origin); `finalize_node_action_point` then ADDS the frame
+// chain's root offset (`oopif_root_offset`) to land the top-level dispatch.
 async fn content_quad_action_point<B: DomCuaRuntimeBackend + Sync>(
     backend: &B,
     ctx: &BackendRequestContext,
@@ -840,6 +866,13 @@ mod oopif_routing_tests {
         ) -> Option<String> {
             Some("OOPIF-A".into())
         }
+        async fn oopif_root_offset(
+            &self,
+            _c: &BackendRequestContext,
+            _session_id: &str,
+        ) -> Result<Option<(f64, f64)>> {
+            Ok(Some((30.0, 60.0)))
+        }
         async fn dispatch_coordinate_cua(
             &self,
             _c: &BackendRequestContext,
@@ -889,7 +922,10 @@ mod oopif_routing_tests {
         let point = node_action_point(&backend, &ctx(), "42", Some("obs"), "8")
             .await
             .unwrap();
-        assert_eq!(point, (20.0, 20.0));
+        // Frame-local center (20,20) composed with the frame chain's root offset
+        // (30,60) -> (50,80). Branch 4c: getContentQuads on the OOPIF session is
+        // frame-local, so finalize adds oopif_root_offset.
+        assert_eq!(point, (50.0, 80.0));
         let calls = backend.calls.lock().unwrap();
         assert!(
             calls
@@ -906,5 +942,16 @@ mod oopif_routing_tests {
                 .any(|(s, m)| s == "TOP" && m == "DOM.getNodeForLocation"),
             "OOPIF nodes must skip the top-level occlusion verify, got {calls:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn oopif_node_point_is_composed_with_frame_offset() {
+        // Frame-local center (20,20) from the OOPIF getContentQuads quad plus the
+        // frame chain's root offset (30,60) yields the root-frame point (50,80).
+        let backend = FakeDomCuaRouting::default();
+        let point = node_action_point(&backend, &ctx(), "42", Some("obs"), "8")
+            .await
+            .unwrap();
+        assert_eq!(point, (50.0, 80.0));
     }
 }

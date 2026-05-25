@@ -396,8 +396,9 @@ where
 ///
 /// Assumptions (validated by the site-isolated e2e in tests/oopif_e2e.rs):
 /// - the iframe's devtools `frameId` equals its OOPIF target id (auto-attach);
-/// - an OOPIF session's `getContentQuads` returns root-frame-composed coords
-///   (DOM-CUA branch 4a), so `action_point_from_content_quads` applies unchanged.
+/// - an OOPIF session's `getContentQuads` returns FRAME-LOCAL coords (DOM-CUA
+///   branch 4c), so the owning iframe's root-frame content top-left (resolved on
+///   the top-level session) is added to compose the final point.
 async fn resolve_cross_origin_action_point<B>(
     backend: &B,
     tab_id: &str,
@@ -422,7 +423,10 @@ where
     };
 
     // Resolve the iframe element on the top-level session -> its content frameId.
-    let Some(frame_id) = query_frame_id(backend, &top_session, &frame_selector).await? else {
+    // The iframe's top-level node_id is reused below for its root-frame box.
+    let Some((frame_id, iframe_node_id)) =
+        query_frame_id(backend, &top_session, &frame_selector).await?
+    else {
         return Ok(None);
     };
     let Some(oopif_session) = backend.playwright_oopif_session_for_frame(&frame_id).await else {
@@ -436,7 +440,7 @@ where
         return Ok(None);
     };
 
-    // Geometry on the OOPIF session (branch 4a: root-composed quads).
+    // Geometry on the OOPIF session (branch 4c: FRAME-LOCAL quads).
     let quads = backend
         .execute_playwright_cdp_on_session(
             &oopif_session,
@@ -444,16 +448,34 @@ where
             json!({ "backendNodeId": backend_node_id }),
         )
         .await?;
-    Ok(dom_cua::action_point_from_content_quads(&quads, viewport))
+    let Some((px, py)) = dom_cua::action_point_from_content_quads(&quads, viewport) else {
+        return Ok(None);
+    };
+
+    // OOPIF getContentQuads is frame-local (branch 4c); add the iframe's root-frame
+    // content top-left (resolved on the top-level session) so the dispatch lands.
+    let iframe_box = backend
+        .execute_playwright_cdp_on_session(
+            &top_session,
+            "DOM.getBoxModel",
+            json!({ "nodeId": iframe_node_id }),
+        )
+        .await?;
+    let (ox, oy) = dom_cua::rect_from_box_model(&iframe_box)
+        .map(|r| (r.x, r.y))
+        .unwrap_or((0.0, 0.0));
+    Ok(Some((px + ox, py + oy)))
 }
 
 /// `DOM.querySelector` `frame_selector` on `session`'s document, then read the
-/// matched iframe's content `frameId` via `DOM.describeNode`. CSS only.
+/// matched iframe's content `frameId` via `DOM.describeNode`. CSS only. Returns
+/// `(frameId, iframe_node_id)` so the caller can reuse the iframe node for its
+/// root-frame box-model (branch 4c frame-offset composition).
 async fn query_frame_id<B>(
     backend: &B,
     session: &str,
     frame_selector: &str,
-) -> Result<Option<String>>
+) -> Result<Option<(String, i64)>>
 where
     B: PlaywrightRuntimeBackend + Sync,
 {
@@ -471,7 +493,7 @@ where
         .get("node")
         .and_then(|node| node.get("frameId"))
         .and_then(Value::as_str)
-        .map(str::to_string))
+        .map(|frame_id| (frame_id.to_string(), node_id)))
 }
 
 /// `DOM.querySelector` then read the matched node's `backendNodeId`.
@@ -1883,6 +1905,11 @@ mod oopif_resolver_tests {
                 ("TOP", "DOM.getDocument") => json!({ "root": { "nodeId": 1 } }),
                 ("TOP", "DOM.querySelector") => json!({ "nodeId": 2 }),
                 ("TOP", "DOM.describeNode") => json!({ "node": { "frameId": "FRAME-1" } }),
+                // The iframe's root-frame box: content top-left (30,60). Branch 4c
+                // adds this to the frame-local inner centroid.
+                ("TOP", "DOM.getBoxModel") => json!({
+                    "model": { "content": [30.0, 60.0, 90.0, 60.0, 90.0, 120.0, 30.0, 120.0], "width": 60.0, "height": 60.0 }
+                }),
                 ("OOPIF", "DOM.getDocument") => json!({ "root": { "nodeId": 10 } }),
                 ("OOPIF", "DOM.querySelector") => json!({ "nodeId": 11 }),
                 ("OOPIF", "DOM.describeNode") => json!({ "node": { "backendNodeId": 77 } }),
@@ -1904,8 +1931,9 @@ mod oopif_resolver_tests {
         )
         .await
         .unwrap();
-        // 20x20 quad at (10,10)-(30,30) -> centroid (20,20); viewport origin (0,0).
-        assert_eq!(point, Some((20.0, 20.0)));
+        // 20x20 quad at (10,10)-(30,30) -> frame-local centroid (20,20). Branch 4c
+        // composes the iframe's root-frame content top-left (30,60): (50,80).
+        assert_eq!(point, Some((50.0, 80.0)));
     }
 
     #[tokio::test]

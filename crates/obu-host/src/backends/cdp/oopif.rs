@@ -94,6 +94,14 @@ impl OopifSessionMap {
             .map(|session| session.session_id.clone())
     }
 
+    /// (frameId, parent_session_id) for a session, for walking the OOPIF frame
+    /// chain to compose root-frame coordinates.
+    pub(crate) fn frame_and_parent(&self, session_id: &str) -> Option<(String, Option<String>)> {
+        self.by_session
+            .get(session_id)
+            .map(|s| (s.target_id.clone(), s.parent_session_id.clone()))
+    }
+
     fn roots_at(&self, session: &OopifSession, root: &str) -> bool {
         let mut parent = session.parent_session_id.as_deref();
         let mut hops = 0;

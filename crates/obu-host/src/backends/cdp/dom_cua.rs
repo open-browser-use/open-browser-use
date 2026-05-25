@@ -1,10 +1,11 @@
 //! CDP adapter for the shared DOM-CUA runtime.
 
-use serde_json::Value;
+use serde_json::{Value, json};
 
 use crate::backends::cdp::CdpBackend;
 use crate::backends::{BackendRequestContext, BrowserBackend};
 use crate::error::{HostError, Result};
+use crate::ops::dom_cua;
 use crate::ops::dom_cua_runtime::{self, DomCuaRuntimeBackend};
 use crate::tab_state::TabId;
 
@@ -115,5 +116,51 @@ impl DomCuaRuntimeBackend for CdpBackend {
             .lock()
             .await
             .session_for_node(ctx, tab_id, observation_id, node_id)
+    }
+
+    async fn oopif_root_offset(
+        &self,
+        _ctx: &BackendRequestContext,
+        session_id: &str,
+    ) -> Result<Option<(f64, f64)>> {
+        let mut offset = (0.0_f64, 0.0_f64);
+        let mut current = session_id.to_string();
+        for _ in 0..32 {
+            let frame_and_parent = self
+                .oopif_sessions()
+                .lock()
+                .await
+                .frame_and_parent(&current);
+            let Some((frame_id, Some(parent_session))) = frame_and_parent else {
+                break;
+            };
+            let owner = self
+                .transport()
+                .send_command(
+                    "DOM.getFrameOwner",
+                    json!({ "frameId": frame_id }),
+                    Some(&parent_session),
+                )
+                .await
+                .map_err(HostError::from)?;
+            let Some(backend_node_id) = owner.get("backendNodeId").and_then(Value::as_i64) else {
+                break;
+            };
+            let box_model = self
+                .transport()
+                .send_command(
+                    "DOM.getBoxModel",
+                    json!({ "backendNodeId": backend_node_id }),
+                    Some(&parent_session),
+                )
+                .await
+                .map_err(HostError::from)?;
+            if let Some(rect) = dom_cua::rect_from_box_model(&box_model) {
+                offset.0 += rect.x;
+                offset.1 += rect.y;
+            }
+            current = parent_session; // walk up; a non-OOPIF parent → frame_and_parent None → break
+        }
+        Ok(Some(offset))
     }
 }
