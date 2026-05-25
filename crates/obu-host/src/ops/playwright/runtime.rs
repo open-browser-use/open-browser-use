@@ -328,6 +328,11 @@ pub(crate) fn map_resolve_action_point_result(value: &Value) -> Result<(f64, f64
 /// `(frame-locator selector, in-frame selector)`. Returns `None` when there is no
 /// `enter-frame` hop. Used by the OOPIF resolver to run the frame part on the
 /// top-level session and the remainder on the owning OOPIF session.
+///
+/// The literal marker must stay in sync with the SDK/Playwright frame-hop
+/// selector serialization; if it ever diverges, a cross-origin selector falls
+/// back gracefully to the typed `cross_origin_unreachable` error (the
+/// `splits_selector_at_first_enter_frame` test pins the current form).
 pub(crate) fn split_first_enter_frame(selector: &str) -> Option<(String, String)> {
     const MARKER: &str = " >> internal:control=enter-frame >> ";
     let index = selector.find(MARKER)?;

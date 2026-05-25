@@ -83,6 +83,10 @@ impl OopifSessionMap {
 
     /// The OOPIF session owning the frame whose devtools `frameId` is `frame_id`.
     /// For auto-attached OOPIFs the child target's `target_id` equals that frameId.
+    ///
+    /// The match is browser-global (not tab-scoped, unlike `sessions_for_tab`):
+    /// CDP target ids are unique per browser process, so at most one session can
+    /// match a given frameId — there is no cross-tab ambiguity.
     pub(crate) fn session_for_frame(&self, frame_id: &str) -> Option<String> {
         self.by_session
             .values()
