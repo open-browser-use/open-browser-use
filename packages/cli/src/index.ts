@@ -674,7 +674,7 @@ function formatShellEnv(shell: ShellEnvKind, installDir: string, env: NodeJS.Pro
   }
   return [
     `export OBU_INSTALL_DIR=${shellSingleQuoted(installDir)};`,
-    'export PATH="${OBU_INSTALL_DIR}/bin${PATH+:$PATH}";',
+    'case ":${PATH}:" in *:"${OBU_INSTALL_DIR}/bin":*) ;; *) export PATH="${OBU_INSTALL_DIR}/bin:$PATH" ;; esac',
   ].join("\n");
 }
 

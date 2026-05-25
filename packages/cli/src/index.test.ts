@@ -1101,7 +1101,7 @@ test("shellenv emits packaged install environment snippets", async (t) => {
   assert.equal(sh.code, 0);
   assert.equal(sh.stderr, "");
   assert.match(sh.stdout, new RegExp(`export OBU_INSTALL_DIR='${escapeRegExp(installRoot)}';`));
-  assert.match(sh.stdout, /export PATH="\$\{OBU_INSTALL_DIR\}\/bin\$\{PATH\+:\$PATH\}";/);
+  assert.match(sh.stdout, /case ":\$\{PATH\}:" in \*:"\$\{OBU_INSTALL_DIR\}\/bin":\*\) ;; \*\) export PATH="\$\{OBU_INSTALL_DIR\}\/bin:\$PATH" ;; esac/);
 
   const fish = await runCli(["shellenv", "fish"], env);
   assert.equal(fish.code, 0);
