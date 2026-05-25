@@ -30,7 +30,13 @@ fn fixture_set(value: &Value, key: &str) -> BTreeSet<String> {
 fn read_state_vocab_matches_fixture() {
     let got: BTreeSet<String> = RuntimeDescriptorReadState::ALL
         .iter()
-        .map(|s| serde_json::to_value(s).unwrap().as_str().unwrap().to_string())
+        .map(|s| {
+            serde_json::to_value(s)
+                .unwrap()
+                .as_str()
+                .unwrap()
+                .to_string()
+        })
         .collect();
     assert_eq!(got, fixture_set(&fixture(), "readerStates"));
 }

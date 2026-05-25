@@ -33,9 +33,6 @@ use crate::backends::{
 };
 use crate::error::{HostError, Result};
 use crate::methods;
-use crate::task_lifecycle::resume_status;
-use crate::task_store::TaskListFilter;
-use crate::task_store_actor::TaskStoreHandle;
 use crate::peer_lifecycle::{
     PEER_AUTH_REQUIRED_MESSAGE, PeerFirstFrameAction, PeerLifecycleDiagnostics, plan_peer_auth,
     plan_peer_first_frame, plan_peer_request_cancelled, plan_peer_shutdown,
@@ -44,6 +41,9 @@ use crate::peer_lifecycle::{
 use crate::policy::{
     HostPolicy, MethodPolicyKind, PermissivePolicy, PolicyContext, guard_mode_disabled,
 };
+use crate::task_lifecycle::resume_status;
+use crate::task_store::TaskListFilter;
+use crate::task_store_actor::TaskStoreHandle;
 
 /// Default number of concurrent JSON-RPC requests allowed for one peer.
 pub const DEFAULT_MAX_IN_FLIGHT_REQUESTS: usize = 64;
@@ -110,14 +110,7 @@ impl Dispatcher {
         policy: Arc<dyn HostPolicy>,
         peer_diagnostics: PeerLifecycleDiagnostics,
     ) -> Self {
-        Self::with_optional_task_store(
-            host_version,
-            backend,
-            policy,
-            peer_diagnostics,
-            None,
-            None,
-        )
+        Self::with_optional_task_store(host_version, backend, policy, peer_diagnostics, None, None)
     }
 
     /// Construct a dispatcher with an explicit policy, peer diagnostics, and an
@@ -180,7 +173,9 @@ impl Dispatcher {
     /// dir, kept alive for the dispatcher's lifetime.
     #[doc(hidden)]
     pub fn new_for_test_with_temp_task_store() -> Self {
-        Self::new_for_test_with_backend_and_temp_task_store(Arc::new(WebExtensionBackend::default()))
+        Self::new_for_test_with_backend_and_temp_task_store(
+            Arc::new(WebExtensionBackend::default()),
+        )
     }
 
     /// Test dispatcher around a caller-supplied `backend` plus a real task store
@@ -192,12 +187,11 @@ impl Dispatcher {
     /// WebExtension backend has no transport / owned session and so errors before
     /// any evidence could be written).
     #[doc(hidden)]
-    pub fn new_for_test_with_backend_and_temp_task_store(
-        backend: Arc<dyn BrowserBackend>,
-    ) -> Self {
+    pub fn new_for_test_with_backend_and_temp_task_store(backend: Arc<dyn BrowserBackend>) -> Self {
         use std::os::unix::fs::PermissionsExt;
         let dir = Arc::new(tempfile::tempdir().expect("tempdir"));
-        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700)).expect("chmod");
+        std::fs::set_permissions(dir.path(), std::fs::Permissions::from_mode(0o700))
+            .expect("chmod");
         let handle = TaskStoreHandle::open(dir.path().to_path_buf()).expect("task store");
         Self::with_optional_task_store(
             env!("CARGO_PKG_VERSION").into(),
@@ -254,9 +248,9 @@ impl Dispatcher {
         let first = match first {
             Ok(bytes) => bytes,
             Err(error) => {
-                self.inner
-                    .peer_diagnostics
-                    .record(&plan_peer_terminal_close("peer closed with invalid first frame").event);
+                self.inner.peer_diagnostics.record(
+                    &plan_peer_terminal_close("peer closed with invalid first frame").event,
+                );
                 return Err(error.into());
             }
         };
@@ -273,9 +267,10 @@ impl Dispatcher {
                 let authorized = response.error.is_none();
                 framed.send(encode_response(&response)?).await?;
                 if !authorized {
-                    self.inner
-                        .peer_diagnostics
-                        .record(&plan_peer_terminal_close("peer rejected during capability authentication").event);
+                    self.inner.peer_diagnostics.record(
+                        &plan_peer_terminal_close("peer rejected during capability authentication")
+                            .event,
+                    );
                     return Ok(());
                 }
             }
@@ -285,9 +280,9 @@ impl Dispatcher {
                     ErrorObject::new(ErrorCode::Server(ERR_PEER_AUTH), PEER_AUTH_REQUIRED_MESSAGE),
                 );
                 framed.send(encode_response(&response)?).await?;
-                self.inner
-                    .peer_diagnostics
-                    .record(&plan_peer_terminal_close("peer rejected before dispatch: missing auth").event);
+                self.inner.peer_diagnostics.record(
+                    &plan_peer_terminal_close("peer rejected before dispatch: missing auth").event,
+                );
                 return Ok(());
             }
             PeerFirstFrameAction::DispatchFirstFrame => first_frame = Some(first),
@@ -632,9 +627,7 @@ impl Dispatcher {
                     .map_err(|error| ErrorObject::new(ErrorCode::InternalError, error.to_string()))
             }
             methods::TASKS_RESUME => self.route_task_resume_begin(ctx, &params).await,
-            methods::TASKS_RESUME_COMPLETE => {
-                self.route_task_resume_complete(ctx, &params).await
-            }
+            methods::TASKS_RESUME_COMPLETE => self.route_task_resume_complete(ctx, &params).await,
             _ => Err(ErrorObject::new(
                 ErrorCode::MethodNotFound,
                 format!("method not found: {method}"),
@@ -719,7 +712,9 @@ impl Dispatcher {
                     .map_err(|error| task_store_rpc_error(error.to_string()))?;
                 Ok(json!({ "status": "attached", "segment": outcome }))
             }
-            resume_status::BLOCKED | resume_status::ATTACH_FAILED | resume_status::OBSERVATION_FAILED => {
+            resume_status::BLOCKED
+            | resume_status::ATTACH_FAILED
+            | resume_status::OBSERVATION_FAILED => {
                 // Capture the REAL failure detail the SDK sends so it lands in
                 // durable evidence (terminal_error + the resume_attempt_blocked
                 // event), not a dropped `reason: null`. The SDK
@@ -741,10 +736,10 @@ impl Dispatcher {
                     .map_err(|error| task_store_rpc_error(error.to_string()))?;
                 Ok(json!({ "status": "blocked" }))
             }
-            other => Err(invalid_params(&format!(
-                "unknown tasksResumeComplete status: {other}"
-            ))
-            .with_data(json!({ "code": "invalid_resume_status", "status": other }))),
+            other => Err(
+                invalid_params(&format!("unknown tasksResumeComplete status: {other}"))
+                    .with_data(json!({ "code": "invalid_resume_status", "status": other })),
+            ),
         }
     }
 
@@ -1741,10 +1736,12 @@ fn reject_user_runtime_metadata(
             .into_iter()
             .find(|key| params.get(*key).is_some())
         {
-            return Err(invalid_params("untrusted runtime metadata").with_data(json!({
-                "code": "untrusted_runtime_metadata",
-                "field": field
-            })));
+            return Err(
+                invalid_params("untrusted runtime metadata").with_data(json!({
+                    "code": "untrusted_runtime_metadata",
+                    "field": field
+                })),
+            );
         }
     }
     Ok(())

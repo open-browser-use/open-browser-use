@@ -324,7 +324,8 @@ impl JsRuntimeManager {
         let mut kernel = match SpawnedKernel::spawn(spawn_opts).await {
             Ok(kernel) => kernel,
             Err(error) => {
-                self.set_kernel_failed(next_generation, "spawn", error.to_string(), false).await;
+                self.set_kernel_failed(next_generation, "spawn", error.to_string(), false)
+                    .await;
                 return Err(error).context("spawn JavaScript kernel");
             }
         };
@@ -380,7 +381,8 @@ impl JsRuntimeManager {
             cancel,
         });
         if let Err(error) = self.wait_for_ready().await {
-            self.set_kernel_failed(next_generation, "ready", error.to_string(), false).await;
+            self.set_kernel_failed(next_generation, "ready", error.to_string(), false)
+                .await;
             return Err(error);
         }
         *self.state.lock().await = KernelState::Ready;
@@ -468,18 +470,22 @@ impl JsRuntimeManager {
         match &outcome {
             Ok(_) => {
                 *self.state.lock().await = KernelState::Ready;
-                *self.kernel_lifecycle.lock().await = AgentRuntimeKernelLifecycle::Ready {
-                    generation,
-                };
+                *self.kernel_lifecycle.lock().await =
+                    AgentRuntimeKernelLifecycle::Ready { generation };
             }
             Err(_) => {
                 self.kill_kernel().await;
                 self.set_kernel_failed(
                     generation,
                     "exec",
-                    outcome.as_ref().err().map(ToString::to_string).unwrap_or_default(),
+                    outcome
+                        .as_ref()
+                        .err()
+                        .map(ToString::to_string)
+                        .unwrap_or_default(),
                     true,
-                ).await;
+                )
+                .await;
                 *self.registry.lock().await = ExecRegistry::default();
             }
         }
@@ -1102,7 +1108,8 @@ fn browser_status_product_error(
     }
     if inventory.backends.is_empty() && !inventory.diagnostics.is_empty() {
         if inventory.diagnostics.iter().any(|diagnostic| {
-            diagnostic.setup_reason_code == Some(RuntimeDescriptorSetupReasonCode::DescriptorMissing)
+            diagnostic.setup_reason_code
+                == Some(RuntimeDescriptorSetupReasonCode::DescriptorMissing)
         }) {
             return Some(product_error("browser_popup_boundary"));
         }
@@ -1896,16 +1903,17 @@ mod tests {
         let manager = JsRuntimeManager::new(options).await.unwrap();
         let err = manager.boot().await;
         assert!(err.is_err(), "boot should fail with unspawnable kernel");
-        assert_eq!(
-            manager.coarse_state_for_tests().await,
-            KernelState::Failed
-        );
+        assert_eq!(manager.coarse_state_for_tests().await, KernelState::Failed);
     }
 
     #[tokio::test]
     async fn set_kernel_failed_helper_writes_both_state_sources() {
-        let manager = JsRuntimeManager::new(ManagerOptions::for_tests()).await.unwrap();
-        manager.set_kernel_failed(2, "spawn", "boom".into(), false).await;
+        let manager = JsRuntimeManager::new(ManagerOptions::for_tests())
+            .await
+            .unwrap();
+        manager
+            .set_kernel_failed(2, "spawn", "boom".into(), false)
+            .await;
         assert_eq!(manager.coarse_state_for_tests().await, KernelState::Failed);
         match &*manager.kernel_lifecycle.lock().await {
             AgentRuntimeKernelLifecycle::Failed {
@@ -1922,13 +1930,17 @@ mod tests {
         }
 
         // recovered=true => coarse returns to Idle (re-bootable)
-        manager.set_kernel_failed(3, "exec", "thrown".into(), true).await;
+        manager
+            .set_kernel_failed(3, "exec", "thrown".into(), true)
+            .await;
         assert_eq!(manager.coarse_state_for_tests().await, KernelState::Idle);
     }
 
     #[tokio::test]
     async fn browser_status_exposes_kernel_generation() {
-        let manager = JsRuntimeManager::new(ManagerOptions::for_tests()).await.unwrap();
+        let manager = JsRuntimeManager::new(ManagerOptions::for_tests())
+            .await
+            .unwrap();
         let status = manager.browser_status().await.unwrap();
         assert!(
             status["kernel_generation"].is_u64(),
@@ -1939,12 +1951,16 @@ mod tests {
     #[tokio::test]
     #[ignore = "requires a real Node runtime"]
     async fn exec_failure_returns_coarse_idle_and_detailed_failed() {
-        let manager = JsRuntimeManager::new(ManagerOptions::for_tests()).await.unwrap();
+        let manager = JsRuntimeManager::new(ManagerOptions::for_tests())
+            .await
+            .unwrap();
         manager.boot().await.expect("boot");
         let _ = manager.exec("throw new Error('boom')", Some(1000)).await;
         assert_eq!(manager.coarse_state_for_tests().await, KernelState::Idle);
         match &*manager.kernel_lifecycle.lock().await {
-            AgentRuntimeKernelLifecycle::Failed { stage, recovered, .. } => {
+            AgentRuntimeKernelLifecycle::Failed {
+                stage, recovered, ..
+            } => {
                 assert_eq!(*stage, "exec");
                 assert!(*recovered);
             }

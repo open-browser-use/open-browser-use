@@ -141,7 +141,7 @@ fn download_lifecycle_tracks_completion() {
         registry
             .describe_missing_download(&id)
             .unwrap()
-        .contains("removed explicitly")
+            .contains("removed explicitly")
     );
     let failed_id = DownloadId("d2".into());
     let failed_state = DownloadState {
@@ -161,12 +161,17 @@ fn download_lifecycle_tracks_completion() {
         .mark_download_failed(&failed_id, &failed_state, "download was canceled")
         .unwrap();
     assert!(registry.get_download(&failed_id).unwrap().is_none());
-    assert!(registry
-        .describe_missing_download(&failed_id)
-        .unwrap()
-        .contains("download was canceled"));
+    assert!(
+        registry
+            .describe_missing_download(&failed_id)
+            .unwrap()
+            .contains("download was canceled")
+    );
     let events = registry.recent_lifecycle_events(10).unwrap();
-    let kinds = events.iter().map(|event| event.kind.clone()).collect::<Vec<_>>();
+    let kinds = events
+        .iter()
+        .map(|event| event.kind.clone())
+        .collect::<Vec<_>>();
     assert!(kinds.contains(&RegistryLifecycleEventKind::DownloadInserted));
     assert!(kinds.contains(&RegistryLifecycleEventKind::DownloadCompleted));
     assert!(kinds.contains(&RegistryLifecycleEventKind::DownloadRemoved));

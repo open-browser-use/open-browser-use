@@ -30,7 +30,8 @@ use obu_wire::error::{ERR_CONFLICT, ERR_NOT_FOUND};
 #[tokio::test]
 async fn tasks_list_returns_empty_store() {
     let dispatcher = Dispatcher::new_for_test_with_temp_task_store();
-    let response = dispatch_for_test(&dispatcher, methods::TASKS_LIST, json!({ "limit": 10 })).await;
+    let response =
+        dispatch_for_test(&dispatcher, methods::TASKS_LIST, json!({ "limit": 10 })).await;
     assert_eq!(response["result"], json!([]));
 }
 
@@ -60,7 +61,10 @@ async fn tasks_export_unknown_task_returns_not_found() {
     .await;
     // §13: export of an unknown id is an explicit existence failure
     // (ERR_NOT_FOUND), not an empty `{ task_id, turns: [], events: [] }`.
-    assert!(response.get("result").is_none(), "unexpected ok: {response:#}");
+    assert!(
+        response.get("result").is_none(),
+        "unexpected ok: {response:#}"
+    );
     assert_eq!(response["error"]["code"], ERR_NOT_FOUND);
     assert_eq!(response["error"]["data"]["code"], "unknown_task");
     assert_eq!(response["error"]["data"]["task_id"], "missing-task");
@@ -83,7 +87,10 @@ async fn tasks_resume_unknown_task_returns_not_found() {
         }),
     )
     .await;
-    assert!(response.get("result").is_none(), "unexpected ok: {response:#}");
+    assert!(
+        response.get("result").is_none(),
+        "unexpected ok: {response:#}"
+    );
     assert_eq!(response["error"]["code"], ERR_NOT_FOUND);
     assert_eq!(response["error"]["data"]["code"], "unknown_task");
     assert_eq!(response["error"]["data"]["task_id"], "missing-task");
@@ -131,9 +138,8 @@ impl ExtensionTransport for OkTransport {
 /// segment whose `turnId` is the current turn, and the recorded `tabs_finalized`
 /// evidence's `outcome` reflects the backend's real disposition.
 fn finalize_dispatcher(session_id: &str, turn_id: &str) -> Dispatcher {
-    let backend = Arc::new(
-        WebExtensionBackend::dev_chrome(json!({})).with_transport(Arc::new(OkTransport)),
-    );
+    let backend =
+        Arc::new(WebExtensionBackend::dev_chrome(json!({})).with_transport(Arc::new(OkTransport)));
     // `finalizeTabs` calls `assert_agent_owns_session`, which only requires the
     // session to exist (and not be under human takeover). Pre-touch it.
     backend
@@ -154,7 +160,10 @@ async fn finalize_only_first_write_creates_one_segment_and_event() {
     .await;
     // Finalize must SUCCEED for evidence to be written (evidence is written only
     // after backend success). The real success shape has no top-level `status`.
-    assert!(response.get("error").is_none(), "finalize failed: {response:#}");
+    assert!(
+        response.get("error").is_none(),
+        "finalize failed: {response:#}"
+    );
 
     let tasks = dispatch_for_test(&dispatcher, methods::TASKS_LIST, json!({ "limit": 10 })).await;
     assert_eq!(tasks["result"][0]["segmentCount"], 1);
@@ -175,7 +184,10 @@ async fn finalize_records_real_outcome_dispositions() {
         json!({ "session_id": "session-1", "turn_id": "turn-1", "keep": [] }),
     )
     .await;
-    assert!(response.get("error").is_none(), "finalize failed: {response:#}");
+    assert!(
+        response.get("error").is_none(),
+        "finalize failed: {response:#}"
+    );
 
     // Resolve the auto-created task id, then export its episode (events included).
     let tasks = dispatch_for_test(&dispatcher, methods::TASKS_LIST, json!({ "limit": 10 })).await;
@@ -191,17 +203,14 @@ async fn finalize_records_real_outcome_dispositions() {
     .await;
 
     // Find the tabs_finalized event and parse its serialized payload string.
-    let events = export["result"]["events"]
-        .as_array()
-        .expect("events array");
+    let events = export["result"]["events"].as_array().expect("events array");
     let finalized = events
         .iter()
         .find(|event| event["kind"] == "tabs_finalized")
         .expect("a tabs_finalized event");
-    let payload: Value = serde_json::from_str(
-        finalized["payload"].as_str().expect("payload is a string"),
-    )
-    .expect("payload parses as json");
+    let payload: Value =
+        serde_json::from_str(finalized["payload"].as_str().expect("payload is a string"))
+            .expect("payload parses as json");
 
     // The disposition is REAL data from the backend result, not a hardcoded value.
     assert_eq!(
@@ -213,8 +222,14 @@ async fn finalize_records_real_outcome_dispositions() {
     assert_eq!(payload["outcome"]["keptTabs"], json!([]));
     assert_eq!(payload["outcome"]["releasedTabIds"], json!([]));
     // The fabricated always-"ok" status / always-[] failures keys are gone.
-    assert!(payload.get("status").is_none(), "status should be removed: {payload:#}");
-    assert!(payload.get("failures").is_none(), "failures should be removed: {payload:#}");
+    assert!(
+        payload.get("status").is_none(),
+        "status should be removed: {payload:#}"
+    );
+    assert!(
+        payload.get("failures").is_none(),
+        "failures should be removed: {payload:#}"
+    );
 }
 
 /// `turnEnded` also records evidence for the current turn's segment, auto-creating
@@ -228,7 +243,10 @@ async fn turn_ended_first_write_creates_one_segment_and_event() {
         json!({ "session_id": "session-2", "turn_id": "turn-9" }),
     )
     .await;
-    assert!(response.get("error").is_none(), "turnEnded failed: {response:#}");
+    assert!(
+        response.get("error").is_none(),
+        "turnEnded failed: {response:#}"
+    );
 
     let tasks = dispatch_for_test(&dispatcher, methods::TASKS_LIST, json!({ "limit": 10 })).await;
     assert_eq!(tasks["result"][0]["segmentCount"], 1);
@@ -243,7 +261,10 @@ async fn finalize_twice_same_turn_keeps_one_segment() {
     let params = json!({ "session_id": "session-1", "turn_id": "turn-1", "keep": [] });
     for _ in 0..2 {
         let response = dispatch_for_test(&dispatcher, methods::FINALIZE_TABS, params.clone()).await;
-        assert!(response.get("error").is_none(), "finalize failed: {response:#}");
+        assert!(
+            response.get("error").is_none(),
+            "finalize failed: {response:#}"
+        );
     }
 
     let tasks = dispatch_for_test(&dispatcher, methods::TASKS_LIST, json!({ "limit": 10 })).await;
@@ -327,7 +348,10 @@ async fn resume_complete_blocked_persists_real_repair_detail() {
         7,
     )
     .await;
-    assert!(complete.get("error").is_none(), "complete failed: {complete:#}");
+    assert!(
+        complete.get("error").is_none(),
+        "complete failed: {complete:#}"
+    );
     assert_eq!(complete["result"]["status"], "blocked");
 
     // Read the durable evidence back: the resume_attempt_blocked event's payload
@@ -338,9 +362,7 @@ async fn resume_complete_blocked_persists_real_repair_detail() {
         json!({ "taskId": task_id }),
     )
     .await;
-    let events = export["result"]["events"]
-        .as_array()
-        .expect("events array");
+    let events = export["result"]["events"].as_array().expect("events array");
     let blocked = events
         .iter()
         .find(|event| event["kind"] == "resume_attempt_blocked")
@@ -449,7 +471,10 @@ async fn dispatch_frame_for_test(dispatcher: &Dispatcher, frame: Value) -> Value
 
     let server = tokio::spawn(async move {
         let peer = listener.accept().await.unwrap();
-        server_dispatcher.serve_peer(peer.stream, None).await.unwrap();
+        server_dispatcher
+            .serve_peer(peer.stream, None)
+            .await
+            .unwrap();
     });
 
     tokio::time::sleep(Duration::from_millis(50)).await;

@@ -700,10 +700,8 @@ impl TaskStore {
                 // already has the column. Stays inside this transaction so the
                 // ALTER and the version bump are atomic.
                 if on_disk == 1 {
-                    tx.execute_batch(
-                        "ALTER TABLE task_segments ADD COLUMN generation INTEGER;",
-                    )
-                    .context("migrate task_segments: add generation column (v1->v2)")?;
+                    tx.execute_batch("ALTER TABLE task_segments ADD COLUMN generation INTEGER;")
+                        .context("migrate task_segments: add generation column (v1->v2)")?;
                 }
                 // v2 -> v3 (Finding 3): the brand-new v3 binding/resume tables are
                 // created by the `CREATE TABLE IF NOT EXISTS` batch above. But the
@@ -721,7 +719,9 @@ impl TaskStore {
                              GROUP BY task_id, session_id, turn_id
                          );",
                     )
-                    .context("migrate task_segments: remove duplicate task/session/turn rows (v3)")?;
+                    .context(
+                        "migrate task_segments: remove duplicate task/session/turn rows (v3)",
+                    )?;
                 }
                 if on_disk < TASK_STORE_SCHEMA_VERSION {
                     tx.execute(
@@ -1542,11 +1542,7 @@ impl TaskStore {
     /// caller's fields) before appending, so [`TaskStore::append_typed_event`]'s
     /// kind-match invariant holds. No segment and no owner are created. Fails
     /// with `invalid_resume_token` if no pending/attached attempt matches.
-    pub fn complete_resume_blocked(
-        &self,
-        token: &str,
-        payload: serde_json::Value,
-    ) -> Result<()> {
+    pub fn complete_resume_blocked(&self, token: &str, payload: serde_json::Value) -> Result<()> {
         let AttachableAttempt {
             attempt_id,
             task_id,
@@ -1642,9 +1638,13 @@ mod tests {
     fn resume_appends_new_segment_with_current_turn() {
         let (store, _dir) = open_temp_store();
         let task_id = store.create_task(default_new_task()).unwrap();
-        store.append_segment(&task_id, Segment::new("s1", "t1")).unwrap();
+        store
+            .append_segment(&task_id, Segment::new("s1", "t1"))
+            .unwrap();
         // resume under a NEW turn
-        store.append_segment(&task_id, Segment::new("s1", "t2")).unwrap();
+        store
+            .append_segment(&task_id, Segment::new("s1", "t2"))
+            .unwrap();
         let segs = store.segments(&task_id).unwrap();
         assert_eq!(segs.len(), 2);
         assert_eq!(segs.last().unwrap().turn_id, "t2");
@@ -1793,7 +1793,10 @@ mod tests {
         let task_id = store.create_task(default_new_task()).unwrap();
         let cleanup =
             cancel_task(&store, &task_id, &SessionTurnEvidence::human_takeover()).unwrap();
-        assert_eq!(store.load_task(&task_id).unwrap().state, TaskState::Cancelled);
+        assert_eq!(
+            store.load_task(&task_id).unwrap().state,
+            TaskState::Cancelled
+        );
         assert!(
             !cleanup.cleaned_browser_resources,
             "must not clean browser during human takeover"
@@ -1808,7 +1811,10 @@ mod tests {
         let task_id = store.create_task(default_new_task()).unwrap();
         // Default evidence carries no human-present control_state => trusted.
         let cleanup = cancel_task(&store, &task_id, &SessionTurnEvidence::default()).unwrap();
-        assert_eq!(store.load_task(&task_id).unwrap().state, TaskState::Cancelled);
+        assert_eq!(
+            store.load_task(&task_id).unwrap().state,
+            TaskState::Cancelled
+        );
         assert!(
             cleanup.cleaned_browser_resources,
             "trusted-context cancel must authorize browser cleanup"
@@ -1825,7 +1831,10 @@ mod tests {
             ..Default::default()
         };
         let cleanup = cancel_task(&store, &task_id, &yielded).unwrap();
-        assert_eq!(store.load_task(&task_id).unwrap().state, TaskState::Cancelled);
+        assert_eq!(
+            store.load_task(&task_id).unwrap().state,
+            TaskState::Cancelled
+        );
         assert!(
             !cleanup.cleaned_browser_resources,
             "must not clean browser while a human holds control (yielded)"
@@ -1871,7 +1880,9 @@ mod tests {
         let (store, _dir) = open_temp_store();
         let task_id = store.create_task(default_new_task()).unwrap();
         // Segment::new records no generation: continuity cannot be proven.
-        store.append_segment(&task_id, Segment::new("s1", "t1")).unwrap();
+        store
+            .append_segment(&task_id, Segment::new("s1", "t1"))
+            .unwrap();
         let plan = plan_task_resume(&store, &task_id, 5);
         assert!(plan.recover_from_store);
         assert!(plan.requires_fresh_observation);
@@ -1893,7 +1904,9 @@ mod tests {
         store
             .append_segment(&task_id, Segment::with_generation("s1", "t1", 7))
             .unwrap();
-        store.append_segment(&task_id, Segment::new("s1", "t2")).unwrap();
+        store
+            .append_segment(&task_id, Segment::new("s1", "t2"))
+            .unwrap();
         let segs = store.segments(&task_id).unwrap();
         assert_eq!(segs.len(), 2);
         assert_eq!(segs[0].generation, Some(7));
@@ -2052,8 +2065,12 @@ mod tests {
         let task_id = store.create_task(default_new_task()).unwrap();
 
         // Two turns: one segment per resume.
-        store.append_segment(&task_id, Segment::new("s1", "t1")).unwrap();
-        store.append_segment(&task_id, Segment::new("s1", "t2")).unwrap();
+        store
+            .append_segment(&task_id, Segment::new("s1", "t1"))
+            .unwrap();
+        store
+            .append_segment(&task_id, Segment::new("s1", "t2"))
+            .unwrap();
 
         // A task-level linking event spanning the segments.
         let cursor = store.append_event(&task_id, "resumed", "to t2").unwrap();
@@ -2069,11 +2086,18 @@ mod tests {
         // Every section carries both the task_id and a non-empty active turn_id.
         for section in &ep.turns {
             assert_eq!(section.task_id, task_id, "section must carry task_id");
-            assert!(!section.turn_id.is_empty(), "section must carry active turn_id");
+            assert!(
+                !section.turn_id.is_empty(),
+                "section must carry active turn_id"
+            );
         }
 
         // Task-level linking events are exported alongside the sections.
-        assert_eq!(ep.events.len(), 1, "exactly the one appended event is exported");
+        assert_eq!(
+            ep.events.len(),
+            1,
+            "exactly the one appended event is exported"
+        );
         assert!(
             ep.events
                 .iter()
@@ -2088,7 +2112,9 @@ mod tests {
         let (store, _dir) = open_temp_store();
         let task_id = store.create_task(default_new_task()).unwrap();
 
-        let c1 = store.append_event(&task_id, "segment_started", "a").unwrap();
+        let c1 = store
+            .append_event(&task_id, "segment_started", "a")
+            .unwrap();
         let c2 = store.append_event(&task_id, "resumed", "b").unwrap();
         assert_eq!(c1, 1);
         assert_eq!(c2, 2);
@@ -2119,11 +2145,17 @@ mod tests {
         let task_a = store.create_task(default_new_task()).unwrap();
         let task_b = store.create_task(default_new_task()).unwrap();
 
-        let first = store.ensure_turn_segment(&task_a, "session-1", "turn-1", Some(7)).unwrap();
-        let second = store.ensure_turn_segment(&task_a, "session-1", "turn-1", Some(7)).unwrap();
+        let first = store
+            .ensure_turn_segment(&task_a, "session-1", "turn-1", Some(7))
+            .unwrap();
+        let second = store
+            .ensure_turn_segment(&task_a, "session-1", "turn-1", Some(7))
+            .unwrap();
         assert_eq!(first.segment_id, second.segment_id);
 
-        let err = store.ensure_turn_segment(&task_b, "session-1", "turn-1", Some(7)).unwrap_err();
+        let err = store
+            .ensure_turn_segment(&task_b, "session-1", "turn-1", Some(7))
+            .unwrap_err();
         assert!(err.to_string().contains("task_turn_conflict"));
     }
 
@@ -2132,26 +2164,47 @@ mod tests {
         let dir = owner_only_tempdir();
         let store = TaskStore::open(dir.path()).unwrap();
         let task_id = store.create_task(default_new_task()).unwrap();
-        let segment = store.ensure_turn_segment(&task_id, "session-1", "turn-1", Some(3)).unwrap();
+        let segment = store
+            .ensure_turn_segment(&task_id, "session-1", "turn-1", Some(3))
+            .unwrap();
         store.bind_session_task("session-1", &task_id).unwrap();
-        store.bind_turn_task("session-1", "turn-1", &task_id, &segment.segment_id, "auto").unwrap();
+        store
+            .bind_turn_task("session-1", "turn-1", &task_id, &segment.segment_id, "auto")
+            .unwrap();
         drop(store);
 
         let reopened = TaskStore::open(dir.path()).unwrap();
-        assert_eq!(reopened.task_for_session("session-1").unwrap(), Some(task_id.clone()));
-        assert_eq!(reopened.task_for_turn("session-1", "turn-1").unwrap(), Some(task_id));
+        assert_eq!(
+            reopened.task_for_session("session-1").unwrap(),
+            Some(task_id.clone())
+        );
+        assert_eq!(
+            reopened.task_for_turn("session-1", "turn-1").unwrap(),
+            Some(task_id)
+        );
     }
 
     #[test]
     fn list_tasks_orders_filters_and_reports_last_segment() {
         let (store, _dir) = open_temp_store();
         let task_id = store.create_task(default_new_task()).unwrap();
-        let segment = store.ensure_turn_segment(&task_id, "session-1", "turn-1", Some(11)).unwrap();
-        let rows = store.list_tasks(TaskListFilter { state: None, limit: 100, scope_session_id: None }).unwrap();
+        let segment = store
+            .ensure_turn_segment(&task_id, "session-1", "turn-1", Some(11))
+            .unwrap();
+        let rows = store
+            .list_tasks(TaskListFilter {
+                state: None,
+                limit: 100,
+                scope_session_id: None,
+            })
+            .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].task_id, task_id);
         assert_eq!(rows[0].segment_count, 1);
-        assert_eq!(rows[0].last_segment.as_ref().unwrap().segment_id, segment.segment_id);
+        assert_eq!(
+            rows[0].last_segment.as_ref().unwrap().segment_id,
+            segment.segment_id
+        );
     }
 
     #[test]
@@ -2173,7 +2226,9 @@ mod tests {
             )
             .unwrap();
         assert_eq!(cursor, 1);
-        let err = store.append_typed_event(&task_id, "turn_ended", json!({ "kind": "tabs_finalized" })).unwrap_err();
+        let err = store
+            .append_typed_event(&task_id, "turn_ended", json!({ "kind": "tabs_finalized" }))
+            .unwrap_err();
         assert!(err.to_string().contains("task event kind mismatch"));
     }
 
@@ -2200,12 +2255,18 @@ mod tests {
     fn resume_begin_is_idempotent_and_conflicts_across_sessions() {
         let (store, _dir) = open_temp_store();
         let task_id = store.create_task(default_new_task()).unwrap();
-        let first = store.begin_resume_attempt(&task_id, "session-1", "turn-1", 7, 60_000).unwrap();
-        let retry = store.begin_resume_attempt(&task_id, "session-1", "turn-1", 7, 60_000).unwrap();
+        let first = store
+            .begin_resume_attempt(&task_id, "session-1", "turn-1", 7, 60_000)
+            .unwrap();
+        let retry = store
+            .begin_resume_attempt(&task_id, "session-1", "turn-1", 7, 60_000)
+            .unwrap();
         assert_eq!(first.attempt_id, retry.attempt_id);
         assert!(first.resume_token.is_some());
         assert!(retry.resume_token.is_none());
-        let err = store.begin_resume_attempt(&task_id, "session-2", "turn-1", 7, 60_000).unwrap_err();
+        let err = store
+            .begin_resume_attempt(&task_id, "session-2", "turn-1", 7, 60_000)
+            .unwrap_err();
         assert!(err.to_string().contains("task_resume_conflict"));
     }
 
@@ -2213,23 +2274,42 @@ mod tests {
     fn resume_attached_is_idempotent_and_creates_active_owner() {
         let (store, _dir) = open_temp_store();
         let task_id = store.create_task(default_new_task()).unwrap();
-        let attempt = store.begin_resume_attempt(&task_id, "session-1", "turn-1", 7, 60_000).unwrap();
+        let attempt = store
+            .begin_resume_attempt(&task_id, "session-1", "turn-1", 7, 60_000)
+            .unwrap();
         let token = attempt.resume_token.as_deref().unwrap();
         let first = store.complete_resume_attached(token, 7).unwrap();
         let retry = store.complete_resume_attached(token, 7).unwrap();
         assert_eq!(first.segment.segment_id, retry.segment.segment_id);
-        assert_eq!(store.active_execution_owner(&task_id).unwrap().unwrap().attempt_id, attempt.attempt_id);
+        assert_eq!(
+            store
+                .active_execution_owner(&task_id)
+                .unwrap()
+                .unwrap()
+                .attempt_id,
+            attempt.attempt_id
+        );
     }
 
     #[test]
     fn blocked_resume_records_event_and_does_not_create_segment() {
         let (store, _dir) = open_temp_store();
         let task_id = store.create_task(default_new_task()).unwrap();
-        let attempt = store.begin_resume_attempt(&task_id, "session-1", "turn-1", 7, 60_000).unwrap();
-        store.complete_resume_blocked(attempt.resume_token.as_deref().unwrap(), json!({ "status": "blocked", "reason": "no_active_tab" })).unwrap();
+        let attempt = store
+            .begin_resume_attempt(&task_id, "session-1", "turn-1", 7, 60_000)
+            .unwrap();
+        store
+            .complete_resume_blocked(
+                attempt.resume_token.as_deref().unwrap(),
+                json!({ "status": "blocked", "reason": "no_active_tab" }),
+            )
+            .unwrap();
         assert_eq!(store.segments(&task_id).unwrap().len(), 0);
         assert!(store.active_execution_owner(&task_id).unwrap().is_none());
-        assert_eq!(store.events(&task_id).unwrap().last().unwrap().kind, "resume_attempt_blocked");
+        assert_eq!(
+            store.events(&task_id).unwrap().last().unwrap().kind,
+            "resume_attempt_blocked"
+        );
     }
 
     // Task 8 relies on rotate_resume_attempt_token to recover a wire token for a
@@ -2246,7 +2326,9 @@ mod tests {
         let old_token = attempt.resume_token.clone().unwrap();
 
         // Rotation mints a fresh token distinct from the original.
-        let new_token = store.rotate_resume_attempt_token(&attempt.attempt_id).unwrap();
+        let new_token = store
+            .rotate_resume_attempt_token(&attempt.attempt_id)
+            .unwrap();
         assert_ne!(new_token, old_token, "rotation must mint a new token");
 
         // The OLD token no longer resolves (its hash was overwritten).
@@ -2271,7 +2353,11 @@ mod tests {
         assert_eq!(attached.attempt_id, attempt.attempt_id);
         assert_eq!(attached.task_id, task_id);
         assert_eq!(
-            store.active_execution_owner(&task_id).unwrap().unwrap().segment_id,
+            store
+                .active_execution_owner(&task_id)
+                .unwrap()
+                .unwrap()
+                .segment_id,
             attached.segment.segment_id
         );
     }

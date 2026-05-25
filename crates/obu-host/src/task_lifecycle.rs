@@ -10,7 +10,7 @@
 
 use std::str::FromStr;
 
-use anyhow::{bail, Result};
+use anyhow::{Result, bail};
 
 /// Coarse lifecycle state of a long-running host task.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
@@ -143,7 +143,14 @@ fn allowed_transitions(state: TaskState) -> &'static [TaskState] {
             Blocked,
             Failed,
         ],
-        WaitingForHuman => &[Running, PausedYielded, Resuming, Cancelling, Blocked, Failed],
+        WaitingForHuman => &[
+            Running,
+            PausedYielded,
+            Resuming,
+            Cancelling,
+            Blocked,
+            Failed,
+        ],
         PausedYielded => &[Resuming, WaitingForHuman, Cancelling, Blocked, Failed],
         Resuming => &[Running, RepairRequired, Blocked, Cancelling, Failed],
         // RepairRequired and Blocked must re-enter through Resuming, where
@@ -372,11 +379,7 @@ impl TaskLifecycle {
             self.state = next;
             Ok(())
         } else {
-            bail!(
-                "invalid task transition: {:?} -> {:?}",
-                self.state,
-                next
-            );
+            bail!("invalid task transition: {:?} -> {:?}", self.state, next);
         }
     }
 }

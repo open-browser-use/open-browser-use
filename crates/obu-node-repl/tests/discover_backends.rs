@@ -711,7 +711,10 @@ async fn runtime_descriptor_discovery_reports_missing_descriptor_dir_as_setup_mi
         options.backend_discovery_diagnostics[0].setup_reason_code,
         Some(RuntimeDescriptorSetupReasonCode::DescriptorDirMissing)
     );
-    assert_eq!(options.backend_discovery_diagnostics[0].lifecycle_state, None);
+    assert_eq!(
+        options.backend_discovery_diagnostics[0].lifecycle_state,
+        None
+    );
     assert_eq!(options.backend_discovery_diagnostics[0].reason_code, None);
 
     let manager = JsRuntimeManager::new(options).await.unwrap();
@@ -793,7 +796,10 @@ async fn runtime_descriptor_discovery_reports_empty_descriptor_dir_as_popup_boun
         .exec("globalThis.obuRepl.discoverBackendDiagnostics()", None)
         .await
         .unwrap();
-    assert_eq!(result.result[0]["setup_lifecycle_state"], json!("no_descriptor"));
+    assert_eq!(
+        result.result[0]["setup_lifecycle_state"],
+        json!("no_descriptor")
+    );
     assert_eq!(
         result.result[0]["setup_reason_code"],
         json!("descriptor_missing")

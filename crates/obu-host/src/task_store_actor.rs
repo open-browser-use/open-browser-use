@@ -432,7 +432,10 @@ fn resume_begin(
     // §13: resume of an unknown id gets an explicit existence failure before any
     // attempt insert, so the caller sees `unknown_task` rather than an opaque
     // foreign-key-violation InternalError from `begin_resume_attempt`.
-    if !store.task_exists(task_id).map_err(|error| error.to_string())? {
+    if !store
+        .task_exists(task_id)
+        .map_err(|error| error.to_string())?
+    {
         return Err("unknown_task".to_string());
     }
     let ResumeAttemptBegin {
@@ -491,7 +494,10 @@ fn ensure_current_turn_segment(
     turn_id: &str,
     generation: Option<i64>,
 ) -> Result<(String, Segment), String> {
-    let task_id = match store.task_for_session(session_id).map_err(|e| e.to_string())? {
+    let task_id = match store
+        .task_for_session(session_id)
+        .map_err(|e| e.to_string())?
+    {
         Some(task_id) => task_id,
         None => {
             let task_id = store
@@ -525,8 +531,7 @@ fn record_finalize_evidence(
     generation: Option<i64>,
     outcome: Value,
 ) -> Result<(), String> {
-    let (task_id, segment) =
-        ensure_current_turn_segment(store, session_id, turn_id, generation)?;
+    let (task_id, segment) = ensure_current_turn_segment(store, session_id, turn_id, generation)?;
     let payload = json!({
         "kind": "tabs_finalized",
         "taskId": task_id,
@@ -549,8 +554,7 @@ fn record_turn_ended_evidence(
     turn_id: &str,
     generation: Option<i64>,
 ) -> Result<(), String> {
-    let (task_id, segment) =
-        ensure_current_turn_segment(store, session_id, turn_id, generation)?;
+    let (task_id, segment) = ensure_current_turn_segment(store, session_id, turn_id, generation)?;
     let payload = json!({
         "kind": "turn_ended",
         "taskId": task_id,

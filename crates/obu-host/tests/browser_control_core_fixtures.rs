@@ -8,6 +8,10 @@ fn browser_control_core_json_fixtures_are_parseable() {
     let fixture: Value = serde_json::from_str(&source).expect("parse browser-control fixture json");
     assert_eq!(fixture["protocolVersion"], 1);
     let cases = fixture["cases"].as_array().expect("fixture cases");
-    assert!(cases.iter().any(|case| case["name"] == "activeCommandAccepted"));
+    assert!(
+        cases
+            .iter()
+            .any(|case| case["name"] == "activeCommandAccepted")
+    );
     assert!(cases.iter().any(|case| case["name"] == "finalizeTwoTabs"));
 }

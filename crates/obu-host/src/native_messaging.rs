@@ -32,12 +32,12 @@ use crate::dispatcher::Dispatcher;
 use crate::error::{HostError, Result};
 use crate::peer_lifecycle::PeerLifecycleDiagnostics;
 use crate::policy::ConfiguredHostPolicy;
-use crate::task_store_actor::TaskStoreHandle;
 use crate::runtime_descriptor_lifecycle::{
     RuntimeDescriptorDropPlan, RuntimeDescriptorLifecycleEventKind, plan_runtime_descriptor_drop,
     plan_runtime_descriptor_write,
 };
 use crate::socket::{Listener, unix::UnixSockListener};
+use crate::task_store_actor::TaskStoreHandle;
 
 type NativeReader = FramedRead<Stdin, FrameCodec>;
 type NativeWriter = FramedWrite<Stdout, FrameCodec>;
@@ -276,20 +276,24 @@ async fn handle_extension_request(
             close_runtime_descriptor_registration(registration, "stop_browser_control").await;
             Response::ok(request.id, Value::Null)
         }
-        "takeBrowserControl" => match apply_extension_control_state(backend, request.params, true) {
-            Ok(()) => Response::ok(request.id, Value::Null),
-            Err(error) => Response::err(
-                request.id,
-                ErrorObject::new(ErrorCode::InvalidParams, error.to_string()),
-            ),
-        },
-        "resumeBrowserControl" => match apply_extension_control_state(backend, request.params, false) {
-            Ok(()) => Response::ok(request.id, Value::Null),
-            Err(error) => Response::err(
-                request.id,
-                ErrorObject::new(ErrorCode::InvalidParams, error.to_string()),
-            ),
-        },
+        "takeBrowserControl" => {
+            match apply_extension_control_state(backend, request.params, true) {
+                Ok(()) => Response::ok(request.id, Value::Null),
+                Err(error) => Response::err(
+                    request.id,
+                    ErrorObject::new(ErrorCode::InvalidParams, error.to_string()),
+                ),
+            }
+        }
+        "resumeBrowserControl" => {
+            match apply_extension_control_state(backend, request.params, false) {
+                Ok(()) => Response::ok(request.id, Value::Null),
+                Err(error) => Response::err(
+                    request.id,
+                    ErrorObject::new(ErrorCode::InvalidParams, error.to_string()),
+                ),
+            }
+        }
         other => Response::err(
             request.id,
             ErrorObject::new(
@@ -832,7 +836,10 @@ mod tests {
         assert_eq!(error["method"], "click");
         assert_eq!(error["error_code"], ErrorCode::InternalError.value());
         assert_eq!(error["error_message"], "click failed");
-        assert_eq!(error["error_data"], json!({ "code": "synthetic_click_failure" }));
+        assert_eq!(
+            error["error_data"],
+            json!({ "code": "synthetic_click_failure" })
+        );
 
         let closed = late_transport_closed_event(9, pending_request("goto"), "native port closed");
         assert_eq!(closed["kind"], "timed_out_late_transport_closed");
@@ -881,10 +888,7 @@ mod tests {
             descriptor_path: Some(std::path::PathBuf::from("/definitely/not/here.json")),
         };
         reg.remove_descriptor_file("test"); // NotFound => treat as dropped
-        assert!(
-            reg.descriptor_path.is_none(),
-            "NotFound means already gone"
-        );
+        assert!(reg.descriptor_path.is_none(), "NotFound means already gone");
     }
 
     #[test]
@@ -896,7 +900,10 @@ mod tests {
             descriptor_path: Some(file_path.clone()),
         };
         reg.remove_descriptor_file("test");
-        assert!(reg.descriptor_path.is_none(), "successful remove must clear the path");
+        assert!(
+            reg.descriptor_path.is_none(),
+            "successful remove must clear the path"
+        );
         assert!(!file_path.exists(), "file must actually be removed");
     }
 }

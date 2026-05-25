@@ -396,7 +396,11 @@ impl ServiceRegistry {
     }
 
     /// Reject lifecycle operations if an existing session is under human takeover.
-    pub fn reject_human_takeover_if_present(&self, session_id: &str, operation: &str) -> Result<()> {
+    pub fn reject_human_takeover_if_present(
+        &self,
+        session_id: &str,
+        operation: &str,
+    ) -> Result<()> {
         let guard = self
             .inner
             .read()
@@ -1371,7 +1375,10 @@ fn describe_stale_handle(kind: &str, id: &str, state: &StaleHandleState) -> Stri
     if let Some(session_id) = state.owner_session_id.as_deref() {
         message.push_str(&format!("; owner_session={session_id}"));
     }
-    message.push_str(&format!("; terminal_state={}", state.terminal_state.as_str()));
+    message.push_str(&format!(
+        "; terminal_state={}",
+        state.terminal_state.as_str()
+    ));
     if let Some(owner_turn_id) = state.owner_turn_id.as_deref() {
         message.push_str(&format!("; owner_turn={owner_turn_id}"));
     }

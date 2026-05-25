@@ -17,8 +17,7 @@ pub enum RuntimeDescriptorReadState {
 
 impl RuntimeDescriptorReadState {
     /// Every read-state variant. Pinned to `descriptor-vocab.json` (`readerStates`).
-    pub const ALL: [RuntimeDescriptorReadState; 3] =
-        [Self::Fresh, Self::Invalid, Self::Stale];
+    pub const ALL: [RuntimeDescriptorReadState; 3] = [Self::Fresh, Self::Invalid, Self::Stale];
 }
 
 /// Runtime descriptor setup state observed before reading descriptor content.
@@ -286,7 +285,9 @@ pub fn plan_runtime_descriptor_ignored(
 }
 
 /// Plan a runtime descriptor setup diagnostic.
-pub fn plan_runtime_descriptor_setup(issue: RuntimeDescriptorSetupIssue) -> RuntimeDescriptorSetupPlan {
+pub fn plan_runtime_descriptor_setup(
+    issue: RuntimeDescriptorSetupIssue,
+) -> RuntimeDescriptorSetupPlan {
     match issue {
         RuntimeDescriptorSetupIssue::RuntimeRootMissing => RuntimeDescriptorSetupPlan {
             setup_lifecycle_state: RuntimeDescriptorSetupState::Missing,
@@ -298,26 +299,32 @@ pub fn plan_runtime_descriptor_setup(issue: RuntimeDescriptorSetupIssue) -> Runt
             setup_reason_code: RuntimeDescriptorSetupReasonCode::RuntimeRootInvalid,
             reason,
         },
-        RuntimeDescriptorSetupIssue::RuntimeRootUnreadable { reason } => RuntimeDescriptorSetupPlan {
-            setup_lifecycle_state: RuntimeDescriptorSetupState::Unreadable,
-            setup_reason_code: RuntimeDescriptorSetupReasonCode::RuntimeRootUnreadable,
-            reason,
-        },
+        RuntimeDescriptorSetupIssue::RuntimeRootUnreadable { reason } => {
+            RuntimeDescriptorSetupPlan {
+                setup_lifecycle_state: RuntimeDescriptorSetupState::Unreadable,
+                setup_reason_code: RuntimeDescriptorSetupReasonCode::RuntimeRootUnreadable,
+                reason,
+            }
+        }
         RuntimeDescriptorSetupIssue::DescriptorDirMissing => RuntimeDescriptorSetupPlan {
             setup_lifecycle_state: RuntimeDescriptorSetupState::Missing,
             setup_reason_code: RuntimeDescriptorSetupReasonCode::DescriptorDirMissing,
             reason: "runtime descriptor directory missing".to_string(),
         },
-        RuntimeDescriptorSetupIssue::DescriptorDirUnreadable { reason } => RuntimeDescriptorSetupPlan {
-            setup_lifecycle_state: RuntimeDescriptorSetupState::Unreadable,
-            setup_reason_code: RuntimeDescriptorSetupReasonCode::DescriptorDirUnreadable,
-            reason,
-        },
-        RuntimeDescriptorSetupIssue::DescriptorDirInvalid { reason } => RuntimeDescriptorSetupPlan {
-            setup_lifecycle_state: RuntimeDescriptorSetupState::Invalid,
-            setup_reason_code: RuntimeDescriptorSetupReasonCode::DescriptorDirInvalid,
-            reason,
-        },
+        RuntimeDescriptorSetupIssue::DescriptorDirUnreadable { reason } => {
+            RuntimeDescriptorSetupPlan {
+                setup_lifecycle_state: RuntimeDescriptorSetupState::Unreadable,
+                setup_reason_code: RuntimeDescriptorSetupReasonCode::DescriptorDirUnreadable,
+                reason,
+            }
+        }
+        RuntimeDescriptorSetupIssue::DescriptorDirInvalid { reason } => {
+            RuntimeDescriptorSetupPlan {
+                setup_lifecycle_state: RuntimeDescriptorSetupState::Invalid,
+                setup_reason_code: RuntimeDescriptorSetupReasonCode::DescriptorDirInvalid,
+                reason,
+            }
+        }
         RuntimeDescriptorSetupIssue::DescriptorMissing => RuntimeDescriptorSetupPlan {
             setup_lifecycle_state: RuntimeDescriptorSetupState::NoDescriptor,
             setup_reason_code: RuntimeDescriptorSetupReasonCode::DescriptorMissing,
@@ -345,8 +352,8 @@ mod tests {
     use super::{
         RuntimeDescriptorReadIssue, RuntimeDescriptorReadReasonCode, RuntimeDescriptorReadState,
         RuntimeDescriptorSetupIssue, RuntimeDescriptorSetupReasonCode, RuntimeDescriptorSetupState,
-        plan_runtime_descriptor_ignored, plan_runtime_descriptor_setup, plan_runtime_descriptor_usable,
-        rendered_descriptor_value,
+        plan_runtime_descriptor_ignored, plan_runtime_descriptor_setup,
+        plan_runtime_descriptor_usable, rendered_descriptor_value,
     };
     use serde_json::json;
 
@@ -404,8 +411,12 @@ mod tests {
 
     #[test]
     fn setup_planner_classifies_descriptor_setup_boundary_states() {
-        let missing = plan_runtime_descriptor_setup(RuntimeDescriptorSetupIssue::DescriptorDirMissing);
-        assert_eq!(missing.setup_lifecycle_state, RuntimeDescriptorSetupState::Missing);
+        let missing =
+            plan_runtime_descriptor_setup(RuntimeDescriptorSetupIssue::DescriptorDirMissing);
+        assert_eq!(
+            missing.setup_lifecycle_state,
+            RuntimeDescriptorSetupState::Missing
+        );
         assert_eq!(
             missing.setup_reason_code,
             RuntimeDescriptorSetupReasonCode::DescriptorDirMissing
@@ -429,14 +440,20 @@ mod tests {
             plan_runtime_descriptor_setup(RuntimeDescriptorSetupIssue::DescriptorDirInvalid {
                 reason: "not owner-only".to_string(),
             });
-        assert_eq!(invalid.setup_lifecycle_state, RuntimeDescriptorSetupState::Invalid);
+        assert_eq!(
+            invalid.setup_lifecycle_state,
+            RuntimeDescriptorSetupState::Invalid
+        );
         assert_eq!(
             invalid.setup_reason_code,
             RuntimeDescriptorSetupReasonCode::DescriptorDirInvalid
         );
 
         let none = plan_runtime_descriptor_setup(RuntimeDescriptorSetupIssue::DescriptorMissing);
-        assert_eq!(none.setup_lifecycle_state, RuntimeDescriptorSetupState::NoDescriptor);
+        assert_eq!(
+            none.setup_lifecycle_state,
+            RuntimeDescriptorSetupState::NoDescriptor
+        );
         assert_eq!(
             none.setup_reason_code,
             RuntimeDescriptorSetupReasonCode::DescriptorMissing
