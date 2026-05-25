@@ -1,0 +1,19 @@
+{
+  "schemaVersion": 1,
+  "readerStates": [
+    "fresh",
+    "stale",
+    "invalid"
+  ],
+  "readerReasonCodes": [
+    "descriptor_file_invalid",
+    "descriptor_json_invalid",
+    "descriptor_probe_failed",
+    "descriptor_process_not_alive",
+    "descriptor_socket_invalid",
+    "sdk_auth_token_missing",
+    "socket_path_missing",
+    "unsupported_descriptor_type",
+    "unsupported_schema_version"
+  ]
+}
