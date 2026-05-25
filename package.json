@@ -29,6 +29,7 @@
     "smoke:agent-adapters": "node scripts/agent-adapter-smoke.mjs",
     "smoke:cli-runtime-deps": "node scripts/cli-runtime-deps-smoke.mjs",
     "smoke:curl-install": "node scripts/curl-install-smoke.mjs",
+    "smoke:install-path-config": "node scripts/install-path-config-smoke.mjs",
     "smoke:install-refresh-safety": "node scripts/install-refresh-safety-smoke.mjs",
     "smoke:cargo-dist": "node scripts/cargo-dist-smoke.mjs",
     "smoke:mcp-stdio-clean": "node scripts/mcp-stdio-clean-smoke.mjs",

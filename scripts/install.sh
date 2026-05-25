@@ -436,6 +436,34 @@ shell_profile_path() {
   esac
 }
 
+write_env_file() {
+  env_path="$INSTALL_DIR/env"
+  if [ -L "$env_path" ]; then
+    echo "warning: $env_path is a symlink; not writing env file" >&2
+    return 1
+  fi
+  if [ -e "$env_path" ] && [ ! -f "$env_path" ]; then
+    echo "warning: $env_path is not a regular file; not writing env file" >&2
+    return 1
+  fi
+  env_stage="$(mktemp "$INSTALL_DIR/.env.tmp.XXXXXX")" || return 1
+  cat > "$env_stage" <<EOF
+#!/bin/sh
+# open-browser-use environment — managed by the installer. Do not edit.
+export OBU_INSTALL_DIR="$INSTALL_DIR"
+case ":\${PATH}:" in
+    *:"\${OBU_INSTALL_DIR}/bin":*) ;;
+    *) export PATH="\${OBU_INSTALL_DIR}/bin:\$PATH" ;;
+esac
+EOF
+  chmod 644 "$env_stage" 2>/dev/null || true
+  if ! mv -f "$env_stage" "$env_path"; then
+    rm -f "$env_stage"
+    return 1
+  fi
+  return 0
+}
+
 print_path_next_steps() {
   [ "$NO_MODIFY_PATH" -eq 0 ] || { log_verbose "path: skipped shellenv instructions"; return 0; }
   [ "$UNMANAGED" != "1" ] || { log_verbose "path: skipped shellenv instructions"; return 0; }
@@ -760,4 +788,4 @@ if [ -n "$SELECTED_TARGET" ]; then
 fi
 echo "open-browser-use installed at $INSTALL_DIR"
 echo "Run: $INSTALL_DIR/bin/obu bootstrap --yes --all --agents=auto"
-print_path_next_steps
+write_env_file || echo "warning: could not write $INSTALL_DIR/env" >&2
