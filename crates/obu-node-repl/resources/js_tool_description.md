@@ -111,6 +111,31 @@ Safety confirmation taxonomy:
   screenshots for inspection, cursor movement, and waits that do not mutate page
   or browser state.
 
+Locator priority ladder (most to least robust — prefer the highest that
+uniquely matches):
+1. Role + accessible name: `tab.getByRole("button", { name })`,
+   `tab.getByLabel(...)`, and the other `getBy*` accessible locators. Most
+   resilient to markup churn.
+2. Visible text: locate by the text the user actually sees.
+3. Stable test ids or unique attributes the page author intends as hooks.
+4. Structural CSS via `tab.locator("css")` — brittle; use only when no
+   semantic locator disambiguates, and keep selectors shallow.
+5. Coordinate or visual targeting (the modality ladder below) — only when no
+   stable DOM locator exists.
+
+Modality preference ladder (prefer the highest-fidelity modality that can act
+on the target):
+1. Playwright locators (`tab.getByRole`/`getByLabel`/`locator(...)`) — default
+   for anything addressable in the DOM.
+2. DOM-CUA (`tab.dom_cua`): click/type by snapshot node id when locators cannot
+   target the element but it still exists as a DOM node. Use `tab.dom_cua.text()`
+   to read the node list while keeping ids valid.
+3. Coordinate-CUA (`tab.cua`): act by viewport coordinates when DOM targeting
+   fails but the element is visibly rendered (canvas, custom widgets).
+4. Vision (`tab.screenshotForModel(...)`): use a clipped screenshot to *decide
+   where* to act, then act through the highest modality above that can reach the
+   target. Vision locates; it does not click.
+
 ## Arguments
 
 - `source` — JavaScript source to execute.
