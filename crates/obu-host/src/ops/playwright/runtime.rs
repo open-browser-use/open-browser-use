@@ -10,6 +10,10 @@ use tokio::time::Instant;
 use crate::backends::BackendRequestContext;
 use crate::error::{HostError, Result};
 use crate::methods;
+use crate::ops::action_point::{
+    ActionPointResolution, RESOLUTION_NO_CLICKABLE_BOX, RESOLUTION_OCCLUDED,
+    RESOLUTION_OUTSIDE_VIEWPORT, RESOLUTION_TRANSFORMED_FRAME_UNSUPPORTED,
+};
 use crate::ops::cua as cua_ops;
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
@@ -256,6 +260,40 @@ async fn wait_for_timeout(params: Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
+pub(crate) fn map_resolve_action_point_result(value: &Value) -> Result<(f64, f64)> {
+    if let Some(resolution) = value.get("resolution").and_then(Value::as_str) {
+        let outcome = match resolution {
+            RESOLUTION_OCCLUDED => ActionPointResolution::Occluded {
+                by: value
+                    .get("by")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown element")
+                    .to_string(),
+            },
+            RESOLUTION_OUTSIDE_VIEWPORT => ActionPointResolution::OutsideViewport,
+            RESOLUTION_NO_CLICKABLE_BOX => ActionPointResolution::NoClickableBox,
+            RESOLUTION_TRANSFORMED_FRAME_UNSUPPORTED => {
+                ActionPointResolution::TransformedFrameUnsupported
+            }
+            other => {
+                return Err(HostError::CdpFailure(format!(
+                    "resolveActionPoint returned unknown resolution: {other}"
+                )));
+            }
+        };
+        return Err(outcome.into_host_error());
+    }
+    let x = value
+        .get("x")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| HostError::CdpFailure("resolveActionPoint missing x".into()))?;
+    let y = value
+        .get("y")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| HostError::CdpFailure("resolveActionPoint missing y".into()))?;
+    Ok((x, y))
+}
+
 pub(crate) async fn resolve_action_point<B>(
     backend: &B,
     ctx: &BackendRequestContext,
@@ -268,13 +306,15 @@ where
 {
     let tab_id = required_str(params, "tab_id")?;
     let selector = required_str(params, "selector")?;
+    let not_forced = params.get("force").and_then(Value::as_bool) != Some(true);
     let mut states = Vec::new();
-    if require_visible && params.get("force").and_then(Value::as_bool) != Some(true) {
+    if require_visible && not_forced {
         states.push("visible");
     }
-    if require_enabled && params.get("force").and_then(Value::as_bool) != Some(true) {
+    if require_enabled && not_forced {
         states.push("enabled");
     }
+    let hit_test = not_forced;
     let point = eval_runtime(
         backend,
         ctx,
@@ -282,20 +322,12 @@ where
         &format!(
             "window.__obuPlaywrightRuntime.resolveActionPoint({}, {})",
             js_string(selector),
-            js_value(&json!({ "requiredStates": states }))
+            js_value(&json!({ "requiredStates": states, "hitTest": hit_test }))
         ),
         timeout_ms(params),
     )
     .await?;
-    let x = point
-        .get("x")
-        .and_then(Value::as_f64)
-        .ok_or_else(|| HostError::CdpFailure("resolveActionPoint missing x".into()))?;
-    let y = point
-        .get("y")
-        .and_then(Value::as_f64)
-        .ok_or_else(|| HostError::CdpFailure("resolveActionPoint missing y".into()))?;
-    Ok((x, y))
+    map_resolve_action_point_result(&point)
 }
 
 pub(crate) async fn click_selector<B, Click, ClickFut>(
@@ -1477,5 +1509,70 @@ mod tests {
                 .iter()
                 .any(|expression| expression.contains(r#""retargetInput":true"#))
         );
+    }
+}
+
+#[cfg(test)]
+mod resolve_map_tests {
+    use serde_json::json;
+
+    use super::map_resolve_action_point_result;
+    use crate::error::HostError;
+
+    #[test]
+    fn point_result_returns_xy() {
+        assert_eq!(
+            map_resolve_action_point_result(&json!({ "x": 11.0, "y": 22.0 })).unwrap(),
+            (11.0, 22.0)
+        );
+    }
+
+    #[test]
+    fn occluded_result_maps_to_resolution_error() {
+        let error = map_resolve_action_point_result(
+            &json!({ "resolution": "occluded", "by": "DIV#cover" }),
+        )
+        .unwrap_err();
+        match error {
+            HostError::Rpc {
+                data: Some(data), ..
+            } => {
+                assert_eq!(data["resolution"], "occluded");
+                assert_eq!(data["by"], "DIV#cover");
+            }
+            other => panic!("expected occluded rpc error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_clickable_box_maps_to_resolution_error() {
+        let error = map_resolve_action_point_result(&json!({ "resolution": "no_clickable_box" }))
+            .unwrap_err();
+        match error {
+            HostError::Rpc {
+                data: Some(data), ..
+            } => assert_eq!(data["resolution"], "no_clickable_box"),
+            other => panic!("expected no_clickable_box rpc error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn outside_viewport_maps_to_resolution_error() {
+        let error = map_resolve_action_point_result(&json!({ "resolution": "outside_viewport" }))
+            .unwrap_err();
+        match error {
+            HostError::Rpc {
+                data: Some(data), ..
+            } => assert_eq!(data["resolution"], "outside_viewport"),
+            other => panic!("expected outside_viewport rpc error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_coordinates_is_cdp_failure() {
+        assert!(matches!(
+            map_resolve_action_point_result(&json!({})).unwrap_err(),
+            HostError::CdpFailure(_)
+        ));
     }
 }
