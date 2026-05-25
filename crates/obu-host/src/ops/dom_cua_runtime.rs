@@ -6,6 +6,7 @@ use serde_json::{Value, json};
 use crate::backends::BackendRequestContext;
 use crate::error::{HostError, Result};
 use crate::methods;
+use crate::ops::action_point::ActionPointResolution;
 use crate::ops::dom_cua::{self, Rect};
 
 #[async_trait]
@@ -346,16 +347,79 @@ async fn node_action_point<B: DomCuaRuntimeBackend + Sync>(
     if let Some(point) =
         content_quad_action_point(backend, ctx, tab_id, backend_node_id, viewport).await?
     {
-        return Ok(point);
+        return verify_action_point(backend, ctx, tab_id, backend_node_id, point.0, point.1)
+            .await?
+            .into_point();
     }
     if let Some(point) =
         box_model_action_point(backend, ctx, tab_id, backend_node_id, viewport).await?
     {
-        return Ok(point);
+        return verify_action_point(backend, ctx, tab_id, backend_node_id, point.0, point.1)
+            .await?
+            .into_point();
     }
     Err(HostError::Protocol(format!(
         "node_outside_viewport_after_scroll: DOM-CUA node {node_id} has no reliable visible action point"
     )))
+}
+
+async fn verify_action_point<B: DomCuaRuntimeBackend + Sync>(
+    backend: &B,
+    ctx: &BackendRequestContext,
+    tab_id: &str,
+    target_backend_node_id: i64,
+    x: f64,
+    y: f64,
+) -> Result<ActionPointResolution> {
+    let hit = backend
+        .execute_dom_cdp(
+            ctx,
+            tab_id,
+            "DOM.getNodeForLocation",
+            json!({ "x": x, "y": y, "includeUserAgentShadowDOM": true, "ignorePointerEventsNone": false }),
+        )
+        .await?;
+    let Some(hit_id) = hit.get("backendNodeId").and_then(Value::as_i64) else {
+        return Ok(ActionPointResolution::Resolved { x, y }); // nothing hit-testable; do not block
+    };
+    if hit_id == target_backend_node_id {
+        return Ok(ActionPointResolution::Resolved { x, y });
+    }
+    let described = backend
+        .execute_dom_cdp(
+            ctx,
+            tab_id,
+            "DOM.describeNode",
+            json!({ "backendNodeId": target_backend_node_id, "depth": -1, "pierce": true }),
+        )
+        .await?;
+    let mut subtree = std::collections::HashSet::new();
+    if let Some(node) = described.get("node") {
+        collect_backend_node_ids(node, &mut subtree);
+    }
+    if subtree.contains(&hit_id) {
+        Ok(ActionPointResolution::Resolved { x, y })
+    } else {
+        Ok(ActionPointResolution::Occluded {
+            by: format!("backendNodeId={hit_id}"),
+        })
+    }
+}
+
+fn collect_backend_node_ids(node: &Value, out: &mut std::collections::HashSet<i64>) {
+    if let Some(id) = node.get("backendNodeId").and_then(Value::as_i64) {
+        out.insert(id);
+    }
+    for key in ["children", "shadowRoots", "pseudoElements"] {
+        if let Some(children) = node.get(key).and_then(Value::as_array) {
+            for child in children {
+                collect_backend_node_ids(child, out);
+            }
+        }
+    }
+    if let Some(content) = node.get("contentDocument") {
+        collect_backend_node_ids(content, out);
+    }
 }
 
 async fn content_quad_action_point<B: DomCuaRuntimeBackend + Sync>(
@@ -458,4 +522,120 @@ fn required_str<'a>(params: &'a Value, key: &str) -> Result<&'a str> {
 
 fn optional_str<'a>(params: &'a Value, key: &str) -> Option<&'a str> {
     params.get(key).and_then(Value::as_str)
+}
+
+#[cfg(test)]
+mod hit_verify_tests {
+    use async_trait::async_trait;
+    use serde_json::{Value, json};
+
+    use crate::backends::BackendRequestContext;
+    use crate::error::Result;
+
+    use super::*;
+
+    #[derive(Default)]
+    struct FakeDomCua {
+        node_for_location: Value,
+        described_target: Value,
+        snapshot_ok: bool,
+    }
+
+    #[async_trait]
+    impl DomCuaRuntimeBackend for FakeDomCua {
+        async fn execute_dom_cdp(
+            &self,
+            _ctx: &BackendRequestContext,
+            _tab: &str,
+            method: &str,
+            _p: Value,
+        ) -> Result<Value> {
+            match method {
+                "DOM.scrollIntoViewIfNeeded" => Ok(Value::Null),
+                "Page.getLayoutMetrics" => Ok(
+                    json!({ "cssVisualViewport": { "pageX": 0, "pageY": 0, "clientWidth": 100, "clientHeight": 100 } }),
+                ),
+                "DOM.getContentQuads" => Ok(json!({ "quads": [[10, 10, 30, 10, 30, 30, 10, 30]] })),
+                "DOM.getNodeForLocation" => Ok(self.node_for_location.clone()),
+                "DOM.describeNode" => Ok(self.described_target.clone()),
+                other => panic!("unexpected method {other}"),
+            }
+        }
+        async fn dispatch_coordinate_cua(
+            &self,
+            _c: &BackendRequestContext,
+            _m: &str,
+            _p: Value,
+        ) -> Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn remember_visible_dom_nodes(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+            _n: &[Value],
+        ) {
+        }
+        async fn validate_visible_dom_node(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+            _n: &str,
+        ) -> Result<()> {
+            if self.snapshot_ok {
+                Ok(())
+            } else {
+                Err(HostError::Protocol("not in snapshot".into()))
+            }
+        }
+        async fn forget_visible_dom_snapshot(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+        ) {
+        }
+    }
+
+    fn ctx() -> BackendRequestContext {
+        BackendRequestContext {
+            session_id: Some("s".into()),
+            turn_id: Some("t".into()),
+            client_timeout_ms: None,
+            trusted_kernel_generation: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn occluder_outside_target_subtree_is_rejected() {
+        let backend = FakeDomCua {
+            node_for_location: json!({ "backendNodeId": 99 }), // hit = occluder
+            described_target: json!({ "node": { "backendNodeId": 7, "children": [] } }),
+            snapshot_ok: true,
+        };
+        let error = node_action_point(&backend, &ctx(), "42", None, "7")
+            .await
+            .unwrap_err();
+        match error {
+            HostError::Rpc {
+                data: Some(data), ..
+            } => assert_eq!(data["resolution"], "occluded"),
+            other => panic!("expected occluded rpc error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn hit_on_target_descendant_resolves() {
+        let backend = FakeDomCua {
+            node_for_location: json!({ "backendNodeId": 8 }), // hit = child of target
+            described_target: json!({ "node": { "backendNodeId": 7, "children": [ { "backendNodeId": 8, "children": [] } ] } }),
+            snapshot_ok: true,
+        };
+        let point = node_action_point(&backend, &ctx(), "42", None, "7")
+            .await
+            .unwrap();
+        assert_eq!(point, (20.0, 20.0));
+    }
 }
