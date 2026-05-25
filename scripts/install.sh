@@ -464,6 +464,77 @@ EOF
   return 0
 }
 
+# Print the profile files that should source the env file, one per line.
+# zsh files are always safe to create; .bash_profile is only touched if it
+# already exists (creating it would stop login bash from reading ~/.profile).
+path_profile_targets() {
+  [ -n "${HOME:-}" ] || return 0
+  zdotdir="${ZDOTDIR:-$HOME}"
+  printf '%s\n' "$HOME/.profile"
+  printf '%s\n' "$HOME/.bashrc"
+  printf '%s\n' "$zdotdir/.zshrc"
+  printf '%s\n' "$zdotdir/.zprofile"
+  if [ -f "$HOME/.bash_profile" ]; then
+    printf '%s\n' "$HOME/.bash_profile"
+  fi
+}
+
+append_source_block() {
+  profile="$1"
+  begin="# >>> open-browser-use installer (managed v1) >>>"
+  end="# <<< open-browser-use installer (managed v1) <<<"
+  line=". \"$INSTALL_DIR/env\""
+  if [ -L "$profile" ]; then
+    echo "warning: $profile is a symlink; not modifying PATH there" >&2
+    return 1
+  fi
+  mkdir -p "$(dirname "$profile")" 2>/dev/null || true
+  if [ -f "$profile" ] && grep -F "$begin" "$profile" >/dev/null 2>&1; then
+    return 0
+  fi
+  {
+    printf '\n%s\n' "$begin"
+    printf '%s\n' "$line"
+    printf '%s\n' "$end"
+  } >> "$profile" || { echo "warning: could not update $profile" >&2; return 1; }
+  return 0
+}
+
+configure_fish_path() {
+  fish_root="${XDG_CONFIG_HOME:-$HOME/.config}/fish"
+  shell_name="$(detect_shell_name)"
+  if [ ! -d "$fish_root" ] && [ "$shell_name" != "fish" ]; then
+    return 0
+  fi
+  fish_file="$fish_root/conf.d/obu.fish"
+  if [ -L "$fish_file" ]; then
+    echo "warning: $fish_file is a symlink; skipping" >&2
+    return 1
+  fi
+  mkdir -p "$fish_root/conf.d" 2>/dev/null || return 1
+  fish_stage="$(mktemp "$fish_root/conf.d/.obu.fish.tmp.XXXXXX")" || return 1
+  cat > "$fish_stage" <<EOF
+# open-browser-use environment — managed by the installer. Do not edit.
+set --global --export OBU_INSTALL_DIR "$INSTALL_DIR"
+if type -q fish_add_path
+    fish_add_path --global --path "$INSTALL_DIR/bin"
+else if not contains "$INSTALL_DIR/bin" \$PATH
+    set --global --export PATH "$INSTALL_DIR/bin" \$PATH
+end
+EOF
+  mv -f "$fish_stage" "$fish_file" || { rm -f "$fish_stage"; return 1; }
+  return 0
+}
+
+configure_path() {
+  write_env_file || { echo "warning: could not write $INSTALL_DIR/env; PATH not configured" >&2; return 0; }
+  path_profile_targets | while IFS= read -r profile; do
+    append_source_block "$profile" || true
+  done
+  configure_fish_path || true
+  return 0
+}
+
 print_path_next_steps() {
   [ "$NO_MODIFY_PATH" -eq 0 ] || { log_verbose "path: skipped shellenv instructions"; return 0; }
   [ "$UNMANAGED" != "1" ] || { log_verbose "path: skipped shellenv instructions"; return 0; }
@@ -788,4 +859,4 @@ if [ -n "$SELECTED_TARGET" ]; then
 fi
 echo "open-browser-use installed at $INSTALL_DIR"
 echo "Run: $INSTALL_DIR/bin/obu bootstrap --yes --all --agents=auto"
-write_env_file || echo "warning: could not write $INSTALL_DIR/env" >&2
+configure_path
