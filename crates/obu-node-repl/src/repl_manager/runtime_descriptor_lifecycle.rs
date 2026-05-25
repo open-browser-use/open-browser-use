@@ -15,6 +15,12 @@ pub enum RuntimeDescriptorReadState {
     Stale,
 }
 
+impl RuntimeDescriptorReadState {
+    /// Every read-state variant. Pinned to `descriptor-vocab.json` (`readerStates`).
+    pub const ALL: [RuntimeDescriptorReadState; 3] =
+        [Self::Fresh, Self::Invalid, Self::Stale];
+}
+
 /// Runtime descriptor setup state observed before reading descriptor content.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "snake_case")]
@@ -68,6 +74,19 @@ impl RuntimeDescriptorReadReasonCode {
             Self::DescriptorProbeFailed => "descriptor_probe_failed",
         }
     }
+
+    /// Every reader reason code. Pinned to `descriptor-vocab.json`.
+    pub const ALL: [RuntimeDescriptorReadReasonCode; 9] = [
+        Self::DescriptorFileInvalid,
+        Self::DescriptorJsonInvalid,
+        Self::UnsupportedSchemaVersion,
+        Self::UnsupportedDescriptorType,
+        Self::SocketPathMissing,
+        Self::SdkAuthTokenMissing,
+        Self::DescriptorSocketInvalid,
+        Self::DescriptorProcessNotAlive,
+        Self::DescriptorProbeFailed,
+    ];
 }
 
 /// Stable reason code for descriptor setup diagnostics.
