@@ -7,13 +7,13 @@ use std::time::SystemTime;
 
 use crate::error::{HostError, Result};
 use crate::registry_lifecycle::{
-    RegistryHandleKind, RegistryHandleSnapshot, RegistryLifecycleEvent, RegistryLifecycleEventKind,
-    RegistryLifecycleEventPlan, RegistryStaleHandlePlan, RegistryTabSnapshot,
-    RegistryTabSnapshotStatus, choose_registry_active_tab_id, plan_clear_tab_handles,
-    plan_current_active_tab_repair, plan_diagnostics_cleared, plan_download_completed,
-    plan_download_failed, plan_download_inserted, plan_download_removed, plan_download_stale,
-    plan_file_chooser_consumed, plan_file_chooser_inserted, plan_file_chooser_stale,
-    plan_playwright_injected,
+    HandleState, RegistryHandleKind, RegistryHandleSnapshot, RegistryLifecycleEvent,
+    RegistryLifecycleEventKind, RegistryLifecycleEventPlan, RegistryStaleHandlePlan,
+    RegistryTabSnapshot, RegistryTabSnapshotStatus, choose_registry_active_tab_id,
+    live_handle_state, plan_clear_tab_handles, plan_current_active_tab_repair,
+    plan_diagnostics_cleared, plan_download_completed, plan_download_failed,
+    plan_download_inserted, plan_download_removed, plan_download_stale, plan_file_chooser_consumed,
+    plan_file_chooser_inserted, plan_file_chooser_stale, plan_playwright_injected,
     plan_playwright_injection_cleared, plan_reconcile_session_tabs,
     plan_session_active_tab_reconciled, plan_session_active_tab_set, plan_session_named,
     plan_session_stale, plan_session_touched, plan_tab_inserted, plan_tab_stale, plan_tab_updated,
@@ -114,6 +114,10 @@ pub struct FileChooserState {
     pub tab_id: TabId,
     /// Owning browser-control session, when known.
     pub owner_session_id: Option<String>,
+    /// Owning turn id at acquisition (turn proof). Backfilled from the owning
+    /// session's `current_turn_id` during registry insert; the CDP-event
+    /// constructors do not have the turn in scope.
+    pub owner_turn_id: Option<String>,
     /// Creation time for stale-handle diagnostics and future pruning.
     pub created_at: SystemTime,
     /// CDP backend node id for the input element.
@@ -133,6 +137,10 @@ pub struct DownloadState {
     pub tab_id: TabId,
     /// Owning browser-control session, when known.
     pub owner_session_id: Option<String>,
+    /// Owning turn id at acquisition (turn proof). Backfilled from the owning
+    /// session's `current_turn_id` during registry insert; the CDP-event
+    /// constructors do not have the turn in scope.
+    pub owner_turn_id: Option<String>,
     /// Creation time for stale-handle diagnostics and future pruning.
     pub created_at: SystemTime,
     /// Download source URL.
@@ -159,6 +167,8 @@ pub struct StaleHandleState {
     pub created_at: SystemTime,
     /// Time when the handle became stale.
     pub stale_at: SystemTime,
+    /// Closed terminal state at retirement.
+    pub terminal_state: HandleState,
 }
 
 /// State shared by dispatcher and backend handlers for one host session.
@@ -819,6 +829,12 @@ impl ServiceRegistry {
             .inner
             .write()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
+        let mut state = state;
+        state.owner_turn_id = state
+            .owner_session_id
+            .as_deref()
+            .and_then(|sid| guard.tab_sessions.sessions.get(sid))
+            .and_then(|session| session.current_turn_id.clone());
         guard.diagnostics.stale_file_choosers_by_id.remove(&id);
         record_planned_lifecycle_event_locked(
             &mut guard,
@@ -842,6 +858,7 @@ impl ServiceRegistry {
                 id.clone(),
                 state,
                 plan.stale_handle.reason,
+                plan.stale_handle.terminal_state,
             );
             record_planned_lifecycle_event_locked(&mut guard, plan.event);
         }
@@ -880,6 +897,12 @@ impl ServiceRegistry {
             .inner
             .write()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
+        let mut state = state;
+        state.owner_turn_id = state
+            .owner_session_id
+            .as_deref()
+            .and_then(|sid| guard.tab_sessions.sessions.get(sid))
+            .and_then(|session| session.current_turn_id.clone());
         guard.diagnostics.stale_downloads_by_id.remove(&id);
         record_planned_lifecycle_event_locked(
             &mut guard,
@@ -946,7 +969,13 @@ impl ServiceRegistry {
         if let Some(state) = state.as_ref() {
             let plan = plan_download_removed(&download_handle_snapshot(id, state));
             record_planned_lifecycle_event_locked(&mut guard, plan.event);
-            record_stale_download_locked(&mut guard, id.clone(), state, plan.stale_handle.reason);
+            record_stale_download_locked(
+                &mut guard,
+                id.clone(),
+                state,
+                plan.stale_handle.reason,
+                plan.stale_handle.terminal_state,
+            );
         }
         Ok(state)
     }
@@ -969,6 +998,7 @@ impl ServiceRegistry {
             id.clone(),
             state,
             plan.stale_handle.reason,
+            plan.stale_handle.terminal_state,
         );
         record_planned_lifecycle_event_locked(&mut guard, plan.event);
         Ok(())
@@ -1077,7 +1107,40 @@ fn handle_snapshots_locked(inner: &Inner) -> Vec<RegistryHandleSnapshot> {
                 .iter()
                 .map(|(id, state)| download_handle_snapshot(id, state)),
         )
+        .chain(
+            inner
+                .diagnostics
+                .stale_file_choosers_by_id
+                .iter()
+                .map(|(id, s)| {
+                    stale_handle_snapshot(id.0.clone(), RegistryHandleKind::FileChooser, s)
+                }),
+        )
+        .chain(
+            inner
+                .diagnostics
+                .stale_downloads_by_id
+                .iter()
+                .map(|(id, s)| {
+                    stale_handle_snapshot(id.0.clone(), RegistryHandleKind::Download, s)
+                }),
+        )
         .collect()
+}
+
+fn stale_handle_snapshot(
+    handle_id: String,
+    kind: RegistryHandleKind,
+    state: &StaleHandleState,
+) -> RegistryHandleSnapshot {
+    RegistryHandleSnapshot {
+        handle_id,
+        tab_id: state.tab_id.0.clone(),
+        owner_session_id: state.owner_session_id.clone(),
+        owner_turn_id: None,
+        kind,
+        state: state.terminal_state,
+    }
 }
 
 fn file_chooser_handle_snapshot(
@@ -1088,7 +1151,9 @@ fn file_chooser_handle_snapshot(
         handle_id: id.0.clone(),
         tab_id: state.tab_id.0.clone(),
         owner_session_id: state.owner_session_id.clone(),
+        owner_turn_id: state.owner_turn_id.clone(),
         kind: RegistryHandleKind::FileChooser,
+        state: live_handle_state(RegistryHandleKind::FileChooser, false),
     }
 }
 
@@ -1097,7 +1162,9 @@ fn download_handle_snapshot(id: &DownloadId, state: &DownloadState) -> RegistryH
         handle_id: id.0.clone(),
         tab_id: state.tab_id.0.clone(),
         owner_session_id: state.owner_session_id.clone(),
+        owner_turn_id: state.owner_turn_id.clone(),
         kind: RegistryHandleKind::Download,
+        state: live_handle_state(RegistryHandleKind::Download, state.completed_path.is_some()),
     }
 }
 
@@ -1106,13 +1173,25 @@ fn remove_and_record_stale_handle_plan_locked(inner: &mut Inner, plan: &Registry
         RegistryHandleKind::FileChooser => {
             let id = FileChooserId(plan.handle_id.clone());
             if let Some(state) = inner.handles.file_choosers_by_id.remove(&id) {
-                record_stale_file_chooser_locked(inner, id, &state, plan.reason.clone());
+                record_stale_file_chooser_locked(
+                    inner,
+                    id,
+                    &state,
+                    plan.reason.clone(),
+                    plan.terminal_state,
+                );
             }
         }
         RegistryHandleKind::Download => {
             let id = DownloadId(plan.handle_id.clone());
             if let Some(state) = inner.downloads.downloads_by_id.remove(&id) {
-                record_stale_download_locked(inner, id, &state, plan.reason.clone());
+                record_stale_download_locked(
+                    inner,
+                    id,
+                    &state,
+                    plan.reason.clone(),
+                    plan.terminal_state,
+                );
             }
         }
     }
@@ -1211,6 +1290,7 @@ fn record_stale_file_chooser_locked(
     id: FileChooserId,
     state: &FileChooserState,
     reason: String,
+    terminal_state: HandleState,
 ) {
     let session_id = state.owner_session_id.clone();
     let tab_id = state.tab_id.clone();
@@ -1222,6 +1302,7 @@ fn record_stale_file_chooser_locked(
             owner_session_id: state.owner_session_id.clone(),
             created_at: state.created_at,
             stale_at: SystemTime::now(),
+            terminal_state,
         },
     );
     prune_stale_map_locked(&mut inner.diagnostics.stale_file_choosers_by_id, |state| {
@@ -1238,6 +1319,7 @@ fn record_stale_download_locked(
     id: DownloadId,
     state: &DownloadState,
     reason: String,
+    terminal_state: HandleState,
 ) {
     let session_id = state.owner_session_id.clone();
     let tab_id = state.tab_id.clone();
@@ -1249,6 +1331,7 @@ fn record_stale_download_locked(
             owner_session_id: state.owner_session_id.clone(),
             created_at: state.created_at,
             stale_at: SystemTime::now(),
+            terminal_state,
         },
     );
     prune_stale_map_locked(&mut inner.diagnostics.stale_downloads_by_id, |state| {
@@ -1336,6 +1419,7 @@ mod tests {
                     FileChooserState {
                         tab_id: tab_id.clone(),
                         owner_session_id: None,
+                        owner_turn_id: None,
                         created_at: SystemTime::now(),
                         backend_node_id: index as i64,
                         is_multiple: false,

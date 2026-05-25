@@ -247,6 +247,7 @@ async fn cdp_finalize_tabs_applies_host_owned_lifecycle_semantics() {
             FileChooserState {
                 tab_id: TabId::new("handoff"),
                 owner_session_id: Some("session".into()),
+                owner_turn_id: None,
                 created_at: SystemTime::now(),
                 backend_node_id: 12,
                 is_multiple: false,
@@ -259,6 +260,7 @@ async fn cdp_finalize_tabs_applies_host_owned_lifecycle_semantics() {
             DownloadState {
                 tab_id: TabId::new("deliverable"),
                 owner_session_id: Some("session".into()),
+                owner_turn_id: None,
                 created_at: SystemTime::now(),
                 url: "https://deliverable.example/file".into(),
                 suggested_filename: "file.txt".into(),

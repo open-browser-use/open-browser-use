@@ -113,6 +113,7 @@ fn download_lifecycle_tracks_completion() {
             DownloadState {
                 tab_id: TabId::new("t1"),
                 owner_session_id: Some("session".into()),
+                owner_turn_id: None,
                 created_at: SystemTime::now(),
                 url: "https://example.com/file".into(),
                 suggested_filename: "file.txt".into(),
@@ -146,6 +147,7 @@ fn download_lifecycle_tracks_completion() {
     let failed_state = DownloadState {
         tab_id: TabId::new("t1"),
         owner_session_id: Some("session".into()),
+        owner_turn_id: None,
         created_at: SystemTime::now(),
         url: "https://example.com/failed".into(),
         suggested_filename: "failed.txt".into(),
@@ -203,6 +205,7 @@ fn removing_or_detaching_tab_cleans_associated_handles() {
             FileChooserState {
                 tab_id: tab_id.clone(),
                 owner_session_id: Some("session".into()),
+                owner_turn_id: None,
                 created_at: SystemTime::now(),
                 backend_node_id: 123,
                 is_multiple: false,
@@ -215,6 +218,7 @@ fn removing_or_detaching_tab_cleans_associated_handles() {
             DownloadState {
                 tab_id: tab_id.clone(),
                 owner_session_id: Some("session".into()),
+                owner_turn_id: None,
                 created_at: SystemTime::now(),
                 url: "https://example.com/file".into(),
                 suggested_filename: "file.txt".into(),
@@ -257,6 +261,7 @@ fn removing_or_detaching_tab_cleans_associated_handles() {
             DownloadState {
                 tab_id: tab_id.clone(),
                 owner_session_id: Some("session".into()),
+                owner_turn_id: None,
                 created_at: SystemTime::now(),
                 url: "https://example.com/other".into(),
                 suggested_filename: "other.txt".into(),
@@ -285,6 +290,7 @@ fn consumed_file_chooser_reports_specific_stale_reason() {
             FileChooserState {
                 tab_id: TabId::new("t1"),
                 owner_session_id: Some("session".into()),
+                owner_turn_id: None,
                 created_at: SystemTime::now(),
                 backend_node_id: 123,
                 is_multiple: false,
@@ -367,6 +373,7 @@ fn session_lifecycle_tracks_turn_label_and_reconciles_missing_tabs() {
             FileChooserState {
                 tab_id: active_tab.clone(),
                 owner_session_id: Some("session".into()),
+                owner_turn_id: None,
                 created_at: SystemTime::now(),
                 backend_node_id: 123,
                 is_multiple: false,

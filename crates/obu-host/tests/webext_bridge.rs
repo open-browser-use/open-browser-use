@@ -154,6 +154,7 @@ async fn webext_backend_get_tabs_is_pure_observation_without_host_reconcile() {
             FileChooserState {
                 tab_id: stale_tab.clone(),
                 owner_session_id: Some("session".into()),
+                owner_turn_id: None,
                 created_at: SystemTime::now(),
                 backend_node_id: 4,
                 is_multiple: false,
@@ -379,6 +380,7 @@ async fn webext_backend_normalizes_user_tabs_history_and_finalize() {
             FileChooserState {
                 tab_id: TabId::new("7"),
                 owner_session_id: Some("session".into()),
+                owner_turn_id: None,
                 created_at: SystemTime::now(),
                 backend_node_id: 3,
                 is_multiple: false,
@@ -392,6 +394,7 @@ async fn webext_backend_normalizes_user_tabs_history_and_finalize() {
             DownloadState {
                 tab_id: TabId::new("8"),
                 owner_session_id: Some("session".into()),
+                owner_turn_id: None,
                 created_at: SystemTime::now(),
                 url: "https://deliverable.example/file".into(),
                 suggested_filename: "file.txt".into(),
@@ -1070,6 +1073,7 @@ async fn webext_backend_tab_close_removes_host_registry_record_immediately() {
             FileChooserState {
                 tab_id: TabId::new("42"),
                 owner_session_id: Some("session".into()),
+                owner_turn_id: None,
                 created_at: SystemTime::now(),
                 backend_node_id: 3,
                 is_multiple: false,
@@ -1083,6 +1087,7 @@ async fn webext_backend_tab_close_removes_host_registry_record_immediately() {
             DownloadState {
                 tab_id: TabId::new("42"),
                 owner_session_id: Some("session".into()),
+                owner_turn_id: None,
                 created_at: SystemTime::now(),
                 url: "https://example.com/file".into(),
                 suggested_filename: "file.txt".into(),
@@ -2585,6 +2590,7 @@ async fn webext_backend_rejects_handle_use_from_wrong_session_without_consuming(
             FileChooserState {
                 tab_id: TabId::new("42"),
                 owner_session_id: Some("session".into()),
+                owner_turn_id: None,
                 created_at: SystemTime::now(),
                 backend_node_id: 123,
                 is_multiple: false,
@@ -2646,6 +2652,7 @@ async fn webext_backend_rejects_handle_use_from_wrong_session_without_consuming(
             DownloadState {
                 tab_id: TabId::new("42"),
                 owner_session_id: Some("session".into()),
+                owner_turn_id: None,
                 created_at: SystemTime::now(),
                 url: "https://example.com/file.txt".into(),
                 suggested_filename: "file.txt".into(),

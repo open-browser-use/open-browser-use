@@ -57,6 +57,64 @@ pub enum RegistryHandleKind {
     Download,
 }
 
+/// Closed public lifecycle state of a registry handle. The state is a
+/// *projection* — the event/plan stream remains the source of truth. Live
+/// handles project to `Pending`/`Active`/`Completed`; tombstones carry the
+/// terminal state recorded at the transition that retired them.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HandleState {
+    /// Awaiting its first action (file chooser before selection).
+    Pending,
+    /// In progress (download before completion).
+    Active,
+    /// File chooser selection was consumed. Terminal.
+    Consumed,
+    /// Download finished successfully. Terminal.
+    Completed,
+    /// Handle failed. Terminal.
+    Failed,
+    /// Retired by tab/session reconciliation. Terminal.
+    Stale,
+    /// Explicitly removed. Terminal.
+    Gone,
+}
+
+impl HandleState {
+    /// Every state.
+    pub const ALL: [HandleState; 7] = [
+        Self::Pending,
+        Self::Active,
+        Self::Consumed,
+        Self::Completed,
+        Self::Failed,
+        Self::Stale,
+        Self::Gone,
+    ];
+
+    /// Stable snake_case string.
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Pending => "pending",
+            Self::Active => "active",
+            Self::Consumed => "consumed",
+            Self::Completed => "completed",
+            Self::Failed => "failed",
+            Self::Stale => "stale",
+            Self::Gone => "gone",
+        }
+    }
+}
+
+/// Project the live state of a handle from its kind and completion.
+pub fn live_handle_state(kind: RegistryHandleKind, download_completed: bool) -> HandleState {
+    match kind {
+        RegistryHandleKind::FileChooser => HandleState::Pending,
+        RegistryHandleKind::Download if download_completed => HandleState::Completed,
+        RegistryHandleKind::Download => HandleState::Active,
+    }
+}
+
 /// Minimal handle row used by pure host registry lifecycle planners.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RegistryHandleSnapshot {
@@ -66,8 +124,12 @@ pub struct RegistryHandleSnapshot {
     pub tab_id: String,
     /// Owning browser-control session, when known.
     pub owner_session_id: Option<String>,
+    /// Owning turn id at acquisition (turn proof), when known.
+    pub owner_turn_id: Option<String>,
     /// Handle kind.
     pub kind: RegistryHandleKind,
+    /// Closed projected lifecycle state.
+    pub state: HandleState,
 }
 
 /// Planned lifecycle event without a concrete timestamp.
@@ -98,6 +160,8 @@ pub struct RegistryStaleHandlePlan {
     pub owner_session_id: Option<String>,
     /// Stale reason.
     pub reason: String,
+    /// Closed terminal state recorded at the transition that retired the handle.
+    pub terminal_state: HandleState,
 }
 
 /// Pure plan for clearing all handles tied to a tab.
@@ -223,7 +287,7 @@ pub fn plan_clear_tab_handles(
     let mut stale_handles = handles
         .iter()
         .filter(|handle| handle.tab_id == tab_id)
-        .map(|handle| stale_handle_plan(handle, stale_reason))
+        .map(|handle| stale_handle_plan(handle, stale_reason, HandleState::Stale))
         .collect::<Vec<_>>();
     stale_handles.sort_by(|left, right| {
         left.handle_id
@@ -248,7 +312,7 @@ pub fn plan_clear_tab_handles(
 pub fn plan_file_chooser_consumed(handle: &RegistryHandleSnapshot) -> ConsumeFileChooserPlan {
     let reason = "already consumed by setFiles";
     ConsumeFileChooserPlan {
-        stale_handle: stale_handle_plan(handle, reason),
+        stale_handle: stale_handle_plan(handle, reason, HandleState::Consumed),
         event: RegistryLifecycleEventPlan {
             kind: RegistryLifecycleEventKind::FileChooserConsumed,
             subject_id: handle.handle_id.clone(),
@@ -283,7 +347,7 @@ pub fn plan_download_removed(handle: &RegistryHandleSnapshot) -> RemoveDownloadP
             tab_id: Some(handle.tab_id.clone()),
             reason: Some(reason.to_string()),
         },
-        stale_handle: stale_handle_plan(handle, reason),
+        stale_handle: stale_handle_plan(handle, reason, HandleState::Gone),
     }
 }
 
@@ -301,7 +365,7 @@ pub fn plan_download_failed(
             tab_id: Some(handle.tab_id.clone()),
             reason: Some(reason.clone()),
         },
-        stale_handle: stale_handle_plan(handle, &reason),
+        stale_handle: stale_handle_plan(handle, &reason, HandleState::Failed),
     }
 }
 
@@ -515,13 +579,18 @@ fn registry_event_plan(
     }
 }
 
-fn stale_handle_plan(handle: &RegistryHandleSnapshot, reason: &str) -> RegistryStaleHandlePlan {
+fn stale_handle_plan(
+    handle: &RegistryHandleSnapshot,
+    reason: &str,
+    terminal_state: HandleState,
+) -> RegistryStaleHandlePlan {
     RegistryStaleHandlePlan {
         kind: handle.kind,
         handle_id: handle.handle_id.clone(),
         tab_id: handle.tab_id.clone(),
         owner_session_id: handle.owner_session_id.clone(),
         reason: reason.to_string(),
+        terminal_state,
     }
 }
 
@@ -899,6 +968,22 @@ mod tests {
         );
     }
 
+    #[test]
+    fn handle_state_is_a_closed_seven_state_union() {
+        use super::HandleState::*;
+        assert_eq!(super::HandleState::ALL.len(), 7);
+        assert_eq!(Pending.as_str(), "pending");
+        assert_eq!(Gone.as_str(), "gone");
+        assert_eq!(
+            super::live_handle_state(super::RegistryHandleKind::FileChooser, false),
+            Pending
+        );
+        assert_eq!(
+            super::live_handle_state(super::RegistryHandleKind::Download, true),
+            Completed
+        );
+    }
+
     fn tab(
         tab_id: &str,
         session_id: Option<&str>,
@@ -921,7 +1006,9 @@ mod tests {
             handle_id: handle_id.into(),
             tab_id: tab_id.into(),
             owner_session_id: owner_session_id.map(str::to_string),
+            owner_turn_id: None,
             kind,
+            state: live_handle_state(kind, false),
         }
     }
 }

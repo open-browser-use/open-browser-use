@@ -128,6 +128,7 @@ pub(crate) fn file_chooser_opened_result(
         FileChooserState {
             tab_id: TabId::new(tab_id),
             owner_session_id,
+            owner_turn_id: None,
             created_at: SystemTime::now(),
             backend_node_id,
             is_multiple,
@@ -184,6 +185,7 @@ pub(crate) fn download_from_will_begin(
     let state = DownloadState {
         tab_id: TabId::new(tab_id),
         owner_session_id,
+        owner_turn_id: None,
         created_at: SystemTime::now(),
         url: params
             .get("url")
@@ -342,6 +344,7 @@ mod tests {
         let state = FileChooserState {
             tab_id: TabId::new("tab-1"),
             owner_session_id: Some("session".into()),
+            owner_turn_id: None,
             created_at: SystemTime::now(),
             backend_node_id: 42,
             is_multiple: true,
@@ -432,6 +435,7 @@ mod tests {
         let state = DownloadState {
             tab_id: TabId::new("1"),
             owner_session_id: Some("session".into()),
+            owner_turn_id: None,
             created_at: SystemTime::now(),
             url: "https://example.test/file.txt".into(),
             suggested_filename: "file.txt".into(),
