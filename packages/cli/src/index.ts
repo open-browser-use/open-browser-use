@@ -935,7 +935,8 @@ function printHelp(): void {
   obu shellenv [shell]
   obu mcp stdio
 
-Agent aliases: codex=codex-cli, claude=claude-code, gemini=gemini-cli.`);
+Agent aliases: codex=codex-cli, claude=claude-code, gemini=gemini-cli.
+Agent setup is automatic except "continue", which is manual MCP setup only (obu mcp-config --agent=continue --print).`);
 }
 
 main(process.argv.slice(2))
