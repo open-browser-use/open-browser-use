@@ -1,12 +1,12 @@
 <div align="center">
 
-<sub><a href="../README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a> · <b>Español</b></sub>
-
 <h1>open-browser-use</h1>
 
 <p><b>Deja que los agentes controlen el navegador que ya usas.</b></p>
 
 <img src="../open-browser-use-readme-preview-wide.png" alt="open-browser-use — agent browser tool, agentic RL ready" width="820">
+
+<sub><a href="../README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a> · <b>Español</b></sub>
 
 <p align="center">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square">
@@ -62,9 +62,9 @@ Con la extensión cargada, conectarla a tu agente de programación lleva alreded
 > Luego simplemente pídelo, en lenguaje natural:
 > *«Abre mis notificaciones de GitHub y resume lo que realmente necesita mi atención.»*
 
-## Lo que tu agente puede hacer
+## Capacidades
 
-Por dentro, tu agente llama a una única herramienta `js` y escribe contra un SDK con forma de Playwright (el global `agent`). Un turno completo de trabajo en el navegador es tan pequeño como esto:
+Tu agente maneja el navegador a través de una única herramienta `js`. El JavaScript que escribe se ejecuta en un runtime de Node persistente donde un SDK con forma de Playwright está vinculado al global `agent`, de modo que un turno completo de trabajo en el navegador se mantiene pequeño y legible:
 
 ```js
 const browser = await agent.browsers.get("chrome");
@@ -76,19 +76,21 @@ display(await tab.locator("h1").innerText());         // muestra un resultado
 await browser.turnEnded();                            // devuelve el control, conserva la sesión
 ```
 
-A partir de ahí puede:
+El SDK cubre toda la gama de interacciones que exige una tarea real:
 
-| Capacidad                          | Qué significa                                                                                                               |
-| ---------------------------------- | --------------------------------------------------------------------------------------------------------------------------- |
-| **Actuar sobre elementos**   | Hacer clic, rellenar, escribir, pulsar teclas, seleccionar, pasar el cursor — direccionados por rol, texto o CSS (la forma resiliente de Playwright). |
-| **Clic por vista o id del DOM** | Modalidades por visión/coordenada y direccionadas por el DOM para cuando no hay un selector limpio — incluso a través de iframes de origen cruzado. |
-| **Leer y extraer**           | Texto, tablas, atributos y capturas de pantalla.                                                                            |
-| **Archivos y diálogos**      | Subidas, descargas, alertas y confirmaciones.                                                                               |
-| **Pestañas, sesiones y reanudación** | Manejar varias pestañas y sesiones a la vez, y reanudar tareas largas a lo largo de los turnos sin perder el hilo.     |
+| Capacidad | Qué proporciona |
+| --- | --- |
+| **Actuar sobre elementos** | Hacer clic, rellenar, escribir, pulsar teclas, seleccionar y pasar el cursor — direccionados por rol ARIA, texto visible o selector CSS: los locators resilientes, al estilo de Playwright, que sobreviven a los cambios del marcado. |
+| **Clic por vista o nodo del DOM** | Interacción por visión/coordenada y direccionada por el DOM para páginas sin un selector limpio, incluidos los objetivos dentro de iframes de origen cruzado. |
+| **Leer y extraer** | Texto de la página y de elementos, tablas, atributos y capturas de pantalla. |
+| **Archivos y diálogos** | Subidas y descargas de archivos, además del manejo nativo de `alert`, `confirm` y `prompt`. |
+| **Pestañas, sesiones y reanudación** | Manejar varias pestañas y sesiones en paralelo, y reanudar tareas de larga duración a lo largo de los turnos sin perder el hilo. |
 
-## Cómo funciona
+Para flujos de trabajo de más alto nivel, el SDK añade helpers ergonómicos (`tab.act.*`, `tab.flows`, `tab.read`) sobre estas mismas primitivas.
 
-Tu agente se comunica con open-browser-use como un servidor MCP. Escribe JavaScript a través de una única herramienta `js`, que se ejecuta en un runtime de Node persistente donde `agent` es el SDK. Esas llamadas viajan como JSON-RPC a través de un Unix socket, restringido por capacidades y exclusivo del propietario, hasta **`obu-host`** — un broker por sesión que maneja tu navegador mediante uno de dos backends:
+## Arquitectura
+
+Para tu agente, open-browser-use es un servidor MCP. El agente escribe JavaScript a través de la única herramienta `js`; ese código se ejecuta en un runtime de Node de larga vida donde el SDK está vinculado a `agent`. Las llamadas del SDK se enmarcan como JSON-RPC y viajan a través de un Unix socket, restringido por capacidades y exclusivo del propietario, hasta **`obu-host`** — un daemon broker por sesión que maneja tu navegador mediante uno de dos backends:
 
 ```
 your agent
@@ -102,26 +104,56 @@ obu-host                          (daemon broker por sesión)
    └─▶ CDP backend          ─▶ Chrome with remote debugging   (OBU_CDP_URL)
 ```
 
-- **Backend WebExtension** — maneja un Chrome instalado de forma normal a través de la extensión de open-browser-use. Sin `--remote-debugging-port`, con tu perfil real y tus inicios de sesión intactos. Es el predeterminado para el uso diario.
-- **Backend CDP** — se conecta a cualquier Chrome iniciado con depuración remota (`OBU_CDP_URL`). Ideal para ejecuciones headless y con scripts.
+Ambos backends hablan el mismo protocolo y presentan el mismo SDK; solo difieren en cómo alcanzan el navegador:
 
-> [!IMPORTANT]
-> Todo permanece en tu máquina. El socket de `obu-host` es exclusivo del propietario y se autentica por el usuario del sistema operativo, y solo el código del SDK de confianza posee el token de capacidad para alcanzarlo — open-browser-use nunca se comunica con un servicio remoto.
+| Backend | Cómo alcanza el navegador | Ideal para |
+| --- | --- | --- |
+| **WebExtension** *(predeterminado)* | Un Chrome instalado de forma normal a través de la extensión de open-browser-use (MV3 + native messaging) — sin `--remote-debugging-port`, con tu perfil real y tus inicios de sesión intactos. | El uso diario contra el navegador en el que ya inicias sesión. |
+| **CDP** | Cualquier Chrome iniciado con depuración remota, direccionado mediante `OBU_CDP_URL`. | Ejecuciones headless, en contenedores y con scripts. |
 
 <details>
 <summary><b>Estructura del repositorio</b> — dónde vive cada pieza</summary>
 
-| Ruta                              | Qué es                                                                                                              |
-| --------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
-| `crates/obu-wire`               | Framing, sobres (envelopes) y códigos de error de JSON-RPC compartidos.                                              |
-| `crates/obu-node-repl`          | El servidor MCP: lanza el runtime de Node (donde se ejecuta el SDK) y hace de broker de su socket, restringido por capacidades, hacia `obu-host`. |
-| `crates/obu-host`               | El daemon broker por sesión y los backends de CDP / WebExtension.                                                   |
-| `packages/sdk`                  | El SDK de TypeScript con forma de Playwright, orientado al agente (`@open-browser-use/sdk`).                       |
-| `packages/browser-control-core` | Tipos de protocolo puros, planificadores y fixtures compartidos por el SDK y la extensión.                          |
-| `packages/cli`                  | La línea de comandos `obu` — `setup`, `verify`, `doctor` y el cableado MCP del agente.                      |
-| `packages/extension`            | La extensión Chromium MV3 y su puente con el native-host.                                                           |
+| Ruta | Qué es |
+| --- | --- |
+| `crates/obu-wire` | Framing, sobres (envelopes) y códigos de error de JSON-RPC compartidos. |
+| `crates/obu-node-repl` | El servidor MCP: lanza el runtime de Node (donde se ejecuta el SDK) y hace de broker de su socket, restringido por capacidades, hacia `obu-host`. |
+| `crates/obu-host` | El daemon broker por sesión y los backends de CDP / WebExtension. |
+| `packages/sdk` | El SDK de TypeScript con forma de Playwright, orientado al agente (`@open-browser-use/sdk`). |
+| `packages/browser-control-core` | Tipos de protocolo puros, planificadores y fixtures compartidos por el SDK y la extensión. |
+| `packages/cli` | La línea de comandos `obu` — `setup`, `verify`, `doctor` y el cableado MCP del agente. |
+| `packages/extension` | La extensión Chromium MV3 y su puente con el native-host. |
 
 </details>
+
+## Seguridad y privacidad
+
+open-browser-use es local-first por diseño: nunca llama a una URL remota ni a un servicio de políticas de producto, y nada sobre tu navegación sale de tu máquina. Los guards del SDK y la política del host se ejecutan localmente y son permisivos por defecto — solo los endureces cuando lo necesitas. Tres capas te dan el control, desde el límite del proceso hacia afuera.
+
+**Límite del proceso.** `obu-host` escucha en un Unix socket que es exclusivo del propietario y se autentica por el usuario del sistema operativo, y solo el código del SDK de confianza posee el token de capacidad necesario para alcanzarlo. open-browser-use nunca abre una conexión hacia un servicio remoto.
+
+**Política del host.** Restringe lo que el navegador puede hacer con variables de entorno:
+
+| Variable | Efecto |
+| --- | --- |
+| `OBU_HOST_POLICY_DENY_ORIGINS` | Bloquea la navegación y los comandos sobre el origen actual para los orígenes indicados. |
+| `OBU_HOST_POLICY_DENY_CDP_METHODS` | Bloquea métodos CDP en bruto específicos (`*` los bloquea todos). |
+| `OBU_HOST_POLICY_BLOCK_HISTORY` / `_BLOCK_DOWNLOADS` / `_BLOCK_UPLOADS` | Bloquea las lecturas del historial, las descargas o las subidas. |
+| `OBU_GUARD_MODE=disabled` | Bypass local/de pruebas para todas las comprobaciones de guards y políticas. |
+
+**Guards del SDK.** Para un control programático por navegador, instala hooks `Guards` para navegación, descargas, subidas, historial y CDP en bruto. Se ejecutan dentro de tu proceso de agente local y no hacen ninguna petición de red:
+
+```ts
+import { Guards } from "@open-browser-use/sdk";
+
+const browser = await agent.browsers.get("chrome", {
+  guards: new Guards({
+    checkNavigation(url) {
+      if (url.startsWith("https://admin.example/")) throw new Error("navigation blocked");
+    },
+  }),
+});
+```
 
 ## Entorno de RL agéntico
 
@@ -132,7 +164,6 @@ open-browser-use está construido para servir también como un **entorno para en
 - **Un bucle de acción/observación con forma de entorno.** `tab.observe()` devuelve un `TabObservation` tipado; `tab.step(action)` recibe un `EnvAction` tipado y devuelve un `ActionResult`. `EnvAction` abarca **13 tipos de acción** repartidos en tres modos de direccionamiento — `locator.*`, `dom_cua.*` y `coordinate.*` — cada uno con una `policy` de capacidad opcional.
 - **Resultados de paso ricos y estructurados.** `ActionResult` informa de un `ActionEffect` (`navigation`, `dom_changed`, `download_started`, `no_visible_change`, …), `invalidatedObservations`, handles, avisos y un `error` estructurado — señal suficiente para guiar a un aprendiz o a un verificador.
 - **Episodios duraderos con recuperación.** Las sesiones llevan arbitraje de propiedad, diagnósticos de handles obsoletos, pruebas del turno del propietario y `resume`, de modo que los episodios largos sobreviven a caídas y reconexiones. Las tareas se exportan a `EpisodeExport { task_id, turns, events }`.
-- **Helpers de alto nivel** (`tab.act.*`, `tab.flows`, `tab.read`) construidos sobre las mismas primitivas.
 
 **Aún no disponible** — no hay una única fachada `Environment` que exponga un `reset/step/observe/close` formal y muestreable; `browser.reset()` solo restablece el viewport (el backend se conecta a un navegador en lugar de lanzar uno desechable); y no hay un sustrato de verificador integrado, un esquema de trayectorias con recompensa, una flota de rollouts en paralelo, ni un cliente de Python / de red (HTTP/gRPC) — hoy la superficie es MCP-stdio más el broker de tubería nativa.
 
@@ -147,32 +178,9 @@ Ordenada según la ruta crítica hacia *«¿se puede entrenar de verdad contra �
 - [ ] **Flota de rollouts en paralelo** — un pool de N navegadores aislados con stepping asíncrono (se apoya en el reset limpio).
 - [ ] **Determinismo y reproducibilidad** — semillas, grabación/reproducción de red opcional e instancias de tarea fijas con hash de contenido para detectar la deriva de la web en vivo.
 
-## Local por defecto
+## Compilar desde el código fuente
 
-open-browser-use nunca llama a una URL remota ni a un servicio de políticas de producto. Los guards del SDK y la política del host se ejecutan localmente y son permisivos por defecto. Endurécelos con variables de entorno cuando lo necesites:
-
-| Variable                                                                      | Efecto                                                               |
-| ----------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| `OBU_HOST_POLICY_DENY_ORIGINS`                                              | Bloquea la navegación y los comandos sobre el origen actual para los orígenes indicados. |
-| `OBU_HOST_POLICY_DENY_CDP_METHODS`                                          | Bloquea métodos CDP en bruto específicos (`*` los bloquea todos).  |
-| `OBU_HOST_POLICY_BLOCK_HISTORY` / `_BLOCK_DOWNLOADS` / `_BLOCK_UPLOADS` | Bloquea las lecturas del historial, las descargas o las subidas.                          |
-| `OBU_GUARD_MODE=disabled`                                                   | Bypass local/de pruebas para todas las comprobaciones de guards y políticas. |
-
-Quienes usan el SDK también pueden instalar hooks `Guards` por navegador para navegación, descargas, subidas, historial y CDP en bruto — se ejecutan en tu proceso de agente local y no hacen ninguna petición de red:
-
-```ts
-import { Guards } from "@open-browser-use/sdk";
-
-const browser = await agent.browsers.get("chrome", {
-  guards: new Guards({
-    checkNavigation(url) {
-      if (url.startsWith("https://admin.example/")) throw new Error("navigation blocked");
-    },
-  }),
-});
-```
-
-## Compilar y probar
+Compila y prueba todo el workspace:
 
 ```bash
 cargo test --workspace
@@ -180,7 +188,7 @@ pnpm install --frozen-lockfile
 pnpm -r build && pnpm -r test
 ```
 
-Los nombres de los métodos del wire, las clases de guards del SDK, las clases de política del host y los estados de soporte de cada backend provienen todos de `wire/methods.json`. Después de cambiar un método del wire, regenera las tablas de TS/Rust y ejecuta la comprobación de vigencia:
+Los nombres de los métodos del wire, las clases de guards del SDK, las clases de política del host y los estados de soporte de cada backend se generan todos a partir de `wire/methods.json`. Después de cambiar un método del wire, regenera las tablas de TypeScript/Rust y ejecuta la comprobación de vigencia:
 
 ```bash
 pnpm generate:wire-methods
@@ -189,7 +197,7 @@ pnpm check:wire-methods
 
 El empaquetado, la cobertura y los gates end-to-end de CDP / WebExtension (marcados como ignorados) tienen sus propios scripts y configuración; consulta [docs/install.md](../docs/install.md), [docs/troubleshooting.md](../docs/troubleshooting.md) y [docs/release-checklist.md](../docs/release-checklist.md).
 
-## Licencia y avisos
+## Licencia
 
 open-browser-use tiene licencia MIT — consulta [LICENSE](../LICENSE). Los paquetes de las versiones también incluyen componentes de terceros bajo sus licencias originales; los detalles están en [LICENSE-THIRD-PARTY.md](../LICENSE-THIRD-PARTY.md).
 
