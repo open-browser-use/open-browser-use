@@ -6,7 +6,13 @@ fn js_tool_description() {
 
 #[test]
 fn agent_browser_mcp_usage_fast_work_rules() {
-    let body = include_str!("../../../docs/agent-browser-mcp-usage.md");
+    // docs/agent-browser-mcp-usage.md is gitignored (developer-local), so it is
+    // absent on clean checkouts/CI. Validate it only when present.
+    let doc_path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../docs/agent-browser-mcp-usage.md");
+    let Ok(body) = std::fs::read_to_string(&doc_path) else {
+        return;
+    };
     let required = [
         "Call `browser_status` before the first `js` cell",
         "Call `browser.name(\"short task label\")` early",
