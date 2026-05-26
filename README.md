@@ -2,7 +2,7 @@
 
 <h1>open-browser-use</h1>
 
-<p><b>Open-source Browser Use — give your local AI agent a real browser.</b></p>
+<p><b>Let agents control the browser you already use.</b></p>
 
 <img src="open-browser-use-readme-preview-wide.png" alt="open-browser-use — agent browser tool, agentic RL ready" width="820">
 
