@@ -256,29 +256,12 @@ async function runRuntimeActivation(options: SetupOptions, browser: BrowserKind)
       runtimeDir: options.layout.runtimeDir,
     });
   }
-  const testResult = options.env?.OBU_TEST_RUNTIME_ACTIVATION_RESULT ?? process.env.OBU_TEST_RUNTIME_ACTIVATION_RESULT;
-  if (testResult) {
-    return stubRuntimeActivationResult(testResult as BrowserRuntimeActivationResult["result"]);
-  }
   return activateBrowserRuntime({
     browser,
     extensionId: options.extensionId,
     homeDir,
     runtimeDir: options.layout.runtimeDir,
   });
-}
-
-function stubRuntimeActivationResult(result: BrowserRuntimeActivationResult["result"]): BrowserRuntimeActivationResult {
-  return {
-    result,
-    timeoutMs: 5000,
-    intervalMs: 250,
-    profileLimit: 3,
-    candidates: [],
-    attemptedProfiles: [],
-    openedCount: 0,
-    errors: [],
-  };
 }
 
 function activationAwareExtensionNextActions(

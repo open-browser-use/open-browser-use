@@ -107,7 +107,7 @@ the command output says the local install is corrupt or missing.
 | --- | --- |
 | `verify.result == "ready"` | Stop and report success. |
 | Verify asks for repair | Rerun the same verify command with `--repair`. Keep the same agent/browser/channel/id tuple. |
-| Browser popup boundary | Setup attempts browser runtime activation automatically. If verify still returns this boundary, tell the user setup already opened the extension popup and waited up to 5 seconds; ask them to confirm the popup shows Connected or click Resume if enabled, then rerun the same verify command. |
+| Browser popup boundary | Setup attempts browser runtime activation automatically. If verify still returns this boundary, inspect the `runtime-activation-*` step result, opened count, candidate count, and errors; ask the user to confirm the popup shows Connected or click Resume if enabled, then rerun the same verify command. |
 | Divergent MCP server | Show the exact conflict and ask the user what to keep. Do not overwrite it silently. |
 | `agent-runtime-status: not_checked` with `result: ready` | Treat as non-blocking for CLI verification. |
 | MCP server works but `browser_status.backends` is empty | Run verify with the same handoff tuple; repair only if verify asks for it. |

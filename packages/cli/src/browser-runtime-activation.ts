@@ -3,7 +3,7 @@ import { constants } from "node:fs";
 import { access } from "node:fs/promises";
 import path from "node:path";
 
-import { browserInstallPath, browserProfileRoot, type BrowserKind } from "./browser-paths.js";
+import { browserInstallPath, browserProfileRoot, browserRuntimeKind, type BrowserKind } from "./browser-paths.js";
 import {
   discoverProfileCandidates,
   enabledExtensionProfiles,
@@ -54,7 +54,10 @@ export async function activateBrowserRuntime(options: BrowserRuntimeActivationOp
   const now = options.now ?? Date.now;
   const sleep = options.sleep ?? defaultSleep;
   const hasActiveDescriptor = options.hasActiveDescriptor ?? (() =>
-    hasActiveWebExtensionRuntimeDescriptor(options.runtimeDir, { extensionId: options.extensionId })
+    hasActiveWebExtensionRuntimeDescriptor(options.runtimeDir, {
+      extensionId: options.extensionId,
+      browserKind: browserRuntimeKind(options.browser),
+    })
   );
   const openPopup = options.openPopup ?? openBrowserPopup;
   const root = browserProfileRoot(options.browser, process.platform, options.homeDir);
@@ -62,6 +65,7 @@ export async function activateBrowserRuntime(options: BrowserRuntimeActivationOp
   const enabled = enabledExtensionProfiles(candidates).slice(0, profileLimit);
   const attemptedProfiles: string[] = [];
   const errors: string[] = [];
+  let openedCount = 0;
 
   if (await hasActiveDescriptor()) {
     return {
@@ -90,8 +94,11 @@ export async function activateBrowserRuntime(options: BrowserRuntimeActivationOp
   }
 
   const url = `chrome-extension://${options.extensionId}/popup.html`;
-  for (const candidate of enabled) {
+  const deadline = now() + timeoutMs;
+  for (let index = 0; index < enabled.length && now() < deadline; index += 1) {
+    const candidate = enabled[index]!;
     attemptedProfiles.push(candidate.path);
+    let opened = false;
     try {
       await openPopup({
         browser: options.browser,
@@ -99,6 +106,8 @@ export async function activateBrowserRuntime(options: BrowserRuntimeActivationOp
         profilePath: candidate.path,
         url,
       });
+      opened = true;
+      openedCount += 1;
     } catch (error) {
       errors.push(`${candidate.path}: ${error instanceof Error ? error.message : String(error)}`);
     }
@@ -110,17 +119,22 @@ export async function activateBrowserRuntime(options: BrowserRuntimeActivationOp
         profileLimit,
         candidates,
         attemptedProfiles,
-        openedCount: attemptedProfiles.length,
+        openedCount,
         errors,
       };
     }
-  }
-
-  const deadline = now() + timeoutMs;
-  while (now() < deadline) {
-    const remaining = Math.max(0, deadline - now());
-    await sleep(Math.min(intervalMs, remaining));
-    if (await hasActiveDescriptor()) {
+    if (!opened) continue;
+    const remainingMs = Math.max(0, deadline - now());
+    const remainingProfiles = enabled.length - index;
+    const profileWaitMs = Math.max(intervalMs, Math.ceil(remainingMs / remainingProfiles));
+    const profileDeadline = Math.min(deadline, now() + profileWaitMs);
+    if (await waitForDescriptor({
+      deadline: profileDeadline,
+      intervalMs,
+      now,
+      sleep,
+      hasActiveDescriptor,
+    })) {
       return {
         result: "ready",
         timeoutMs,
@@ -128,22 +142,57 @@ export async function activateBrowserRuntime(options: BrowserRuntimeActivationOp
         profileLimit,
         candidates,
         attemptedProfiles,
-        openedCount: attemptedProfiles.length,
+        openedCount,
         errors,
       };
     }
   }
 
+  if (openedCount > 0 && await waitForDescriptor({
+    deadline,
+    intervalMs,
+    now,
+    sleep,
+    hasActiveDescriptor,
+  })) {
+    return {
+      result: "ready",
+      timeoutMs,
+      intervalMs,
+      profileLimit,
+      candidates,
+      attemptedProfiles,
+      openedCount,
+      errors,
+    };
+  }
+
   return {
-    result: errors.length === attemptedProfiles.length ? "open_failed" : "timeout",
+    result: openedCount === 0 ? "open_failed" : "timeout",
     timeoutMs,
     intervalMs,
     profileLimit,
     candidates,
     attemptedProfiles,
-    openedCount: attemptedProfiles.length,
+    openedCount,
     errors,
   };
+}
+
+async function waitForDescriptor(input: {
+  deadline: number;
+  intervalMs: number;
+  now: () => number;
+  sleep: (ms: number) => Promise<void>;
+  hasActiveDescriptor: () => Promise<boolean>;
+}): Promise<boolean> {
+  while (input.now() < input.deadline) {
+    const remaining = Math.max(0, input.deadline - input.now());
+    if (remaining === 0) break;
+    await input.sleep(Math.min(input.intervalMs, remaining));
+    if (await input.hasActiveDescriptor()) return true;
+  }
+  return false;
 }
 
 export async function openBrowserPopup(target: BrowserActivationTarget): Promise<void> {

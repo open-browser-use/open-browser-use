@@ -3,7 +3,7 @@ import { access, chmod, lstat, mkdir, readFile, rename, rm, writeFile } from "no
 import os from "node:os";
 import path from "node:path";
 
-import { nativeMessagingHostDir, type BrowserKind } from "./browser-paths.js";
+import { browserRuntimeKind, nativeMessagingHostDir, type BrowserKind } from "./browser-paths.js";
 import { extensionManifestPath, readExtensionIdFromManifest } from "./extension-channel.js";
 import type { RuntimeLayout } from "./runtime-layout.js";
 
@@ -192,10 +192,6 @@ export async function writeIfChanged(file: string, content: string, mode: number
     throw error;
   }
   return true;
-}
-
-function browserRuntimeKind(browser: BrowserKind): string {
-  return browser === "chrome-for-testing" ? "chrome" : browser;
 }
 
 function shellQuote(value: string): string {

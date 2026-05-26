@@ -10,8 +10,6 @@ import type { RuntimeLayout } from "./runtime-layout.js";
 
 const EXTENSION_KEY = Buffer.from("open-browser-use setup test key").toString("base64");
 
-process.env.OBU_TEST_RUNTIME_ACTIVATION_RESULT ??= "no_candidates";
-
 test("setupOpenBrowserUse composes runtime, native host, extension update, and manual agent boundary", async (t) => {
   const root = await mkdtemp(path.join(os.tmpdir(), "obu-setup-"));
   t.after(() => rm(root, { recursive: true, force: true }));

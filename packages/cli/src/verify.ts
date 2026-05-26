@@ -12,7 +12,7 @@ import { type AgentId, type McpServerInvocation } from "./agents/registry.js";
 import { appendShellArgs } from "./command-line.js";
 import { doctorBrowser } from "./doctor-browser.js";
 import { type ExtensionChannel, type ExtensionIdSource } from "./extension-channel.js";
-import { browserProfileRoot, nativeMessagingHostDir, type BrowserKind } from "./browser-paths.js";
+import { browserProfileRoot, browserRuntimeKind, nativeMessagingHostDir, type BrowserKind } from "./browser-paths.js";
 import {
   defaultProfileCandidates,
   inspectProfileCandidate,
@@ -1892,9 +1892,9 @@ async function probeOneDescriptor(
     const metadata = mergedDescriptorMetadata(descriptor, info.result);
     const browserKind = stringFromPath(metadata, ["browser_kind"]) ?? String(descriptor.name ?? "");
     const extensionId = stringFromPath(metadata, ["extension_id"]) ?? "unknown";
-    if (browserKind !== runtimeBrowserKind(options.browser)) {
+    if (browserKind !== browserRuntimeKind(options.browser)) {
       return descriptorFailure(
-        `descriptor browser kind ${browserKind || "unknown"} does not match ${runtimeBrowserKind(options.browser)}`,
+        `descriptor browser kind ${browserKind || "unknown"} does not match ${browserRuntimeKind(options.browser)}`,
         "browser_popup_boundary",
         "needs_browser_popup",
         "descriptor_browser_kind_mismatch",
@@ -2126,7 +2126,7 @@ function normalizeBackend(value: unknown, options: VerifyOptions): NormalizedBac
   const browserKind = typeof metadata.browser_kind === "string" ? metadata.browser_kind : typeof row.name === "string" ? row.name : undefined;
   const extensionId = typeof metadata.extension_id === "string" ? metadata.extension_id : undefined;
   const verified = row.type === "webextension" &&
-    browserKind === runtimeBrowserKind(options.browser) &&
+    browserKind === browserRuntimeKind(options.browser) &&
     extensionId === options.extensionId;
   return {
     type: typeof row.type === "string" ? row.type : "unknown",
@@ -2695,10 +2695,6 @@ function verifyArgs(options: VerifyOptions, repair: boolean, extra: { agentRunti
 function homeDirFromLayout(layout: RuntimeLayout): string | undefined {
   const obuDir = path.dirname(layout.userConfigPath);
   return path.basename(obuDir) === ".obu" ? path.dirname(obuDir) : undefined;
-}
-
-function runtimeBrowserKind(browser: BrowserKind): string {
-  return browser === "chrome-for-testing" ? "chrome" : browser;
 }
 
 function samePath(left: string, right: string): boolean {

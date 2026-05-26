@@ -2,6 +2,10 @@ import path from "node:path";
 
 export type BrowserKind = "chrome" | "chrome-for-testing" | "edge" | "brave" | "arc" | "chromium";
 
+export function browserRuntimeKind(browser: BrowserKind): string {
+  return browser === "chrome-for-testing" ? "chrome" : browser;
+}
+
 export function browserInstallPath(browser: BrowserKind, platform: NodeJS.Platform): string | undefined {
   if (platform === "darwin") {
     return {
