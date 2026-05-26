@@ -1,12 +1,12 @@
 <div align="center">
 
-<sub><a href="README.md">English</a> · <b>简体中文</b> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a> · <a href="README.es.md">Español</a></sub>
+<sub><a href="../README.md">English</a> · <b>简体中文</b> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a> · <a href="README.es.md">Español</a></sub>
 
 <h1>open-browser-use</h1>
 
 <p><b>让智能体操控你本就在用的浏览器。</b></p>
 
-<img src="open-browser-use-readme-preview-wide.png" alt="open-browser-use — agent browser tool, agentic RL ready" width="820">
+<img src="../open-browser-use-readme-preview-wide.png" alt="open-browser-use — agent browser tool, agentic RL ready" width="820">
 
 <p align="center">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square">
@@ -48,7 +48,7 @@ open-browser-use 目前是一个 **macOS / Linux 公开预览版** —— Chrome
 2. **将其加载到浏览器中：** 打开 `chrome://extensions`（Chrome 或其他 Chromium 浏览器），开启 **开发者模式**，点击 **加载已解压的扩展程序**，然后选中解压后的文件夹。把它固定到工具栏 —— 接下来你正是通过它的弹窗来连接智能体。
 
 > [!NOTE]
-> 一旦 Chrome 应用商店的上架生效，你就能直接从商店添加扩展 —— 无需下载或解压。关于各平台的注意事项与故障排查，请参阅 [docs/install.md](docs/install.md) 和 [docs/troubleshooting.md](docs/troubleshooting.md)。
+> 一旦 Chrome 应用商店的上架生效，你就能直接从商店添加扩展 —— 无需下载或解压。关于各平台的注意事项与故障排查，请参阅 [docs/install.md](../docs/install.md) 和 [docs/troubleshooting.md](../docs/troubleshooting.md)。
 
 ## 快速上手
 
@@ -187,11 +187,11 @@ pnpm generate:wire-methods
 pnpm check:wire-methods
 ```
 
-打包、覆盖率，以及被忽略（ignored）的 CDP / WebExtension 端到端测试关卡都有各自的脚本与配置；详见 [docs/install.md](docs/install.md)、[docs/troubleshooting.md](docs/troubleshooting.md) 和 [docs/release-checklist.md](docs/release-checklist.md)。
+打包、覆盖率，以及被忽略（ignored）的 CDP / WebExtension 端到端测试关卡都有各自的脚本与配置；详见 [docs/install.md](../docs/install.md)、[docs/troubleshooting.md](../docs/troubleshooting.md) 和 [docs/release-checklist.md](../docs/release-checklist.md)。
 
 ## 许可证与声明
 
-open-browser-use 采用 MIT 许可证 —— 详见 [LICENSE](LICENSE)。Release 产物中还携带了一些遵循其上游许可证的第三方组件；细节请见 [LICENSE-THIRD-PARTY.md](LICENSE-THIRD-PARTY.md)。
+open-browser-use 采用 MIT 许可证 —— 详见 [LICENSE](../LICENSE)。Release 产物中还携带了一些遵循其上游许可证的第三方组件；细节请见 [LICENSE-THIRD-PARTY.md](../LICENSE-THIRD-PARTY.md)。
 
 ---
 

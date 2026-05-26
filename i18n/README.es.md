@@ -1,12 +1,12 @@
 <div align="center">
 
-<sub><a href="README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a> · <b>Español</b></sub>
+<sub><a href="../README.md">English</a> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a> · <b>Español</b></sub>
 
 <h1>open-browser-use</h1>
 
 <p><b>Deja que los agentes controlen el navegador que ya usas.</b></p>
 
-<img src="open-browser-use-readme-preview-wide.png" alt="open-browser-use — agent browser tool, agentic RL ready" width="820">
+<img src="../open-browser-use-readme-preview-wide.png" alt="open-browser-use — agent browser tool, agentic RL ready" width="820">
 
 <p align="center">
   <img alt="License: MIT" src="https://img.shields.io/badge/license-MIT-blue?style=flat-square">
@@ -48,7 +48,7 @@ open-browser-use es una **vista previa pública para macOS / Linux** — la fich
 2. **Cárgala en tu navegador:** abre `chrome://extensions` (Chrome u otro navegador Chromium), activa el **Modo de desarrollador**, haz clic en **Cargar descomprimida** y selecciona la carpeta descomprimida. Ánclala — su ventana emergente es por donde conectarás tu agente a continuación.
 
 > [!NOTE]
-> Una vez que la ficha de la Chrome Web Store esté activa, añadirás la extensión directamente desde la Store — sin descargas ni descompresión. Para notas específicas de cada plataforma y solución de problemas, consulta [docs/install.md](docs/install.md) y [docs/troubleshooting.md](docs/troubleshooting.md).
+> Una vez que la ficha de la Chrome Web Store esté activa, añadirás la extensión directamente desde la Store — sin descargas ni descompresión. Para notas específicas de cada plataforma y solución de problemas, consulta [docs/install.md](../docs/install.md) y [docs/troubleshooting.md](../docs/troubleshooting.md).
 
 ## Inicio rápido
 
@@ -187,11 +187,11 @@ pnpm generate:wire-methods
 pnpm check:wire-methods
 ```
 
-El empaquetado, la cobertura y los gates end-to-end de CDP / WebExtension (marcados como ignorados) tienen sus propios scripts y configuración; consulta [docs/install.md](docs/install.md), [docs/troubleshooting.md](docs/troubleshooting.md) y [docs/release-checklist.md](docs/release-checklist.md).
+El empaquetado, la cobertura y los gates end-to-end de CDP / WebExtension (marcados como ignorados) tienen sus propios scripts y configuración; consulta [docs/install.md](../docs/install.md), [docs/troubleshooting.md](../docs/troubleshooting.md) y [docs/release-checklist.md](../docs/release-checklist.md).
 
 ## Licencia y avisos
 
-open-browser-use tiene licencia MIT — consulta [LICENSE](LICENSE). Los paquetes de las versiones también incluyen componentes de terceros bajo sus licencias originales; los detalles están en [LICENSE-THIRD-PARTY.md](LICENSE-THIRD-PARTY.md).
+open-browser-use tiene licencia MIT — consulta [LICENSE](../LICENSE). Los paquetes de las versiones también incluyen componentes de terceros bajo sus licencias originales; los detalles están en [LICENSE-THIRD-PARTY.md](../LICENSE-THIRD-PARTY.md).
 
 ---
 
