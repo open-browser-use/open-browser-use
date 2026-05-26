@@ -162,6 +162,7 @@ function assertStoreContents(files) {
     "session_store.js",
     "tab_group_manager.js",
     "tab_lifecycle_controller.js",
+    "vendor/browser-control-core.mjs",
   ].sort();
   const expectedLocaleFiles = expectedLocales.map((locale) => `_locales/${locale}/messages.json`).sort();
   const actual = [...files].sort();

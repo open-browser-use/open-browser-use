@@ -271,7 +271,8 @@ Verify:
 - the popup still exposes `Copy for agent` after the native host is connected,
   so users can add another MCP client such as Cursor after Codex is working.
 - `dist/chrome-web-store/chrome-web-store-artifact.json` lists only
-  `manifest.json`, generated JS/CSS/HTML, and icon files.
+  `manifest.json`, generated JS/CSS/HTML, the vendored browser-control-core
+  runtime module, and icon files.
 - permission justifications, data handling notes, and reviewer instructions are
   ready in [`chrome-web-store-review-pack.md`](chrome-web-store-review-pack.md).
 

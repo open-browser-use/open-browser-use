@@ -1,3 +1,4 @@
+await import("./test-build-output.mjs");
 await import("./test-finalize-tabs-machine.mjs");
 await import("./test-finalize-tabs-controller.mjs");
 await import("./test-native-lifecycle-machines.mjs");

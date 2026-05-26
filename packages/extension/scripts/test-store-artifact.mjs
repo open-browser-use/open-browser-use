@@ -90,6 +90,7 @@ try {
     "session_store.js",
     "tab_group_manager.js",
     "tab_lifecycle_controller.js",
+    "vendor/browser-control-core.mjs",
   ].sort();
   const expectedLocaleContents = [
     "ar",
