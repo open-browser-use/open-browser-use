@@ -45,7 +45,6 @@ describe("help", () => {
 
   it("keeps overview docs on the safe user-tab discovery surface", async () => {
     const sdkReadme = await readFile(new URL("../README.md", import.meta.url), "utf8");
-    const architecture = await readFile(new URL("../../../docs/current-product-architecture.md", import.meta.url), "utf8");
 
     expect(sdkReadme).toContain("browser.tabs.current()");
     expect(sdkReadme).toContain("browser.tabs.selected()");
@@ -53,6 +52,13 @@ describe("help", () => {
     expect(sdkReadme).not.toContain("browser.user.openTabs/history/claimTab");
     expect(sdkReadme).not.toContain("browser.user.openTabs()` |");
 
+    // docs/current-product-architecture.md is gitignored (developer-local), so it
+    // is absent on clean checkouts/CI. Validate it only when present.
+    const architecture = await readFile(
+      new URL("../../../docs/current-product-architecture.md", import.meta.url),
+      "utf8",
+    ).catch(() => undefined);
+    if (architecture === undefined) return;
     expect(architecture).toContain("tabs.create/list/get/current/selected");
     expect(architecture).toContain("user.discoverTabs/history/claimTab");
     expect(architecture).not.toContain("user.openTabs/history/claimTab");
