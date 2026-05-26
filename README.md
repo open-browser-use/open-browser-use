@@ -1,5 +1,7 @@
 <div align="center">
 
+<sub><b>English</b> · <a href="README.zh-CN.md">简体中文</a> · <a href="README.ja.md">日本語</a> · <a href="README.ko.md">한국어</a> · <a href="README.es.md">Español</a></sub>
+
 <h1>open-browser-use</h1>
 
 <p><b>Let agents control the browser you already use.</b></p>
