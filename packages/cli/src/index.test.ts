@@ -13,6 +13,8 @@ import { nativeHostWrapperContent, nativeHostWrapperPath } from "./native-host.j
 
 const cliEntry = fileURLToPath(new URL("./index.js", import.meta.url));
 
+process.env.OBU_TEST_RUNTIME_ACTIVATION_RESULT ??= "no_candidates";
+
 test("mcp-config print emits a runnable repo-mode invocation", async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
   t.after(() => rm(home, { recursive: true, force: true }));
@@ -1337,6 +1339,7 @@ test("setup summary preserves manual agent next actions", async (t) => {
     OBU_COMMAND: obuCommand,
     OBU_RUNTIME_DIR: path.join(home, "runtime"),
     OBU_HOST_BIN: hostBin,
+    OBU_TEST_RUNTIME_ACTIVATION_RESULT: "ready",
   });
 
   assert.equal(result.code, 1);
@@ -1352,9 +1355,71 @@ test("setup summary preserves manual agent next actions", async (t) => {
     OBU_COMMAND: obuCommand,
     OBU_RUNTIME_DIR: path.join(home, "runtime"),
     OBU_HOST_BIN: hostBin,
+    OBU_TEST_RUNTIME_ACTIVATION_RESULT: "ready",
   });
   assert.equal(recovery.code, 1);
   assert.match(recovery.stdout, new RegExp(`${escapeRegExp(obuCommand)} mcp-config --agent=continue --print`));
+});
+
+test("setup JSON includes runtime activation diagnostics when popup activation times out", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  withTestXdgConfigHome(t, home);
+  const extensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const runtimeDir = path.join(home, "runtime");
+  const hostBin = await writeExecutable(path.join(bin, "obu-host"), "#!/bin/sh\nexit 0\n");
+  const profilePath = path.join(browserProfileRoot("chrome", process.platform, home), "Default");
+  await writeChromePreferences(profilePath, extensionId, 1);
+
+  const result = await runCli([
+    "setup",
+    "--agents=none",
+    "--browser=chrome",
+    "--channel=store",
+    `--extension-id=${extensionId}`,
+    "--json",
+  ], {
+    HOME: home,
+    OBU_HOST_BIN: hostBin,
+    OBU_RUNTIME_DIR: runtimeDir,
+    OBU_TEST_RUNTIME_ACTIVATION_RESULT: "timeout",
+  });
+
+  assert.equal(result.code, 1);
+  const payload = JSON.parse(result.stdout);
+  const activation = payload.steps.find((step: any) => step.id === "runtime-activation-chrome");
+  assert.equal(activation.status, "manual_action_required");
+  assert.equal(activation.details.timeoutMs, 5000);
+  assert.equal(activation.details.profileLimit, 3);
+  assert.equal(activation.details.openedCount >= 0, true);
+});
+
+test("setup human output explains runtime activation timeout", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  const extensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const hostBin = await writeExecutable(path.join(bin, "obu-host"), "#!/bin/sh\nexit 0\n");
+
+  const result = await runCli([
+    "setup",
+    "--agents=none",
+    "--browser=chrome",
+    "--channel=store",
+    `--extension-id=${extensionId}`,
+  ], {
+    HOME: home,
+    OBU_HOST_BIN: hostBin,
+    OBU_RUNTIME_DIR: path.join(home, "runtime"),
+    OBU_TEST_RUNTIME_ACTIVATION_RESULT: "timeout",
+  });
+
+  assert.equal(result.code, 1);
+  assert.match(result.stdout, /Setup needs 1 follow-up step/);
+  assert.match(result.stdout, /Browser runtime activation was attempted automatically/);
 });
 
 test("bootstrap continues through manual agent setup and runs browser repair", async (t) => {
@@ -1454,6 +1519,7 @@ test("setup CLI accepts explicit auto and none agent modes", async (t) => {
     OBU_RUNTIME_DIR: path.join(home, "runtime"),
     OBU_HOST_BIN: hostBin,
     PATH: "",
+    OBU_TEST_RUNTIME_ACTIVATION_RESULT: "ready",
   };
   const storeExtensionId = "abcdefghijklmnopabcdefghijklmnop";
 
@@ -1494,6 +1560,7 @@ test("setup auto skips unreadable direct-edit agent config instead of aborting",
     PATH: "",
     OBU_RUNTIME_DIR: path.join(home, "runtime"),
     OBU_HOST_BIN: hostBin,
+    OBU_TEST_RUNTIME_ACTIVATION_RESULT: "ready",
   });
 
   assert.equal(result.code, 0);
@@ -1544,6 +1611,35 @@ test("setup recovery mode exits zero for manual action but not failed setup", as
   });
   assert.equal(failedRecovery.code, 1);
   assert.match(failedRecovery.stdout, /Setup failed\./);
+});
+
+test("setup recovery mode exits zero for runtime activation manual boundary", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  const hostBin = await writeExecutable(path.join(bin, "obu-host"), "#!/bin/sh\nexit 0\n");
+  const storeExtensionId = "abcdefghijklmnopabcdefghijklmnop";
+
+  const result = await runCli([
+    "setup",
+    "--yes",
+    "--recovery",
+    "--channel=store",
+    `--extension-id=${storeExtensionId}`,
+    "--agents=none",
+    "--json",
+  ], {
+    HOME: home,
+    OBU_RUNTIME_DIR: path.join(home, "runtime"),
+    OBU_HOST_BIN: hostBin,
+    OBU_TEST_RUNTIME_ACTIVATION_RESULT: "timeout",
+  });
+
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.result, "manual_action_required");
+  assert.equal(payload.steps.find((step: any) => step.id === "runtime-activation-chrome")?.status, "manual_action_required");
 });
 
 test("setup CLI runs deterministic steps before extension manual boundary", async (t) => {
@@ -1637,6 +1733,7 @@ test("setup CLI supports Store channel without staging an unpacked extension", a
     HOME: home,
     OBU_RUNTIME_DIR: runtimeDir,
     OBU_HOST_BIN: hostBin,
+    OBU_TEST_RUNTIME_ACTIVATION_RESULT: "ready",
   });
 
   assert.equal(result.code, 0);
@@ -1682,6 +1779,7 @@ test("setup can write Codex and Claude primary-browser instructions explicitly",
     PATH: bin,
     OBU_RUNTIME_DIR: path.join(home, "runtime"),
     OBU_HOST_BIN: hostBin,
+    OBU_TEST_RUNTIME_ACTIVATION_RESULT: "ready",
   });
 
   assert.equal(result.code, 0);

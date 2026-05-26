@@ -1,5 +1,9 @@
 import path from "node:path";
 
+import {
+  activateBrowserRuntime,
+  type BrowserRuntimeActivationResult,
+} from "./browser-runtime-activation.js";
 import { installNativeHosts } from "./native-host.js";
 import { ensureRuntimeDir, type RuntimeLayout, writeUserConfig } from "./runtime-layout.js";
 import { updateExtension, type ExtensionUpdateStep } from "./extension-update.js";
@@ -46,6 +50,12 @@ export type SetupOptions = {
   env?: NodeJS.ProcessEnv;
   commandPrefix?: string;
   projectDir?: string;
+  runtimeActivation?: (input: {
+    browser: BrowserKind;
+    extensionId: string;
+    homeDir: string;
+    runtimeDir: string;
+  }) => Promise<BrowserRuntimeActivationResult>;
 };
 
 export async function setupOpenBrowserUse(options: SetupOptions): Promise<SetupJson> {
@@ -101,6 +111,8 @@ export async function setupOpenBrowserUse(options: SetupOptions): Promise<SetupJ
     });
   }
 
+  const extensionNextActions: SetupJson["nextActions"] = [];
+
   if (options.extensionChannel === "store") {
     steps.push({
       id: "extension-update",
@@ -122,6 +134,7 @@ export async function setupOpenBrowserUse(options: SetupOptions): Promise<SetupJ
     const extension = await updateExtension({
       layout: options.layout,
       dryRun,
+      noWait: true,
       verifyTarget: {
         channel: options.extensionChannel,
         extensionId: options.extensionId,
@@ -129,8 +142,19 @@ export async function setupOpenBrowserUse(options: SetupOptions): Promise<SetupJ
       ...(options.extensionPath ? { sourceDir: options.extensionPath } : {}),
     });
     for (const step of extension.steps) steps.push(mapExtensionStep(step));
-    nextActions.push(...extension.nextActions);
+    extensionNextActions.push(...extension.nextActions);
   }
+
+  const activationSteps: SetupJson["steps"] = [];
+  if (shouldAttemptRuntimeActivation(options, steps, dryRun)) {
+    for (const browser of options.browsers) {
+      if (!browserActivationPrerequisitesReady(steps, browser)) continue;
+      const activation = await runRuntimeActivation(options, browser);
+      activationSteps.push(runtimeActivationStep(browser, activation));
+    }
+  }
+  steps.push(...activationSteps);
+  nextActions.push(...activationAwareExtensionNextActions(extensionNextActions, activationSteps));
 
   const agentHomeDir = path.dirname(path.dirname(options.layout.userConfigPath));
   const agents = options.skipAgents
@@ -210,6 +234,107 @@ function mapExtensionStep(step: ExtensionUpdateStep): SetupJson["steps"][number]
     status: setupStatus(step.status),
     message: step.message,
     ...(step.details ? { details: step.details } : {}),
+  };
+}
+
+function shouldAttemptRuntimeActivation(options: SetupOptions, steps: SetupJson["steps"], dryRun: boolean): boolean {
+  if (dryRun || options.skipExtension) return false;
+  return !steps.some((step) => step.id.startsWith("extension-") && step.status === "failed");
+}
+
+function browserActivationPrerequisitesReady(steps: SetupJson["steps"], browser: BrowserKind): boolean {
+  return steps.find((step) => step.id === `native-host-${browser}`)?.status !== "failed";
+}
+
+async function runRuntimeActivation(options: SetupOptions, browser: BrowserKind): Promise<BrowserRuntimeActivationResult> {
+  const homeDir = path.dirname(path.dirname(options.layout.userConfigPath));
+  if (options.runtimeActivation) {
+    return options.runtimeActivation({
+      browser,
+      extensionId: options.extensionId,
+      homeDir,
+      runtimeDir: options.layout.runtimeDir,
+    });
+  }
+  const testResult = options.env?.OBU_TEST_RUNTIME_ACTIVATION_RESULT ?? process.env.OBU_TEST_RUNTIME_ACTIVATION_RESULT;
+  if (testResult) {
+    return stubRuntimeActivationResult(testResult as BrowserRuntimeActivationResult["result"]);
+  }
+  return activateBrowserRuntime({
+    browser,
+    extensionId: options.extensionId,
+    homeDir,
+    runtimeDir: options.layout.runtimeDir,
+  });
+}
+
+function stubRuntimeActivationResult(result: BrowserRuntimeActivationResult["result"]): BrowserRuntimeActivationResult {
+  return {
+    result,
+    timeoutMs: 5000,
+    intervalMs: 250,
+    profileLimit: 3,
+    candidates: [],
+    attemptedProfiles: [],
+    openedCount: 0,
+    errors: [],
+  };
+}
+
+function activationAwareExtensionNextActions(
+  actions: SetupJson["nextActions"],
+  activationSteps: SetupJson["steps"],
+): SetupJson["nextActions"] {
+  const activationSucceeded = activationSteps.length > 0 &&
+    activationSteps.every((step) => step.id.startsWith("runtime-activation-") && step.status === "applied");
+  if (!activationSucceeded) return actions;
+  return actions.filter((action) => !isExtensionReloadAction(action));
+}
+
+function isExtensionReloadAction(action: SetupJson["nextActions"][number]): boolean {
+  return /chrome:\/\/extensions|Load unpacked|Reload/.test(action.value);
+}
+
+function runtimeActivationStep(browser: BrowserKind, activation: BrowserRuntimeActivationResult): SetupJson["steps"][number] {
+  const details = {
+    result: activation.result,
+    timeoutMs: activation.timeoutMs,
+    intervalMs: activation.intervalMs,
+    profileLimit: activation.profileLimit,
+    attemptedProfiles: activation.attemptedProfiles,
+    openedCount: activation.openedCount,
+    candidateCount: activation.candidates.length,
+    errors: activation.errors,
+  };
+  if (activation.result === "ready") {
+    return {
+      id: `runtime-activation-${browser}`,
+      status: "applied",
+      message: `activated ${browser} WebExtension runtime`,
+      details,
+    };
+  }
+  if (activation.result === "no_candidates") {
+    return {
+      id: `runtime-activation-${browser}`,
+      status: "manual_action_required",
+      message: `no enabled ${browser} profile has the open-browser-use extension installed`,
+      details,
+    };
+  }
+  if (activation.result === "open_failed") {
+    return {
+      id: `runtime-activation-${browser}`,
+      status: "manual_action_required",
+      message: `could not open the open-browser-use extension popup for ${browser}`,
+      details,
+    };
+  }
+  return {
+    id: `runtime-activation-${browser}`,
+    status: "manual_action_required",
+    message: `opened the open-browser-use extension popup for ${browser} and waited ${activation.timeoutMs}ms, but no active runtime descriptor appeared`,
+    details,
   };
 }
 

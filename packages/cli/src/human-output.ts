@@ -24,6 +24,12 @@ export function formatSetupSummary(report: SetupJson): string {
     rows.push("Setup failed.");
     rows.push(...formatFailedSteps(report.steps));
   }
+  const activationFailures = report.steps.filter((step) =>
+    step.id.startsWith("runtime-activation-") && step.status === "manual_action_required"
+  );
+  if (activationFailures.length > 0) {
+    rows.push("Browser runtime activation was attempted automatically but still needs browser follow-up.");
+  }
   rows.push(...formatNextActions(report.nextActions, report.dryRun ? "After applying, next actions would be:" : undefined));
   return rows.join("\n");
 }
