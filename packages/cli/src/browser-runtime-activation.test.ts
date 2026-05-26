@@ -29,6 +29,7 @@ test("activateBrowserRuntime opens only enabled extension profiles up to the def
     runtimeDir: path.join(homeDir, "runtime"),
     hasActiveDescriptor: async () => opened.length >= 2,
     openPopup: async (target) => {
+      assert.equal(target.url, `chrome-extension://${EXTENSION_ID}/pairing.html`);
       opened.push(path.basename(target.profilePath));
     },
     now: clock.now,

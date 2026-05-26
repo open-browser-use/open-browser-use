@@ -93,7 +93,7 @@ export async function activateBrowserRuntime(options: BrowserRuntimeActivationOp
     };
   }
 
-  const url = `chrome-extension://${options.extensionId}/popup.html`;
+  const url = `chrome-extension://${options.extensionId}/pairing.html`;
   const deadline = now() + timeoutMs;
   for (let index = 0; index < enabled.length && now() < deadline; index += 1) {
     const candidate = enabled[index]!;

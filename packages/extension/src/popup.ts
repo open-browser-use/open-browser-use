@@ -108,12 +108,12 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (isDebugLogStatus(debug)) renderDebug(debug);
 });
 
-stopButton!.addEventListener("click", () => {
-  void sendControlMessage("TAKE_BROWSER_CONTROL", stopButton!);
+stopButton?.addEventListener("click", () => {
+  void sendControlMessage("TAKE_BROWSER_CONTROL", stopButton);
 });
 
-resumeButton!.addEventListener("click", () => {
-  void sendControlMessage("RESUME_BROWSER_CONTROL", resumeButton!);
+resumeButton?.addEventListener("click", () => {
+  void sendControlMessage("RESUME_BROWSER_CONTROL", resumeButton);
 });
 
 settingsButton?.addEventListener("click", () => {
@@ -141,15 +141,15 @@ agentHandoff!.addEventListener("keydown", (event) => {
   void copyAgentHandoff();
 });
 
-debugToggleButton!.addEventListener("click", () => {
+debugToggleButton?.addEventListener("click", () => {
   void setDebugEnabled(!currentDebug.enabled);
 });
 
-copyDebugButton!.addEventListener("click", () => {
+copyDebugButton?.addEventListener("click", () => {
   void copyDebugLogs();
 });
 
-clearDebugButton!.addEventListener("click", () => {
+clearDebugButton?.addEventListener("click", () => {
   void clearDebugLogs();
 });
 
@@ -325,8 +325,8 @@ type ActionButtonSemantics = {
 };
 
 function renderActionButtons(status: HostStatus): void {
-  applyActionButton(stopButton!, stopButtonSemantics(status));
-  applyActionButton(resumeButton!, resumeButtonSemantics(status));
+  if (stopButton) applyActionButton(stopButton, stopButtonSemantics(status));
+  if (resumeButton) applyActionButton(resumeButton, resumeButtonSemantics(status));
 }
 
 function applyActionButton(button: HTMLButtonElement, semantics: ActionButtonSemantics): void {
@@ -518,11 +518,12 @@ function removeDataAttribute(element: HTMLElement | null, name: string): void {
 
 function renderDebug(debug: DebugLogStatus, overrideText?: string): void {
   currentDebug = debug;
-  debugToggleButton!.textContent = debug.enabled
+  if (!debugToggleButton || !copyDebugButton || !clearDebugButton || !debugText) return;
+  debugToggleButton.textContent = debug.enabled
     ? msg("debugDisable")
     : msg("debugEnable");
-  copyDebugButton!.disabled = debug.entries.length === 0;
-  clearDebugButton!.disabled = debug.entries.length === 0;
+  copyDebugButton.disabled = debug.entries.length === 0;
+  clearDebugButton.disabled = debug.entries.length === 0;
   if (overrideText) {
     debugText!.textContent = overrideText;
     return;
@@ -720,6 +721,8 @@ function agentHandoffForChannel(channel: string, runtimeExtensionId: string | un
     `Extension id: ${extensionId}`,
     "Use the linked prompt as the source of truth, and use the exact browser, extension channel, and extension id above for setup, repair, and browser pairing.",
     `Fast path contract: always run the official installer first for this handoff; then run one-agent setup with setup --agents=<agent-id> --browser=chrome --channel=${resolvedChannel} --extension-id=${extensionId} --write-instructions --json; then run verify --agent=<agent-id> --browser=chrome --channel=${resolvedChannel} --extension-id=${extensionId} --json.`,
+    "After any browser popup reports Connected, or browser_status shows a matching connected backend, rerun the same verify command up to 3 times before taking another action.",
+    "Only retry browser connection or ask the user after those verify attempts still do not return ready.",
     "Configure the agent/client currently executing this prompt. Configure other agents only when the user explicitly names them.",
     "Do not run broad setup for unnamed agents or browsers. Stop when verify returns result: ready.",
   ].join("\n");

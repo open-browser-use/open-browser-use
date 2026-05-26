@@ -1,0 +1,243 @@
+:root {
+  color-scheme: dark;
+  --pairing-black: oklch(5.5% 0.004 260);
+  --pairing-rise: oklch(8% 0.004 260);
+  --pairing-panel: oklch(9.5% 0.004 260);
+  --pairing-panel-muted: oklch(13% 0.004 260);
+  --pairing-ink: oklch(94% 0.006 92);
+  --pairing-soft: oklch(83% 0.006 92);
+  --pairing-muted: oklch(67% 0.006 92);
+  --pairing-rule: oklch(94% 0.006 92 / 0.34);
+  --pairing-line: oklch(94% 0.006 92 / 0.16);
+  --pairing-serif: "Iowan Old Style", "Palatino Linotype", Palatino, "Book Antiqua", Georgia, serif;
+  --pairing-page: min(100% - 48px, 1320px);
+}
+
+html {
+  min-height: 100%;
+  background: var(--pairing-black);
+}
+
+body {
+  width: auto;
+  min-width: 0;
+  min-height: 100vh;
+  overflow: auto;
+  background:
+    radial-gradient(ellipse at 78% 4%, oklch(94% 0.006 92 / 0.035), transparent 38%),
+    linear-gradient(180deg, var(--pairing-black) 0%, var(--pairing-rise) 100%);
+}
+
+.pairing-shell {
+  width: var(--pairing-page);
+  min-height: 100vh;
+  margin: 0 auto;
+  padding: 40px 0 36px;
+  gap: 34px;
+}
+
+.pairing-hero {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 360px;
+  gap: 72px;
+  align-items: end;
+}
+
+.pairing-copy {
+  display: grid;
+  gap: 30px;
+  align-content: end;
+}
+
+.pairing-copy .brand-identity {
+  align-self: start;
+}
+
+.pairing-copy .brand-mark-wrap {
+  width: 2.25rem;
+  height: 2.25rem;
+}
+
+.pairing-copy .brand-mark {
+  width: 1.86rem;
+  height: 1.86rem;
+}
+
+.pairing-version {
+  color: var(--pairing-muted);
+  font-size: 0.75rem;
+  line-height: 1;
+  font-variant-numeric: tabular-nums;
+}
+
+.pairing-copy h1 {
+  max-width: 9ch;
+  margin: 0;
+  color: var(--pairing-ink);
+  font-size: 6.4rem;
+  font-weight: 500;
+  line-height: 0.86;
+  letter-spacing: 0;
+  text-transform: lowercase;
+}
+
+.pairing-tagline {
+  width: fit-content;
+  max-width: 42rem;
+  margin: 0;
+  color: var(--pairing-soft);
+  font-family: var(--pairing-serif);
+  font-size: 1.18rem;
+  font-style: italic;
+  line-height: 1.35;
+}
+
+.pairing-status {
+  align-self: end;
+  display: grid;
+  align-content: space-between;
+  min-height: 17rem;
+  padding: 22px;
+  border-color: var(--pairing-rule);
+  background: transparent;
+}
+
+.pairing-status .value {
+  margin-top: 0.5rem;
+  color: var(--pairing-ink);
+  font-size: 3rem;
+  line-height: 0.98;
+}
+
+.pairing-status .detail {
+  max-width: 30rem;
+  margin-top: 1rem;
+  color: var(--pairing-muted);
+  font-size: 0.95rem;
+  line-height: 1.5;
+}
+
+.pairing-workspace {
+  display: block;
+  border-top: 1px solid var(--pairing-rule);
+  border-bottom: 1px solid var(--pairing-line);
+  padding: 28px 0 24px;
+}
+
+.pairing-setup {
+  display: grid;
+  grid-template-columns: 340px minmax(0, 1fr);
+  gap: 68px;
+  min-height: 0;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.pairing-setup .panel-head {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 28px;
+  align-content: start;
+}
+
+.pairing-setup h2 {
+  max-width: 9ch;
+  margin-top: 0.5rem;
+  color: var(--pairing-ink);
+  font-size: 3rem;
+  font-weight: 500;
+  line-height: 0.98;
+}
+
+.pairing-setup .setup-actions {
+  justify-content: start;
+}
+
+.pairing-setup .prompt-toggle {
+  display: none;
+}
+
+.pairing-setup .handoff-copy {
+  display: none;
+}
+
+.pairing-setup .handoff-surface {
+  min-height: 30rem;
+  max-height: calc(100vh - 380px);
+  margin: 0;
+  border: 1px solid var(--pairing-line);
+  background:
+    linear-gradient(180deg, var(--pairing-panel) 0%, var(--pairing-panel-muted) 100%);
+  color: var(--pairing-soft);
+  padding: 22px 24px;
+  font-size: 0.92rem;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+
+.pairing-setup .handoff-surface:hover {
+  background: var(--pairing-panel-muted);
+}
+
+@media (max-width: 980px) {
+  :root {
+    --pairing-page: min(100% - 32px, 1320px);
+  }
+
+  .pairing-shell {
+    padding-top: 28px;
+    gap: 26px;
+  }
+
+  .pairing-hero,
+  .pairing-setup {
+    grid-template-columns: 1fr;
+    gap: 22px;
+  }
+
+  .pairing-copy {
+    gap: 18px;
+  }
+
+  .pairing-copy h1 {
+    max-width: 8.2ch;
+    font-size: 4rem;
+  }
+
+  .pairing-status {
+    min-height: 0;
+  }
+
+  .pairing-status .value,
+  .pairing-setup h2 {
+    font-size: 2rem;
+  }
+
+  .pairing-setup .panel-head {
+    gap: 16px;
+  }
+
+  .pairing-setup .handoff-surface {
+    min-height: 20rem;
+    max-height: none;
+  }
+}
+
+@media (max-width: 520px) {
+  .pairing-copy h1 {
+    font-size: 3rem;
+  }
+
+  .pairing-tagline {
+    font-size: 1rem;
+  }
+
+  .pairing-setup .setup-actions {
+    width: 100%;
+  }
+
+  .pairing-setup .setup-copy {
+    width: auto;
+  }
+}

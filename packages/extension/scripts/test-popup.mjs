@@ -61,6 +61,7 @@ await runPopupResumeFromFailureStates();
 await runPopupDebugLogs();
 await runPopupInitialFailure("missing status response", [undefined], "Repair setup, then reconnect.");
 await runPopupInitialFailure("runtime rejection", [new Error("status boom")], "Repair setup, then reconnect.");
+await runPairingPageWakesHost();
 
 function assertAgentHandoff(elements, channel = "unpacked-dev") {
   const handoff = elements.agentHandoff.textContent;
@@ -74,6 +75,9 @@ function assertAgentHandoff(elements, channel = "unpacked-dev") {
   assert.match(handoff, /always run the official installer first for this handoff/);
   assert.match(handoff, new RegExp(`setup --agents=<agent-id> --browser=chrome --channel=${channel} --extension-id=${runtimeExtensionId} --write-instructions --json`));
   assert.match(handoff, new RegExp(`verify --agent=<agent-id> --browser=chrome --channel=${channel} --extension-id=${runtimeExtensionId} --json`));
+  assert.match(handoff, /After any browser popup reports Connected/);
+  assert.match(handoff, /rerun the same verify command up to 3 times/);
+  assert.match(handoff, /Only retry browser connection or ask the user after those verify attempts still do not return ready/);
   assert.match(handoff, /currently executing this prompt/);
   assert.match(handoff, /Do not run broad setup/);
   assert.match(handoff, /Stop when verify returns result: ready/);
@@ -240,6 +244,7 @@ async function runPopupHappyPath() {
   assert.match(harness.clipboardWrites.at(-1), /always run the official installer first for this handoff/);
   assert.match(harness.clipboardWrites.at(-1), /setup --agents=<agent-id> --browser=chrome --channel=unpacked-dev/);
   assert.match(harness.clipboardWrites.at(-1), /verify --agent=<agent-id> --browser=chrome --channel=unpacked-dev/);
+  assert.match(harness.clipboardWrites.at(-1), /rerun the same verify command up to 3 times/);
   assert.match(harness.clipboardWrites.at(-1), /Stop when verify returns result: ready/);
   assert.doesNotMatch(harness.clipboardWrites.at(-1), /generic open-browser-use stdio server/);
   assert.doesNotMatch(harness.clipboardWrites.at(-1), /obu bootstrap/);
@@ -733,6 +738,71 @@ async function runPopupDebugLogs() {
   assert.equal(harness.elements.debugText.textContent, "Enabled, 1/200 entry");
 }
 
+// Regression guard for the popup.html -> pairing.html pivot. `obu setup`
+// auto-activates the browser runtime by opening pairing.html, which loads the
+// SAME compiled dist/popup.js as the toolbar popup. pairing.html has fewer DOM
+// elements than popup.html, so popup.js must run against that reduced element
+// set WITHOUT throwing all the way to sending GET_NATIVE_HOST_STATUS -- that
+// message is what wakes the native host and writes the runtime descriptor that
+// activation polls for. An unguarded `element!.foo` deref on a pairing-absent
+// element would silently make activation inert while every other test passes.
+async function runPairingPageWakesHost() {
+  // pairing.html is the source of truth for which ids the reduced page contains.
+  const pairingHtml = await readFile(path.join(packageRoot, "public", "pairing.html"), "utf8");
+  const pairingIds = new Set(
+    Array.from(pairingHtml.matchAll(/id="([^"]+)"/g), (match) => match[1]),
+  );
+  // popup.ts is the source of truth for which ids popup.js looks up. Parse its
+  // querySelector arguments the same way (the generic-typed `<...>` segment is
+  // optional so both `querySelector("#x")` and `querySelector<T>("#x")` match).
+  // Deriving both sides keeps `absent = queried - present` auto-tracking either
+  // file -- if popup.ts adds an unguarded querySelector for a pairing-absent id,
+  // it lands in absentSelectors and the import below would throw.
+  const popupTs = await readFile(path.join(packageRoot, "src", "popup.ts"), "utf8");
+  const queriedIds = new Set(
+    Array.from(
+      popupTs.matchAll(/querySelector(?:All)?(?:<[^>]*>)?\(\s*"#([^"]+)"\s*\)/g),
+      (match) => match[1],
+    ),
+  );
+  const absentSelectors = [...queriedIds]
+    .filter((id) => !pairingIds.has(id))
+    .map((id) => `#${id}`)
+    .sort();
+  // Drift pin over the cross-product of two independently-parsed files
+  // (popup.ts queries minus pairing.html ids): pairing.html must be missing
+  // exactly the toolbar-only controls, else this test proves nothing.
+  assert.deepEqual(
+    absentSelectors,
+    [
+      "#clear-debug-button",
+      "#copy-debug-button",
+      "#debug-text",
+      "#debug-toggle-button",
+      "#resume-button",
+      "#settings-button",
+      "#stop-button",
+    ],
+    "pairing.html element set drifted from popup.ts queries; update the harness/scenario",
+  );
+
+  const harness = installPopupHarness(
+    [{ state: "connected", hostVersion: "0.1.0" }],
+    { absentSelectors },
+  );
+
+  // Importing popup.js re-runs its module side effects, including `void start()`.
+  // It must not throw on the pairing DOM.
+  await importPopup("pairing-wakes-host");
+
+  // The proof the wake path ran to completion: GET_NATIVE_HOST_STATUS was sent.
+  await waitFor(() => harness.sent.some((message) => message?.type === "GET_NATIVE_HOST_STATUS"));
+  assert.ok(
+    harness.sent.some((message) => message?.type === "GET_NATIVE_HOST_STATUS"),
+    "pairing page did not send GET_NATIVE_HOST_STATUS",
+  );
+}
+
 function installPopupHarness(responses, options = {}) {
   const elements = {
     dot: new FakeElement(),
@@ -774,6 +844,11 @@ function installPopupHarness(responses, options = {}) {
     ["#copy-agent-button", elements.copyAgentButton],
     ["#setup-copy-text", elements.setupCopyText],
   ]);
+  // Drop selectors that a reduced host page (e.g. pairing.html) lacks so
+  // document.querySelector resolves them to null, exercising popup.ts guards.
+  for (const selector of options.absentSelectors ?? []) {
+    selectors.delete(selector);
+  }
   const sent = [];
   const clipboardWrites = [];
   const storageChanges = new EventTarget();
