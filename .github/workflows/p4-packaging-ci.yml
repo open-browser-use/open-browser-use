@@ -57,6 +57,11 @@ jobs:
       - name: Descriptor vocab generation check
         run: pnpm check:descriptor-vocab
 
+      # Build before typecheck: packages/sdk and extension resolve the
+      # @open-browser-use/browser-control-core types from its built dist/*.d.ts.
+      - name: Build JS artifacts
+        run: pnpm -r build
+
       - name: Typecheck
         run: pnpm -r typecheck
 
@@ -68,9 +73,6 @@ jobs:
           OBU_WEBEXT_E2E_AUTO_INSTALL: "1"
           OBU_WEBEXT_E2E_HEADLESS: "1"
         run: pnpm -C packages/extension test:browser
-
-      - name: Build JS artifacts
-        run: pnpm -r build
 
       - name: Rust tests
         run: cargo test -p obu-wire -p obu-node-repl -p obu-host --lib --tests --no-fail-fast
