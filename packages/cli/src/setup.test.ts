@@ -96,6 +96,16 @@ test("setupOpenBrowserUse skips extension staging for Store channel", async (t) 
     extensionId: storeExtensionId,
     extensionIdSource: "explicit-argument",
     skipAgents: true,
+    runtimeActivation: async () => ({
+      result: "ready",
+      timeoutMs: 5000,
+      intervalMs: 250,
+      profileLimit: 3,
+      candidates: [],
+      attemptedProfiles: [],
+      openedCount: 0,
+      errors: [],
+    }),
   });
 
   assert.equal(result.result, "complete");
@@ -111,6 +121,156 @@ test("setupOpenBrowserUse skips extension staging for Store channel", async (t) 
     action.kind === "manual" &&
     action.value.includes(`${layout.openBrowserUseCommand} verify '--agent=<agent-id>' --browser=chrome --channel=store --extension-id=${storeExtensionId}`)
   ));
+});
+
+test("setupOpenBrowserUse completes when runtime activation finds a descriptor", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-setup-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const hostBin = path.join(root, "bin", "obu-host");
+  await mkdir(path.dirname(hostBin), { recursive: true });
+  await writeFile(hostBin, "#!/bin/sh\n", "utf8");
+  await chmod(hostBin, 0o755);
+  const sourceDir = await extensionSource(root, "0.9.0");
+  const layout = fakeLayout(root, hostBin, sourceDir);
+  const extensionId = extensionIdFromManifestKey(EXTENSION_KEY);
+
+  const result = await setupOpenBrowserUse({
+    layout,
+    obuVersion: "0.1.0",
+    browsers: ["chrome"],
+    agents: [],
+    server: mcpServer(root),
+    extensionChannel: "unpacked-dev",
+    extensionId,
+    extensionIdSource: "manifest-key",
+    extensionPath: sourceDir,
+    skipAgents: true,
+    runtimeActivation: async () => ({
+      result: "ready",
+      timeoutMs: 5000,
+      intervalMs: 250,
+      profileLimit: 3,
+      candidates: [],
+      attemptedProfiles: [path.join(root, "profile", "Default")],
+      openedCount: 1,
+      errors: [],
+    }),
+  });
+
+  assert.equal(result.result, "complete");
+  const activation = result.steps.find((step) => step.id === "runtime-activation-chrome");
+  assert.equal(activation?.status, "applied");
+  assert.equal(activation?.details?.result, "ready");
+  assert.equal(activation?.details?.timeoutMs, 5000);
+  assert.equal(result.steps.find((step) => step.id === "runtime-descriptor-probe")?.status, "skipped");
+  assert.equal(result.nextActions.some((action) => /chrome:\/\/extensions|Load unpacked|Reload/.test(action.value)), false);
+});
+
+test("setupOpenBrowserUse reports manual action when runtime activation times out", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-setup-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const hostBin = path.join(root, "bin", "obu-host");
+  await mkdir(path.dirname(hostBin), { recursive: true });
+  await writeFile(hostBin, "#!/bin/sh\n", "utf8");
+  await chmod(hostBin, 0o755);
+  const sourceDir = await extensionSource(root, "0.10.0");
+  const layout = fakeLayout(root, hostBin, sourceDir);
+  const extensionId = extensionIdFromManifestKey(EXTENSION_KEY);
+
+  const result = await setupOpenBrowserUse({
+    layout,
+    obuVersion: "0.1.0",
+    browsers: ["chrome"],
+    agents: [],
+    server: mcpServer(root),
+    extensionChannel: "unpacked-dev",
+    extensionId,
+    extensionIdSource: "manifest-key",
+    extensionPath: sourceDir,
+    skipAgents: true,
+    runtimeActivation: async () => ({
+      result: "timeout",
+      timeoutMs: 5000,
+      intervalMs: 250,
+      profileLimit: 3,
+      candidates: [],
+      attemptedProfiles: [path.join(root, "profile", "Default")],
+      openedCount: 1,
+      errors: [],
+    }),
+  });
+
+  assert.equal(result.result, "manual_action_required");
+  const activation = result.steps.find((step) => step.id === "runtime-activation-chrome");
+  assert.equal(activation?.status, "manual_action_required");
+  assert.match(activation?.message ?? "", /waited 5000ms/);
+  assert.equal(activation?.details?.openedCount, 1);
+  assert.equal(result.nextActions.some((action) => /chrome:\/\/extensions|Load unpacked|Reload/.test(action.value)), true);
+});
+
+test("setupOpenBrowserUse does not launch activation after native host install failure", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-setup-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const missingHostBin = path.join(root, "bin", "missing-obu-host");
+  const sourceDir = await extensionSource(root, "0.11.0");
+  const layout = fakeLayout(root, missingHostBin, sourceDir);
+  let activationCalls = 0;
+
+  const result = await setupOpenBrowserUse({
+    layout,
+    obuVersion: "0.1.0",
+    browsers: ["chrome"],
+    agents: [],
+    server: mcpServer(root),
+    extensionChannel: "unpacked-dev",
+    extensionId: extensionIdFromManifestKey(EXTENSION_KEY),
+    extensionIdSource: "manifest-key",
+    extensionPath: sourceDir,
+    skipAgents: true,
+    runtimeActivation: async () => {
+      activationCalls += 1;
+      throw new Error("activation must not run after native host failure");
+    },
+  });
+
+  assert.equal(result.result, "failed");
+  assert.equal(result.steps.find((step) => step.id === "native-host-chrome")?.status, "failed");
+  assert.equal(result.steps.some((step) => step.id === "runtime-activation-chrome"), false);
+  assert.equal(activationCalls, 0);
+});
+
+test("setupOpenBrowserUse does not launch activation after extension staging failure", async (t) => {
+  const root = await mkdtemp(path.join(os.tmpdir(), "obu-setup-"));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const hostBin = path.join(root, "bin", "obu-host");
+  await mkdir(path.dirname(hostBin), { recursive: true });
+  await writeFile(hostBin, "#!/bin/sh\n", "utf8");
+  await chmod(hostBin, 0o755);
+  const missingSourceDir = path.join(root, "missing-extension");
+  const layout = fakeLayout(root, hostBin, missingSourceDir);
+  let activationCalls = 0;
+
+  const result = await setupOpenBrowserUse({
+    layout,
+    obuVersion: "0.1.0",
+    browsers: ["chrome"],
+    agents: [],
+    server: mcpServer(root),
+    extensionChannel: "unpacked-dev",
+    extensionId: extensionIdFromManifestKey(EXTENSION_KEY),
+    extensionIdSource: "manifest-key",
+    extensionPath: missingSourceDir,
+    skipAgents: true,
+    runtimeActivation: async () => {
+      activationCalls += 1;
+      throw new Error("activation must not run after extension failure");
+    },
+  });
+
+  assert.equal(result.result, "failed");
+  assert.equal(result.steps.find((step) => step.id === "extension-source")?.status, "failed");
+  assert.equal(result.steps.some((step) => step.id === "runtime-activation-chrome"), false);
+  assert.equal(activationCalls, 0);
 });
 
 async function extensionSource(root: string, version: string): Promise<string> {

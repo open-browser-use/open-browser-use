@@ -55,7 +55,8 @@ try {
   assertStep(report, "runtime-dir", "applied");
   assertStep(report, "native-host-chrome-for-testing", "applied");
   assertStep(report, "extension-current", "applied");
-  assertStep(report, "runtime-descriptor-probe", "manual_action_required");
+  assertStep(report, "runtime-descriptor-probe", "skipped");
+  assertStep(report, "runtime-activation-chrome-for-testing", "manual_action_required");
   assertStep(report, "agent-adapters", "skipped");
 
   const config = JSON.parse(await readFile(path.join(home, ".obu", "config.json"), "utf8"));
@@ -166,6 +167,7 @@ function run(command, args, env = {}, options = {}) {
   const result = spawnSync(command, args, {
     encoding: "utf8",
     env: { ...process.env, ...env },
+    cwd: options.cwd ?? temp,
   });
   if (result.error) throw result.error;
   if (!options.allowFailure && result.status !== 0) {
@@ -179,6 +181,7 @@ function runAsync(command, args, env = {}, options = {}) {
     const child = spawn(command, args, {
       encoding: "utf8",
       env: { ...process.env, ...env },
+      cwd: options.cwd ?? temp,
       stdio: ["ignore", "pipe", "pipe"],
     });
     let stdout = "";

@@ -87,6 +87,11 @@ refresh the release CLI, configure one target agent, then verify readiness.
      --json
    ```
 
+   The installer may add open-browser-use to shell profiles and print an
+   activation hint for the current shell. Keep using the `"$OBU"` absolute path
+   in this handoff anyway; do not assume the parent shell's `PATH` has changed
+   during the current command sequence.
+
 3. Stop when `verify` returns `result: ready`.
 
    Report the concise final state to the user. Do not run `doctor`,
@@ -102,7 +107,7 @@ the command output says the local install is corrupt or missing.
 | --- | --- |
 | `verify.result == "ready"` | Stop and report success. |
 | Verify asks for repair | Rerun the same verify command with `--repair`. Keep the same agent/browser/channel/id tuple. |
-| Browser popup boundary | Ask the user to open this extension popup, click Resume if enabled, wait for Connected, then rerun the same verify command. |
+| Browser popup boundary | Setup attempts browser runtime activation automatically. If verify still returns this boundary, inspect the `runtime-activation-*` step result, opened count, candidate count, and errors; ask the user to confirm the popup shows Connected or click Resume if enabled, then rerun the same verify command. |
 | Divergent MCP server | Show the exact conflict and ask the user what to keep. Do not overwrite it silently. |
 | `agent-runtime-status: not_checked` with `result: ready` | Treat as non-blocking for CLI verification. |
 | MCP server works but `browser_status.backends` is empty | Run verify with the same handoff tuple; repair only if verify asks for it. |
@@ -143,7 +148,8 @@ The MCP server contract is:
 ```
 
 On a standard release install, resolve `/absolute/path/to/obu` from
-`~/.obu/bin/obu`. Do not depend on `obu` being on `PATH`.
+`~/.obu/bin/obu`. Do not depend on `obu` being on `PATH`, even after the
+installer reports shell profile updates.
 
 Prefer the current client's native MCP add command. It should be equivalent to:
 
@@ -254,7 +260,7 @@ obvious persistent instruction surface exists, show the snippet to the user.
   must allow that exact browser extension origin.
 - Do not configure other agents unless the user explicitly names them.
 - Do not overwrite divergent MCP server settings without asking the user.
-- Do not make broad PATH, shell profile, or dotfile edits beyond explicit
-  installer instructions.
+- Do not make broad PATH, shell profile, or dotfile edits beyond the official
+  installer's own managed env/profile updates.
 - Do not commit, push, or modify application code unless the user separately
   asks.

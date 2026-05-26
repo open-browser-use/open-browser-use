@@ -108,6 +108,24 @@ fn agent_install_prompt_closeout_rules() {
     insta::assert_snapshot!("agent_install_prompt_closeout_rules", excerpt);
 }
 
+#[test]
+fn agent_install_prompt_path_rules() {
+    let body = include_str!("../../../prompts/agent-install-prompt.md");
+    let required = [
+        "The installer may add open-browser-use to shell profiles",
+        "Keep using the `\"$OBU\"` absolute path",
+        "Do not depend on `obu` being on `PATH`, even after the",
+        "beyond the official",
+        "installer's own managed env/profile updates.",
+    ];
+    for needle in required {
+        assert!(
+            body.contains(needle),
+            "missing agent install prompt PATH rule: {needle}"
+        );
+    }
+}
+
 fn fenced_block_after(body: &str, marker: &str) -> String {
     let mut seen_marker = false;
     let mut in_block = false;

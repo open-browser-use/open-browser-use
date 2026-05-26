@@ -716,6 +716,11 @@ function formatBootstrapSummary(setupReport: SetupJson, browserReport: DoctorRep
 
   const agentLine = bootstrapAgentSummary(setupReport);
   if (agentLine) rows.push(agentLine);
+  const activationSteps = setupReport.steps.filter((step) => step.id.startsWith("runtime-activation-"));
+  const activationFailures = activationSteps.filter((step) => step.status === "manual_action_required");
+  if (activationFailures.length > 0) {
+    rows.push("Browser runtime activation was attempted automatically but still needs browser follow-up.");
+  }
   if (browserResumeRequired(browserReport)) {
     rows.push("Open the extension popup; click Resume if it is enabled, otherwise wait for Connected and rerun verify.");
   }
@@ -759,7 +764,9 @@ function plural(count: number, label: string): string {
 
 function isBrowserRecoveryBoundary(report: SetupJson): boolean {
   const manualSteps = report.steps.filter((step) => step.status === "manual_action_required");
-  return manualSteps.length > 0 && manualSteps.every((step) => step.id === "runtime-descriptor-probe");
+  return manualSteps.length > 0 && manualSteps.every((step) =>
+    step.id === "runtime-descriptor-probe" || step.id.startsWith("runtime-activation-")
+  );
 }
 
 function doctorVerboseCommand(args: ParsedArgs, commandPrefix: string): string {

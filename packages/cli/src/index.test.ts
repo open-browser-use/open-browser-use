@@ -1331,11 +1331,13 @@ test("setup summary preserves manual agent next actions", async (t) => {
   await writeFile(obuCommand, "#!/bin/sh\n", "utf8");
   await chmod(obuCommand, 0o755);
   const storeExtensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const runtimeDir = path.join(home, "runtime");
+  await writeActiveRuntimeDescriptor(t, runtimeDir, storeExtensionId);
 
   const result = await runCli(["setup", "--yes", "--channel=store", "--extension-id", storeExtensionId, "--agents=continue"], {
     HOME: home,
     OBU_COMMAND: obuCommand,
-    OBU_RUNTIME_DIR: path.join(home, "runtime"),
+    OBU_RUNTIME_DIR: runtimeDir,
     OBU_HOST_BIN: hostBin,
   });
 
@@ -1350,11 +1352,97 @@ test("setup summary preserves manual agent next actions", async (t) => {
   const recovery = await runCli(["setup", "--yes", "--recovery", "--channel=store", "--extension-id", storeExtensionId, "--agents=continue"], {
     HOME: home,
     OBU_COMMAND: obuCommand,
-    OBU_RUNTIME_DIR: path.join(home, "runtime"),
+    OBU_RUNTIME_DIR: runtimeDir,
     OBU_HOST_BIN: hostBin,
   });
   assert.equal(recovery.code, 1);
   assert.match(recovery.stdout, new RegExp(`${escapeRegExp(obuCommand)} mcp-config --agent=continue --print`));
+});
+
+test("setup JSON includes runtime activation diagnostics when no enabled profile is available", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  const extensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const runtimeDir = path.join(home, "runtime");
+  const hostBin = await writeExecutable(path.join(bin, "obu-host"), "#!/bin/sh\nexit 0\n");
+
+  const result = await runCli([
+    "setup",
+    "--agents=none",
+    "--browser=chrome",
+    "--channel=store",
+    `--extension-id=${extensionId}`,
+    "--json",
+  ], {
+    HOME: home,
+    OBU_HOST_BIN: hostBin,
+    OBU_RUNTIME_DIR: runtimeDir,
+  });
+
+  assert.equal(result.code, 1);
+  const payload = JSON.parse(result.stdout);
+  const activation = payload.steps.find((step: any) => step.id === "runtime-activation-chrome");
+  assert.equal(activation.status, "manual_action_required");
+  assert.equal(activation.details.result, "no_candidates");
+  assert.equal(activation.details.timeoutMs, 5000);
+  assert.equal(activation.details.profileLimit, 3);
+  assert.equal(activation.details.openedCount, 0);
+});
+
+test("setup human output explains runtime activation follow-up", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  const extensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const hostBin = await writeExecutable(path.join(bin, "obu-host"), "#!/bin/sh\nexit 0\n");
+
+  const result = await runCli([
+    "setup",
+    "--agents=none",
+    "--browser=chrome",
+    "--channel=store",
+    `--extension-id=${extensionId}`,
+  ], {
+    HOME: home,
+    OBU_HOST_BIN: hostBin,
+    OBU_RUNTIME_DIR: path.join(home, "runtime"),
+  });
+
+  assert.equal(result.code, 1);
+  assert.match(result.stdout, /Setup needs 1 follow-up step/);
+  assert.match(result.stdout, /Browser runtime activation was attempted automatically/);
+});
+
+test("setup CLI ignores legacy runtime activation test env overrides", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  const extensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const hostBin = await writeExecutable(path.join(bin, "obu-host"), "#!/bin/sh\nexit 0\n");
+
+  const result = await runCli([
+    "setup",
+    "--agents=none",
+    "--browser=chrome",
+    "--channel=store",
+    `--extension-id=${extensionId}`,
+    "--json",
+  ], {
+    HOME: home,
+    OBU_HOST_BIN: hostBin,
+    OBU_RUNTIME_DIR: path.join(home, "runtime"),
+    OBU_TEST_RUNTIME_ACTIVATION_RESULT: "ready",
+  });
+
+  assert.equal(result.code, 1);
+  const payload = JSON.parse(result.stdout);
+  const activation = payload.steps.find((step: any) => step.id === "runtime-activation-chrome");
+  assert.equal(activation.status, "manual_action_required");
+  assert.equal(activation.details.result, "no_candidates");
 });
 
 test("bootstrap continues through manual agent setup and runs browser repair", async (t) => {
@@ -1449,13 +1537,15 @@ test("setup CLI accepts explicit auto and none agent modes", async (t) => {
   const hostBin = path.join(bin, "obu-host");
   await writeFile(hostBin, "#!/bin/sh\n", "utf8");
   await chmod(hostBin, 0o755);
+  const runtimeDir = path.join(home, "runtime");
   const env = {
     HOME: home,
-    OBU_RUNTIME_DIR: path.join(home, "runtime"),
+    OBU_RUNTIME_DIR: runtimeDir,
     OBU_HOST_BIN: hostBin,
     PATH: "",
   };
   const storeExtensionId = "abcdefghijklmnopabcdefghijklmnop";
+  await writeActiveRuntimeDescriptor(t, runtimeDir, storeExtensionId);
 
   const auto = await runCli(["setup", "--yes", "--channel=store", "--extension-id", storeExtensionId, "--agents=auto", "--json"], env);
   assert.equal(auto.code, 0);
@@ -1488,11 +1578,13 @@ test("setup auto skips unreadable direct-edit agent config instead of aborting",
   await writeFile(hostBin, "#!/bin/sh\n", "utf8");
   await chmod(hostBin, 0o755);
   const storeExtensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const runtimeDir = path.join(home, "runtime");
+  await writeActiveRuntimeDescriptor(t, runtimeDir, storeExtensionId);
 
   const result = await runCli(["setup", "--yes", "--channel=store", "--extension-id", storeExtensionId, "--agents=auto", "--json"], {
     HOME: home,
     PATH: "",
-    OBU_RUNTIME_DIR: path.join(home, "runtime"),
+    OBU_RUNTIME_DIR: runtimeDir,
     OBU_HOST_BIN: hostBin,
   });
 
@@ -1544,6 +1636,34 @@ test("setup recovery mode exits zero for manual action but not failed setup", as
   });
   assert.equal(failedRecovery.code, 1);
   assert.match(failedRecovery.stdout, /Setup failed\./);
+});
+
+test("setup recovery mode exits zero for runtime activation manual boundary", async (t) => {
+  const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
+  const bin = await mkdtemp(path.join(os.tmpdir(), "obu-cli-bin-"));
+  t.after(() => rm(home, { recursive: true, force: true }));
+  t.after(() => rm(bin, { recursive: true, force: true }));
+  const hostBin = await writeExecutable(path.join(bin, "obu-host"), "#!/bin/sh\nexit 0\n");
+  const storeExtensionId = "abcdefghijklmnopabcdefghijklmnop";
+
+  const result = await runCli([
+    "setup",
+    "--yes",
+    "--recovery",
+    "--channel=store",
+    `--extension-id=${storeExtensionId}`,
+    "--agents=none",
+    "--json",
+  ], {
+    HOME: home,
+    OBU_RUNTIME_DIR: path.join(home, "runtime"),
+    OBU_HOST_BIN: hostBin,
+  });
+
+  assert.equal(result.code, 0);
+  const payload = JSON.parse(result.stdout);
+  assert.equal(payload.result, "manual_action_required");
+  assert.equal(payload.steps.find((step: any) => step.id === "runtime-activation-chrome")?.status, "manual_action_required");
 });
 
 test("setup CLI runs deterministic steps before extension manual boundary", async (t) => {
@@ -1632,6 +1752,7 @@ test("setup CLI supports Store channel without staging an unpacked extension", a
   await chmod(hostBin, 0o755);
   const runtimeDir = path.join(home, "runtime");
   const storeExtensionId = "abcdefghijklmnopabcdefghijklmnop";
+  await writeActiveRuntimeDescriptor(t, runtimeDir, storeExtensionId);
 
   const result = await runCli(["setup", "--yes", "--channel=store", "--extension-id", storeExtensionId, "--skip-agents", "--json"], {
     HOME: home,
@@ -1667,6 +1788,8 @@ test("setup can write Codex and Claude primary-browser instructions explicitly",
   await writeFile(claude, "#!/bin/sh\nexit 0\n", "utf8");
   await chmod(claude, 0o755);
   const storeExtensionId = "abcdefghijklmnopabcdefghijklmnop";
+  const runtimeDir = path.join(home, "runtime");
+  await writeActiveRuntimeDescriptor(t, runtimeDir, storeExtensionId);
 
   const result = await runCli([
     "setup",
@@ -1680,7 +1803,7 @@ test("setup can write Codex and Claude primary-browser instructions explicitly",
   ], {
     HOME: home,
     PATH: bin,
-    OBU_RUNTIME_DIR: path.join(home, "runtime"),
+    OBU_RUNTIME_DIR: runtimeDir,
     OBU_HOST_BIN: hostBin,
   });
 
@@ -2045,6 +2168,42 @@ async function writeChromePreferences(profilePath: string, extensionId: string, 
 async function writeRuntimeDescriptor(file: string, value: Record<string, unknown>): Promise<void> {
   await writeFile(file, `${JSON.stringify(value, null, 2)}\n`, { encoding: "utf8", mode: 0o600 });
   await chmod(file, 0o600);
+}
+
+async function writeActiveRuntimeDescriptor(
+  t: { after: (fn: () => void | Promise<void>) => void },
+  runtimeDir: string,
+  extensionId: string,
+  browserKind = "chrome",
+): Promise<void> {
+  const descriptorDir = path.join(runtimeDir, "webextension");
+  await mkdir(descriptorDir, { recursive: true, mode: 0o700 });
+  await chmod(descriptorDir, 0o700);
+  const socketPath = path.join(runtimeDir, `${browserKind}.sock`);
+  await startRuntimeDescriptorServer(t, socketPath, {
+    getInfoResult: {
+      type: "webextension",
+      name: browserKind,
+      metadata: {
+        backend: {
+          browser_kind: browserKind,
+          extension_id: extensionId,
+        },
+      },
+    },
+  });
+  await writeRuntimeDescriptor(path.join(descriptorDir, `${browserKind}.json`), {
+    schema_version: 1,
+    type: "webextension",
+    name: browserKind,
+    socketPath,
+    sdk_auth_token: "token",
+    pid: process.pid,
+    metadata: {
+      browser_kind: browserKind,
+      extension_id: extensionId,
+    },
+  });
 }
 
 async function startRuntimeDescriptorServer(
