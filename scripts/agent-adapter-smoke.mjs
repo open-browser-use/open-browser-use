@@ -61,11 +61,21 @@ try {
   assertStep(report, "agent-zed", "applied");
   assertStep(report, "agent-continue", "manual_action_required");
 
-  assert.match(await readFile(path.join(temp, "codex.log"), "utf8"), /mcp add open-browser-use -- .* mcp stdio/);
+  // codex-cli is configured by writing its config file directly (no `codex` binary
+  // invocation), so assert the written config at the path the CLI reported.
+  const codexConfigPath = report.steps.find((step) => step.id === "agent-codex-cli")?.details?.path;
+  assert.ok(codexConfigPath, "codex-cli step should report its written config path");
+  assert.match(await readFile(codexConfigPath, "utf8"), /\[mcp_servers\.open-browser-use\]/);
   assert.match(await readFile(path.join(temp, "claude.log"), "utf8"), /mcp add -s user open-browser-use -- .* mcp stdio/);
   assert.match(await readFile(path.join(temp, "gemini.log"), "utf8"), /mcp add --scope user open-browser-use .* mcp stdio/);
   assert.match(await readFile(path.join(temp, "vscode.log"), "utf8"), /--add-mcp/);
-  assert.match(await readFile(path.join(temp, "cursor.log"), "utf8"), /--add-mcp/);
+  // cursor is configured by writing .cursor/mcp.json directly (no `cursor --add-mcp`
+  // invocation), so assert the written config at the path the CLI reported.
+  const cursorConfigPath = report.steps.find((step) => step.id === "agent-cursor")?.details?.path;
+  assert.ok(cursorConfigPath, "cursor step should report its written config path");
+  const cursorConfig = JSON.parse(await readFile(cursorConfigPath, "utf8"));
+  assert.equal(cursorConfig.mcpServers["open-browser-use"].command, obuShim);
+  assert.deepEqual(cursorConfig.mcpServers["open-browser-use"].args, ["mcp", "stdio"]);
 
   const cline = JSON.parse(await readFile(directEditPath(home, "cline"), "utf8"));
   const windsurf = JSON.parse(await readFile(directEditPath(home, "windsurf"), "utf8"));
