@@ -196,6 +196,15 @@ async function waitForDescriptor(input: {
 }
 
 export async function openBrowserPopup(target: BrowserActivationTarget): Promise<void> {
+  // Test-safety floor: refuse to spawn a real, focus-stealing browser window whenever
+  // OBU_DISABLE_BROWSER_LAUNCH is set. The full discovery/wait logic in
+  // activateBrowserRuntime still runs; this only blocks the actual launch. Throwing is
+  // intentional — activateBrowserRuntime try/catches each open into errors[] and classifies
+  // all-failed opens as "open_failed", so the suite (and any future test that writes an
+  // enabled profile into a setup HOME) can never spawn a browser during `pnpm test`.
+  if (process.env.OBU_DISABLE_BROWSER_LAUNCH) {
+    throw new Error("browser launch disabled by OBU_DISABLE_BROWSER_LAUNCH");
+  }
   const command = await browserLaunchCommand(target.browser);
   const profileDirectory = path.basename(target.profilePath);
   const args = [`--profile-directory=${profileDirectory}`, target.url];

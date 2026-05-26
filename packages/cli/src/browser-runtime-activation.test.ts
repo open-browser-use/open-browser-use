@@ -5,10 +5,32 @@ import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
 
-import { activateBrowserRuntime } from "./browser-runtime-activation.js";
+import { activateBrowserRuntime, openBrowserPopup } from "./browser-runtime-activation.js";
 import { browserProfileRoot } from "./browser-paths.js";
 
 const EXTENSION_ID = "abcdefghijklmnopabcdefghijklmnop";
+
+test("openBrowserPopup refuses to launch when OBU_DISABLE_BROWSER_LAUNCH is set", async (t) => {
+  const previous = process.env.OBU_DISABLE_BROWSER_LAUNCH;
+  process.env.OBU_DISABLE_BROWSER_LAUNCH = "1";
+  t.after(() => {
+    if (previous === undefined) {
+      delete process.env.OBU_DISABLE_BROWSER_LAUNCH;
+    } else {
+      process.env.OBU_DISABLE_BROWSER_LAUNCH = previous;
+    }
+  });
+
+  await assert.rejects(
+    openBrowserPopup({
+      browser: "chrome",
+      extensionId: EXTENSION_ID,
+      profilePath: "/tmp/whatever/Default",
+      url: `chrome-extension://${EXTENSION_ID}/pairing.html`,
+    }),
+    /OBU_DISABLE_BROWSER_LAUNCH/,
+  );
+});
 
 test("activateBrowserRuntime opens only enabled extension profiles up to the default limit", async (t) => {
   const homeDir = await mkdtemp(path.join(os.tmpdir(), "obu-activation-home-"));

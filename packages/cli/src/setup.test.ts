@@ -8,6 +8,9 @@ import test from "node:test";
 import { setupOpenBrowserUse } from "./setup.js";
 import type { RuntimeLayout } from "./runtime-layout.js";
 
+// Test-safety floor: never spawn a real browser during the suite.
+process.env.OBU_DISABLE_BROWSER_LAUNCH = "1";
+
 const EXTENSION_KEY = Buffer.from("open-browser-use setup test key").toString("base64");
 
 test("setupOpenBrowserUse composes runtime, native host, extension update, and manual agent boundary", async (t) => {

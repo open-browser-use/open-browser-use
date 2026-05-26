@@ -13,6 +13,10 @@ import { nativeHostWrapperContent, nativeHostWrapperPath } from "./native-host.j
 
 const cliEntry = fileURLToPath(new URL("./index.js", import.meta.url));
 
+// Test-safety floor: never spawn a real browser during the suite. runCli composes child
+// env as { ...process.env, ...env }, so this propagates to every spawned CLI child.
+process.env.OBU_DISABLE_BROWSER_LAUNCH = "1";
+
 test("mcp-config print emits a runnable repo-mode invocation", async (t) => {
   const home = await mkdtemp(path.join(os.tmpdir(), "obu-cli-home-"));
   t.after(() => rm(home, { recursive: true, force: true }));
