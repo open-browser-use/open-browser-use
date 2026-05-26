@@ -1,5 +1,6 @@
 import { withSessionMeta } from "./session-meta.js";
 import { Guards } from "./guards.js";
+import { Image } from "./image.js";
 import type { LoadState } from "./tab.js";
 import type { Transport } from "./wire/transport.js";
 import * as M from "./wire/methods.js";
@@ -15,9 +16,12 @@ export type TabCuaTimeoutOptions = {
   timeout?: number;
 };
 
-export type TabCuaMouseOptions = TabCuaTimeoutOptions & {
-  button?: "left" | "right" | "middle";
+export type TabCuaModifierOptions = {
   modifiers?: string[];
+};
+
+export type TabCuaMouseOptions = TabCuaTimeoutOptions & TabCuaModifierOptions & {
+  button?: "left" | "right" | "middle";
   waitForNavigation?: boolean | {
     waitUntil?: LoadState;
     timeout?: number;
@@ -39,6 +43,7 @@ export class TabCua {
     private readonly transport: Transport,
     guardsOrTabId: Guards | string,
     tabId?: string,
+    private readonly ensureCommandable: (method: string) => void = () => {},
   ) {
     this.guards = guardsOrTabId instanceof Guards ? guardsOrTabId : new Guards();
     this.tabId = guardsOrTabId instanceof Guards ? (tabId ?? "") : guardsOrTabId;
@@ -66,11 +71,11 @@ export class TabCua {
     x: number,
     y: number,
     delta: TabCuaScrollDelta,
-    opts: TabCuaTimeoutOptions = {},
+    opts: TabCuaTimeoutOptions & TabCuaModifierOptions = {},
   ): Promise<void> {
     const deltaX = typeof delta === "number" ? 0 : (delta.deltaX ?? 0);
     const deltaY = typeof delta === "number" ? delta : (delta.deltaY ?? 0);
-    await this.#send(M.CUA_SCROLL, { x, y, deltaX, deltaY }, opts.timeout);
+    await this.#send(M.CUA_SCROLL, { x, y, deltaX, deltaY, modifiers: opts.modifiers }, opts.timeout);
   }
 
   async type(text: string, opts: TabCuaTimeoutOptions = {}): Promise<void> {
@@ -88,20 +93,48 @@ export class TabCua {
   async drag(
     from: TabCuaPoint,
     to: TabCuaPoint,
-    opts: TabCuaTimeoutOptions & { steps?: number } = {},
+    opts: TabCuaTimeoutOptions & TabCuaModifierOptions & { steps?: number } = {},
   ): Promise<void> {
-    await this.#send(M.CUA_DRAG, { from, to, steps: opts.steps }, opts.timeout);
+    await this.#send(M.CUA_DRAG, { from, to, steps: opts.steps, modifiers: opts.modifiers }, opts.timeout);
   }
 
-  async dragPath(path: TabCuaPoint[], opts: TabCuaTimeoutOptions = {}): Promise<void> {
-    await this.#send(M.CUA_DRAG, { path }, opts.timeout);
+  async dragPath(path: TabCuaPoint[], opts: TabCuaTimeoutOptions & TabCuaModifierOptions = {}): Promise<void> {
+    await this.#send(M.CUA_DRAG, { path, modifiers: opts.modifiers }, opts.timeout);
   }
 
-  async move(x: number, y: number, opts: TabCuaTimeoutOptions = {}): Promise<void> {
-    await this.#send(M.CUA_MOVE, { x, y }, opts.timeout);
+  async move(x: number, y: number, opts: TabCuaTimeoutOptions & TabCuaModifierOptions = {}): Promise<void> {
+    await this.#send(M.CUA_MOVE, { x, y, modifiers: opts.modifiers }, opts.timeout);
+  }
+
+  async download_media(x: number, y: number, opts: TabCuaTimeoutOptions = {}): Promise<void> {
+    await this.#send(M.CUA_DOWNLOAD_MEDIA, { x, y }, opts.timeout);
+  }
+
+  async get_visible_screenshot(opts: TabCuaTimeoutOptions = {}): Promise<Image> {
+    const method = M.TAB_SCREENSHOT;
+    this.ensureCommandable(method);
+    const currentUrl = this.guards.needsCurrentUrl(method)
+      ? await this.transport.sendRequest<string>(M.TAB_URL, withSessionMeta({ tab_id: this.tabId }), opts.timeout)
+      : undefined;
+    await this.guards.ensureCommandAllowed({ command: method, tab_id: this.tabId }, { currentUrl });
+    const row = await this.transport.sendRequest<{ data?: string; data_base64?: string; mime_type?: string }>(
+      method,
+      withSessionMeta({
+        tab_id: this.tabId,
+        type: "jpeg",
+        quality: 80,
+        fullPage: false,
+      }),
+      opts.timeout,
+    );
+    return Image.from({
+      data_base64: row.data_base64 ?? row.data ?? "",
+      mime_type: row.mime_type ?? "image/jpeg",
+    });
   }
 
   async #send(method: string, params: Record<string, unknown>, timeoutMs?: number, requestTimeoutMs?: number): Promise<void> {
+    this.ensureCommandable(method);
     const requestTimeout = requestTimeoutMs ?? timeoutMs;
     const command = { command: method, tab_id: this.tabId, ...params };
     const currentUrl = this.guards.needsCurrentUrl(method)

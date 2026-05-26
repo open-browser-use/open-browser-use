@@ -2,11 +2,18 @@
 
 pub mod kernel_state;
 pub mod node_version;
+pub mod runtime_descriptor_lifecycle;
 pub mod spawn;
 pub mod stdio_codec;
 
 pub use kernel_state::{DisplayEntry, ExecRegistry, JsExecResult, KernelState, TruncationInfo};
 pub use node_version::{NodeVersion, required_node_version, resolve_compatible_node};
+pub use runtime_descriptor_lifecycle::{
+    RuntimeDescriptorReadIssue, RuntimeDescriptorReadReasonCode, RuntimeDescriptorReadState,
+    RuntimeDescriptorSetupIssue, RuntimeDescriptorSetupReasonCode, RuntimeDescriptorSetupState,
+    plan_runtime_descriptor_ignored, plan_runtime_descriptor_setup, plan_runtime_descriptor_usable,
+    rendered_descriptor_value,
+};
 pub use spawn::{SpawnOptions, SpawnedKernel};
 
 use std::collections::HashMap;
@@ -81,6 +88,18 @@ pub struct BackendDiscoveryDiagnostic {
     pub source: String,
     /// Human-readable reason the descriptor was ignored.
     pub reason: String,
+    /// Runtime descriptor lifecycle state when the diagnostic came from descriptor discovery.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub lifecycle_state: Option<RuntimeDescriptorReadState>,
+    /// Stable runtime descriptor diagnostic reason code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reason_code: Option<RuntimeDescriptorReadReasonCode>,
+    /// Runtime descriptor setup lifecycle state when discovery failed before descriptor read.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_lifecycle_state: Option<RuntimeDescriptorSetupState>,
+    /// Stable runtime descriptor setup reason code.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub setup_reason_code: Option<RuntimeDescriptorSetupReasonCode>,
 }
 
 impl ManagerOptions {
@@ -172,10 +191,40 @@ struct KernelGeneration {
     cancel: CancellationToken,
 }
 
+#[derive(Debug, Clone, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+enum AgentRuntimeKernelLifecycle {
+    Idle {
+        generation: u64,
+    },
+    Spawning {
+        generation: u64,
+    },
+    Ready {
+        generation: u64,
+    },
+    Executing {
+        generation: u64,
+        exec_id: String,
+        turn_id: String,
+    },
+    Restarting {
+        previous_generation: u64,
+    },
+    Failed {
+        generation: u64,
+        stage: &'static str,
+        error_message: String,
+        recovered: bool,
+    },
+}
+
 /// Orchestrates one persistent JavaScript kernel.
 pub struct JsRuntimeManager {
     options: ManagerOptions,
     state: Mutex<KernelState>,
+    kernel_lifecycle: Mutex<AgentRuntimeKernelLifecycle>,
+    kernel_generation: Mutex<u64>,
     lifecycle: Mutex<()>,
     kernel: Mutex<Option<SpawnedKernel>>,
     registry: Arc<Mutex<ExecRegistry>>,
@@ -200,6 +249,8 @@ impl JsRuntimeManager {
             backend_state: StdMutex::new(backend_state),
             options,
             state: Mutex::new(KernelState::Idle),
+            kernel_lifecycle: Mutex::new(AgentRuntimeKernelLifecycle::Idle { generation: 0 }),
+            kernel_generation: Mutex::new(0),
             lifecycle: Mutex::new(()),
             kernel: Mutex::new(None),
             registry: Arc::new(Mutex::new(ExecRegistry::default())),
@@ -228,6 +279,8 @@ impl JsRuntimeManager {
         Ok(json!({
             "sdk_bootstrap": sdk_bootstrap,
             "sdk_bootstrap_detail": sdk_bootstrap_detail,
+            "kernel_lifecycle": self.kernel_lifecycle.lock().await.clone(),
+            "kernel_generation": *self.kernel_generation.lock().await,
             "backends": inventory.backends,
             "diagnostics": inventory.diagnostics,
             "runtime_dir": runtime_dir().to_string_lossy(),
@@ -252,6 +305,10 @@ impl JsRuntimeManager {
             }
             *state = KernelState::Spawning;
         }
+        let next_generation = *self.kernel_generation.lock().await + 1;
+        *self.kernel_lifecycle.lock().await = AgentRuntimeKernelLifecycle::Spawning {
+            generation: next_generation,
+        };
 
         let inventory = self.backend_inventory();
         let spawn_opts = SpawnOptions {
@@ -264,9 +321,14 @@ impl JsRuntimeManager {
             backends: inventory.backends,
             backend_discovery_diagnostics: inventory.diagnostics,
         };
-        let mut kernel = SpawnedKernel::spawn(spawn_opts)
-            .await
-            .context("spawn JavaScript kernel")?;
+        let mut kernel = match SpawnedKernel::spawn(spawn_opts).await {
+            Ok(kernel) => kernel,
+            Err(error) => {
+                self.set_kernel_failed(next_generation, "spawn", error.to_string(), false)
+                    .await;
+                return Err(error).context("spawn JavaScript kernel");
+            }
+        };
         let kernel_reader = kernel
             .reader
             .take()
@@ -318,8 +380,16 @@ impl JsRuntimeManager {
             handshake_token,
             cancel,
         });
-        self.wait_for_ready().await?;
+        if let Err(error) = self.wait_for_ready().await {
+            self.set_kernel_failed(next_generation, "ready", error.to_string(), false)
+                .await;
+            return Err(error);
+        }
         *self.state.lock().await = KernelState::Ready;
+        *self.kernel_generation.lock().await = next_generation;
+        *self.kernel_lifecycle.lock().await = AgentRuntimeKernelLifecycle::Ready {
+            generation: next_generation,
+        };
         Ok(())
     }
 
@@ -365,6 +435,7 @@ impl JsRuntimeManager {
             .lifecycle
             .try_lock()
             .map_err(|_| anyhow!("kernel is busy"))?;
+        // KernelState::Failed and KernelState::Idle both trigger a re-boot here.
         if *self.state.lock().await != KernelState::Ready {
             self.boot_locked().await?;
         }
@@ -380,21 +451,41 @@ impl JsRuntimeManager {
         self.registry.lock().await.start(exec_id.clone());
 
         let turn_id = client_turn_id.unwrap_or_else(|| exec_id.clone());
+        let generation = *self.kernel_generation.lock().await;
+        *self.kernel_lifecycle.lock().await = AgentRuntimeKernelLifecycle::Executing {
+            generation,
+            exec_id: exec_id.clone(),
+            turn_id: turn_id.clone(),
+        };
         let installed_progress_sink = progress_sink.is_some();
         if let Some(sink) = progress_sink {
             self.set_progress_sink(Some(sink)).await;
         }
         let outcome = self
-            .exec_inner(source, timeout_ms, &exec_id, &turn_id)
+            .exec_inner(source, timeout_ms, &exec_id, &turn_id, generation)
             .await;
         if installed_progress_sink {
             self.set_progress_sink(None).await;
         }
         match &outcome {
-            Ok(_) => *self.state.lock().await = KernelState::Ready,
+            Ok(_) => {
+                *self.state.lock().await = KernelState::Ready;
+                *self.kernel_lifecycle.lock().await =
+                    AgentRuntimeKernelLifecycle::Ready { generation };
+            }
             Err(_) => {
                 self.kill_kernel().await;
-                *self.state.lock().await = KernelState::Idle;
+                self.set_kernel_failed(
+                    generation,
+                    "exec",
+                    outcome
+                        .as_ref()
+                        .err()
+                        .map(ToString::to_string)
+                        .unwrap_or_default(),
+                    true,
+                )
+                .await;
                 *self.registry.lock().await = ExecRegistry::default();
             }
         }
@@ -407,6 +498,7 @@ impl JsRuntimeManager {
         timeout_ms: Option<u64>,
         exec_id: &str,
         turn_id: &str,
+        generation: u64,
     ) -> Result<JsExecResult> {
         self.sync_module_dirs_to_kernel().await?;
         let mut result_rx = self.register_exec_waiter(exec_id).await?;
@@ -418,6 +510,9 @@ impl JsRuntimeManager {
                 "x-obu-turn-metadata": {
                     "session_id": self.options.session_id.clone(),
                     "turn_id": turn_id,
+                },
+                "x-obu-runtime-metadata": {
+                    "kernel_generation": generation,
                 }
             },
         });
@@ -572,7 +667,11 @@ impl JsRuntimeManager {
     /// Restart the kernel and clear REPL state.
     pub async fn reset(&self) -> Result<()> {
         let _lifecycle = self.lifecycle.lock().await;
+        let previous_generation = *self.kernel_generation.lock().await;
         *self.state.lock().await = KernelState::Restarting;
+        *self.kernel_lifecycle.lock().await = AgentRuntimeKernelLifecycle::Restarting {
+            previous_generation,
+        };
         self.kill_kernel().await;
         *self.registry.lock().await = ExecRegistry::default();
         self.refresh_backend_inventory().await?;
@@ -667,6 +766,47 @@ impl JsRuntimeManager {
             .as_ref()
             .map(|generation| generation.handshake_token.clone())?;
         handshake.lock().await.clone()
+    }
+
+    /// Single failure transition point: atomically writes both `kernel_lifecycle`
+    /// and the coarse `state` field.
+    ///
+    /// Order: `kernel_lifecycle` is written first, then `state`.  This ensures
+    /// that any reader who observes the coarse `Failed` or `Idle` state will
+    /// also see a fully-populated `AgentRuntimeKernelLifecycle::Failed` variant.
+    ///
+    /// `recovered: true` means the kernel was killed after a bad exec and the
+    /// next call to `exec` (or `boot`) will re-boot a fresh child; the coarse
+    /// state is set to `Idle` (re-bootable).
+    ///
+    /// `recovered: false` means the spawn or ready-handshake attempt left no
+    /// usable child process; the coarse state is set to `Failed` (not
+    /// re-bootable without an explicit reset).
+    async fn set_kernel_failed(
+        &self,
+        generation: u64,
+        stage: &'static str,
+        error_message: String,
+        recovered: bool,
+    ) {
+        *self.kernel_lifecycle.lock().await = AgentRuntimeKernelLifecycle::Failed {
+            generation,
+            stage,
+            error_message,
+            recovered,
+        };
+        // Coarse state is a derived compatibility view: a recovered exec failure
+        // returns to Idle (re-bootable); spawn/ready failure parks at Failed.
+        *self.state.lock().await = if recovered {
+            KernelState::Idle
+        } else {
+            KernelState::Failed
+        };
+    }
+
+    #[cfg(test)]
+    pub(super) async fn coarse_state_for_tests(&self) -> KernelState {
+        *self.state.lock().await
     }
 
     async fn kill_kernel(&self) {
@@ -967,7 +1107,32 @@ fn browser_status_product_error(
         return Some(product_error("setup_missing"));
     }
     if inventory.backends.is_empty() && !inventory.diagnostics.is_empty() {
-        return Some(product_error("stale_descriptor"));
+        if inventory.diagnostics.iter().any(|diagnostic| {
+            diagnostic.setup_reason_code
+                == Some(RuntimeDescriptorSetupReasonCode::DescriptorMissing)
+        }) {
+            return Some(product_error("browser_popup_boundary"));
+        }
+        if inventory
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.setup_lifecycle_state.is_some())
+        {
+            return Some(product_error("setup_missing"));
+        }
+        if inventory.diagnostics.iter().any(|diagnostic| {
+            diagnostic.lifecycle_state == Some(RuntimeDescriptorReadState::Invalid)
+        }) {
+            return Some(product_error("invalid_descriptor"));
+        }
+        if inventory
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.lifecycle_state == Some(RuntimeDescriptorReadState::Stale))
+        {
+            return Some(product_error("stale_descriptor"));
+        }
+        return Some(product_error("setup_missing"));
     }
     if inventory.backends.is_empty() {
         return Some(product_error("browser_popup_boundary"));
@@ -1036,6 +1201,7 @@ fn browser_status_hints(product_error: Option<&Value>) -> (&'static str, &'stati
         .and_then(Value::as_str);
     match code {
         Some("setup_missing") => (VERIFY_REPAIR_HINT, DOCTOR_BROWSER_REPAIR_HINT),
+        Some("invalid_descriptor") => (VERIFY_REPAIR_HINT, DOCTOR_BROWSER_REPAIR_HINT),
         Some("stale_descriptor") => (VERIFY_HINT, DOCTOR_BROWSER_REPAIR_HINT),
         Some("browser_popup_boundary") => (OPEN_POPUP_HINT, DOCTOR_BROWSER_REPAIR_HINT),
         _ => (VERIFY_HINT, DOCTOR_BROWSER_REPAIR_HINT),
@@ -1061,12 +1227,30 @@ fn browser_status_advisories(inventory: &BackendInventory) -> Vec<Value> {
             "pending_update": pending_update,
         }));
     }
+    for backend in &inventory.backends {
+        let Some(overlay_release) = backend
+            .metadata
+            .as_ref()
+            .and_then(|metadata| metadata.pointer("/diagnostics/extension/overlay_release"))
+            .and_then(|value| value.as_array())
+            .filter(|rows| !rows.is_empty())
+        else {
+            continue;
+        };
+        advisories.push(json!({
+            "code": "overlay_release_pending",
+            "title": "Overlay release pending",
+            "summary": "The WebExtension still has pending or failed overlay release cleanup.",
+            "backend": backend.name,
+            "overlay_release": overlay_release,
+        }));
+    }
     advisories
 }
 
 enum RuntimeDescriptorRead {
     Usable(DiscoveredBackend, PathBuf, String),
-    Ignored(String),
+    Ignored(runtime_descriptor_lifecycle::RuntimeDescriptorIgnoredPlan),
 }
 
 fn discover_backend_inventory() -> BackendInventory {
@@ -1112,39 +1296,48 @@ fn discover_runtime_descriptors(inventory: &mut BackendInventory) {
     let root = runtime_dir();
     if let Err(error) = validate_runtime_root(&root) {
         tracing::warn!(path = %root.display(), %error, "ignoring runtime backend root");
-        inventory.diagnostics.push(BackendDiscoveryDiagnostic {
-            source: root.display().to_string(),
-            reason: error.to_string(),
-        });
+        let issue = runtime_root_setup_issue(&error);
+        push_setup_diagnostic(inventory, &root, issue);
         return;
     }
     let dir = root.join("webextension");
     if let Err(error) = validate_runtime_descriptor_dir(&dir) {
         tracing::warn!(path = %dir.display(), %error, "ignoring runtime backend descriptor directory");
-        inventory.diagnostics.push(BackendDiscoveryDiagnostic {
-            source: dir.display().to_string(),
-            reason: error.to_string(),
-        });
+        let issue = descriptor_dir_setup_issue(&error);
+        push_setup_diagnostic(inventory, &dir, issue);
         return;
     }
     let Ok(entries) = std::fs::read_dir(&dir) else {
+        push_setup_diagnostic(
+            inventory,
+            &dir,
+            RuntimeDescriptorSetupIssue::DescriptorDirUnreadable {
+                reason: "runtime descriptor directory cannot be read".to_string(),
+            },
+        );
         return;
     };
+    let mut descriptor_count = 0usize;
     for entry in entries.flatten() {
         let path = entry.path();
         if path.extension().and_then(|ext| ext.to_str()) != Some("json") {
             continue;
         }
+        descriptor_count += 1;
         match read_runtime_descriptor(&path) {
             Ok(RuntimeDescriptorRead::Usable(backend, canonical_socket, token)) => {
                 inventory.backends.push(backend);
                 inventory.auth_tokens.insert(canonical_socket, token);
             }
-            Ok(RuntimeDescriptorRead::Ignored(reason)) => {
-                tracing::warn!(path = %path.display(), reason = %reason, "ignoring runtime backend descriptor");
+            Ok(RuntimeDescriptorRead::Ignored(plan)) => {
+                tracing::warn!(path = %path.display(), reason = %plan.reason, lifecycle_state = ?plan.lifecycle_state, reason_code = ?plan.reason_code, "ignoring runtime backend descriptor");
                 inventory.diagnostics.push(BackendDiscoveryDiagnostic {
                     source: path.display().to_string(),
-                    reason,
+                    reason: plan.reason,
+                    lifecycle_state: Some(plan.lifecycle_state),
+                    reason_code: Some(plan.reason_code),
+                    setup_lifecycle_state: None,
+                    setup_reason_code: None,
                 });
             }
             Err(error) => {
@@ -1152,59 +1345,164 @@ fn discover_runtime_descriptors(inventory: &mut BackendInventory) {
                 inventory.diagnostics.push(BackendDiscoveryDiagnostic {
                     source: path.display().to_string(),
                     reason: error.to_string(),
+                    lifecycle_state: None,
+                    reason_code: None,
+                    setup_lifecycle_state: None,
+                    setup_reason_code: None,
                 });
             }
         }
     }
+    if descriptor_count == 0 {
+        push_setup_diagnostic(
+            inventory,
+            &dir,
+            RuntimeDescriptorSetupIssue::DescriptorMissing,
+        );
+    }
+}
+
+fn push_setup_diagnostic(
+    inventory: &mut BackendInventory,
+    source: &Path,
+    issue: RuntimeDescriptorSetupIssue,
+) {
+    let plan = plan_runtime_descriptor_setup(issue);
+    inventory.diagnostics.push(BackendDiscoveryDiagnostic {
+        source: source.display().to_string(),
+        reason: plan.reason,
+        lifecycle_state: None,
+        reason_code: None,
+        setup_lifecycle_state: Some(plan.setup_lifecycle_state),
+        setup_reason_code: Some(plan.setup_reason_code),
+    });
+}
+
+fn runtime_root_setup_issue(error: &anyhow::Error) -> RuntimeDescriptorSetupIssue {
+    if io_error_kind(error, std::io::ErrorKind::NotFound) {
+        return RuntimeDescriptorSetupIssue::RuntimeRootMissing;
+    }
+    if setup_safety_validation_failed(error) {
+        return RuntimeDescriptorSetupIssue::RuntimeRootInvalid {
+            reason: error.to_string(),
+        };
+    }
+    if io_error_kind(error, std::io::ErrorKind::PermissionDenied) {
+        return RuntimeDescriptorSetupIssue::RuntimeRootUnreadable {
+            reason: error.to_string(),
+        };
+    }
+    RuntimeDescriptorSetupIssue::RuntimeRootInvalid {
+        reason: error.to_string(),
+    }
+}
+
+fn descriptor_dir_setup_issue(error: &anyhow::Error) -> RuntimeDescriptorSetupIssue {
+    if io_error_kind(error, std::io::ErrorKind::NotFound) {
+        return RuntimeDescriptorSetupIssue::DescriptorDirMissing;
+    }
+    if setup_safety_validation_failed(error) {
+        return RuntimeDescriptorSetupIssue::DescriptorDirInvalid {
+            reason: error.to_string(),
+        };
+    }
+    if io_error_kind(error, std::io::ErrorKind::PermissionDenied) {
+        return RuntimeDescriptorSetupIssue::DescriptorDirUnreadable {
+            reason: error.to_string(),
+        };
+    }
+    RuntimeDescriptorSetupIssue::DescriptorDirInvalid {
+        reason: error.to_string(),
+    }
+}
+
+fn io_error_kind(error: &anyhow::Error, kind: std::io::ErrorKind) -> bool {
+    error
+        .downcast_ref::<std::io::Error>()
+        .is_some_and(|io| io.kind() == kind)
+}
+
+fn setup_safety_validation_failed(error: &anyhow::Error) -> bool {
+    let message = error.to_string();
+    message.contains("owner-only")
+        || message.contains("not owned by current user")
+        || message.contains("is a symlink")
+        || message.contains("not a directory")
 }
 
 fn read_runtime_descriptor(path: &std::path::Path) -> Result<RuntimeDescriptorRead> {
-    validate_descriptor_file(path)?;
+    if let Err(error) = validate_descriptor_file(path) {
+        return Ok(RuntimeDescriptorRead::Ignored(
+            plan_runtime_descriptor_ignored(RuntimeDescriptorReadIssue::DescriptorFileInvalid {
+                reason: error.to_string(),
+            }),
+        ));
+    }
 
     let raw = std::fs::read_to_string(path)
         .with_context(|| format!("read descriptor {}", path.display()))?;
-    let value: Value = serde_json::from_str(&raw)
-        .with_context(|| format!("parse descriptor {}", path.display()))?;
+    let value: Value = match serde_json::from_str(&raw) {
+        Ok(value) => value,
+        Err(error) => {
+            return Ok(RuntimeDescriptorRead::Ignored(
+                plan_runtime_descriptor_ignored(
+                    RuntimeDescriptorReadIssue::DescriptorJsonInvalid {
+                        reason: format!("descriptor_json_invalid: {error}"),
+                    },
+                ),
+            ));
+        }
+    };
     if value.get("schema_version").and_then(Value::as_u64) != Some(1) {
-        return Ok(RuntimeDescriptorRead::Ignored(format!(
-            "unsupported schema_version {}",
-            value
-                .get("schema_version")
-                .map(Value::to_string)
-                .unwrap_or_else(|| "missing".to_string())
-        )));
+        return Ok(RuntimeDescriptorRead::Ignored(
+            plan_runtime_descriptor_ignored(RuntimeDescriptorReadIssue::UnsupportedSchemaVersion {
+                value: rendered_descriptor_value(value.get("schema_version")),
+            }),
+        ));
     }
     if value.get("type").and_then(Value::as_str) != Some("webextension") {
-        return Ok(RuntimeDescriptorRead::Ignored(format!(
-            "unsupported descriptor type {}",
-            value
-                .get("type")
-                .map(Value::to_string)
-                .unwrap_or_else(|| "missing".to_string())
-        )));
+        return Ok(RuntimeDescriptorRead::Ignored(
+            plan_runtime_descriptor_ignored(
+                RuntimeDescriptorReadIssue::UnsupportedDescriptorType {
+                    value: rendered_descriptor_value(value.get("type")),
+                },
+            ),
+        ));
     }
 
     let Some(socket_path) = value.get("socketPath").and_then(Value::as_str) else {
         return Ok(RuntimeDescriptorRead::Ignored(
-            "socketPath missing".to_string(),
+            plan_runtime_descriptor_ignored(RuntimeDescriptorReadIssue::SocketPathMissing),
         ));
     };
     let Some(token) = value.get("sdk_auth_token").and_then(Value::as_str) else {
         return Ok(RuntimeDescriptorRead::Ignored(
-            "sdk_auth_token missing".to_string(),
+            plan_runtime_descriptor_ignored(RuntimeDescriptorReadIssue::SdkAuthTokenMissing),
         ));
     };
-    let canonical_socket = validate_descriptor_socket(socket_path)?;
+    let canonical_socket = match validate_descriptor_socket(socket_path) {
+        Ok(path) => path,
+        Err(error) => {
+            return Ok(RuntimeDescriptorRead::Ignored(
+                plan_runtime_descriptor_ignored(
+                    RuntimeDescriptorReadIssue::DescriptorSocketInvalid {
+                        reason: error.to_string(),
+                    },
+                ),
+            ));
+        }
+    };
     if !descriptor_process_alive(&value) {
         return Ok(RuntimeDescriptorRead::Ignored(
-            "descriptor process is not alive".to_string(),
+            plan_runtime_descriptor_ignored(RuntimeDescriptorReadIssue::DescriptorProcessNotAlive),
         ));
     }
     let Some(probe_result) = probe_runtime_descriptor(&canonical_socket, token, &value) else {
         return Ok(RuntimeDescriptorRead::Ignored(
-            "descriptor probe failed".to_string(),
+            plan_runtime_descriptor_ignored(RuntimeDescriptorReadIssue::DescriptorProbeFailed),
         ));
     };
+    let usable_plan = plan_runtime_descriptor_usable();
     let mut metadata = value.get("metadata").cloned();
     if let Some(meta) = metadata.as_mut().and_then(Value::as_object_mut)
         && let Some(started_at) = value.get("startedAt")
@@ -1216,6 +1514,15 @@ fn read_runtime_descriptor(path: &std::path::Path) -> Result<RuntimeDescriptorRe
         if let Some(object) = meta.as_object_mut() {
             object.insert("diagnostics".to_string(), diagnostics);
         }
+    }
+    let meta = metadata.get_or_insert_with(|| json!({}));
+    if let Some(object) = meta.as_object_mut() {
+        object.insert(
+            "runtimeDescriptorLifecycle".to_string(),
+            json!({
+                "state": usable_plan.lifecycle_state,
+            }),
+        );
     }
 
     let backend = DiscoveredBackend {
@@ -1236,19 +1543,11 @@ fn read_runtime_descriptor(path: &std::path::Path) -> Result<RuntimeDescriptorRe
 }
 
 fn validate_runtime_root(path: &Path) -> Result<()> {
-    match validate_owner_only_dir(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
-    }
+    validate_owner_only_dir(path).map_err(Into::into)
 }
 
 fn validate_runtime_descriptor_dir(path: &Path) -> Result<()> {
-    match validate_owner_only_dir(path) {
-        Ok(()) => Ok(()),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(error) => Err(error.into()),
-    }
+    validate_owner_only_dir(path).map_err(Into::into)
 }
 
 #[cfg(unix)]
@@ -1506,7 +1805,12 @@ fn seed_sdk_trust(
 
 #[cfg(test)]
 mod tests {
-    use super::{constant_time_eq, current_uid, descriptor_process_alive, product_error};
+    use super::{
+        AgentRuntimeKernelLifecycle, DiscoveredBackend, JsRuntimeManager, KernelState,
+        ManagerOptions, constant_time_eq, current_uid, descriptor_process_alive, product_error,
+    };
+    use std::path::PathBuf;
+
     use serde_json::json;
 
     #[test]
@@ -1528,6 +1832,36 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn browser_status_does_not_expose_runtime_descriptor_tokens() {
+        let socket_path = PathBuf::from("/tmp/obu-runtime-token-boundary.sock");
+        let token = "fixture-sdk-auth-token";
+        let mut options = ManagerOptions::for_tests();
+        options.backends.push(DiscoveredBackend {
+            kind: "webextension".to_string(),
+            name: "chrome".to_string(),
+            socket_path: socket_path.to_string_lossy().to_string(),
+            metadata: Some(json!({ "source": "runtime-descriptor-fixture" })),
+        });
+        options
+            .backend_auth_tokens
+            .insert(socket_path.clone(), token.to_string());
+
+        let manager = JsRuntimeManager::new(options).await.unwrap();
+        let status = manager.browser_status().await.unwrap();
+        let serialized = status.to_string();
+
+        assert_eq!(status["backends"][0]["type"], "webextension");
+        assert_eq!(
+            status["backends"][0]["socketPath"],
+            socket_path.to_string_lossy().as_ref()
+        );
+        assert!(
+            !serialized.contains(token),
+            "browser_status must not expose descriptor auth tokens"
+        );
+    }
+
     #[cfg(unix)]
     #[test]
     fn unix_helpers_use_process_syscalls_without_shelling_out() {
@@ -1539,5 +1873,98 @@ mod tests {
         assert!(!descriptor_process_alive(
             &json!({ "pid": (i32::MAX as u64) + 1 })
         ));
+    }
+
+    #[allow(unsafe_code)]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn boot_failure_resets_coarse_state() {
+        // RAII guard restores OBU_NODE_BINARY on drop.
+        // SAFETY: this is a test-only env-var mutation; std::env::set_var is
+        // unsafe in Rust 1.80+ because it is not thread-safe; the
+        // #[serial_test::serial] attribute serialises this test against any
+        // other serial-tagged test so concurrent threads cannot observe the
+        // mutated OBU_NODE_BINARY value.  The guard ensures restoration on
+        // both success and panic paths.
+        struct EnvGuard(&'static str, Option<std::ffi::OsString>);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match &self.1 {
+                    Some(v) => unsafe { std::env::set_var(self.0, v) },
+                    None => unsafe { std::env::remove_var(self.0) },
+                }
+            }
+        }
+        let prev = std::env::var_os("OBU_NODE_BINARY");
+        unsafe { std::env::set_var("OBU_NODE_BINARY", "/definitely/does/not/exist/node") };
+        let _guard = EnvGuard("OBU_NODE_BINARY", prev);
+
+        let options = ManagerOptions::for_tests();
+        let manager = JsRuntimeManager::new(options).await.unwrap();
+        let err = manager.boot().await;
+        assert!(err.is_err(), "boot should fail with unspawnable kernel");
+        assert_eq!(manager.coarse_state_for_tests().await, KernelState::Failed);
+    }
+
+    #[tokio::test]
+    async fn set_kernel_failed_helper_writes_both_state_sources() {
+        let manager = JsRuntimeManager::new(ManagerOptions::for_tests())
+            .await
+            .unwrap();
+        manager
+            .set_kernel_failed(2, "spawn", "boom".into(), false)
+            .await;
+        assert_eq!(manager.coarse_state_for_tests().await, KernelState::Failed);
+        match &*manager.kernel_lifecycle.lock().await {
+            AgentRuntimeKernelLifecycle::Failed {
+                generation,
+                stage,
+                recovered,
+                ..
+            } => {
+                assert_eq!(*generation, 2);
+                assert_eq!(*stage, "spawn");
+                assert!(!*recovered);
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
+
+        // recovered=true => coarse returns to Idle (re-bootable)
+        manager
+            .set_kernel_failed(3, "exec", "thrown".into(), true)
+            .await;
+        assert_eq!(manager.coarse_state_for_tests().await, KernelState::Idle);
+    }
+
+    #[tokio::test]
+    async fn browser_status_exposes_kernel_generation() {
+        let manager = JsRuntimeManager::new(ManagerOptions::for_tests())
+            .await
+            .unwrap();
+        let status = manager.browser_status().await.unwrap();
+        assert!(
+            status["kernel_generation"].is_u64(),
+            "browser_status must expose a stable top-level kernel_generation field, got: {status}",
+        );
+    }
+
+    #[tokio::test]
+    #[ignore = "requires a real Node runtime"]
+    async fn exec_failure_returns_coarse_idle_and_detailed_failed() {
+        let manager = JsRuntimeManager::new(ManagerOptions::for_tests())
+            .await
+            .unwrap();
+        manager.boot().await.expect("boot");
+        let _ = manager.exec("throw new Error('boom')", Some(1000)).await;
+        assert_eq!(manager.coarse_state_for_tests().await, KernelState::Idle);
+        match &*manager.kernel_lifecycle.lock().await {
+            AgentRuntimeKernelLifecycle::Failed {
+                stage, recovered, ..
+            } => {
+                assert_eq!(*stage, "exec");
+                assert!(*recovered);
+            }
+            other => panic!("expected Failed, got {other:?}"),
+        }
     }
 }

@@ -1,11 +1,24 @@
 //! Per-session in-memory browser state.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::hash::Hash;
 use std::sync::RwLock;
 use std::time::SystemTime;
 
 use crate::error::{HostError, Result};
+use crate::registry_lifecycle::{
+    HandleState, RegistryHandleKind, RegistryHandleSnapshot, RegistryLifecycleEvent,
+    RegistryLifecycleEventKind, RegistryLifecycleEventPlan, RegistryStaleHandlePlan,
+    RegistryTabSnapshot, RegistryTabSnapshotStatus, choose_registry_active_tab_id,
+    live_handle_state, plan_clear_tab_handles, plan_current_active_tab_repair,
+    plan_diagnostics_cleared, plan_download_completed, plan_download_failed,
+    plan_download_inserted, plan_download_removed, plan_download_stale, plan_file_chooser_consumed,
+    plan_file_chooser_inserted, plan_file_chooser_stale, plan_playwright_injected,
+    plan_playwright_injection_cleared, plan_reconcile_session_tabs,
+    plan_session_active_tab_reconciled, plan_session_active_tab_set, plan_session_named,
+    plan_session_stale, plan_session_touched, plan_tab_inserted, plan_tab_stale, plan_tab_updated,
+    push_registry_lifecycle_event, registry_lifecycle_event,
+};
 use crate::tab_state::{TabId, TabRecord, TabStatus};
 
 const MAX_STALE_DIAGNOSTICS_PER_KIND: usize = 128;
@@ -21,6 +34,8 @@ pub struct BrowserSessionRecord {
     pub active_tab_id: Option<TabId>,
     /// Human-visible session label, when set.
     pub label: Option<String>,
+    /// Whether the human currently owns the session.
+    pub human_takeover: bool,
     /// First time this host observed the session.
     pub created_at: SystemTime,
     /// Last time this host observed or mutated the session.
@@ -99,6 +114,10 @@ pub struct FileChooserState {
     pub tab_id: TabId,
     /// Owning browser-control session, when known.
     pub owner_session_id: Option<String>,
+    /// Owning turn id at acquisition (turn proof). Backfilled from the owning
+    /// session's `current_turn_id` during registry insert; the CDP-event
+    /// constructors do not have the turn in scope.
+    pub owner_turn_id: Option<String>,
     /// Creation time for stale-handle diagnostics and future pruning.
     pub created_at: SystemTime,
     /// CDP backend node id for the input element.
@@ -118,6 +137,10 @@ pub struct DownloadState {
     pub tab_id: TabId,
     /// Owning browser-control session, when known.
     pub owner_session_id: Option<String>,
+    /// Owning turn id at acquisition (turn proof). Backfilled from the owning
+    /// session's `current_turn_id` during registry insert; the CDP-event
+    /// constructors do not have the turn in scope.
+    pub owner_turn_id: Option<String>,
     /// Creation time for stale-handle diagnostics and future pruning.
     pub created_at: SystemTime,
     /// Download source URL.
@@ -140,10 +163,14 @@ pub struct StaleHandleState {
     pub tab_id: TabId,
     /// Owning browser-control session, when known.
     pub owner_session_id: Option<String>,
+    /// Owning turn id at acquisition (turn proof), when known.
+    pub owner_turn_id: Option<String>,
     /// Original creation time.
     pub created_at: SystemTime,
     /// Time when the handle became stale.
     pub stale_at: SystemTime,
+    /// Closed terminal state at retirement.
+    pub terminal_state: HandleState,
 }
 
 /// State shared by dispatcher and backend handlers for one host session.
@@ -153,14 +180,35 @@ pub struct ServiceRegistry {
 
 #[derive(Default)]
 struct Inner {
+    tab_sessions: TabSessionStore,
+    handles: HandleStore,
+    downloads: DownloadStore,
+    diagnostics: RegistryDiagnosticsStore,
+}
+
+#[derive(Default)]
+struct TabSessionStore {
     sessions: HashMap<String, BrowserSessionRecord>,
     tabs: HashMap<TabId, TabRecord>,
     playwright_injected_tab_ids: HashSet<TabId>,
+}
+
+#[derive(Default)]
+struct HandleStore {
     file_choosers_by_id: HashMap<FileChooserId, FileChooserState>,
+}
+
+#[derive(Default)]
+struct DownloadStore {
     downloads_by_id: HashMap<DownloadId, DownloadState>,
+}
+
+#[derive(Default)]
+struct RegistryDiagnosticsStore {
     stale_tabs_by_id: HashMap<TabId, StaleTabState>,
     stale_file_choosers_by_id: HashMap<FileChooserId, StaleHandleState>,
     stale_downloads_by_id: HashMap<DownloadId, StaleHandleState>,
+    lifecycle_events: VecDeque<RegistryLifecycleEvent>,
 }
 
 impl Default for ServiceRegistry {
@@ -178,11 +226,21 @@ impl ServiceRegistry {
             .inner
             .write()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
+        let tab_id = record.id.clone();
+        let session_id = record.session_id.clone();
+        let restored = guard
+            .diagnostics
+            .stale_tabs_by_id
+            .remove(&record.id)
+            .is_some();
         if let Some(session_id) = record.session_id.as_deref() {
             touch_session_locked(&mut guard, session_id, None);
         }
-        guard.stale_tabs_by_id.remove(&record.id);
-        guard.tabs.insert(record.id.clone(), record);
+        guard.tab_sessions.tabs.insert(record.id.clone(), record);
+        record_planned_lifecycle_event_locked(
+            &mut guard,
+            plan_tab_inserted(&tab_id.0, session_id, restored),
+        );
         Ok(())
     }
 
@@ -203,20 +261,31 @@ impl ServiceRegistry {
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
         let reason = reason.into();
         clear_tab_handles_locked(&mut guard, id, &reason);
-        let record = guard.tabs.remove(id);
+        let record = guard.tab_sessions.tabs.remove(id);
         if let Some(record) = record.as_ref() {
             if let Some(session_id) = record.session_id.as_deref()
                 && guard
+                    .tab_sessions
                     .sessions
                     .get(session_id)
                     .and_then(|session| session.active_tab_id.as_ref())
                     == Some(id)
             {
                 let next_active_tab_id = choose_active_tab_locked(&guard, session_id);
-                if let Some(session) = guard.sessions.get_mut(session_id) {
+                let next_active_tab_id_for_event =
+                    next_active_tab_id.as_ref().map(|tab_id| tab_id.0.clone());
+                if let Some(session) = guard.tab_sessions.sessions.get_mut(session_id) {
                     session.active_tab_id = next_active_tab_id;
                     session.updated_at = SystemTime::now();
                 }
+                record_planned_lifecycle_event_locked(
+                    &mut guard,
+                    plan_session_active_tab_reconciled(
+                        session_id,
+                        next_active_tab_id_for_event,
+                        "active tab was removed from host registry",
+                    ),
+                );
             }
             record_stale_tab_locked(&mut guard, record.clone(), reason);
         }
@@ -243,6 +312,7 @@ impl ServiceRegistry {
             .inner
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?
+            .tab_sessions
             .tabs
             .get(id)
             .cloned())
@@ -254,6 +324,7 @@ impl ServiceRegistry {
             .inner
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?
+            .tab_sessions
             .tabs
             .values()
             .cloned()
@@ -267,6 +338,10 @@ impl ServiceRegistry {
             .write()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
         touch_session_locked(&mut guard, session_id, turn_id);
+        record_planned_lifecycle_event_locked(
+            &mut guard,
+            plan_session_touched(session_id, turn_id),
+        );
         Ok(())
     }
 
@@ -276,9 +351,68 @@ impl ServiceRegistry {
             .inner
             .write()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
-        let session = touch_session_locked(&mut guard, session_id, None);
-        session.label = label;
-        session.updated_at = SystemTime::now();
+        {
+            let session = touch_session_locked(&mut guard, session_id, None);
+            session.label = label.clone();
+            session.updated_at = SystemTime::now();
+        }
+        record_planned_lifecycle_event_locked(&mut guard, plan_session_named(session_id, label));
+        Ok(())
+    }
+
+    /// Mark or clear the human-takeover ownership boundary for a session.
+    pub fn set_human_takeover(
+        &self,
+        session_id: &str,
+        turn_id: Option<&str>,
+        active: bool,
+    ) -> Result<()> {
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
+        let session = touch_session_locked(&mut guard, session_id, turn_id);
+        session.human_takeover = active;
+        Ok(())
+    }
+
+    /// Reject lifecycle operations that require agent ownership.
+    pub fn assert_agent_owns_session(&self, session_id: &str, operation: &str) -> Result<()> {
+        let guard = self
+            .inner
+            .read()
+            .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
+        let session = guard
+            .tab_sessions
+            .sessions
+            .get(session_id)
+            .ok_or_else(|| HostError::Protocol(format!("missing session {session_id}")))?;
+        if session.human_takeover {
+            return Err(HostError::Protocol(format!(
+                "{operation} blocked during human takeover"
+            )));
+        }
+        Ok(())
+    }
+
+    /// Reject lifecycle operations if an existing session is under human takeover.
+    pub fn reject_human_takeover_if_present(
+        &self,
+        session_id: &str,
+        operation: &str,
+    ) -> Result<()> {
+        let guard = self
+            .inner
+            .read()
+            .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
+        let Some(session) = guard.tab_sessions.sessions.get(session_id) else {
+            return Ok(());
+        };
+        if session.human_takeover {
+            return Err(HostError::Protocol(format!(
+                "{operation} blocked during human takeover"
+            )));
+        }
         Ok(())
     }
 
@@ -294,39 +428,114 @@ impl ServiceRegistry {
             .write()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
         let now = SystemTime::now();
-        let session = touch_session_locked(&mut guard, session_id, turn_id);
-        session.active_tab_id = Some(tab_id.into());
+        let tab_id = tab_id.into();
+        validate_active_tab_transition_locked(&guard, session_id, &tab_id)?;
+        let changed = guard
+            .tab_sessions
+            .sessions
+            .get(session_id)
+            .and_then(|session| session.active_tab_id.as_ref())
+            != Some(&tab_id);
+        let session = guard
+            .tab_sessions
+            .sessions
+            .get_mut(session_id)
+            .ok_or_else(|| HostError::Protocol(format!("missing session {session_id}")))?;
+        if let Some(turn_id) = turn_id {
+            session.current_turn_id = Some(turn_id.to_string());
+        }
+        session.active_tab_id = Some(tab_id.clone());
         session.updated_at = now;
+        if changed {
+            record_planned_lifecycle_event_locked(
+                &mut guard,
+                plan_session_active_tab_set(session_id, &tab_id.0, turn_id),
+            );
+        }
         Ok(())
+    }
+
+    /// Validate that a tab can become or remain the session-owned logical active tab.
+    pub fn validate_active_session_tab(&self, session_id: &str, tab_id: &TabId) -> Result<()> {
+        let guard = self
+            .inner
+            .read()
+            .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
+        validate_active_tab_transition_locked(&guard, session_id, tab_id)
     }
 
     /// Return the session-owned logical active tab when it is still valid.
     pub fn current_tab_for_session(&self, session_id: &str) -> Result<Option<TabRecord>> {
+        let guard = self
+            .inner
+            .read()
+            .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
+        let current_active_tab_id = guard
+            .tab_sessions
+            .sessions
+            .get(session_id)
+            .and_then(|session| session.active_tab_id.as_ref())
+            .map(|tab_id| tab_id.0.clone());
+        let snapshots = tab_snapshots_locked(&guard);
+        let plan = plan_current_active_tab_repair(
+            session_id,
+            current_active_tab_id.as_deref(),
+            &snapshots,
+        );
+        let Some(next_active_tab_id) = plan.next_active_tab_id else {
+            return Ok(None);
+        };
+        Ok(guard
+            .tab_sessions
+            .tabs
+            .get(&TabId::new(next_active_tab_id))
+            .cloned())
+    }
+
+    /// Explicitly repair and return the session-owned logical active tab.
+    pub fn repair_current_tab_for_session(&self, session_id: &str) -> Result<Option<TabRecord>> {
         let mut guard = self
             .inner
             .write()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
-        if let Some(active_tab_id) = guard
+        let current_active_tab_id = guard
+            .tab_sessions
             .sessions
             .get(session_id)
             .and_then(|session| session.active_tab_id.as_ref())
-            && let Some(record) = guard.tabs.get(active_tab_id)
-            && record.session_id.as_deref() == Some(session_id)
-            && record.status == TabStatus::Active
+            .map(|tab_id| tab_id.0.clone());
+        let snapshots = tab_snapshots_locked(&guard);
+        let plan = plan_current_active_tab_repair(
+            session_id,
+            current_active_tab_id.as_deref(),
+            &snapshots,
+        );
+        let mut reconciled = false;
+        if let Some(session) = guard.tab_sessions.sessions.get_mut(session_id)
+            && plan.changed
         {
-            return Ok(Some(record.clone()));
-        }
-        let fallback_id = choose_active_tab_locked(&guard, session_id);
-        if let Some(session) = guard.sessions.get_mut(session_id)
-            && session.active_tab_id != fallback_id
-        {
-            session.active_tab_id = fallback_id.clone();
+            session.active_tab_id = plan.next_active_tab_id.clone().map(TabId::new);
             session.updated_at = SystemTime::now();
+            reconciled = true;
         }
-        let Some(fallback_id) = fallback_id else {
+        if reconciled {
+            record_planned_lifecycle_event_locked(
+                &mut guard,
+                plan_session_active_tab_reconciled(
+                    session_id,
+                    plan.next_active_tab_id.clone(),
+                    "current active tab was missing or not commandable",
+                ),
+            );
+        }
+        let Some(next_active_tab_id) = plan.next_active_tab_id else {
             return Ok(None);
         };
-        Ok(guard.tabs.get(&fallback_id).cloned())
+        Ok(guard
+            .tab_sessions
+            .tabs
+            .get(&TabId::new(next_active_tab_id))
+            .cloned())
     }
 
     /// Mark a session as stale for diagnostics.
@@ -335,9 +544,13 @@ impl ServiceRegistry {
             .inner
             .write()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
-        let session = touch_session_locked(&mut guard, session_id, None);
-        session.stale_reason = Some(reason.into());
-        session.updated_at = SystemTime::now();
+        let reason = reason.into();
+        {
+            let session = touch_session_locked(&mut guard, session_id, None);
+            session.stale_reason = Some(reason.clone());
+            session.updated_at = SystemTime::now();
+        }
+        record_planned_lifecycle_event_locked(&mut guard, plan_session_stale(session_id, reason));
         Ok(())
     }
 
@@ -347,6 +560,7 @@ impl ServiceRegistry {
             .inner
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?
+            .tab_sessions
             .sessions
             .get(session_id)
             .cloned())
@@ -358,6 +572,7 @@ impl ServiceRegistry {
             .inner
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?
+            .tab_sessions
             .sessions
             .values()
             .cloned()
@@ -370,6 +585,7 @@ impl ServiceRegistry {
             .inner
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?
+            .tab_sessions
             .tabs
             .values()
             .filter(|record| record.session_id.as_deref() == Some(session_id))
@@ -392,28 +608,55 @@ impl ServiceRegistry {
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
         let session = touch_session_locked(&mut guard, session_id, None);
         let now = SystemTime::now();
+        let current_active_tab_id = session
+            .active_tab_id
+            .as_ref()
+            .map(|tab_id| tab_id.0.clone());
         session.last_reconciled_at = Some(now);
         session.updated_at = now;
         let reason = reason.into();
-        let stale = guard
-            .tabs
+        let observed_tab_ids = observed_tab_ids
             .iter()
-            .filter(|(id, record)| {
-                record.session_id.as_deref() == Some(session_id)
-                    && record.status != TabStatus::Deliverable
-                    && !observed_tab_ids.contains(*id)
+            .map(|tab_id| tab_id.0.clone())
+            .collect::<HashSet<_>>();
+        let snapshots = tab_snapshots_locked(&guard);
+        let plan = plan_reconcile_session_tabs(
+            session_id,
+            &observed_tab_ids,
+            current_active_tab_id.as_deref(),
+            &snapshots,
+        );
+        let stale = plan
+            .stale_tab_ids
+            .iter()
+            .filter_map(|id| {
+                let tab_id = TabId::new(id.clone());
+                guard
+                    .tab_sessions
+                    .tabs
+                    .get(&tab_id)
+                    .cloned()
+                    .map(|record| (tab_id, record))
             })
-            .map(|(id, record)| (id.clone(), record.clone()))
             .collect::<Vec<_>>();
         for (id, record) in &stale {
             clear_tab_handles_locked(&mut guard, id, &reason);
-            guard.tabs.remove(id);
+            guard.tab_sessions.tabs.remove(id);
             record_stale_tab_locked(&mut guard, record.clone(), reason.clone());
         }
-        let next_active_tab_id = choose_active_tab_locked(&guard, session_id);
-        if let Some(session) = guard.sessions.get_mut(session_id) {
-            session.active_tab_id = next_active_tab_id;
+        if let Some(session) = guard.tab_sessions.sessions.get_mut(session_id) {
+            session.active_tab_id = plan.next_active_tab_id.clone().map(TabId::new);
             session.updated_at = SystemTime::now();
+        }
+        if plan.active_tab_changed {
+            record_planned_lifecycle_event_locked(
+                &mut guard,
+                plan_session_active_tab_reconciled(
+                    session_id,
+                    plan.next_active_tab_id.clone(),
+                    "session tab reconciliation updated active tab",
+                ),
+            );
         }
         Ok(stale.into_iter().map(|(_, record)| record).collect())
     }
@@ -425,6 +668,7 @@ impl ServiceRegistry {
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
         Ok(guard
+            .diagnostics
             .stale_tabs_by_id
             .get(id)
             .map(|state| describe_stale_tab(&id.0, state))
@@ -448,15 +692,33 @@ impl ServiceRegistry {
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
         let before = lifecycle_counts_locked(&guard);
         let now = SystemTime::now();
-        for session in guard.sessions.values_mut() {
+        for session in guard.tab_sessions.sessions.values_mut() {
             if session.stale_reason.take().is_some() {
                 session.updated_at = now;
             }
         }
-        guard.stale_tabs_by_id.clear();
-        guard.stale_file_choosers_by_id.clear();
-        guard.stale_downloads_by_id.clear();
+        guard.diagnostics.stale_tabs_by_id.clear();
+        guard.diagnostics.stale_file_choosers_by_id.clear();
+        guard.diagnostics.stale_downloads_by_id.clear();
+        record_planned_lifecycle_event_locked(&mut guard, plan_diagnostics_cleared());
         Ok(before)
+    }
+
+    /// Return recent registry lifecycle events for diagnostics.
+    pub fn recent_lifecycle_events(&self, limit: usize) -> Result<Vec<RegistryLifecycleEvent>> {
+        let guard = self
+            .inner
+            .read()
+            .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
+        let len = guard.diagnostics.lifecycle_events.len();
+        let start = len.saturating_sub(limit);
+        Ok(guard
+            .diagnostics
+            .lifecycle_events
+            .iter()
+            .skip(start)
+            .cloned()
+            .collect())
     }
 
     /// Return compact stale-session summaries for diagnostics.
@@ -466,6 +728,7 @@ impl ServiceRegistry {
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
         let mut rows = guard
+            .tab_sessions
             .sessions
             .values()
             .filter_map(|session| {
@@ -490,6 +753,7 @@ impl ServiceRegistry {
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
         let mut rows = guard
+            .tab_sessions
             .tabs
             .values()
             .filter(|record| record.status == TabStatus::Deliverable)
@@ -511,8 +775,14 @@ impl ServiceRegistry {
             .inner
             .write()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
-        if let Some(record) = guard.tabs.get_mut(id) {
+        if let Some(record) = guard.tab_sessions.tabs.get_mut(id) {
             f(record);
+            let session_id = record.session_id.clone();
+            let tab_id = record.id.clone();
+            record_planned_lifecycle_event_locked(
+                &mut guard,
+                plan_tab_updated(&tab_id.0, session_id),
+            );
             Ok(true)
         } else {
             Ok(false)
@@ -521,11 +791,15 @@ impl ServiceRegistry {
 
     /// Mark Playwright InjectedScript as mounted in a tab.
     pub fn mark_playwright_injected(&self, id: &TabId) -> Result<()> {
-        self.inner
+        let mut guard = self
+            .inner
             .write()
-            .map_err(|_| HostError::Protocol("registry poisoned".into()))?
+            .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
+        guard
+            .tab_sessions
             .playwright_injected_tab_ids
             .insert(id.clone());
+        record_planned_lifecycle_event_locked(&mut guard, plan_playwright_injected(&id.0));
         Ok(())
     }
 
@@ -535,17 +809,23 @@ impl ServiceRegistry {
             .inner
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?
+            .tab_sessions
             .playwright_injected_tab_ids
             .contains(id))
     }
 
     /// Clear Playwright InjectedScript mounted state for a tab.
     pub fn clear_playwright_injected(&self, id: &TabId) -> Result<()> {
-        self.inner
+        let mut guard = self
+            .inner
             .write()
-            .map_err(|_| HostError::Protocol("registry poisoned".into()))?
-            .playwright_injected_tab_ids
-            .remove(id);
+            .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
+        if guard.tab_sessions.playwright_injected_tab_ids.remove(id) {
+            record_planned_lifecycle_event_locked(
+                &mut guard,
+                plan_playwright_injection_cleared(&id.0),
+            );
+        }
         Ok(())
     }
 
@@ -555,8 +835,18 @@ impl ServiceRegistry {
             .inner
             .write()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
-        guard.stale_file_choosers_by_id.remove(&id);
-        guard.file_choosers_by_id.insert(id, state);
+        let mut state = state;
+        state.owner_turn_id = state
+            .owner_session_id
+            .as_deref()
+            .and_then(|sid| guard.tab_sessions.sessions.get(sid))
+            .and_then(|session| session.current_turn_id.clone());
+        guard.diagnostics.stale_file_choosers_by_id.remove(&id);
+        record_planned_lifecycle_event_locked(
+            &mut guard,
+            plan_file_chooser_inserted(&file_chooser_handle_snapshot(&id, &state)),
+        );
+        guard.handles.file_choosers_by_id.insert(id, state);
         Ok(())
     }
 
@@ -566,14 +856,17 @@ impl ServiceRegistry {
             .inner
             .write()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
-        let state = guard.file_choosers_by_id.remove(id);
+        let state = guard.handles.file_choosers_by_id.remove(id);
         if let Some(state) = state.as_ref() {
+            let plan = plan_file_chooser_consumed(&file_chooser_handle_snapshot(id, state));
             record_stale_file_chooser_locked(
                 &mut guard,
                 id.clone(),
                 state,
-                "already consumed by setFiles".into(),
+                plan.stale_handle.reason,
+                plan.stale_handle.terminal_state,
             );
+            record_planned_lifecycle_event_locked(&mut guard, plan.event);
         }
         Ok(state)
     }
@@ -584,6 +877,7 @@ impl ServiceRegistry {
             .inner
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?
+            .handles
             .file_choosers_by_id
             .get(id)
             .cloned())
@@ -596,6 +890,7 @@ impl ServiceRegistry {
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
         Ok(guard
+            .diagnostics
             .stale_file_choosers_by_id
             .get(id)
             .map(|state| describe_stale_handle("file chooser", &id.0, state))
@@ -608,8 +903,18 @@ impl ServiceRegistry {
             .inner
             .write()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
-        guard.stale_downloads_by_id.remove(&id);
-        guard.downloads_by_id.insert(id, state);
+        let mut state = state;
+        state.owner_turn_id = state
+            .owner_session_id
+            .as_deref()
+            .and_then(|sid| guard.tab_sessions.sessions.get(sid))
+            .and_then(|session| session.current_turn_id.clone());
+        guard.diagnostics.stale_downloads_by_id.remove(&id);
+        record_planned_lifecycle_event_locked(
+            &mut guard,
+            plan_download_inserted(&download_handle_snapshot(&id, &state)),
+        );
+        guard.downloads.downloads_by_id.insert(id, state);
         Ok(())
     }
 
@@ -619,6 +924,7 @@ impl ServiceRegistry {
             .inner
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?
+            .downloads
             .downloads_by_id
             .get(id)
             .cloned())
@@ -631,6 +937,7 @@ impl ServiceRegistry {
             .read()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
         Ok(guard
+            .diagnostics
             .stale_downloads_by_id
             .get(id)
             .map(|state| describe_stale_handle("download", &id.0, state))
@@ -639,14 +946,21 @@ impl ServiceRegistry {
 
     /// Mark a download complete.
     pub fn mark_download_completed(&self, id: &DownloadId, path: Option<String>) -> Result<()> {
-        if let Some(state) = self
+        let mut guard = self
             .inner
             .write()
-            .map_err(|_| HostError::Protocol("registry poisoned".into()))?
-            .downloads_by_id
-            .get_mut(id)
-        {
+            .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
+        let snapshot = if let Some(state) = guard.downloads.downloads_by_id.get_mut(id) {
             state.completed_path = path;
+            Some(download_handle_snapshot(id, state))
+        } else {
+            None
+        };
+        if let Some(snapshot) = snapshot {
+            record_planned_lifecycle_event_locked(
+                &mut guard,
+                plan_download_completed(&snapshot).event,
+            );
         }
         Ok(())
     }
@@ -657,77 +971,244 @@ impl ServiceRegistry {
             .inner
             .write()
             .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
-        let state = guard.downloads_by_id.remove(id);
+        let state = guard.downloads.downloads_by_id.remove(id);
         if let Some(state) = state.as_ref() {
+            let plan = plan_download_removed(&download_handle_snapshot(id, state));
+            record_planned_lifecycle_event_locked(&mut guard, plan.event);
             record_stale_download_locked(
                 &mut guard,
                 id.clone(),
                 state,
-                "removed explicitly".into(),
+                plan.stale_handle.reason,
+                plan.stale_handle.terminal_state,
             );
         }
         Ok(state)
     }
+
+    /// Mark a download as failed and preserve its terminal diagnostic.
+    pub fn mark_download_failed(
+        &self,
+        id: &DownloadId,
+        state: &DownloadState,
+        reason: impl Into<String>,
+    ) -> Result<()> {
+        let mut guard = self
+            .inner
+            .write()
+            .map_err(|_| HostError::Protocol("registry poisoned".into()))?;
+        guard.downloads.downloads_by_id.remove(id);
+        let plan = plan_download_failed(&download_handle_snapshot(id, state), reason);
+        record_stale_download_locked(
+            &mut guard,
+            id.clone(),
+            state,
+            plan.stale_handle.reason,
+            plan.stale_handle.terminal_state,
+        );
+        record_planned_lifecycle_event_locked(&mut guard, plan.event);
+        Ok(())
+    }
+}
+
+fn record_lifecycle_event_locked(
+    inner: &mut Inner,
+    kind: RegistryLifecycleEventKind,
+    subject_id: String,
+    session_id: Option<String>,
+    tab_id: Option<String>,
+    reason: Option<String>,
+) {
+    let event = registry_lifecycle_event(
+        kind,
+        subject_id,
+        session_id,
+        tab_id,
+        reason,
+        SystemTime::now(),
+    );
+    push_registry_lifecycle_event(&mut inner.diagnostics.lifecycle_events, event);
+}
+
+fn record_planned_lifecycle_event_locked(inner: &mut Inner, event: RegistryLifecycleEventPlan) {
+    record_lifecycle_event_locked(
+        inner,
+        event.kind,
+        event.subject_id,
+        event.session_id,
+        event.tab_id,
+        event.reason,
+    );
 }
 
 fn clear_tab_handles_locked(inner: &mut Inner, id: &TabId, stale_reason: &str) {
-    inner.playwright_injected_tab_ids.remove(id);
-    let file_chooser_ids = inner
-        .file_choosers_by_id
-        .iter()
-        .filter(|(_, state)| &state.tab_id == id)
-        .map(|(handle_id, state)| (handle_id.clone(), state.clone()))
-        .collect::<Vec<_>>();
-    for (handle_id, state) in file_chooser_ids {
-        inner.file_choosers_by_id.remove(&handle_id);
-        record_stale_file_chooser_locked(inner, handle_id, &state, stale_reason.to_string());
+    let plan = plan_clear_tab_handles(
+        &id.0,
+        inner.tab_sessions.playwright_injected_tab_ids.contains(id),
+        &handle_snapshots_locked(inner),
+        stale_reason,
+    );
+    if plan.clear_playwright_injected {
+        inner.tab_sessions.playwright_injected_tab_ids.remove(id);
     }
-
-    let download_ids = inner
-        .downloads_by_id
-        .iter()
-        .filter(|(_, state)| &state.tab_id == id)
-        .map(|(handle_id, state)| (handle_id.clone(), state.clone()))
-        .collect::<Vec<_>>();
-    for (handle_id, state) in download_ids {
-        inner.downloads_by_id.remove(&handle_id);
-        record_stale_download_locked(inner, handle_id, &state, stale_reason.to_string());
+    for stale_handle in plan.stale_handles {
+        remove_and_record_stale_handle_plan_locked(inner, &stale_handle);
+    }
+    if let Some(event) = plan.event {
+        record_planned_lifecycle_event_locked(inner, event);
     }
 }
 
 fn lifecycle_counts_locked(inner: &Inner) -> RegistryLifecycleCounts {
     RegistryLifecycleCounts {
-        sessions: inner.sessions.len(),
+        sessions: inner.tab_sessions.sessions.len(),
         stale_sessions: inner
+            .tab_sessions
             .sessions
             .values()
             .filter(|session| session.stale_reason.is_some())
             .count(),
-        tabs: inner.tabs.len(),
+        tabs: inner.tab_sessions.tabs.len(),
         deliverable_tabs: inner
+            .tab_sessions
             .tabs
             .values()
             .filter(|record| record.status == TabStatus::Deliverable)
             .count(),
-        stale_tabs: inner.stale_tabs_by_id.len(),
-        file_choosers: inner.file_choosers_by_id.len(),
-        downloads: inner.downloads_by_id.len(),
-        stale_file_choosers: inner.stale_file_choosers_by_id.len(),
-        stale_downloads: inner.stale_downloads_by_id.len(),
+        stale_tabs: inner.diagnostics.stale_tabs_by_id.len(),
+        file_choosers: inner.handles.file_choosers_by_id.len(),
+        downloads: inner.downloads.downloads_by_id.len(),
+        stale_file_choosers: inner.diagnostics.stale_file_choosers_by_id.len(),
+        stale_downloads: inner.diagnostics.stale_downloads_by_id.len(),
     }
 }
 
 fn choose_active_tab_locked(inner: &Inner, session_id: &str) -> Option<TabId> {
-    let mut candidates = inner
+    choose_registry_active_tab_id(session_id, &tab_snapshots_locked(inner)).map(TabId::new)
+}
+
+fn tab_snapshots_locked(inner: &Inner) -> Vec<RegistryTabSnapshot> {
+    inner
+        .tab_sessions
         .tabs
         .values()
-        .filter(|record| {
-            record.session_id.as_deref() == Some(session_id) && record.status == TabStatus::Active
+        .map(|record| RegistryTabSnapshot {
+            tab_id: record.id.0.clone(),
+            session_id: record.session_id.clone(),
+            status: tab_snapshot_status(&record.status),
         })
-        .map(|record| record.id.clone())
-        .collect::<Vec<_>>();
-    candidates.sort_by(|left, right| left.0.cmp(&right.0));
-    candidates.into_iter().next()
+        .collect()
+}
+
+fn handle_snapshots_locked(inner: &Inner) -> Vec<RegistryHandleSnapshot> {
+    inner
+        .handles
+        .file_choosers_by_id
+        .iter()
+        .map(|(id, state)| file_chooser_handle_snapshot(id, state))
+        .chain(
+            inner
+                .downloads
+                .downloads_by_id
+                .iter()
+                .map(|(id, state)| download_handle_snapshot(id, state)),
+        )
+        .chain(
+            inner
+                .diagnostics
+                .stale_file_choosers_by_id
+                .iter()
+                .map(|(id, s)| {
+                    stale_handle_snapshot(id.0.clone(), RegistryHandleKind::FileChooser, s)
+                }),
+        )
+        .chain(
+            inner
+                .diagnostics
+                .stale_downloads_by_id
+                .iter()
+                .map(|(id, s)| {
+                    stale_handle_snapshot(id.0.clone(), RegistryHandleKind::Download, s)
+                }),
+        )
+        .collect()
+}
+
+fn stale_handle_snapshot(
+    handle_id: String,
+    kind: RegistryHandleKind,
+    state: &StaleHandleState,
+) -> RegistryHandleSnapshot {
+    RegistryHandleSnapshot {
+        handle_id,
+        tab_id: state.tab_id.0.clone(),
+        owner_session_id: state.owner_session_id.clone(),
+        owner_turn_id: state.owner_turn_id.clone(),
+        kind,
+        state: state.terminal_state,
+    }
+}
+
+fn file_chooser_handle_snapshot(
+    id: &FileChooserId,
+    state: &FileChooserState,
+) -> RegistryHandleSnapshot {
+    RegistryHandleSnapshot {
+        handle_id: id.0.clone(),
+        tab_id: state.tab_id.0.clone(),
+        owner_session_id: state.owner_session_id.clone(),
+        owner_turn_id: state.owner_turn_id.clone(),
+        kind: RegistryHandleKind::FileChooser,
+        state: live_handle_state(RegistryHandleKind::FileChooser, false),
+    }
+}
+
+fn download_handle_snapshot(id: &DownloadId, state: &DownloadState) -> RegistryHandleSnapshot {
+    RegistryHandleSnapshot {
+        handle_id: id.0.clone(),
+        tab_id: state.tab_id.0.clone(),
+        owner_session_id: state.owner_session_id.clone(),
+        owner_turn_id: state.owner_turn_id.clone(),
+        kind: RegistryHandleKind::Download,
+        state: live_handle_state(RegistryHandleKind::Download, state.completed_path.is_some()),
+    }
+}
+
+fn remove_and_record_stale_handle_plan_locked(inner: &mut Inner, plan: &RegistryStaleHandlePlan) {
+    match plan.kind {
+        RegistryHandleKind::FileChooser => {
+            let id = FileChooserId(plan.handle_id.clone());
+            if let Some(state) = inner.handles.file_choosers_by_id.remove(&id) {
+                record_stale_file_chooser_locked(
+                    inner,
+                    id,
+                    &state,
+                    plan.reason.clone(),
+                    plan.terminal_state,
+                );
+            }
+        }
+        RegistryHandleKind::Download => {
+            let id = DownloadId(plan.handle_id.clone());
+            if let Some(state) = inner.downloads.downloads_by_id.remove(&id) {
+                record_stale_download_locked(
+                    inner,
+                    id,
+                    &state,
+                    plan.reason.clone(),
+                    plan.terminal_state,
+                );
+            }
+        }
+    }
+}
+
+fn tab_snapshot_status(status: &TabStatus) -> RegistryTabSnapshotStatus {
+    match status {
+        TabStatus::Active => RegistryTabSnapshotStatus::Active,
+        TabStatus::Handoff => RegistryTabSnapshotStatus::Handoff,
+        TabStatus::Deliverable => RegistryTabSnapshotStatus::Deliverable,
+    }
 }
 
 fn touch_session_locked<'a>(
@@ -737,6 +1218,7 @@ fn touch_session_locked<'a>(
 ) -> &'a mut BrowserSessionRecord {
     let now = SystemTime::now();
     let session = inner
+        .tab_sessions
         .sessions
         .entry(session_id.to_string())
         .or_insert_with(|| BrowserSessionRecord {
@@ -744,6 +1226,7 @@ fn touch_session_locked<'a>(
             current_turn_id: None,
             active_tab_id: None,
             label: None,
+            human_takeover: false,
             created_at: now,
             updated_at: now,
             last_reconciled_at: None,
@@ -756,16 +1239,56 @@ fn touch_session_locked<'a>(
     session
 }
 
+fn validate_active_tab_transition_locked(
+    inner: &Inner,
+    session_id: &str,
+    tab_id: &TabId,
+) -> Result<()> {
+    if !inner.tab_sessions.sessions.contains_key(session_id) {
+        return Err(HostError::Protocol(format!("missing session {session_id}")));
+    }
+    let Some(record) = inner.tab_sessions.tabs.get(tab_id) else {
+        return Err(HostError::Protocol(format!("missing tab {}", tab_id.0)));
+    };
+    if record.session_id.as_deref() != Some(session_id) {
+        return Err(HostError::Protocol(format!(
+            "tab {} does not belong to session {session_id}",
+            tab_id.0
+        )));
+    }
+    if record.status != TabStatus::Active {
+        return Err(HostError::Protocol(format!(
+            "tab {} is {}, not actively controlled",
+            tab_id.0,
+            tab_status_label(&record.status)
+        )));
+    }
+    Ok(())
+}
+
+fn tab_status_label(status: &TabStatus) -> &'static str {
+    match status {
+        TabStatus::Active => "active",
+        TabStatus::Handoff => "handoff",
+        TabStatus::Deliverable => "deliverable",
+    }
+}
+
 fn record_stale_tab_locked(inner: &mut Inner, record: TabRecord, reason: String) {
-    inner.stale_tabs_by_id.insert(
+    let tab_id = record.id.clone();
+    let session_id = record.session_id.clone();
+    inner.diagnostics.stale_tabs_by_id.insert(
         record.id.clone(),
         StaleTabState {
-            reason,
+            reason: reason.clone(),
             record,
             stale_at: SystemTime::now(),
         },
     );
-    prune_stale_map_locked(&mut inner.stale_tabs_by_id, |state| state.stale_at);
+    prune_stale_map_locked(&mut inner.diagnostics.stale_tabs_by_id, |state| {
+        state.stale_at
+    });
+    record_planned_lifecycle_event_locked(inner, plan_tab_stale(&tab_id.0, session_id, reason));
 }
 
 fn record_stale_file_chooser_locked(
@@ -773,18 +1296,29 @@ fn record_stale_file_chooser_locked(
     id: FileChooserId,
     state: &FileChooserState,
     reason: String,
+    terminal_state: HandleState,
 ) {
-    inner.stale_file_choosers_by_id.insert(
-        id,
+    let session_id = state.owner_session_id.clone();
+    let tab_id = state.tab_id.clone();
+    inner.diagnostics.stale_file_choosers_by_id.insert(
+        id.clone(),
         StaleHandleState {
-            reason,
+            reason: reason.clone(),
             tab_id: state.tab_id.clone(),
             owner_session_id: state.owner_session_id.clone(),
+            owner_turn_id: state.owner_turn_id.clone(),
             created_at: state.created_at,
             stale_at: SystemTime::now(),
+            terminal_state,
         },
     );
-    prune_stale_map_locked(&mut inner.stale_file_choosers_by_id, |state| state.stale_at);
+    prune_stale_map_locked(&mut inner.diagnostics.stale_file_choosers_by_id, |state| {
+        state.stale_at
+    });
+    record_planned_lifecycle_event_locked(
+        inner,
+        plan_file_chooser_stale(&id.0, &tab_id.0, session_id, reason),
+    );
 }
 
 fn record_stale_download_locked(
@@ -792,18 +1326,29 @@ fn record_stale_download_locked(
     id: DownloadId,
     state: &DownloadState,
     reason: String,
+    terminal_state: HandleState,
 ) {
-    inner.stale_downloads_by_id.insert(
-        id,
+    let session_id = state.owner_session_id.clone();
+    let tab_id = state.tab_id.clone();
+    inner.diagnostics.stale_downloads_by_id.insert(
+        id.clone(),
         StaleHandleState {
-            reason,
+            reason: reason.clone(),
             tab_id: state.tab_id.clone(),
             owner_session_id: state.owner_session_id.clone(),
+            owner_turn_id: state.owner_turn_id.clone(),
             created_at: state.created_at,
             stale_at: SystemTime::now(),
+            terminal_state,
         },
     );
-    prune_stale_map_locked(&mut inner.stale_downloads_by_id, |state| state.stale_at);
+    prune_stale_map_locked(&mut inner.diagnostics.stale_downloads_by_id, |state| {
+        state.stale_at
+    });
+    record_planned_lifecycle_event_locked(
+        inner,
+        plan_download_stale(&id.0, &tab_id.0, session_id, reason),
+    );
 }
 
 fn prune_stale_map_locked<K, V>(map: &mut HashMap<K, V>, stale_at: impl Fn(&V) -> SystemTime)
@@ -829,6 +1374,13 @@ fn describe_stale_handle(kind: &str, id: &str, state: &StaleHandleState) -> Stri
     );
     if let Some(session_id) = state.owner_session_id.as_deref() {
         message.push_str(&format!("; owner_session={session_id}"));
+    }
+    message.push_str(&format!(
+        "; terminal_state={}",
+        state.terminal_state.as_str()
+    ));
+    if let Some(owner_turn_id) = state.owner_turn_id.as_deref() {
+        message.push_str(&format!("; owner_turn={owner_turn_id}"));
     }
     if let Ok(age) = state.stale_at.duration_since(state.created_at) {
         message.push_str(&format!("; age_ms={}", age.as_millis()));
@@ -882,6 +1434,7 @@ mod tests {
                     FileChooserState {
                         tab_id: tab_id.clone(),
                         owner_session_id: None,
+                        owner_turn_id: None,
                         created_at: SystemTime::now(),
                         backend_node_id: index as i64,
                         is_multiple: false,

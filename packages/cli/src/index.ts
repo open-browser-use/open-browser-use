@@ -674,7 +674,7 @@ function formatShellEnv(shell: ShellEnvKind, installDir: string, env: NodeJS.Pro
   }
   return [
     `export OBU_INSTALL_DIR=${shellSingleQuoted(installDir)};`,
-    'export PATH="${OBU_INSTALL_DIR}/bin${PATH+:$PATH}";',
+    'case ":${PATH}:" in *:"${OBU_INSTALL_DIR}/bin":*) ;; *) export PATH="${OBU_INSTALL_DIR}/bin:$PATH" ;; esac',
   ].join("\n");
 }
 
@@ -935,7 +935,8 @@ function printHelp(): void {
   obu shellenv [shell]
   obu mcp stdio
 
-Agent aliases: codex=codex-cli, claude=claude-code, gemini=gemini-cli.`);
+Agent aliases: codex=codex-cli, claude=claude-code, gemini=gemini-cli.
+Agent setup is automatic except "continue", which is manual MCP setup only (obu mcp-config --agent=continue --print).`);
 }
 
 main(process.argv.slice(2))

@@ -77,10 +77,94 @@
     "message": "Agent-instellingsoverdracht kopiëren"
   },
   "stopButton": {
-    "message": "Ik neem over"
+    "message": "Controle overnemen"
   },
   "resumeButton": {
-    "message": "Hervatten"
+    "message": "Agent opnieuw verbinden"
+  },
+  "stopButtonTakeControl": {
+    "message": "Controle overnemen"
+  },
+  "stopButtonTakeControlDescription": {
+    "message": "Pauzeer agentbesturing zodat je deze browser zelf kunt gebruiken."
+  },
+  "stopButtonTakingControl": {
+    "message": "Controle overnemen"
+  },
+  "stopButtonTakingControlDescription": {
+    "message": "De agent geeft browserbesturing vrij."
+  },
+  "stopButtonUserControl": {
+    "message": "Jij hebt controle"
+  },
+  "stopButtonUserControlDescription": {
+    "message": "Je gebruikt de browser rechtstreeks."
+  },
+  "stopButtonUpdateNeeded": {
+    "message": "Update nodig"
+  },
+  "stopButtonUpdateNeededDescription": {
+    "message": "Werk de lokale host bij voordat je browserbesturing wijzigt."
+  },
+  "stopButtonSetupNeeded": {
+    "message": "Setup nodig"
+  },
+  "stopButtonSetupNeededDescription": {
+    "message": "Repareer de setup voordat je browserbesturing overneemt of teruggeeft."
+  },
+  "stopButtonAgentConnecting": {
+    "message": "Agent verbindt"
+  },
+  "stopButtonAgentConnectingDescription": {
+    "message": "De agent maakt nog verbinding met browserbesturing."
+  },
+  "stopButtonAgentOffline": {
+    "message": "Agent offline"
+  },
+  "stopButtonAgentOfflineDescription": {
+    "message": "Er is geen actieve agentbesturing om over te nemen."
+  },
+  "resumeButtonAgentControl": {
+    "message": "Agent heeft controle"
+  },
+  "resumeButtonAgentControlDescription": {
+    "message": "De agent bestuurt de browser al."
+  },
+  "resumeButtonWait": {
+    "message": "Wachten"
+  },
+  "resumeButtonWaitDescription": {
+    "message": "Wacht tot browserbesturing volledig is gestopt."
+  },
+  "resumeButtonReturnToAgent": {
+    "message": "Terug naar agent"
+  },
+  "resumeButtonReturnToAgentDescription": {
+    "message": "Geef browserbesturing terug aan de agent."
+  },
+  "resumeButtonReconnectAfterUpdate": {
+    "message": "Verbinden na update"
+  },
+  "resumeButtonReconnectAfterUpdateDescription": {
+    "message": "Maak opnieuw verbinding nadat de lokale host is bijgewerkt."
+  },
+  "resumeButtonRetryConnection": {
+    "message": "Verbinding opnieuw proberen"
+  },
+  "resumeButtonRetryConnectionDescription": {
+    "message": "Probeer opnieuw te verbinden nadat de setup is gerepareerd."
+  },
+  "resumeButtonReconnectAgent": {
+    "message": "Agent opnieuw verbinden"
+  },
+  "resumeButtonReconnectAgentDescription": {
+    "message": "Verbind de agent opnieuw met browserbesturing."
+  },
+  "resumeButtonConnecting": {
+    "message": "Verbinden"
+  },
+  "resumeButtonConnectingDescription": {
+    "message": "De agent maakt nu verbinding."
   },
   "cleanupButton": {
     "message": "Browsertabbladen opruimen"
@@ -219,6 +303,17 @@
     "message": "$count$ opleverbare tabbladen beschikbaar. Gebruik browser.deliverables() en daarna claim() om ze te herstellen.",
     "placeholders": {
       "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "pendingExtensionUpdate": {
+    "message": "De extensie-update wordt toegepast zodra browserbesturing inactief is."
+  },
+  "pendingExtensionUpdateVersion": {
+    "message": "De extensie-update $version$ wordt toegepast zodra browserbesturing inactief is.",
+    "placeholders": {
+      "version": {
         "content": "$1"
       }
     }

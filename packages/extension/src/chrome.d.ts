@@ -122,7 +122,13 @@ declare const chrome: {
   debugger: {
     attach(target: { tabId: number }, requiredVersion: string): Promise<void>;
     detach(target: { tabId: number }): Promise<void>;
-    sendCommand(target: { tabId: number }, method: string, commandParams?: unknown): Promise<unknown>;
+    // `sessionId` (Chrome 125+) routes the command to a flattened child target
+    // (e.g. an out-of-process iframe) under the same tab connection.
+    sendCommand(
+      target: { tabId: number; sessionId?: string },
+      method: string,
+      commandParams?: unknown,
+    ): Promise<unknown>;
     onEvent: {
       addListener(
         listener: (source: ChromeDebuggerSource, method: string, params?: unknown) => void,
@@ -147,6 +153,9 @@ type ChromeDebuggerSource = {
   tabId?: number;
   extensionId?: string;
   targetId?: string;
+  // Present (Chrome 125+) when the event originates from a flattened child
+  // target (e.g. an out-of-process iframe) reached via `Target.setAutoAttach`.
+  sessionId?: string;
 };
 
 type ChromeTab = {

@@ -2,7 +2,10 @@
 
 use serde_json::Value;
 
-use crate::backends::cdp::{CdpBackend, targets};
+use crate::backends::{
+    BrowserBackend,
+    cdp::{CdpBackend, targets},
+};
 use crate::error::{HostError, Result};
 use crate::methods;
 
@@ -43,6 +46,16 @@ pub async fn run_tab_command(backend: &CdpBackend, method: &str, params: Value) 
                 .unwrap_or("html");
             tab_screenshot::content_export(backend, tab_id, format).await
         }
+        methods::TAB_EVALUATE | methods::TAB_SNAPSHOT_TEXT => {
+            let tab_id = required_str(&params, "tab_id")?;
+            backend
+                .execute_cdp(
+                    tab_id,
+                    "Runtime.evaluate",
+                    runtime_evaluate_params(&params)?,
+                )
+                .await
+        }
         methods::TAB_URL => tab_goto::url(backend, required_str(&params, "tab_id")?)
             .await
             .map(Value::String),
@@ -51,6 +64,21 @@ pub async fn run_tab_command(backend: &CdpBackend, method: &str, params: Value) 
             .map(Value::String),
         _ => Err(HostError::NotImplemented(format!("{method} (Phase 5/6)"))),
     }
+}
+
+fn runtime_evaluate_params(params: &Value) -> Result<Value> {
+    let expression = required_str(params, "expression")?;
+    Ok(serde_json::json!({
+        "expression": expression,
+        "awaitPromise": params
+            .get("awaitPromise")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        "returnByValue": params
+            .get("returnByValue")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+    }))
 }
 
 fn required_str<'a>(params: &'a Value, key: &str) -> Result<&'a str> {

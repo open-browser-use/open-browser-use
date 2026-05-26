@@ -1,5 +1,5 @@
 import { FrameLocator } from "./frame-locator.js";
-import { Guards } from "./guards.js";
+import { Guards, type CommandabilityGuard } from "./guards.js";
 import { Image } from "./image.js";
 import { withSessionMeta } from "./session-meta.js";
 import type { LoadState } from "./tab.js";
@@ -62,12 +62,13 @@ export class Locator {
     protected readonly guards: Guards,
     protected readonly tabId: string,
     protected readonly selector: string,
+    protected readonly ensureCommandable?: CommandabilityGuard,
   ) {}
 
   locator(subSelector: string): Locator {
     if (!subSelector) throw new Error("locator.locator requires a selector");
-    if (!this.selector) return new Locator(this.transport, this.guards, this.tabId, subSelector);
-    return new Locator(this.transport, this.guards, this.tabId, `${this.selector} >> ${subSelector}`);
+    if (!this.selector) return new Locator(this.transport, this.guards, this.tabId, subSelector, this.ensureCommandable);
+    return new Locator(this.transport, this.guards, this.tabId, `${this.selector} >> ${subSelector}`, this.ensureCommandable);
   }
 
   first(): Locator {
@@ -85,10 +86,10 @@ export class Locator {
 
   async all(opts: { timeout?: number } = {}): Promise<Locator[]> {
     const count = await this.count();
-    const cache = new LocatorReadAllCache(this.transport, this.guards, this.tabId, this.selector);
+    const cache = new LocatorReadAllCache(this.transport, this.guards, this.tabId, this.selector, this.ensureCommandable);
     return Array.from({ length: count }, (_, index) => {
       const selector = this.selector ? `${this.selector} >> nth=${index}` : `nth=${index}`;
-      return new CachedLocator(this.transport, this.guards, this.tabId, selector, index, cache, opts.timeout);
+      return new CachedLocator(this.transport, this.guards, this.tabId, selector, index, cache, opts.timeout, this.ensureCommandable);
     });
   }
 
@@ -115,12 +116,12 @@ export class Locator {
       parts.push(`internal:has-not=${JSON.stringify(opts.hasNot.selector)}`);
     }
     if (opts.visible !== undefined) parts.push(`visible=${opts.visible}`);
-    return new Locator(this.transport, this.guards, this.tabId, parts.filter(Boolean).join(" >> "));
+    return new Locator(this.transport, this.guards, this.tabId, parts.filter(Boolean).join(" >> "), this.ensureCommandable);
   }
 
   frameLocator(selector: string): FrameLocator {
     if (!selector) throw new Error("locator.frameLocator requires a selector");
-    return new FrameLocator(this.transport, this.guards, this.tabId, this.selector ? `${this.selector} >> ${selector}` : selector);
+    return new FrameLocator(this.transport, this.guards, this.tabId, this.selector ? `${this.selector} >> ${selector}` : selector, this.ensureCommandable);
   }
 
   getByRole(role: string, opts: { name?: TextMatcher; exact?: boolean } = {}): Locator {
@@ -236,6 +237,7 @@ export class Locator {
   }
 
   async screenshot(opts: { timeout?: number } = {}): Promise<Image> {
+    this.ensureCommandable?.(M.PLAYWRIGHT_SCREENSHOT);
     const box = await this.boundingBox();
     if (!box) throw new Error(`locator.screenshot failed: no bounding box for ${this.selector}`);
     const params = {
@@ -261,6 +263,7 @@ export class Locator {
   }
 
   async #send(method: string, params: Record<string, unknown>, timeoutMs?: number, requestTimeoutMs?: number): Promise<unknown> {
+    this.ensureCommandable?.(method);
     const timeout = timeoutMs ?? DEFAULT_TIMEOUT_MS;
     const requestTimeout = requestTimeoutMs ?? timeout;
     const command = {
@@ -292,8 +295,9 @@ class CachedLocator extends Locator {
     private readonly index: number,
     private readonly cache: LocatorReadAllCache,
     private readonly readTimeout?: number,
+    ensureCommandable?: CommandabilityGuard,
   ) {
-    super(transport, guards, tabId, selector);
+    super(transport, guards, tabId, selector, ensureCommandable);
   }
 
   override async textContent(): Promise<string | null> {
@@ -320,6 +324,7 @@ class LocatorReadAllCache {
     private readonly guards: Guards,
     private readonly tabId: string,
     private readonly selector: string,
+    private readonly ensureCommandable?: CommandabilityGuard,
   ) {}
 
   async row(index: number, timeoutMs?: number): Promise<LocatorReadAllRow> {
@@ -329,6 +334,7 @@ class LocatorReadAllCache {
 
   private async rows(timeoutMs?: number): Promise<LocatorReadAllRow[]> {
     if (!this.rowsPromise) {
+      this.ensureCommandable?.(M.PLAYWRIGHT_LOCATOR_READ_ALL);
       const timeout = timeoutMs ?? DEFAULT_TIMEOUT_MS;
       const command = {
         command: M.PLAYWRIGHT_LOCATOR_READ_ALL,

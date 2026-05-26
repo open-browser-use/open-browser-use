@@ -77,10 +77,94 @@
     "message": "Copiar transferência de configuração do Agente"
   },
   "stopButton": {
-    "message": "Vou assumir"
+    "message": "Assumir controle"
   },
   "resumeButton": {
-    "message": "Retomar"
+    "message": "Reconectar agente"
+  },
+  "stopButtonTakeControl": {
+    "message": "Assumir controle"
+  },
+  "stopButtonTakeControlDescription": {
+    "message": "Pause o controle do agente para usar este navegador você mesmo."
+  },
+  "stopButtonTakingControl": {
+    "message": "Assumindo controle"
+  },
+  "stopButtonTakingControlDescription": {
+    "message": "O agente está liberando o controle do navegador."
+  },
+  "stopButtonUserControl": {
+    "message": "Você tem controle"
+  },
+  "stopButtonUserControlDescription": {
+    "message": "Você está usando o navegador diretamente."
+  },
+  "stopButtonUpdateNeeded": {
+    "message": "Atualização necessária"
+  },
+  "stopButtonUpdateNeededDescription": {
+    "message": "Atualize o host local antes de mudar o controle do navegador."
+  },
+  "stopButtonSetupNeeded": {
+    "message": "Configuração necessária"
+  },
+  "stopButtonSetupNeededDescription": {
+    "message": "Repare a configuração antes de assumir ou devolver o controle do navegador."
+  },
+  "stopButtonAgentConnecting": {
+    "message": "Agente conectando"
+  },
+  "stopButtonAgentConnectingDescription": {
+    "message": "O agente ainda está conectando ao controle do navegador."
+  },
+  "stopButtonAgentOffline": {
+    "message": "Agente offline"
+  },
+  "stopButtonAgentOfflineDescription": {
+    "message": "Não há controle ativo do agente para assumir."
+  },
+  "resumeButtonAgentControl": {
+    "message": "Agente tem controle"
+  },
+  "resumeButtonAgentControlDescription": {
+    "message": "O agente já controla o navegador."
+  },
+  "resumeButtonWait": {
+    "message": "Aguardar"
+  },
+  "resumeButtonWaitDescription": {
+    "message": "Aguarde até o controle do navegador parar completamente."
+  },
+  "resumeButtonReturnToAgent": {
+    "message": "Devolver ao agente"
+  },
+  "resumeButtonReturnToAgentDescription": {
+    "message": "Devolva o controle do navegador ao agente."
+  },
+  "resumeButtonReconnectAfterUpdate": {
+    "message": "Reconectar após atualizar"
+  },
+  "resumeButtonReconnectAfterUpdateDescription": {
+    "message": "Reconecte após o host local ser atualizado."
+  },
+  "resumeButtonRetryConnection": {
+    "message": "Tentar conexão novamente"
+  },
+  "resumeButtonRetryConnectionDescription": {
+    "message": "Tente reconectar após reparar a configuração."
+  },
+  "resumeButtonReconnectAgent": {
+    "message": "Reconectar agente"
+  },
+  "resumeButtonReconnectAgentDescription": {
+    "message": "Reconecte o agente ao controle do navegador."
+  },
+  "resumeButtonConnecting": {
+    "message": "Conectando"
+  },
+  "resumeButtonConnectingDescription": {
+    "message": "O agente está conectando agora."
   },
   "cleanupButton": {
     "message": "Limpar abas do navegador"
@@ -227,6 +311,17 @@
     "message": "$count$ abas entregáveis disponíveis. Use browser.deliverables() e depois claim() para recuperá-las.",
     "placeholders": {
       "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "pendingExtensionUpdate": {
+    "message": "A atualização da extensão será aplicada quando o controle do navegador estiver ocioso."
+  },
+  "pendingExtensionUpdateVersion": {
+    "message": "A atualização da extensão $version$ será aplicada quando o controle do navegador estiver ocioso.",
+    "placeholders": {
+      "version": {
         "content": "$1"
       }
     }

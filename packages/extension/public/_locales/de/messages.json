@@ -77,10 +77,94 @@
     "message": "Agent-Einrichtungsübergabe kopieren"
   },
   "stopButton": {
-    "message": "Ich übernehme"
+    "message": "Kontrolle übernehmen"
   },
   "resumeButton": {
-    "message": "Fortsetzen"
+    "message": "Agent neu verbinden"
+  },
+  "stopButtonTakeControl": {
+    "message": "Kontrolle übernehmen"
+  },
+  "stopButtonTakeControlDescription": {
+    "message": "Agent-Steuerung pausieren, damit du diesen Browser selbst verwenden kannst."
+  },
+  "stopButtonTakingControl": {
+    "message": "Übernehme Kontrolle"
+  },
+  "stopButtonTakingControlDescription": {
+    "message": "Der Agent gibt die Browsersteuerung frei."
+  },
+  "stopButtonUserControl": {
+    "message": "Du hast Kontrolle"
+  },
+  "stopButtonUserControlDescription": {
+    "message": "Du verwendest den Browser direkt."
+  },
+  "stopButtonUpdateNeeded": {
+    "message": "Update nötig"
+  },
+  "stopButtonUpdateNeededDescription": {
+    "message": "Aktualisiere den lokalen Host, bevor du die Browsersteuerung wechselst."
+  },
+  "stopButtonSetupNeeded": {
+    "message": "Setup nötig"
+  },
+  "stopButtonSetupNeededDescription": {
+    "message": "Repariere das Setup, bevor du die Browsersteuerung übernimmst oder zurückgibst."
+  },
+  "stopButtonAgentConnecting": {
+    "message": "Agent verbindet"
+  },
+  "stopButtonAgentConnectingDescription": {
+    "message": "Der Agent verbindet sich noch mit der Browsersteuerung."
+  },
+  "stopButtonAgentOffline": {
+    "message": "Agent offline"
+  },
+  "stopButtonAgentOfflineDescription": {
+    "message": "Es gibt keine aktive Agent-Steuerung zum Übernehmen."
+  },
+  "resumeButtonAgentControl": {
+    "message": "Agent hat Kontrolle"
+  },
+  "resumeButtonAgentControlDescription": {
+    "message": "Der Agent steuert den Browser bereits."
+  },
+  "resumeButtonWait": {
+    "message": "Warten"
+  },
+  "resumeButtonWaitDescription": {
+    "message": "Warte, bis die Browsersteuerung vollständig beendet ist."
+  },
+  "resumeButtonReturnToAgent": {
+    "message": "Zurück zum Agent"
+  },
+  "resumeButtonReturnToAgentDescription": {
+    "message": "Gib die Browsersteuerung an den Agent zurück."
+  },
+  "resumeButtonReconnectAfterUpdate": {
+    "message": "Nach Update verbinden"
+  },
+  "resumeButtonReconnectAfterUpdateDescription": {
+    "message": "Verbinde erneut, nachdem der lokale Host aktualisiert wurde."
+  },
+  "resumeButtonRetryConnection": {
+    "message": "Verbindung erneut versuchen"
+  },
+  "resumeButtonRetryConnectionDescription": {
+    "message": "Versuche nach der Setup-Reparatur erneut zu verbinden."
+  },
+  "resumeButtonReconnectAgent": {
+    "message": "Agent neu verbinden"
+  },
+  "resumeButtonReconnectAgentDescription": {
+    "message": "Verbinde den Agent erneut mit der Browsersteuerung."
+  },
+  "resumeButtonConnecting": {
+    "message": "Verbindet"
+  },
+  "resumeButtonConnectingDescription": {
+    "message": "Der Agent verbindet sich jetzt."
   },
   "cleanupButton": {
     "message": "Browser-Tabs bereinigen"
@@ -219,6 +303,17 @@
     "message": "$count$ lieferbare Tabs verfügbar. Verwende browser.deliverables() und dann claim(), um sie wiederherzustellen.",
     "placeholders": {
       "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "pendingExtensionUpdate": {
+    "message": "Das Erweiterungsupdate wird angewendet, sobald die Browsersteuerung inaktiv ist."
+  },
+  "pendingExtensionUpdateVersion": {
+    "message": "Das Erweiterungsupdate $version$ wird angewendet, sobald die Browsersteuerung inaktiv ist.",
+    "placeholders": {
+      "version": {
         "content": "$1"
       }
     }

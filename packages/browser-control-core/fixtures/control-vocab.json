@@ -1,0 +1,43 @@
+{
+  "schemaVersion": 1,
+  "taskStates": [
+    "created",
+    "running",
+    "waiting_for_human",
+    "waiting_for_effect",
+    "paused_yielded",
+    "resuming",
+    "repair_required",
+    "blocked",
+    "completed",
+    "cancelling",
+    "cancelled",
+    "failed"
+  ],
+  "resumeCompleteStatuses": [
+    "attached",
+    "blocked",
+    "attach_failed",
+    "observation_failed"
+  ],
+  "tabOrigins": [
+    "agent",
+    "user"
+  ],
+  "tabStatuses": [
+    "active",
+    "handoff",
+    "deliverable"
+  ],
+  "coordinateSpaces": [
+    "visualViewport",
+    "layoutViewport"
+  ],
+  "sessionControlProjections": [
+    "human_takeover",
+    "yielded",
+    "resuming",
+    "repair_required",
+    "blocked"
+  ]
+}

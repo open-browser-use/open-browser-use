@@ -1,5 +1,7 @@
 //! WebExtension/native-messaging browser backend.
 
+mod oopif;
+
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex};
@@ -8,6 +10,7 @@ use async_trait::async_trait;
 use serde_json::{Map, Value, json};
 use tokio::sync::{Mutex, broadcast};
 
+use crate::backends::webext::oopif::WebextOopifSessionMap;
 use crate::backends::{BackendKind, BackendRequestContext, BrowserBackend, cdp::ensure_injected};
 use crate::error::{HostError, Result};
 use crate::methods;
@@ -18,13 +21,15 @@ use crate::ops::cua::{
     NavigationWaitOptions, NavigationWaiter,
 };
 use crate::ops::dialogs::DialogTraceStore;
-use crate::ops::dom_cua::{self, Rect};
+use crate::ops::dom_cua::{self, VisibleDomSnapshotStore};
+use crate::ops::dom_cua_runtime::{self, DomCuaRuntimeBackend};
 use crate::ops::event_wait;
 use crate::ops::playwright::handles as handle_ops;
 use crate::ops::playwright::runtime::{
     self as playwright_runtime, MEDIA_DOWNLOAD_FUNCTION, PlaywrightCommandBackend,
     PlaywrightRuntimeBackend, PlaywrightTextInputBackend,
 };
+use crate::ops::point::{self, PointCdpBackend};
 use crate::ops::tab_navigation::{self, TabNavigationBackend};
 use crate::service_registry::ServiceRegistry;
 use crate::tab_state::{TabId, TabOrigin, TabRecord, TabStatus};
@@ -39,8 +44,14 @@ pub struct WebExtensionBackend {
     registry: Arc<ServiceRegistry>,
     dialog_traces: DialogTraceStore,
     extension_diagnostics: Arc<StdMutex<Value>>,
-    visible_dom_nodes: Arc<Mutex<HashMap<String, HashSet<String>>>>,
+    visible_dom_nodes: Arc<Mutex<VisibleDomSnapshotStore>>,
     virtual_clipboard_scripts: Arc<Mutex<HashMap<String, String>>>,
+    /// OOPIF (out-of-process iframe) child sessions, populated from the
+    /// `Target.attachedToTarget` events the extension forwards as `onCDPEvent`.
+    /// A `std` mutex (not `tokio`) because the ingress — `handle_notification` —
+    /// is synchronous; readers clone what they need out and drop the guard before
+    /// any `.await`, so the lock is never held across a suspension point.
+    oopif_sessions: Arc<StdMutex<WebextOopifSessionMap>>,
 }
 
 impl WebExtensionBackend {
@@ -56,8 +67,9 @@ impl WebExtensionBackend {
             registry: Arc::new(ServiceRegistry::default()),
             dialog_traces: DialogTraceStore::default(),
             extension_diagnostics: Arc::new(StdMutex::new(json!({}))),
-            visible_dom_nodes: Arc::new(Mutex::new(HashMap::new())),
+            visible_dom_nodes: Arc::new(Mutex::new(VisibleDomSnapshotStore::default())),
             virtual_clipboard_scripts: Arc::new(Mutex::new(HashMap::new())),
+            oopif_sessions: Arc::new(StdMutex::new(WebextOopifSessionMap::default())),
         }
     }
 
@@ -122,12 +134,27 @@ impl WebExtensionBackend {
         if !matches!(method.as_str(), "onCDPEvent" | "onDownloadChange") {
             return;
         }
+        // OOPIF auto-attach bookkeeping: `Target.attachedToTarget` /
+        // `Target.detachedFromTarget` are forwarded as `onCDPEvent` and carry the
+        // owning `tabId` in `source`, so the session map keys by tab directly.
+        // Applied before the broadcast so the map is current independent of any
+        // event subscriber.
+        if method == "onCDPEvent"
+            && let Ok(mut map) = self.oopif_sessions.lock()
+        {
+            map.apply_cdp_event(&params);
+        }
         let _ = self.event_tx.send(ExtensionNotification { method, params });
     }
 
     /// Shared per-backend service registry.
     pub fn registry(&self) -> &Arc<ServiceRegistry> {
         &self.registry
+    }
+
+    /// OOPIF child-session map, populated from forwarded `attachedToTarget` events.
+    pub(crate) fn oopif_sessions(&self) -> &Arc<StdMutex<WebextOopifSessionMap>> {
+        &self.oopif_sessions
     }
 
     /// Recent handled native-dialog traces.
@@ -157,6 +184,11 @@ impl WebExtensionBackend {
 pub trait ExtensionTransport: Send + Sync {
     /// Send a request to the extension service worker.
     async fn request(&self, method: &str, params: Value) -> Result<Value>;
+
+    /// Transport-owned lifecycle diagnostics.
+    fn diagnostics(&self) -> Value {
+        json!({})
+    }
 }
 
 /// Notification emitted by the extension service worker.
@@ -184,6 +216,10 @@ impl BrowserBackend for WebExtensionBackend {
         &self.id
     }
 
+    fn owns_request_deadline(&self, _method: &str) -> bool {
+        self.transport.is_some()
+    }
+
     fn metadata(&self) -> Value {
         self.metadata.clone()
     }
@@ -193,6 +229,10 @@ impl BrowserBackend for WebExtensionBackend {
             "lifecycle": registry_lifecycle_metadata(self.registry()),
             "dialogs": self.dialog_traces().diagnostics(),
             "extension": self.extension_diagnostics(),
+            "transport": self.transport
+                .as_ref()
+                .map(|transport| transport.diagnostics())
+                .unwrap_or_else(|| json!({})),
         })
     }
 
@@ -209,6 +249,10 @@ impl BrowserBackend for WebExtensionBackend {
                 "lifecycle": registry_lifecycle_metadata(self.registry()),
                 "dialogs": self.dialog_traces().diagnostics(),
                 "extension": self.extension_diagnostics(),
+                "transport": self.transport
+                    .as_ref()
+                    .map(|transport| transport.diagnostics())
+                    .unwrap_or_else(|| json!({})),
             },
         }))
     }
@@ -226,8 +270,7 @@ impl BrowserBackend for WebExtensionBackend {
         Self::require_session_context(ctx, "attach")?;
         let parsed_tab_id = parse_tab_id(_tab_id)?;
         let normalized_tab_id = parsed_tab_id.to_string();
-        ensure_active_tab_if_recorded(self, &normalized_tab_id)?;
-        record_session_context(self, ctx)?;
+        validate_active_tab_if_recorded(self, ctx, &normalized_tab_id)?;
         self.transport("attach")?
             .request(
                 "attach",
@@ -239,6 +282,7 @@ impl BrowserBackend for WebExtensionBackend {
                 }),
             )
             .await?;
+        record_session_context(self, ctx)?;
         self.registry()
             .update(&TabId::new(&normalized_tab_id), |record| {
                 record.attached = true;
@@ -252,9 +296,7 @@ impl BrowserBackend for WebExtensionBackend {
         Self::require_session_context(ctx, "detach")?;
         let parsed_tab_id = parse_tab_id(_tab_id)?;
         let normalized_tab_id = parsed_tab_id.to_string();
-        ensure_active_tab_if_recorded(self, &normalized_tab_id)?;
-        record_session_context(self, ctx)?;
-        cleanup_virtual_clipboard_script(self, ctx, _tab_id).await;
+        validate_active_tab_if_recorded(self, ctx, &normalized_tab_id)?;
         self.transport("detach")?
             .request(
                 "detach",
@@ -266,6 +308,8 @@ impl BrowserBackend for WebExtensionBackend {
                 }),
             )
             .await?;
+        record_session_context(self, ctx)?;
+        cleanup_virtual_clipboard_script(self, ctx, _tab_id).await;
         self.registry()
             .update(&TabId::new(&normalized_tab_id), |record| {
                 record.attached = false;
@@ -292,6 +336,39 @@ impl BrowserBackend for WebExtensionBackend {
             ExecuteCdpOptions::default(),
         )
         .await
+    }
+
+    async fn current_url_for_policy(
+        &self,
+        ctx: &BackendRequestContext,
+        tab_id: &str,
+    ) -> Result<String> {
+        self.ensure_active()?;
+        Self::require_session_context(ctx, "currentUrlForPolicy")?;
+        let parsed_tab_id = parse_tab_id(tab_id)?;
+        let normalized_tab_id = parsed_tab_id.to_string();
+        let session_id = ctx.session_id.as_deref().unwrap_or_default();
+        self.registry()
+            .validate_active_session_tab(session_id, &TabId::new(&normalized_tab_id))?;
+        let response = self
+            .transport("getTabUrlForPolicy")?
+            .request(
+                "getTabUrlForPolicy",
+                json!({
+                    "session_id": ctx.session_id.clone(),
+                    "turn_id": ctx.turn_id.clone(),
+                    "tabId": parsed_tab_id,
+                    "timeoutMs": ctx.client_timeout_ms,
+                }),
+            )
+            .await?;
+        response
+            .get("url")
+            .and_then(Value::as_str)
+            .map(str::to_string)
+            .ok_or_else(|| {
+                HostError::Protocol("current-url policy probe missing string URL".into())
+            })
     }
 
     async fn create_tab_with_context(
@@ -322,7 +399,6 @@ impl BrowserBackend for WebExtensionBackend {
     async fn list_tabs_with_context(&self, ctx: &BackendRequestContext) -> Result<Value> {
         self.ensure_active()?;
         Self::require_session_context(ctx, "getTabs")?;
-        record_session_context(self, ctx)?;
         let response = self
             .transport("getTabs")?
             .request(
@@ -334,35 +410,13 @@ impl BrowserBackend for WebExtensionBackend {
                 }),
             )
             .await?;
-        let deliverable_tabs = normalize_optional_tab_array(&response, "deliverableTabs")?;
         let normalized = normalize_tabs_response(response)?;
-        let mut observed_tab_ids = HashSet::new();
-        if let Some(tabs) = normalized.as_array() {
-            for tab in tabs {
-                if let Some(tab_id) = tab.get("tab_id").and_then(Value::as_str) {
-                    observed_tab_ids.insert(TabId::new(tab_id));
-                }
-                record_webext_tab(self, ctx, tab, TabOrigin::Agent, TabStatus::Active)?;
-            }
-        }
-        for tab in &deliverable_tabs {
-            record_webext_tab(self, ctx, tab, TabOrigin::Agent, TabStatus::Deliverable)?;
-        }
-        let stale_tabs = self.registry().reconcile_session_tabs(
-            ctx.session_id.as_deref().unwrap_or_default(),
-            &observed_tab_ids,
-            "not returned by WebExtension getTabs during session reconcile",
-        )?;
-        for stale in stale_tabs {
-            forget_tab_state(self, ctx, &stale.id.0).await;
-        }
         Ok(normalized)
     }
 
     async fn current_tab_with_context(&self, ctx: &BackendRequestContext) -> Result<Value> {
         self.ensure_active()?;
         Self::require_session_context(ctx, "getCurrentTab")?;
-        record_session_context(self, ctx)?;
         let response = self
             .transport("getCurrentTab")?
             .request(
@@ -373,14 +427,6 @@ impl BrowserBackend for WebExtensionBackend {
         let Some(normalized) = normalize_optional_tab_response(response)? else {
             return Ok(Value::Null);
         };
-        if let Some(tab_id) = normalized.get("tab_id").and_then(Value::as_str) {
-            record_webext_tab(self, ctx, &normalized, TabOrigin::Agent, TabStatus::Active)?;
-            self.registry().set_active_tab(
-                ctx.session_id.as_deref().unwrap_or_default(),
-                tab_id,
-                ctx.turn_id.as_deref(),
-            )?;
-        }
         Ok(normalized)
     }
 
@@ -499,6 +545,10 @@ impl BrowserBackend for WebExtensionBackend {
     ) -> Result<Value> {
         self.ensure_active()?;
         Self::require_session_context(ctx, "finalizeTabs")?;
+        self.registry().assert_agent_owns_session(
+            ctx.session_id.as_deref().unwrap_or_default(),
+            "finalizeTabs",
+        )?;
         record_session_context(self, ctx)?;
         let session_tabs = self
             .registry()
@@ -581,6 +631,10 @@ impl BrowserBackend for WebExtensionBackend {
     ) -> Result<Value> {
         self.ensure_active()?;
         Self::require_session_context(ctx, "turnEnded")?;
+        self.registry().reject_human_takeover_if_present(
+            ctx.session_id.as_deref().unwrap_or_default(),
+            "turnEnded",
+        )?;
         record_session_context(self, ctx)?;
         self.transport("turnEnded")?
             .request("turnEnded", context_payload(ctx, params))
@@ -595,10 +649,14 @@ impl BrowserBackend for WebExtensionBackend {
     ) -> Result<Value> {
         self.ensure_active()?;
         Self::require_session_context(ctx, "yieldControl")?;
-        record_session_context(self, ctx)?;
         self.transport("yieldControl")?
             .request("yieldControl", context_payload(ctx, params))
             .await?;
+        self.registry().set_human_takeover(
+            ctx.session_id.as_deref().unwrap_or_default(),
+            ctx.turn_id.as_deref(),
+            true,
+        )?;
         Ok(Value::Null)
     }
 
@@ -609,23 +667,34 @@ impl BrowserBackend for WebExtensionBackend {
     ) -> Result<Value> {
         self.ensure_active()?;
         Self::require_session_context(ctx, "resumeControl")?;
-        record_session_context(self, ctx)?;
         let response = self
             .transport("resumeControl")?
             .request("resumeControl", context_payload(ctx, params))
             .await?;
-        let Some(normalized) = normalize_optional_tab_response(response)? else {
-            return Ok(Value::Null);
+        let normalized_response = normalize_resume_control_response(response)?;
+        let Some(normalized_tab) = resume_control_tab(&normalized_response) else {
+            return Ok(normalized_response);
         };
-        if let Some(tab_id) = normalized.get("tab_id").and_then(Value::as_str) {
-            record_webext_tab(self, ctx, &normalized, TabOrigin::Agent, TabStatus::Active)?;
+        self.registry().set_human_takeover(
+            ctx.session_id.as_deref().unwrap_or_default(),
+            ctx.turn_id.as_deref(),
+            false,
+        )?;
+        if let Some(tab_id) = normalized_tab.get("tab_id").and_then(Value::as_str) {
+            record_webext_tab(
+                self,
+                ctx,
+                normalized_tab,
+                TabOrigin::Agent,
+                TabStatus::Active,
+            )?;
             self.registry().set_active_tab(
                 ctx.session_id.as_deref().unwrap_or_default(),
                 tab_id,
                 ctx.turn_id.as_deref(),
             )?;
         }
-        Ok(normalized)
+        Ok(normalized_response)
     }
 
     async fn browser_command_with_context(
@@ -650,10 +719,15 @@ impl BrowserBackend for WebExtensionBackend {
     ) -> Result<Value> {
         self.ensure_active()?;
         Self::require_session_context(ctx, method)?;
-        ensure_active_tab_param_if_recorded(self, &params)?;
-        record_session_context(self, ctx)?;
-        remember_active_tab_param(self, ctx, &params)?;
-        run_cua_command(self, ctx, method, params).await
+        let tab_id = params_tab_id(&params);
+        validate_active_tab_param_if_recorded(self, ctx, &params)?;
+        let result = run_cua_command(self, ctx, method, params).await?;
+        if let Some(tab_id) = tab_id {
+            set_active_tab_after_success(self, ctx, &tab_id)?;
+        } else {
+            record_session_context(self, ctx)?;
+        }
+        Ok(result)
     }
 
     async fn playwright_command_with_context(
@@ -664,10 +738,15 @@ impl BrowserBackend for WebExtensionBackend {
     ) -> Result<Value> {
         self.ensure_active()?;
         Self::require_session_context(ctx, method)?;
-        ensure_active_tab_param_if_recorded(self, &params)?;
-        record_session_context(self, ctx)?;
-        remember_active_tab_param(self, ctx, &params)?;
-        run_playwright_command(self, ctx, method, params).await
+        let tab_id = params_tab_id(&params);
+        validate_active_tab_param_if_recorded(self, ctx, &params)?;
+        let result = run_playwright_command(self, ctx, method, params).await?;
+        if let Some(tab_id) = tab_id {
+            set_active_tab_after_success(self, ctx, &tab_id)?;
+        } else {
+            record_session_context(self, ctx)?;
+        }
+        Ok(result)
     }
 
     async fn tab_command_with_context(
@@ -678,10 +757,15 @@ impl BrowserBackend for WebExtensionBackend {
     ) -> Result<Value> {
         self.ensure_active()?;
         Self::require_session_context(ctx, method)?;
-        ensure_active_tab_param_if_recorded(self, &params)?;
-        record_session_context(self, ctx)?;
-        remember_active_tab_param(self, ctx, &params)?;
-        run_tab_command(self, ctx, method, params).await
+        let tab_id = params_tab_id(&params);
+        validate_active_tab_param_if_recorded(self, ctx, &params)?;
+        let result = run_tab_command(self, ctx, method, params).await?;
+        if let Some(tab_id) = tab_id {
+            set_active_tab_after_success(self, ctx, &tab_id)?;
+        } else {
+            record_session_context(self, ctx)?;
+        }
+        Ok(result)
     }
 }
 
@@ -695,28 +779,27 @@ fn record_session_context(
     )
 }
 
-fn remember_active_tab_param(
+fn set_active_tab_after_success(
     backend: &WebExtensionBackend,
     ctx: &BackendRequestContext,
-    params: &Value,
+    tab_id: &str,
 ) -> Result<()> {
-    if let Some(tab_id) = params
-        .get("tab_id")
-        .or_else(|| params.get("tabId"))
-        .and_then(|value| {
-            value
-                .as_str()
-                .map(str::to_string)
-                .or_else(|| value.as_i64().map(|value| value.to_string()))
-        })
+    let Some(record) = backend.registry().get(&TabId::new(tab_id))? else {
+        return record_session_context(backend, ctx);
+    };
+    if record.session_id.as_deref() != ctx.session_id.as_deref()
+        || record.status != TabStatus::Active
     {
-        backend.registry().set_active_tab(
+        return backend.registry().validate_active_session_tab(
             ctx.session_id.as_deref().unwrap_or_default(),
-            tab_id,
-            ctx.turn_id.as_deref(),
-        )?;
+            &TabId::new(tab_id),
+        );
     }
-    Ok(())
+    backend.registry().set_active_tab(
+        ctx.session_id.as_deref().unwrap_or_default(),
+        tab_id,
+        ctx.turn_id.as_deref(),
+    )
 }
 
 async fn execute_cdp_raw_with_context(
@@ -754,14 +837,8 @@ async fn execute_cdp_with_context_options(
     WebExtensionBackend::require_session_context(ctx, "executeCdp")?;
     let parsed_tab_id = parse_tab_id(tab_id)?;
     let normalized_tab_id = parsed_tab_id.to_string();
-    ensure_active_tab_if_recorded(backend, &normalized_tab_id)?;
-    record_session_context(backend, ctx)?;
-    backend.registry().set_active_tab(
-        ctx.session_id.as_deref().unwrap_or_default(),
-        normalized_tab_id.as_str(),
-        ctx.turn_id.as_deref(),
-    )?;
-    if crate::backends::cdp::dialogs::method_can_open_dialog(method) {
+    validate_active_tab_if_recorded(backend, ctx, &normalized_tab_id)?;
+    let result = if crate::backends::cdp::dialogs::method_can_open_dialog(method) {
         execute_cdp_with_dialog_policy(
             backend,
             ctx,
@@ -774,7 +851,9 @@ async fn execute_cdp_with_context_options(
         .await
     } else {
         execute_cdp_raw_with_options(backend, ctx, parsed_tab_id, method, params, options).await
-    }
+    }?;
+    set_active_tab_after_success(backend, ctx, &normalized_tab_id)?;
+    Ok(result)
 }
 
 async fn execute_cdp_raw_with_options(
@@ -795,6 +874,49 @@ async fn execute_cdp_raw_with_options(
     if options.suppress_agent_overlay_for_capture {
         request.insert("suppressAgentOverlayForCapture".into(), Value::Bool(true));
     }
+    backend
+        .transport("executeCdp")?
+        .request("executeCdp", Value::Object(request))
+        .await
+}
+
+/// Execute a CDP command addressed to a specific OOPIF child session.
+///
+/// WebExtension `executeCdp` is addressed by `{ tabId, sessionId }`: the
+/// extension passes that `target` straight to `chrome.debugger.sendCommand`,
+/// which routes to the flattened child session. The owning `tabId` is recovered
+/// from the OOPIF session map (the shared runtime hands the backend only the
+/// child `session_id`). Geometry-only commands never open dialogs, so this skips
+/// the dialog-policy loop.
+async fn execute_cdp_on_session_with_context(
+    backend: &WebExtensionBackend,
+    ctx: &BackendRequestContext,
+    cdp_session_id: &str,
+    method: &str,
+    params: Value,
+) -> Result<Value> {
+    backend.ensure_active()?;
+    WebExtensionBackend::require_session_context(ctx, "executeCdp")?;
+    let tab_id = backend
+        .oopif_sessions()
+        .lock()
+        .map_err(|_| HostError::Protocol("OOPIF session map poisoned".into()))?
+        .tab_for_session(cdp_session_id)
+        .ok_or_else(|| {
+            HostError::Protocol(format!(
+                "no attached tab owns OOPIF session {cdp_session_id}"
+            ))
+        })?;
+    let mut request = Map::new();
+    request.insert("session_id".into(), json!(ctx.session_id.clone()));
+    request.insert("turn_id".into(), json!(ctx.turn_id.clone()));
+    request.insert(
+        "target".into(),
+        json!({ "tabId": tab_id, "sessionId": cdp_session_id }),
+    );
+    request.insert("method".into(), Value::String(method.to_string()));
+    request.insert("commandParams".into(), params);
+    request.insert("timeoutMs".into(), json!(ctx.client_timeout_ms));
     backend
         .transport("executeCdp")?
         .request("executeCdp", Value::Object(request))
@@ -894,20 +1016,31 @@ fn extension_handled_dialog_action(
     (action.accept() == accept).then_some(action)
 }
 
-fn ensure_active_tab_param_if_recorded(
+fn validate_active_tab_param_if_recorded(
     backend: &WebExtensionBackend,
+    ctx: &BackendRequestContext,
     params: &Value,
 ) -> Result<()> {
     if let Some(tab_id) = params_tab_id(params) {
-        ensure_active_tab_if_recorded(backend, &tab_id)?;
+        validate_active_tab_if_recorded(backend, ctx, &tab_id)?;
     }
     Ok(())
 }
 
-fn ensure_active_tab_if_recorded(backend: &WebExtensionBackend, tab_id: &str) -> Result<()> {
+fn validate_active_tab_if_recorded(
+    backend: &WebExtensionBackend,
+    ctx: &BackendRequestContext,
+    tab_id: &str,
+) -> Result<()> {
     let Some(record) = backend.registry().get(&TabId::new(tab_id))? else {
         return Ok(());
     };
+    if record.session_id.as_deref() != ctx.session_id.as_deref() {
+        return Err(HostError::Protocol(format!(
+            "tab {tab_id} does not belong to session {}",
+            ctx.session_id.as_deref().unwrap_or_default()
+        )));
+    }
     if record.status != TabStatus::Active {
         return Err(HostError::Protocol(format!(
             "tab {tab_id} is {}, not actively controlled",
@@ -959,6 +1092,10 @@ fn registry_lifecycle_metadata(registry: &ServiceRegistry) -> Value {
         Ok(rows) => rows,
         Err(error) => return json!({ "error": error.to_string() }),
     };
+    let recent_lifecycle_events = match registry.recent_lifecycle_events(20) {
+        Ok(rows) => rows,
+        Err(error) => return json!({ "error": error.to_string() }),
+    };
     json!({
         "sessions": counts.sessions,
         "stale_sessions": counts.stale_sessions,
@@ -971,6 +1108,7 @@ fn registry_lifecycle_metadata(registry: &ServiceRegistry) -> Value {
         "downloads": counts.downloads,
         "stale_file_choosers": counts.stale_file_choosers,
         "stale_downloads": counts.stale_downloads,
+        "recent_events": recent_lifecycle_events,
     })
 }
 
@@ -1035,7 +1173,49 @@ impl PlaywrightRuntimeBackend for WebExtensionBackend {
         )
         .await
     }
+
+    async fn playwright_top_level_session(&self, tab_id: &str) -> Option<String> {
+        // WebExtension has no explicit top-level CDP session id — `chrome.debugger`
+        // addresses the page by `tabId` alone. Encode the tab in a sentinel so
+        // `execute_playwright_cdp_on_session` can route a top-level command by
+        // `{ tabId }` while OOPIF child commands route by `{ tabId, sessionId }`.
+        let parsed = parse_tab_id(tab_id).ok()?;
+        Some(format!("{WEBEXT_TOP_SESSION_PREFIX}{parsed}"))
+    }
+
+    async fn playwright_oopif_session_for_frame(&self, frame_id: &str) -> Option<String> {
+        // CDP target ids are unique per browser process, so a frameId resolves to
+        // at most one OOPIF session regardless of tab; scan all tabs' sessions.
+        self.oopif_sessions()
+            .lock()
+            .ok()?
+            .session_for_any_frame(frame_id)
+    }
+
+    async fn execute_playwright_cdp_on_session(
+        &self,
+        ctx: &BackendRequestContext,
+        session_id: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        match session_id.strip_prefix(WEBEXT_TOP_SESSION_PREFIX) {
+            // Top-level: route by tabId only (no child sessionId).
+            Some(tab_id) => {
+                execute_cdp_raw_with_context(self, ctx, parse_tab_id(tab_id)?, method, params).await
+            }
+            // OOPIF child session: route by { tabId, sessionId }.
+            None => {
+                execute_cdp_on_session_with_context(self, ctx, session_id, method, params).await
+            }
+        }
+    }
 }
+
+/// Sentinel prefix for the WebExtension "top-level session" placeholder. The
+/// page has no real CDP session id in the extension transport, so the tab id is
+/// carried here and decoded by `execute_playwright_cdp_on_session`.
+const WEBEXT_TOP_SESSION_PREFIX: &str = "webext-top:";
 
 #[async_trait]
 impl PlaywrightTextInputBackend for WebExtensionBackend {
@@ -1066,6 +1246,20 @@ impl PlaywrightTextInputBackend for WebExtensionBackend {
         )
         .await
         .map(|_| ())
+    }
+}
+
+#[async_trait]
+impl PointCdpBackend for WebExtensionBackend {
+    async fn execute_point_cdp(
+        &self,
+        ctx: &BackendRequestContext,
+        tab_id: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        self.execute_cdp_with_context(ctx, tab_id, method, params)
+            .await
     }
 }
 
@@ -1104,6 +1298,22 @@ impl PlaywrightCommandBackend for WebExtensionBackend {
         params: Value,
     ) -> Result<Value> {
         capture_screenshot(self, ctx, params).await
+    }
+
+    async fn playwright_element_info(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value> {
+        point::element_info(self, ctx, params).await
+    }
+
+    async fn playwright_element_screenshot(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value> {
+        point::element_screenshot(self, ctx, params).await
     }
 
     async fn wait_for_playwright_url(
@@ -1176,6 +1386,7 @@ async fn playwright_wait_for_file_chooser(
     ctx: &BackendRequestContext,
     params: Value,
 ) -> Result<Value> {
+    WebExtensionBackend::require_session_context(ctx, "playwright_wait_for_file_chooser")?;
     let tab_id = required_str(&params, "tab_id")?;
     backend
         .execute_cdp_with_context(ctx, tab_id, "Page.enable", json!({}))
@@ -1240,6 +1451,7 @@ async fn playwright_wait_for_download(
     ctx: &BackendRequestContext,
     params: Value,
 ) -> Result<Value> {
+    WebExtensionBackend::require_session_context(ctx, "playwright_wait_for_download")?;
     let tab_id = required_str(&params, "tab_id")?;
     let will_begin = wait_for_cdp_event_matching(
         backend,
@@ -1272,6 +1484,9 @@ async fn playwright_download_path(
             .await?;
         if !handle_ops::download_change_is_complete(&change) {
             let message = handle_ops::download_change_failure_message(&change);
+            backend
+                .registry()
+                .mark_download_failed(&download_id, &state, message)?;
             return Err(HostError::CdpFailure(format!("{message}; event={change}")));
         }
         let path = handle_ops::download_change_filename(&change);
@@ -1463,6 +1678,17 @@ async fn run_tab_command(
             )
             .await
         }
+        methods::TAB_EVALUATE | methods::TAB_SNAPSHOT_TEXT => {
+            let tab_id = required_str(&params, "tab_id")?;
+            backend
+                .execute_cdp_with_context(
+                    ctx,
+                    tab_id,
+                    "Runtime.evaluate",
+                    runtime_evaluate_params(&params)?,
+                )
+                .await
+        }
         methods::TAB_URL => tab_navigation::url(&navigation, required_str(&params, "tab_id")?)
             .await
             .map(Value::String),
@@ -1543,15 +1769,201 @@ async fn run_cua_command(
             CoordinateCommand::DownloadMedia => cua_download_media(backend, ctx, params).await,
         };
     }
-    match method {
-        methods::DOM_CUA_GET_VISIBLE_DOM => dom_cua_visible_dom(backend, ctx, params).await,
-        methods::DOM_CUA_CLICK => dom_cua_click(backend, ctx, params, 1).await,
-        methods::DOM_CUA_DOUBLE_CLICK => dom_cua_click(backend, ctx, params, 2).await,
-        methods::DOM_CUA_SCROLL => dom_cua_scroll(backend, ctx, params).await,
-        methods::DOM_CUA_TYPE => dom_cua_type(backend, ctx, params).await,
-        methods::DOM_CUA_KEYPRESS => dom_cua_keypress(backend, ctx, params).await,
-        methods::DOM_CUA_DOWNLOAD_MEDIA => dom_cua_download_media(backend, ctx, params).await,
-        _ => Err(HostError::NotImplemented(format!("cua command {method}"))),
+    if method == methods::DOM_CUA_DOWNLOAD_MEDIA {
+        return dom_cua_download_media(backend, ctx, params).await;
+    }
+    if method.starts_with("dom_cua_") {
+        return dom_cua_runtime::run(backend, ctx, method, params).await;
+    }
+    Err(HostError::NotImplemented(format!("cua command {method}")))
+}
+
+#[async_trait::async_trait]
+impl DomCuaRuntimeBackend for WebExtensionBackend {
+    async fn execute_dom_cdp(
+        &self,
+        ctx: &BackendRequestContext,
+        tab_id: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        self.execute_cdp_with_context(ctx, tab_id, method, params)
+            .await
+    }
+
+    async fn dispatch_coordinate_cua(
+        &self,
+        ctx: &BackendRequestContext,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        if let Some(command) = cua_ops::coordinate_command(method) {
+            return match command {
+                CoordinateCommand::Click { click_count } => {
+                    click(self, ctx, params, click_count).await
+                }
+                CoordinateCommand::Scroll => scroll(self, ctx, params).await,
+                CoordinateCommand::TypeText => type_text(self, ctx, params).await,
+                CoordinateCommand::Keypress => keypress(self, ctx, params).await,
+                CoordinateCommand::Drag => drag(self, ctx, params).await,
+                CoordinateCommand::Move => move_mouse(self, ctx, params).await,
+                CoordinateCommand::DownloadMedia => cua_download_media(self, ctx, params).await,
+            };
+        }
+        Err(HostError::NotImplemented(format!("cua command {method}")))
+    }
+
+    async fn remember_visible_dom_nodes(
+        &self,
+        ctx: &BackendRequestContext,
+        tab_id: &str,
+        observation_id: Option<&str>,
+        nodes: &[Value],
+    ) {
+        self.visible_dom_nodes
+            .lock()
+            .await
+            .remember(ctx, tab_id, observation_id, nodes);
+    }
+
+    async fn validate_visible_dom_node(
+        &self,
+        ctx: &BackendRequestContext,
+        tab_id: &str,
+        observation_id: Option<&str>,
+        node_id: &str,
+    ) -> Result<()> {
+        self.visible_dom_nodes
+            .lock()
+            .await
+            .validate_node(ctx, tab_id, observation_id, node_id)
+    }
+
+    async fn forget_visible_dom_snapshot(
+        &self,
+        ctx: &BackendRequestContext,
+        tab_id: &str,
+        observation_id: Option<&str>,
+    ) {
+        self.visible_dom_nodes
+            .lock()
+            .await
+            .forget_snapshot(ctx, tab_id, observation_id);
+    }
+
+    async fn oopif_sessions_for_tab(&self, tab_id: &str) -> Vec<String> {
+        let Ok(parsed_tab_id) = parse_tab_id(tab_id) else {
+            return Vec::new();
+        };
+        self.oopif_sessions()
+            .lock()
+            .map(|map| map.sessions_for_tab(parsed_tab_id))
+            .unwrap_or_default()
+    }
+
+    async fn execute_dom_cdp_on_session(
+        &self,
+        ctx: &BackendRequestContext,
+        session_id: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        execute_cdp_on_session_with_context(self, ctx, session_id, method, params).await
+    }
+
+    async fn session_for_visible_dom_node(
+        &self,
+        ctx: &BackendRequestContext,
+        tab_id: &str,
+        observation_id: Option<&str>,
+        node_id: &str,
+    ) -> Option<String> {
+        self.visible_dom_nodes
+            .lock()
+            .await
+            .session_for_node(ctx, tab_id, observation_id, node_id)
+    }
+
+    async fn oopif_root_offset(
+        &self,
+        ctx: &BackendRequestContext,
+        session_id: &str,
+    ) -> Result<Option<(f64, f64)>> {
+        // The owning tab is constant for an OOPIF subtree; resolve it once.
+        let Some(tab_id) = self
+            .oopif_sessions()
+            .lock()
+            .ok()
+            .and_then(|map| map.tab_for_session(session_id))
+        else {
+            return Ok(None);
+        };
+        let mut offset = (0.0_f64, 0.0_f64);
+        let mut current = session_id.to_string();
+        for _ in 0..WebextOopifSessionMap::max_frame_depth() {
+            let Some((frame_id, parent_session)) = self
+                .oopif_sessions()
+                .lock()
+                .ok()
+                .and_then(|map| map.frame_and_parent(tab_id, &current))
+            else {
+                break;
+            };
+            // The owning `<iframe>` element lives in the PARENT frame. In webext
+            // the parent is either another OOPIF session (`Some`) or the top-level
+            // page — which has no explicit CDP session id and is addressed by
+            // `tabId` alone (`None`). Resolve the owner box on whichever that is.
+            let owner = execute_oopif_parent_cdp(
+                self,
+                ctx,
+                tab_id,
+                parent_session.as_deref(),
+                "DOM.getFrameOwner",
+                json!({ "frameId": frame_id }),
+            )
+            .await?;
+            let Some(backend_node_id) = owner.get("backendNodeId").and_then(Value::as_i64) else {
+                break;
+            };
+            let box_model = execute_oopif_parent_cdp(
+                self,
+                ctx,
+                tab_id,
+                parent_session.as_deref(),
+                "DOM.getBoxModel",
+                json!({ "backendNodeId": backend_node_id }),
+            )
+            .await?;
+            if let Some(rect) = dom_cua::rect_from_box_model(&box_model) {
+                offset.0 += rect.x;
+                offset.1 += rect.y;
+            }
+            // Walk up. A `None` parent is the top-level page: the chain ends there.
+            let Some(parent_session) = parent_session else {
+                break;
+            };
+            current = parent_session;
+        }
+        Ok(Some(offset))
+    }
+}
+
+/// Run a DOM command on an OOPIF frame's PARENT, routing by the parent's nature:
+/// an OOPIF parent session (`Some`, `{ tabId, sessionId }`) or the top-level page
+/// (`None`, `{ tabId }` — webext has no explicit top-level CDP session id).
+async fn execute_oopif_parent_cdp(
+    backend: &WebExtensionBackend,
+    ctx: &BackendRequestContext,
+    tab_id: i64,
+    parent_session: Option<&str>,
+    method: &str,
+    params: Value,
+) -> Result<Value> {
+    match parent_session {
+        Some(session_id) => {
+            execute_cdp_on_session_with_context(backend, ctx, session_id, method, params).await
+        }
+        None => execute_cdp_raw_with_context(backend, ctx, tab_id, method, params).await,
     }
 }
 
@@ -1879,8 +2291,19 @@ async fn forget_tab_state(
     ctx: &BackendRequestContext,
     tab_id: &str,
 ) {
+    backend
+        .visible_dom_nodes
+        .lock()
+        .await
+        .forget_tab(ctx, tab_id);
+    // Drop any OOPIF child sessions tracked for this tab; detach can race ahead of
+    // (or supersede) the `Target.detachedFromTarget` events that would prune them.
+    if let Ok(parsed_tab_id) = parse_tab_id(tab_id)
+        && let Ok(mut map) = backend.oopif_sessions().lock()
+    {
+        map.forget_tab(parsed_tab_id);
+    }
     let key = dom_cua::snapshot_key(ctx, tab_id);
-    backend.visible_dom_nodes.lock().await.remove(&key);
     backend.virtual_clipboard_scripts.lock().await.remove(&key);
 }
 
@@ -2038,7 +2461,7 @@ async fn move_mouse(
         ctx,
         tab_id,
     };
-    cua_ops::dispatch_move_command_at(&sink, x, y).await
+    cua_ops::dispatch_move_command_at(&sink, x, y, cua_ops::modifiers_mask(&params)).await
 }
 
 async fn scroll(
@@ -2051,8 +2474,70 @@ async fn scroll(
     let y = required_f64(&params, "y")?;
     let delta_x = cua_ops::scroll_delta(&params, "deltaX", "delta_x");
     let delta_y = cua_ops::scroll_delta(&params, "deltaY", "delta_y");
-    scroll_by_script(backend, ctx, tab_id, x, y, delta_x, delta_y).await?;
+    let modifiers = cua_ops::modifiers_mask(&params);
+    let _ = overlay_move_mouse(backend, ctx, tab_id, x, y).await;
+    match cua_ops::scroll_dispatch_plan(modifiers) {
+        cua_ops::ScrollDispatchPlan::GestureThenWheel => {
+            if dispatch_scroll_gesture(backend, ctx, tab_id, x, y, delta_x, delta_y)
+                .await
+                .is_err()
+            {
+                match dispatch_mouse_wheel(backend, ctx, tab_id, x, y, delta_x, delta_y, modifiers)
+                    .await
+                {
+                    Ok(()) => {}
+                    Err(_) => {
+                        scroll_by_script(backend, ctx, tab_id, x, y, delta_x, delta_y).await?;
+                    }
+                }
+            }
+        }
+        cua_ops::ScrollDispatchPlan::WheelOnly => {
+            dispatch_mouse_wheel(backend, ctx, tab_id, x, y, delta_x, delta_y, modifiers).await?;
+        }
+    }
     Ok(Value::Null)
+}
+
+async fn dispatch_scroll_gesture(
+    backend: &WebExtensionBackend,
+    ctx: &BackendRequestContext,
+    tab_id: &str,
+    x: f64,
+    y: f64,
+    delta_x: f64,
+    delta_y: f64,
+) -> Result<()> {
+    backend
+        .execute_cdp_with_context(
+            ctx,
+            tab_id,
+            "Input.synthesizeScrollGesture",
+            cua_ops::scroll_gesture_params(x, y, delta_x, delta_y),
+        )
+        .await
+        .map(|_| ())
+}
+
+async fn dispatch_mouse_wheel(
+    backend: &WebExtensionBackend,
+    ctx: &BackendRequestContext,
+    tab_id: &str,
+    x: f64,
+    y: f64,
+    delta_x: f64,
+    delta_y: f64,
+    modifiers: i64,
+) -> Result<()> {
+    backend
+        .execute_cdp_with_context(
+            ctx,
+            tab_id,
+            "Input.dispatchMouseEvent",
+            cua_ops::mouse_wheel_params(x, y, delta_x, delta_y, modifiers),
+        )
+        .await
+        .map(|_| ())
 }
 
 async fn scroll_by_script(
@@ -2163,7 +2648,8 @@ async fn drag(
         ctx,
         tab_id,
     };
-    cua_ops::dispatch_drag_path_command(&sink, path.as_slice()).await
+    cua_ops::dispatch_drag_path_command(&sink, path.as_slice(), cua_ops::modifiers_mask(&params))
+        .await
 }
 
 struct WebExtMouseEventSink<'a> {
@@ -2216,106 +2702,6 @@ async fn cua_download_media(
     Ok(Value::Null)
 }
 
-async fn dom_cua_visible_dom(
-    backend: &WebExtensionBackend,
-    ctx: &BackendRequestContext,
-    params: Value,
-) -> Result<Value> {
-    let tab_id = required_str(&params, "tab_id")?;
-    let viewport = viewport_rect(backend, ctx, tab_id).await?;
-    let document = backend
-        .execute_cdp_with_context(
-            ctx,
-            tab_id,
-            "DOM.getDocument",
-            json!({ "depth": -1, "pierce": true }),
-        )
-        .await?;
-    let root = document
-        .get("root")
-        .ok_or_else(|| HostError::Protocol("DOM.getDocument missing root".into()))?;
-    let mut nodes = Vec::new();
-    collect_visible_dom_nodes(backend, ctx, tab_id, root, viewport, &mut nodes).await?;
-    remember_visible_dom_nodes(backend, ctx, tab_id, &nodes).await;
-    if params.get("format").and_then(Value::as_str) == Some("text") {
-        let text = dom_cua::render_visible_dom_text(&nodes);
-        return Ok(json!({ "format": "text", "text": text, "nodes": nodes }));
-    }
-    Ok(json!({ "nodes": nodes }))
-}
-
-async fn dom_cua_click(
-    backend: &WebExtensionBackend,
-    ctx: &BackendRequestContext,
-    params: Value,
-    click_count: i64,
-) -> Result<Value> {
-    let tab_id = required_str(&params, "tab_id")?;
-    let (x, y) = node_center(backend, ctx, tab_id, required_str(&params, "node_id")?).await?;
-    click(
-        backend,
-        ctx,
-        json!({
-            "tab_id": tab_id,
-            "x": x,
-            "y": y,
-        }),
-        click_count,
-    )
-    .await
-}
-
-async fn dom_cua_scroll(
-    backend: &WebExtensionBackend,
-    ctx: &BackendRequestContext,
-    params: Value,
-) -> Result<Value> {
-    let tab_id = required_str(&params, "tab_id")?;
-    let (x, y) = node_center(backend, ctx, tab_id, required_str(&params, "node_id")?).await?;
-    scroll(
-        backend,
-        ctx,
-        json!({
-            "tab_id": tab_id,
-            "x": x,
-            "y": y,
-            "deltaX": params.get("deltaX").or_else(|| params.get("delta_x")).and_then(Value::as_f64).unwrap_or(0.0),
-            "deltaY": params.get("deltaY").or_else(|| params.get("delta_y")).and_then(Value::as_f64).unwrap_or(0.0),
-        }),
-    )
-    .await
-}
-
-async fn dom_cua_type(
-    backend: &WebExtensionBackend,
-    ctx: &BackendRequestContext,
-    params: Value,
-) -> Result<Value> {
-    let tab_id = required_str(&params, "tab_id")?;
-    let (x, y) = node_center(backend, ctx, tab_id, required_str(&params, "node_id")?).await?;
-    click(backend, ctx, json!({ "tab_id": tab_id, "x": x, "y": y }), 1).await?;
-    type_text(
-        backend,
-        ctx,
-        json!({
-            "tab_id": tab_id,
-            "text": required_str(&params, "text")?,
-        }),
-    )
-    .await
-}
-
-async fn dom_cua_keypress(
-    backend: &WebExtensionBackend,
-    ctx: &BackendRequestContext,
-    params: Value,
-) -> Result<Value> {
-    let tab_id = required_str(&params, "tab_id")?;
-    let (x, y) = node_center(backend, ctx, tab_id, required_str(&params, "node_id")?).await?;
-    click(backend, ctx, json!({ "tab_id": tab_id, "x": x, "y": y }), 1).await?;
-    keypress(backend, ctx, params).await
-}
-
 async fn dom_cua_download_media(
     backend: &WebExtensionBackend,
     ctx: &BackendRequestContext,
@@ -2323,7 +2709,10 @@ async fn dom_cua_download_media(
 ) -> Result<Value> {
     let tab_id = required_str(&params, "tab_id")?;
     let node_id = required_str(&params, "node_id")?;
-    validate_visible_dom_node(backend, ctx, tab_id, node_id).await?;
+    let observation_id = params.get("observation_id").and_then(Value::as_str);
+    backend
+        .validate_visible_dom_node(ctx, tab_id, observation_id, node_id)
+        .await?;
     let backend_node_id = dom_cua::backend_node_id(node_id)?;
     let resolved = backend
         .execute_cdp_with_context(
@@ -2353,121 +2742,12 @@ async fn dom_cua_download_media(
         )
         .await?;
     exception_to_error(&result, "Runtime.callFunctionOn")?;
+    if observation_id.is_some() {
+        backend
+            .forget_visible_dom_snapshot(ctx, tab_id, observation_id)
+            .await;
+    }
     Ok(Value::Null)
-}
-
-async fn viewport_rect(
-    backend: &WebExtensionBackend,
-    ctx: &BackendRequestContext,
-    tab_id: &str,
-) -> Result<Rect> {
-    let metrics = backend
-        .execute_cdp_with_context(ctx, tab_id, "Page.getLayoutMetrics", json!({}))
-        .await?;
-    dom_cua::viewport_rect_from_layout_metrics(&metrics)
-}
-
-async fn collect_visible_dom_nodes(
-    backend: &WebExtensionBackend,
-    ctx: &BackendRequestContext,
-    tab_id: &str,
-    node: &Value,
-    viewport: Rect,
-    nodes: &mut Vec<Value>,
-) -> Result<()> {
-    let mut stack = vec![node];
-    while let Some(node) = stack.pop() {
-        if dom_cua::is_hidden_subtree(node) {
-            continue;
-        }
-        if let Some(backend_node_id) = node.get("backendNodeId").and_then(Value::as_i64)
-            && let Some(rect) = box_model_rect(backend, ctx, tab_id, backend_node_id).await?
-            && rect.width > 0.0
-            && rect.height > 0.0
-            && rect.intersects(viewport)
-            && let Some(entry) = dom_cua::snapshot_entry(node, backend_node_id, rect)
-        {
-            nodes.push(entry);
-        }
-        for key in ["children", "shadowRoots", "pseudoElements"] {
-            if let Some(children) = node.get(key).and_then(Value::as_array) {
-                for child in children.iter().rev() {
-                    stack.push(child);
-                }
-            }
-        }
-        if let Some(content_document) = node.get("contentDocument") {
-            stack.push(content_document);
-        }
-    }
-    Ok(())
-}
-
-async fn node_center(
-    backend: &WebExtensionBackend,
-    ctx: &BackendRequestContext,
-    tab_id: &str,
-    node_id: &str,
-) -> Result<(f64, f64)> {
-    validate_visible_dom_node(backend, ctx, tab_id, node_id).await?;
-    let backend_node_id = dom_cua::backend_node_id(node_id)?;
-    let rect = box_model_rect(backend, ctx, tab_id, backend_node_id)
-        .await?
-        .ok_or_else(|| HostError::Protocol(format!("DOM-CUA node {node_id} has no visible box")))?;
-    Ok(rect.center())
-}
-
-async fn remember_visible_dom_nodes(
-    backend: &WebExtensionBackend,
-    ctx: &BackendRequestContext,
-    tab_id: &str,
-    nodes: &[Value],
-) {
-    backend.visible_dom_nodes.lock().await.insert(
-        dom_cua::snapshot_key(ctx, tab_id),
-        dom_cua::snapshot_node_ids(nodes),
-    );
-}
-
-async fn validate_visible_dom_node(
-    backend: &WebExtensionBackend,
-    ctx: &BackendRequestContext,
-    tab_id: &str,
-    node_id: &str,
-) -> Result<()> {
-    let snapshots = backend.visible_dom_nodes.lock().await;
-    let Some(ids) = snapshots.get(&dom_cua::snapshot_key(ctx, tab_id)) else {
-        return Err(HostError::Protocol(
-            "DOM-CUA node_id requires a current visible DOM snapshot".into(),
-        ));
-    };
-    if !ids.contains(node_id) {
-        return Err(HostError::Protocol(format!(
-            "DOM-CUA node_id was not returned by the current visible DOM snapshot: {node_id}"
-        )));
-    }
-    Ok(())
-}
-
-async fn box_model_rect(
-    backend: &WebExtensionBackend,
-    ctx: &BackendRequestContext,
-    tab_id: &str,
-    backend_node_id: i64,
-) -> Result<Option<Rect>> {
-    let result = match backend
-        .execute_cdp_with_context(
-            ctx,
-            tab_id,
-            "DOM.getBoxModel",
-            json!({ "backendNodeId": backend_node_id }),
-        )
-        .await
-    {
-        Ok(result) => result,
-        Err(_) => return Ok(None),
-    };
-    Ok(dom_cua::rect_from_box_model(&result))
 }
 
 async fn overlay_move_mouse(
@@ -2512,6 +2792,21 @@ async fn dispatch_mouse(
     Ok(())
 }
 
+fn runtime_evaluate_params(params: &Value) -> Result<Value> {
+    let expression = required_str(params, "expression")?;
+    Ok(json!({
+        "expression": expression,
+        "awaitPromise": params
+            .get("awaitPromise")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+        "returnByValue": params
+            .get("returnByValue")
+            .and_then(Value::as_bool)
+            .unwrap_or(true),
+    }))
+}
+
 fn required_str<'a>(params: &'a Value, key: &str) -> Result<&'a str> {
     params
         .get(key)
@@ -2554,6 +2849,36 @@ fn normalize_optional_tab_response(response: Value) -> Result<Option<Value>> {
         return Ok(None);
     }
     normalize_tab(tab).map(Some)
+}
+
+fn normalize_resume_control_response(response: Value) -> Result<Value> {
+    let repair = response.get("repair").cloned();
+    let Some(tab) = normalize_optional_tab_response(response)? else {
+        if let Some(repair) = repair {
+            return Ok(json!({
+                "tab": Value::Null,
+                "repair": repair,
+            }));
+        }
+        return Ok(Value::Null);
+    };
+    if let Some(repair) = repair {
+        return Ok(json!({
+            "tab": tab,
+            "repair": repair,
+        }));
+    }
+    Ok(tab)
+}
+
+fn resume_control_tab(response: &Value) -> Option<&Value> {
+    if response.is_null() {
+        return None;
+    }
+    if let Some(tab) = response.get("tab") {
+        return (!tab.is_null()).then_some(tab);
+    }
+    Some(response)
 }
 
 fn normalize_tabs_response(response: Value) -> Result<Value> {
@@ -2653,6 +2978,26 @@ fn record_webext_tab(
         .and_then(Value::as_str)
         .ok_or_else(|| HostError::Protocol("normalized tab missing tab_id".into()))?;
     let existing = backend.registry().get(&TabId::new(tab_id))?;
+    let existing_owner = existing
+        .as_ref()
+        .and_then(|record| record.session_id.as_deref());
+    if let (Some(owner), Some(session_id), Some(existing_record)) =
+        (existing_owner, ctx.session_id.as_deref(), existing.as_ref())
+        && owner != session_id
+        && existing_record.status != TabStatus::Deliverable
+    {
+        return Err(HostError::Protocol(format!(
+            "tab {tab_id} is already owned by session {owner}"
+        )));
+    }
+    let session_id =
+        if existing.as_ref().map(|record| record.status.clone()) == Some(TabStatus::Deliverable) {
+            ctx.session_id.clone()
+        } else {
+            existing_owner
+                .map(str::to_string)
+                .or_else(|| ctx.session_id.clone())
+        };
     let fallback_origin = existing
         .as_ref()
         .map(|record| record.origin.clone())
@@ -2663,7 +3008,7 @@ fn record_webext_tab(
         .unwrap_or(default_status);
     backend.registry().insert(TabRecord {
         id: TabId::new(tab_id),
-        session_id: ctx.session_id.clone(),
+        session_id,
         target_id: tab_id.to_string(),
         url: tab
             .get("url")
@@ -2909,11 +3254,4 @@ fn normalize_tab_array(object: &mut Map<String, Value>, source: &str, dest: &str
         .collect::<Result<Vec<_>>>()?;
     object.insert(dest.into(), Value::Array(normalized));
     Ok(())
-}
-
-fn normalize_optional_tab_array(response: &Value, source: &str) -> Result<Vec<Value>> {
-    let Some(tabs) = response.get(source).and_then(Value::as_array) else {
-        return Ok(Vec::new());
-    };
-    tabs.iter().cloned().map(normalize_tab).collect()
 }

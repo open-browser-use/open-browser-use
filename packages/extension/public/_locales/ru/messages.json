@@ -77,10 +77,94 @@
     "message": "Скопировать передачу настройки агента"
   },
   "stopButton": {
-    "message": "Я беру управление"
+    "message": "Взять управление"
   },
   "resumeButton": {
-    "message": "Возобновить"
+    "message": "Подключить агента снова"
+  },
+  "stopButtonTakeControl": {
+    "message": "Взять управление"
+  },
+  "stopButtonTakeControlDescription": {
+    "message": "Приостановить управление агента, чтобы вы могли пользоваться браузером сами."
+  },
+  "stopButtonTakingControl": {
+    "message": "Берём управление"
+  },
+  "stopButtonTakingControlDescription": {
+    "message": "Агент освобождает управление браузером."
+  },
+  "stopButtonUserControl": {
+    "message": "Вы управляете"
+  },
+  "stopButtonUserControlDescription": {
+    "message": "Вы используете браузер напрямую."
+  },
+  "stopButtonUpdateNeeded": {
+    "message": "Нужно обновление"
+  },
+  "stopButtonUpdateNeededDescription": {
+    "message": "Обновите локальный хост перед сменой управления браузером."
+  },
+  "stopButtonSetupNeeded": {
+    "message": "Нужна настройка"
+  },
+  "stopButtonSetupNeededDescription": {
+    "message": "Исправьте настройку перед тем, как взять или вернуть управление браузером."
+  },
+  "stopButtonAgentConnecting": {
+    "message": "Агент подключается"
+  },
+  "stopButtonAgentConnectingDescription": {
+    "message": "Агент всё ещё подключается к управлению браузером."
+  },
+  "stopButtonAgentOffline": {
+    "message": "Агент офлайн"
+  },
+  "stopButtonAgentOfflineDescription": {
+    "message": "Нет активного управления агента, которое можно взять."
+  },
+  "resumeButtonAgentControl": {
+    "message": "Агент управляет"
+  },
+  "resumeButtonAgentControlDescription": {
+    "message": "Агент уже управляет браузером."
+  },
+  "resumeButtonWait": {
+    "message": "Подождите"
+  },
+  "resumeButtonWaitDescription": {
+    "message": "Подождите, пока управление браузером полностью остановится."
+  },
+  "resumeButtonReturnToAgent": {
+    "message": "Вернуть агенту"
+  },
+  "resumeButtonReturnToAgentDescription": {
+    "message": "Вернуть управление браузером агенту."
+  },
+  "resumeButtonReconnectAfterUpdate": {
+    "message": "Подключить после обновления"
+  },
+  "resumeButtonReconnectAfterUpdateDescription": {
+    "message": "Подключиться снова после обновления локального хоста."
+  },
+  "resumeButtonRetryConnection": {
+    "message": "Повторить подключение"
+  },
+  "resumeButtonRetryConnectionDescription": {
+    "message": "Попробовать подключиться снова после исправления настройки."
+  },
+  "resumeButtonReconnectAgent": {
+    "message": "Подключить агента снова"
+  },
+  "resumeButtonReconnectAgentDescription": {
+    "message": "Повторно подключить агента к управлению браузером."
+  },
+  "resumeButtonConnecting": {
+    "message": "Подключение"
+  },
+  "resumeButtonConnectingDescription": {
+    "message": "Агент подключается."
   },
   "cleanupButton": {
     "message": "Очистить вкладки браузера"
@@ -235,6 +319,17 @@
     "message": "Доступно $count$ вкладок результатов. Используйте browser.deliverables(), затем claim(), чтобы восстановить их.",
     "placeholders": {
       "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "pendingExtensionUpdate": {
+    "message": "Обновление расширения будет применено, когда управление браузером будет бездействовать."
+  },
+  "pendingExtensionUpdateVersion": {
+    "message": "Обновление расширения $version$ будет применено, когда управление браузером будет бездействовать.",
+    "placeholders": {
+      "version": {
         "content": "$1"
       }
     }

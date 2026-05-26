@@ -97,7 +97,7 @@ const INPUT_BYPASS_MAX_MS = 1_000;
 const CAPTURE_SUPPRESSION_TTL_MS = 60_000;
 const CURSOR_SIZE_PX = 42;
 const CURSOR_TIP_ORIGIN_PX = 4;
-const CLICK_PULSE_SIZE_PX = 36;
+const CLICK_SPLASH_SIZE_PX = 36;
 const TAKEOVER_OVERLAY_BACKGROUND =
   "linear-gradient(118deg, rgba(14, 165, 233, 0.1), rgba(37, 99, 235, 0.14) 46%, rgba(6, 182, 212, 0.1))";
 const WATER_GRID_PX = 28;
@@ -797,25 +797,26 @@ function initialCursorPoint(): Point {
 function addPulse(point: Point): void {
   if (!pulseLayer) return;
   const pulse = document.createElement("div");
-  const pulseOffset = CLICK_PULSE_SIZE_PX / 2;
+  const pulseOffset = CLICK_SPLASH_SIZE_PX / 2;
   pulse.style.position = "fixed";
   pulse.style.left = `${Math.round(point.x - pulseOffset)}px`;
   pulse.style.top = `${Math.round(point.y - pulseOffset)}px`;
-  pulse.style.width = `${CLICK_PULSE_SIZE_PX}px`;
-  pulse.style.height = `${CLICK_PULSE_SIZE_PX}px`;
-  pulse.style.borderRadius = "999px";
-  pulse.style.border = "2px solid rgba(56, 189, 248, 0.92)";
-  pulse.style.background = "rgba(37, 99, 235, 0.16)";
-  pulse.style.boxShadow = "0 0 0 1px rgba(255, 255, 255, 0.8)";
+  pulse.style.width = `${CLICK_SPLASH_SIZE_PX}px`;
+  pulse.style.height = `${CLICK_SPLASH_SIZE_PX}px`;
+  pulse.style.background = CLICK_SPLASH_SVG_DATA_URL;
+  pulse.style.backgroundSize = `${CLICK_SPLASH_SIZE_PX}px ${CLICK_SPLASH_SIZE_PX}px`;
+  pulse.style.backgroundRepeat = "no-repeat";
+  pulse.style.backgroundPosition = "center";
+  pulse.style.filter = "drop-shadow(0 6px 10px rgba(242, 169, 0, 0.18))";
   pulse.style.pointerEvents = "none";
-  pulse.style.transition = "transform 280ms cubic-bezier(0.22, 1, 0.36, 1), opacity 280ms ease-out";
-  pulse.style.transform = "scale(0.4)";
+  pulse.style.transition = "transform 260ms cubic-bezier(0.22, 1, 0.36, 1), opacity 260ms ease-out";
+  pulse.style.transform = "scale(0.72) rotate(-8deg)";
   pulseLayer.append(pulse);
   requestFrame(() => {
-    pulse.style.transform = "scale(1.85)";
+    pulse.style.transform = "scale(1.32) rotate(-8deg)";
     pulse.style.opacity = "0";
   });
-  setTimeout(() => pulse.remove(), 340);
+  setTimeout(() => pulse.remove(), 320);
 }
 
 function notifyArrived(): void {
@@ -877,18 +878,28 @@ function quadraticTangent(start: Point, control: Point, end: Point, t: number): 
 
 const CURSOR_SVG_DATA_URL = (() => {
   const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
-    <g fill="#ffc400" stroke="#f2a900" stroke-width=".6" stroke-linejoin="round">
-      <path d="M8.7 7.1 10.4 1.4c.2-.8 1.3-.8 1.6 0l2 5.6 3.1-2.1c.7-.5 1.5.3 1.1 1l-2.1 4.7a10.3 10.3 0 0 0-6.7-.1L6.5 6.3c-.4-.7.4-1.5 1.1-1l1.1 1.8Z"/>
-      <path d="M1.7 6.8c.3-.5.9-.7 1.4-.4l5.3 3.1c.5.3.6.9.3 1.4-.3.5-.9.7-1.4.4L2 8.2c-.5-.3-.6-.9-.3-1.4Z"/>
-      <path d="M.9 12.5c.1-.6.6-1 1.2-.9l5.8.7c.6.1 1 .6.9 1.2-.1.6-.6 1-1.2.9l-5.8-.7c-.6-.1-1-.6-.9-1.2Z"/>
-      <path d="M20.7 3.1c.5.3.7.9.4 1.4l-3.1 5c-.3.5-.9.7-1.4.4-.5-.3-.7-.9-.4-1.4l3.1-5c.3-.5.9-.7 1.4-.4Z"/>
-    </g>
     <path d="M6.5 8.1c-.2-1.4 1.3-2.5 2.6-1.8l21.2 11.3c1.5.8 1.3 3-.3 3.5l-6.7 2 4.6 4.7c.8.9.8 2.2-.1 3l-2.6 2.4c-.9.8-2.3.7-3-.2l-4.6-5.8-3.5 5.2c-1 1.5-3.3 1-3.6-.8L6.5 8.1Z" fill="#0b1118"/>
     <path d="M9 9.6 27.8 19.7l-8.7 2.6 6.3 6.5-1.5 1.4-6.6-8.3-4.8 7.3L9 9.6Z" fill="#f8fbff"/>
     <path d="M9.6 10.8 12.3 27 17.1 20l6.2 7.8" fill="none" stroke="#dfe7ef" stroke-width=".9" stroke-linecap="round" stroke-linejoin="round" opacity=".72"/>
   </svg>`;
-  return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+  return svgDataUrl(svg);
 })();
+
+const CLICK_SPLASH_SVG_DATA_URL = (() => {
+  const svg = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+    <g fill="#ffc400" stroke="#f2a900" stroke-width=".6" stroke-linejoin="round">
+      <path d="M13.7 12.1 15.4 6.4c.2-.8 1.3-.8 1.6 0l2 5.6 3.1-2.1c.7-.5 1.5.3 1.1 1l-2.1 4.7a10.3 10.3 0 0 0-6.7-.1l-2.9-4.2c-.4-.7.4-1.5 1.1-1l1.1 1.8Z"/>
+      <path d="M6.7 11.8c.3-.5.9-.7 1.4-.4l5.3 3.1c.5.3.6.9.3 1.4-.3.5-.9.7-1.4.4L7 13.2c-.5-.3-.6-.9-.3-1.4Z"/>
+      <path d="M5.9 17.5c.1-.6.6-1 1.2-.9l5.8.7c.6.1 1 .6.9 1.2-.1.6-.6 1-1.2.9l-5.8-.7c-.6-.1-1-.6-.9-1.2Z"/>
+      <path d="M25.7 8.1c.5.3.7.9.4 1.4l-3.1 5c-.3.5-.9.7-1.4.4-.5-.3-.7-.9-.4-1.4l3.1-5c.3-.5.9-.7 1.4-.4Z"/>
+    </g>
+  </svg>`;
+  return svgDataUrl(svg);
+})();
+
+function svgDataUrl(svg: string): string {
+  return `url("data:image/svg+xml,${encodeURIComponent(svg)}")`;
+}
 
 function dist(a: Point, b: Point): number {
   return Math.hypot(b.x - a.x, b.y - a.y);

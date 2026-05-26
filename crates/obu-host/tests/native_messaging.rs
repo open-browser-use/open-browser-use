@@ -12,7 +12,7 @@ use tokio::process::Command;
 use tokio_util::codec::Framed;
 
 use obu_wire::FrameCodec;
-use obu_wire::error::ERR_NO_BACKEND;
+use obu_wire::error::{ERR_DISALLOWED, ERR_NO_BACKEND};
 
 #[tokio::test]
 async fn native_messaging_hello_exposes_sdk_socket_descriptor_and_getinfo() {
@@ -65,6 +65,7 @@ async fn native_messaging_hello_exposes_sdk_socket_descriptor_and_getinfo() {
     let descriptor_path = wait_for_descriptor(&runtime_path).await;
     let descriptor: Value =
         serde_json::from_slice(&std::fs::read(&descriptor_path).unwrap()).unwrap();
+    assert_runtime_descriptor_v1_shape(&descriptor);
     assert_eq!(descriptor["type"], "webextension");
     assert_eq!(descriptor["metadata"]["extension_id"], "test-extension");
     assert_eq!(descriptor["metadata"]["profileIdHash"], "profile-hash");
@@ -133,6 +134,10 @@ async fn native_messaging_hello_exposes_sdk_socket_descriptor_and_getinfo() {
     assert_eq!(
         info["result"]["metadata"]["diagnostics"]["profilePathRedacted"],
         "/Users/<redacted>/Library/Application Support/Chrome/Profile 1"
+    );
+    assert!(
+        !info.to_string().contains(token),
+        "getInfo metadata must not leak the SDK auth token"
     );
     assert!(info.to_string().contains("Alice Personal") == false);
 
@@ -205,6 +210,47 @@ async fn stop_browser_control_invalidates_descriptor_socket_and_existing_peer() 
         &mut stdin,
         &json!({
             "jsonrpc": "2.0",
+            "method": "takeBrowserControl",
+            "params": {
+                "sessions": [
+                    { "session_id": "session", "turn_id": "popup-take-control:session:1" }
+                ]
+            },
+            "id": 6
+        }),
+    )
+    .await;
+    let takeover = read_frame(&mut stdout).await;
+    assert_eq!(takeover["result"], Value::Null);
+
+    framed
+        .send(bytes::Bytes::from(
+            serde_json::to_vec(&json!({
+                "jsonrpc": "2.0",
+                "method": "turnEnded",
+                "params": {
+                    "session_id": "session",
+                    "turn_id": "turn-after-take-control"
+                },
+                "id": 6
+            }))
+            .unwrap(),
+        ))
+        .await
+        .unwrap();
+    let blocked = read_json_frame(&mut framed).await;
+    assert!(
+        blocked["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("turnEnded blocked during human takeover"),
+        "expected human takeover to block SDK actions, got {blocked}"
+    );
+
+    write_frame(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
             "method": "stopBrowserControl",
             "params": {
                 "reason": "popup_stop",
@@ -243,6 +289,117 @@ async fn stop_browser_control_invalidates_descriptor_socket_and_existing_peer() 
             .as_str()
             .unwrap_or_default()
             .contains("inactive")
+    );
+
+    drop(framed);
+    drop(stdin);
+    let _ = tokio::time::timeout(Duration::from_secs(2), child.wait()).await;
+    let _ = std::fs::remove_dir_all(&runtime_path);
+}
+
+#[tokio::test]
+async fn native_messaging_preserves_structured_extension_errors_for_sdk_peers() {
+    let runtime_path = Path::new("/tmp").join(format!("obu-nm-{}", uuid::Uuid::new_v4().simple()));
+    std::fs::create_dir_all(&runtime_path).unwrap();
+    std::fs::set_permissions(&runtime_path, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut child = Command::new(env!("CARGO_BIN_EXE_obu-host"))
+        .arg("--native-messaging")
+        .arg("--log")
+        .arg("warn")
+        .env("OBU_RUNTIME_DIR", &runtime_path)
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+
+    let mut stdin = child.stdin.take().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    write_frame(
+        &mut stdin,
+        &json!({
+            "type": "hello",
+            "extension_version": "0.1.0",
+            "manifest_version": 3,
+            "min_host_version": "0.1.0",
+            "native_host_name": "dev.obu.host",
+            "browser_kind": "chrome",
+            "extension_id": "test-extension",
+            "extension_instance_id": "test-instance"
+        }),
+    )
+    .await;
+
+    let ack = read_frame(&mut stdout).await;
+    assert_eq!(ack["type"], "hello_ack");
+
+    let descriptor_path = wait_for_descriptor(&runtime_path).await;
+    let descriptor: Value =
+        serde_json::from_slice(&std::fs::read(&descriptor_path).unwrap()).unwrap();
+    let socket_path = std::path::PathBuf::from(descriptor["socketPath"].as_str().unwrap());
+    let token = descriptor["sdk_auth_token"].as_str().unwrap();
+    let stream = UnixStream::connect(&socket_path).await.unwrap();
+    let mut framed = Framed::new(stream, FrameCodec);
+
+    framed
+        .send(bytes::Bytes::from(
+            serde_json::to_vec(&json!({
+                "jsonrpc": "2.0",
+                "method": "auth",
+                "params": { "capability_token": token },
+                "id": 0
+            }))
+            .unwrap(),
+        ))
+        .await
+        .unwrap();
+    let auth = read_json_frame(&mut framed).await;
+    assert_eq!(auth["result"], Value::Null);
+
+    framed
+        .send(bytes::Bytes::from(
+            serde_json::to_vec(&json!({
+                "jsonrpc": "2.0",
+                "method": "createTab",
+                "params": {
+                    "session_id": "session",
+                    "turn_id": "turn",
+                    "url": "https://blocked.example/"
+                },
+                "id": 1
+            }))
+            .unwrap(),
+        ))
+        .await
+        .unwrap();
+    let extension_request = read_frame(&mut stdout).await;
+    assert_eq!(extension_request["method"], "createTab");
+    write_frame(
+        &mut stdin,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": extension_request["id"],
+            "error": {
+                "code": ERR_DISALLOWED,
+                "message": "navigation blocked",
+                "data": {
+                    "code": "navigation_disallowed",
+                    "url": "https://blocked.example/"
+                }
+            }
+        }),
+    )
+    .await;
+    let response = read_json_frame(&mut framed).await;
+    assert_eq!(response["id"], 1);
+    assert_eq!(response["error"]["code"], json!(ERR_DISALLOWED));
+    assert_eq!(response["error"]["message"], "navigation blocked");
+    assert_eq!(
+        response["error"]["data"],
+        json!({
+            "code": "navigation_disallowed",
+            "url": "https://blocked.example/"
+        })
     );
 
     drop(framed);
@@ -304,4 +461,40 @@ async fn read_frame(stdout: &mut tokio::process::ChildStdout) -> Value {
 async fn read_json_frame(framed: &mut Framed<UnixStream, FrameCodec>) -> Value {
     let bytes = framed.next().await.unwrap().unwrap();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+fn assert_runtime_descriptor_v1_shape(descriptor: &Value) {
+    let fixture: Value = serde_json::from_str(include_str!(
+        "../../../tests/fixtures/runtime-descriptor/v1-webextension.json"
+    ))
+    .unwrap();
+    assert_eq!(descriptor["schema_version"], fixture["schema_version"]);
+    assert_eq!(descriptor["type"], fixture["type"]);
+    assert_eq!(descriptor["name"], fixture["name"]);
+    assert!(
+        descriptor["socketPath"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+    assert!(
+        descriptor["sdk_auth_token"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
+    assert!(descriptor["pid"].as_u64().is_some_and(|value| value > 0));
+    assert!(
+        descriptor["startedAt"]
+            .as_str()
+            .and_then(|value| value.parse::<u128>().ok())
+            .is_some()
+    );
+
+    let metadata = descriptor["metadata"].as_object().unwrap();
+    let fixture_metadata = fixture["metadata"].as_object().unwrap();
+    for key in fixture_metadata.keys() {
+        assert!(
+            metadata.contains_key(key),
+            "descriptor metadata should include fixture field {key}"
+        );
+    }
 }

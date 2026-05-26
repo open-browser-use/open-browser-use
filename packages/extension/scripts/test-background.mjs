@@ -87,6 +87,7 @@ const calls = {
   tabsUngroup: [],
   windowsUpdate: [],
   runtimeReload: [],
+  runtimeReloadPendingUpdate: [],
 };
 let nextTabId = 1;
 let nextGroupId = 10;
@@ -110,6 +111,7 @@ globalThis.chrome = {
     getManifest: () => ({ version: "0.1.0" }),
     reload() {
       calls.runtimeReload.push({ at: Date.now() });
+      calls.runtimeReloadPendingUpdate.push(storage[pendingUpdateKey]);
     },
     connectNative(name) {
       assert.equal(name, "dev.obu.host");
@@ -415,8 +417,9 @@ assert.equal(debugStatus.enabled, false);
 const idleUpdateReloadStart = calls.runtimeReload.length;
 runtimeUpdateAvailable.emitLatest({ version: "0.2.0" });
 await waitFor(() => calls.runtimeReload.length === idleUpdateReloadStart + 1);
+assert.equal(calls.runtimeReloadPendingUpdate.at(-1), null);
 assert.equal(storage[pendingUpdateKey], null);
-assert.equal(storage[statusKey].pendingExtensionUpdate, undefined);
+assert.equal(storage[statusKey].pendingExtensionUpdate.state, "reloading");
 
 const updateDeferralCreated = await hostRequest(port, "createTab", {
   session_id: "update-deferral-session",
@@ -442,8 +445,9 @@ const finalizedForUpdate = await hostRequest(port, "finalizeTabs", {
 });
 assert.deepEqual(finalizedForUpdate.result.closedTabIds, [updateDeferralTabId]);
 await waitFor(() => calls.runtimeReload.length === activeUpdateReloadStart + 1);
+assert.equal(calls.runtimeReloadPendingUpdate.at(-1), null);
 assert.equal(storage[pendingUpdateKey], null);
-assert.equal(storage[statusKey].pendingExtensionUpdate, undefined);
+assert.equal(storage[statusKey].pendingExtensionUpdate.state, "reloading");
 
 storage[pendingUpdateKey] = {
   state: "waiting_for_idle",
@@ -457,6 +461,7 @@ const restoredUpdatePort = await waitFor(() => ports[restoredUpdatePortCount]);
 await waitFor(() => restoredUpdatePort.sent.find((message) => message.type === "hello"));
 restoredUpdatePort.emit({ type: "hello_ack", host_version: "0.1.0" });
 await waitFor(() => calls.runtimeReload.length === restoredUpdateReloadStart + 1);
+assert.equal(calls.runtimeReloadPendingUpdate.at(-1), null);
 assert.equal(storage[pendingUpdateKey], null);
 
 nextTabId = updateDeferralTabId;
@@ -470,6 +475,10 @@ port = await runNativeHostReconnectAfterConnectedCrash(port);
 const missingSession = await hostRequest(port, "createTab", { url: "https://bad.example/" });
 assert.match(missingSession.error.message, /Missing required browser session_id/);
 assert.equal(calls.tabsCreate.length, 0);
+
+const unknownMethod = await hostRequest(port, "unknownMethod", {});
+assert.equal(unknownMethod.error.code, -32601);
+assert.deepEqual(unknownMethod.error.data, { code: "method_not_found", method: "unknownMethod" });
 
 const created = await hostRequest(port, "createTab", {
   session_id: "session",
@@ -593,7 +602,7 @@ staleOldPort.emit({
 });
 const hideCountBeforeStaleDisconnect = calls.tabsSendMessage.filter((call) => call.message.type === "OBU_CURSOR_HIDE").length;
 staleOldPort.disconnect();
-await waitFor(() => storage[statusKey]?.state === "disconnected");
+await waitFor(() => storage[statusKey]?.state === "reconnect_scheduled");
 await waitFor(() => calls.tabsSendMessage.filter((call) => call.message.type === "OBU_CURSOR_HIDE").length > hideCountBeforeStaleDisconnect);
 await waitFor(() => tabs.get(1)?.groupId === -1 && tabs.get(blankCreated.result.tab.tabId)?.groupId === -1);
 assert.equal(tabs.has(1), true);
@@ -659,6 +668,15 @@ const cdp = await hostRequest(port, "executeCdp", {
 });
 assert.deepEqual(cdp.result, { ok: true });
 assert.equal(calls.debuggerAttach[0].target.tabId, 1);
+// Attaching the debugger arms OOPIF auto-attach so out-of-process iframes attach
+// as flattened child sessions on this connection.
+const autoAttachCommand = calls.debuggerSendCommand.find(
+  (call) => call.method === "Target.setAutoAttach" && call.target.tabId === 1 && call.target.sessionId === undefined,
+);
+assert.ok(autoAttachCommand, "attach must issue Target.setAutoAttach on the tab session");
+assert.equal(autoAttachCommand.commandParams.flatten, true);
+assert.equal(autoAttachCommand.commandParams.autoAttach, true);
+assert.equal(autoAttachCommand.commandParams.waitForDebuggerOnStart, false);
 
 const messagesBeforeScreenshot = calls.tabsSendMessage.length;
 const screenshotCdp = await hostRequest(port, "executeCdp", {
@@ -793,7 +811,7 @@ const detachCountBeforeNativeDisconnect = calls.debuggerDetach.length;
 const attachedPort = port;
 const reconnectAfterAttachedDisconnectCount = ports.length;
 attachedPort.disconnect();
-await waitFor(() => storage[statusKey]?.state === "disconnected");
+await waitFor(() => storage[statusKey]?.state === "reconnect_scheduled");
 await waitFor(() => calls.debuggerDetach.length > detachCountBeforeNativeDisconnect);
 assert.equal(calls.debuggerDetach.at(-1).tabId, 1);
 alarmEvents.emit({ name: "obu.reconnectNativeHost" });
@@ -1114,6 +1132,46 @@ const cdpEvent = await waitFor(() =>
 );
 assert.equal(cdpEvent.params.session_id, "session");
 assert.equal(cdpEvent.params.source.tabId, 1);
+
+// An auto-attached OOPIF child: the forwarded onCDPEvent carries the child CDP
+// sessionId, and auto-attach is re-armed on the child so nested OOPIFs attach.
+const attachRearmStart = calls.debuggerSendCommand.length;
+debuggerEvents.emit({ tabId: 1 }, "Target.attachedToTarget", {
+  sessionId: "OOPIF-CHILD",
+  waitingForDebugger: false,
+  targetInfo: { targetId: "FRAME-1", type: "iframe", url: "https://oop.test/inner" },
+});
+const attachEvent = await waitFor(() =>
+  port.sent.find(
+    (message) => message.method === "onCDPEvent" && message.params?.method === "Target.attachedToTarget",
+  ),
+);
+assert.equal(attachEvent.params.session_id, "session");
+assert.equal(attachEvent.params.source.tabId, 1);
+const rearm = await waitFor(() =>
+  calls.debuggerSendCommand
+    .slice(attachRearmStart)
+    .find((call) => call.method === "Target.setAutoAttach" && call.target.sessionId === "OOPIF-CHILD"),
+);
+assert.equal(rearm.commandParams.flatten, true);
+
+// A DOM event originating from the OOPIF child session forwards source.sessionId
+// so the host can key its OOPIF session map and route session-addressed commands.
+debuggerEvents.emit(
+  { tabId: 1, sessionId: "OOPIF-CHILD" },
+  "DOM.documentUpdated",
+  {},
+);
+const childEvent = await waitFor(() =>
+  port.sent.find(
+    (message) =>
+      message.method === "onCDPEvent" &&
+      message.params?.method === "DOM.documentUpdated" &&
+      message.params?.source?.sessionId === "OOPIF-CHILD",
+  ),
+);
+assert.equal(childEvent.params.source.tabId, 1);
+assert.equal(childEvent.params.source.sessionId, "OOPIF-CHILD");
 
 const dialogEventStart = port.sent.length;
 const dialogHandleStart = calls.debuggerSendCommand.length;
@@ -1487,13 +1545,17 @@ assert.deepEqual(
 );
 assert.deepEqual(handoffFailureTabs.result.deliverableTabs, []);
 assert.equal(tabGroupStateGroups().find((group) => group.tabs[String(handoffFailureTabId)])?.tabs[String(handoffFailureTabId)].status, "active");
+// Finding 19 (Task 0.1): a partial finalize leaves the session in
+// `finalize_partial`, which blocks new browser actions until the partial
+// finalize is acknowledged or repaired — preventing a command from silently
+// rewriting the lifecycle back to `active` and masking the failed handoff.
 const handoffFailureCdp = await hostRequest(port, "executeCdp", {
   session_id: "keep-failure-session",
   turn_id: "after-failed-handoff",
   target: { tabId: handoffFailureTabId },
   method: "Runtime.evaluate",
 });
-assert.equal(handoffFailureCdp.result.ok, true);
+assert.match(handoffFailureCdp.error.message, /finalized partially/);
 
 const deliverableFailureCreated = await hostRequest(port, "createTab", {
   session_id: "deliverable-failure-session",
@@ -1782,29 +1844,64 @@ await hostRequest(port, "claimUserTab", {
   tabId: 100,
 });
 assert.notEqual(tabs.get(100).groupId, -1);
-const stopPromise = popupMessage({ type: "STOP_BROWSER_CONTROL" });
-const stopRequest = await waitFor(() => port.sent.find((message) => message.method === "stopBrowserControl"));
-port.emit({ jsonrpc: "2.0", id: stopRequest.id, result: null });
+const takeControlStart = port.sent.length;
+const stopPromise = popupMessage({ type: "TAKE_BROWSER_CONTROL" });
+const takeControlRequest = await waitFor(() =>
+  port.sent.slice(takeControlStart).find((message) => message.method === "takeBrowserControl")
+);
+assert.ok(
+  takeControlRequest.params.sessions.some((session) => session.session_id === "stop-cleanup-session"),
+  "popup takeover must include the currently controlled active session",
+);
+assert.ok(
+  takeControlRequest.params.sessions.length > 1,
+  "popup takeover should pause every active browser-control session without cleanup",
+);
+assert.ok(takeControlRequest.params.sessions.every((session) =>
+  /^popup-take-control:/.test(session.turn_id)
+));
+port.emit({ jsonrpc: "2.0", id: takeControlRequest.id, result: null });
 const stopped = await stopPromise;
-assert.equal(stopped.state, "stopped");
-assert.equal(port.disconnected, true);
-assert.equal(storage[statusKey].state, "stopped");
-assert.equal(calls.debuggerDetach[0].tabId, 1);
-assert.equal(tabs.has(stopCleanupAgentTabId), false);
+assert.equal(stopped.state, "connected");
+assert.equal(stopped.browserControl, "human_takeover");
+assert.equal(port.disconnected, false);
+assert.notEqual(storage[statusKey].state, "stopped");
+assert.equal(storage[statusKey].state, "connected");
+assert.equal(storage[statusKey].browserControl, "human_takeover");
+assert.equal(tabs.has(stopCleanupAgentTabId), true);
 assert.equal(tabs.has(100), true);
-assert.equal(tabs.get(100).groupId, -1);
+assert.notEqual(tabs.get(100).groupId, -1);
 assert.equal(tabs.has(102), true);
 assert.notEqual(tabs.get(102).groupId, -1);
-assert.deepEqual(sessionStateTabs("stop-cleanup-session"), []);
+assert.equal(
+  storage[sessionStateKey]?.sessions?.find((session) => session.session_id === "stop-cleanup-session")?.controlState,
+  "human_takeover",
+);
+assert.deepEqual(
+  sessionStateTabs("stop-cleanup-session")
+    .map((tab) => [tab.tabId, tab.origin, tab.status])
+    .sort((left, right) => left[0] - right[0]),
+  [
+    [stopCleanupAgentTabId, "agent", "active"],
+    [100, "user", "active"],
+  ],
+);
 
-const resumePortIndex = ports.length;
+const popupResumeStart = port.sent.length;
 const resumePromise = popupMessage({ type: "RESUME_BROWSER_CONTROL" });
-const resumedPort = await waitFor(() => ports[resumePortIndex]);
-await waitFor(() => resumedPort.sent.find((message) => message.type === "hello"));
-resumedPort.emit({ type: "hello_ack", host_version: "0.1.0" });
+const resumeRequest = await waitFor(() =>
+  port.sent.slice(popupResumeStart).find((message) => message.method === "resumeBrowserControl")
+);
+port.emit({ jsonrpc: "2.0", id: resumeRequest.id, result: null });
 const resumed = await resumePromise;
-assert.equal(resumed.state, "connecting");
-await waitFor(() => storage[statusKey]?.state === "connected");
+assert.equal(resumed.state, "connected");
+assert.equal(resumed.browserControl, undefined);
+assert.equal(storage[statusKey].state, "connected");
+assert.equal(storage[statusKey].browserControl, undefined);
+assert.equal(
+  storage[sessionStateKey]?.sessions?.find((session) => session.session_id === "stop-cleanup-session")?.controlState,
+  undefined,
+);
 
 await runPendingReconnectSurvivesServiceWorkerRestart();
 
@@ -1857,7 +1954,7 @@ const missingHostPortCount = ports.length;
 connectNativeError = new Error("Specified native messaging host not found.");
 storage[statusKey] = { state: "disconnected", updatedAt: Date.now(), retryDelayMs: 1000, nextRetryAt: Date.now() - 1 };
 await import(`${pathToFileURL(path.join(packageRoot, "dist", "background.js")).href}?restart-missing-host=${Date.now()}`);
-await waitFor(() => storage[statusKey]?.state === "error");
+await waitFor(() => storage[statusKey]?.state === "reconnect_scheduled");
 assert.equal(storage[statusKey].diagnosis, "native_host_not_found");
 assert.match(storage[statusKey].message, /specified native messaging host not found/i);
 assert.equal(ports.length, missingHostPortCount);
@@ -1873,7 +1970,7 @@ const forbiddenPortCount = ports.length;
 connectNativeError = new Error("Access to the specified native messaging host is forbidden.");
 storage[statusKey] = { state: "disconnected", updatedAt: Date.now(), retryDelayMs: 1000, nextRetryAt: Date.now() - 1 };
 await import(`${pathToFileURL(path.join(packageRoot, "dist", "background.js")).href}?restart-forbidden-host=${Date.now()}`);
-await waitFor(() => storage[statusKey]?.state === "error");
+await waitFor(() => storage[statusKey]?.state === "reconnect_scheduled");
 assert.equal(storage[statusKey].diagnosis, "native_host_forbidden");
 assert.match(storage[statusKey].message, /access to the specified native messaging host is forbidden/i);
 assert.equal(ports.length, forbiddenPortCount);
@@ -1889,7 +1986,7 @@ const unavailablePortCount = ports.length;
 connectNativeError = new Error("browser refused native connection");
 storage[statusKey] = { state: "disconnected", updatedAt: Date.now(), retryDelayMs: 1000, nextRetryAt: Date.now() - 1 };
 await import(`${pathToFileURL(path.join(packageRoot, "dist", "background.js")).href}?restart-unavailable-host=${Date.now()}`);
-await waitFor(() => storage[statusKey]?.state === "error");
+await waitFor(() => storage[statusKey]?.state === "reconnect_scheduled");
 assert.equal(storage[statusKey].diagnosis, "native_host_unavailable");
 assert.match(storage[statusKey].message, /browser refused native connection/i);
 assert.equal(ports.length, unavailablePortCount);
@@ -1905,7 +2002,7 @@ const crashedPostMessagePortCount = ports.length;
 postMessageError = new Error("native host process failed during startup");
 storage[statusKey] = { state: "disconnected", updatedAt: Date.now(), retryDelayMs: 1000, nextRetryAt: Date.now() - 1 };
 await import(`${pathToFileURL(path.join(packageRoot, "dist", "background.js")).href}?restart-post-message-failure=${Date.now()}`);
-await waitFor(() => storage[statusKey]?.state === "error");
+await waitFor(() => storage[statusKey]?.state === "reconnect_scheduled");
 assert.equal(storage[statusKey].diagnosis, "native_host_crashed");
 assert.match(storage[statusKey].message, /native host process failed during startup/i);
 assert.equal(ports.length, crashedPostMessagePortCount + 1);
@@ -1929,7 +2026,7 @@ try {
   const helloTimeoutPort = await waitFor(() => ports[helloTimeoutPortCount]);
   await waitFor(() => helloTimeoutPort.sent.find((message) => message.type === "hello"));
   await waitFor(() => storage[statusKey]?.diagnosis === "native_host_hello_timeout");
-  assert.equal(storage[statusKey].state, "error");
+  assert.equal(storage[statusKey].state, "reconnect_scheduled");
   assert.match(storage[statusKey].message, /native host hello timed out/i);
   assert.equal(helloTimeoutPort.disconnected, true);
   assert.equal(calls.alarmsCreate.at(-1).name, "obu.reconnectNativeHost");
@@ -1950,7 +2047,7 @@ const earlyDisconnectPort = await waitFor(() => ports[earlyDisconnectPortCount])
 await waitFor(() => earlyDisconnectPort.sent.find((message) => message.type === "hello"));
 earlyDisconnectPort.disconnect();
 await waitFor(() => storage[statusKey]?.diagnosis === "native_host_crashed");
-assert.equal(storage[statusKey].state, "error");
+assert.equal(storage[statusKey].state, "reconnect_scheduled");
 assert.match(storage[statusKey].message, /native host exited before hello_ack/i);
 assert.equal(calls.alarmsCreate.at(-1).name, "obu.reconnectNativeHost");
 const earlyDisconnectRecoveryPortCount = ports.length;
@@ -1991,7 +2088,7 @@ try {
   accelerateHeartbeatTimeout = true;
   heartbeatIntervalCallback();
   await waitFor(() => storage[statusKey]?.diagnosis === "native_host_heartbeat_timeout");
-  assert.equal(storage[statusKey].state, "disconnected");
+  assert.equal(storage[statusKey].state, "reconnect_scheduled");
   assert.match(storage[statusKey].message, /native host heartbeat timed out/i);
   await waitFor(() => calls.runtimeReload.length === heartbeatUpdateReloadStart + 1);
   assert.equal(storage[pendingUpdateKey], null);
@@ -2015,7 +2112,7 @@ async function runNativeHostReconnectAfterConnectedCrash(connectedPort) {
   const crashedPort = connectedPort;
   const reconnectPortIndex = ports.length;
   crashedPort.disconnect();
-  await waitFor(() => storage[statusKey]?.state === "disconnected");
+  await waitFor(() => storage[statusKey]?.state === "reconnect_scheduled");
   assert.equal(storage[statusKey].diagnosis, "native_host_disconnected");
   await waitFor(() => storage[statusKey]?.retryDelayMs === 1000);
   assert.equal(typeof storage[statusKey].nextRetryAt, "number");

@@ -58,7 +58,6 @@ await runPopupRepairMatrix();
 await runPopupAgentCopyFailure();
 await runPopupStoreHandoff();
 await runPopupResumeFromFailureStates();
-await runPopupCleanupAction();
 await runPopupDebugLogs();
 await runPopupInitialFailure("missing status response", [undefined], "Repair setup, then reconnect.");
 await runPopupInitialFailure("runtime rejection", [new Error("status boom")], "Repair setup, then reconnect.");
@@ -94,9 +93,9 @@ function assertAgentHandoff(elements, channel = "unpacked-dev") {
 async function runPopupHappyPath() {
   const harness = installPopupHarness([
     { state: "connected", hostVersion: "0.1.0" },
-    { state: "stopped", message: "Stopped by user" },
-    { state: "stopped", message: "Stopped by user" },
-    { state: "connecting", message: "Connecting..." },
+    { state: "connected", hostVersion: "0.1.0", browserControl: "human_takeover" },
+    { state: "connected", hostVersion: "0.1.0", browserControl: "human_takeover" },
+    { state: "connected", hostVersion: "0.1.0" },
     { state: "connected", hostVersion: "0.1.0" },
     new Error("stop boom"),
     new Error("refresh boom"),
@@ -114,7 +113,11 @@ async function runPopupHappyPath() {
   assertAgentHandoff(harness.elements);
   assert.equal(harness.elements.stopButton.disabled, false);
   assert.equal(harness.elements.resumeButton.disabled, true);
-  assert.equal(harness.elements.cleanupButton.disabled, false);
+  assert.equal(harness.elements.stopButton.textContent, "Take Control");
+  assert.equal(harness.elements.stopButton.getAttribute("data-action-emphasis"), "primary");
+  assert.equal(harness.elements.stopButton.getAttribute("aria-label"), "Pause agent control so you can use this browser yourself.");
+  assert.equal(harness.elements.resumeButton.textContent, "Agent Has Control");
+  assert.equal(harness.elements.resumeButton.getAttribute("data-action-emphasis"), "status");
   harness.elements.settingsButton.click();
   await waitFor(() => harness.sent.some((message) => message?.type === "OPEN_OPTIONS_PAGE"));
 
@@ -128,6 +131,9 @@ async function runPopupHappyPath() {
   );
   assert.equal(harness.elements.statusText.textContent, "Update needed");
   assert.equal(harness.elements.resumeButton.disabled, false);
+  assert.equal(harness.elements.stopButton.textContent, "Update Needed");
+  assert.equal(harness.elements.resumeButton.textContent, "Reconnect After Update");
+  assert.equal(harness.elements.resumeButton.getAttribute("data-action-emphasis"), "primary");
   assert.match(harness.elements.detailText.textContent, /Update the local host/);
   assert.equal(harness.elements.setupPanel.hidden, false);
   assert.match(harness.elements.setupText.textContent, /Agent/);
@@ -207,7 +213,8 @@ async function runPopupHappyPath() {
   assert.equal(harness.elements.statusText.textContent, "Reconnecting");
   assert.equal(harness.elements.dot.className, "dot reconnecting");
   assert.equal(harness.elements.resumeButton.disabled, false);
-  assert.equal(harness.elements.cleanupButton.disabled, false);
+  assert.equal(harness.elements.stopButton.textContent, "Agent Offline");
+  assert.equal(harness.elements.resumeButton.textContent, "Reconnect Agent");
   assert.match(harness.elements.detailText.textContent, /Retrying in 2s/);
 
   harness.storageChanges.emit(
@@ -360,10 +367,11 @@ async function runPopupHappyPath() {
   assert.match(harness.elements.detailText.textContent, /Repair setup/);
 
   harness.elements.stopButton.click();
-  await waitFor(() => harness.sent.some((message) => message.type === "STOP_BROWSER_CONTROL"));
+  await waitFor(() => harness.sent.some((message) => message.type === "TAKE_BROWSER_CONTROL"));
   await waitFor(() => harness.elements.statusText.textContent === "You are in control");
   assert.equal(harness.elements.resumeButton.disabled, false);
-  assert.equal(harness.elements.cleanupButton.disabled, false);
+  assert.equal(harness.elements.stopButton.textContent, "You Have Control");
+  assert.equal(harness.elements.resumeButton.textContent, "Return to Agent");
 
   harness.elements.resumeButton.click();
   await waitFor(() => harness.sent.some((message) => message.type === "RESUME_BROWSER_CONTROL"));
@@ -373,6 +381,8 @@ async function runPopupHappyPath() {
   await waitFor(() => harness.elements.detailText.textContent === "Repair setup, then reconnect.");
   assert.equal(harness.elements.statusText.textContent, "Needs setup");
   assert.equal(harness.elements.dot.className, "dot attention");
+  assert.equal(harness.elements.stopButton.textContent, "Setup Needed");
+  assert.equal(harness.elements.resumeButton.textContent, "Retry Connection");
 }
 
 async function runPopupRepairMatrix() {
@@ -516,6 +526,17 @@ async function runPopupRepairMatrix() {
       status: {
         state: "connected",
         hostVersion: "0.1.0",
+        browserControl: "human_takeover",
+      },
+      label: "You are in control",
+      patterns: [/Finish sign-in/, /passwords/, /click Resume/],
+      setupVisible: false,
+      resumeEnabled: true,
+    },
+    {
+      status: {
+        state: "connected",
+        hostVersion: "0.1.0",
         diagnosis: "native_host_not_found",
       },
       label: "Connected",
@@ -638,6 +659,8 @@ async function runPopupResumeFromFailureStates() {
   await importPopup("resume-disconnected");
   await waitFor(() => disconnected.elements.statusText.textContent === "Reconnecting");
   assert.equal(disconnected.elements.resumeButton.disabled, false);
+  assert.equal(disconnected.elements.stopButton.textContent, "Agent Offline");
+  assert.equal(disconnected.elements.resumeButton.textContent, "Reconnect Agent");
   disconnected.elements.resumeButton.click();
   await waitFor(() => disconnected.sent.some((message) => message.type === "RESUME_BROWSER_CONTROL"));
   await waitFor(() => disconnected.elements.statusText.textContent === "Connected");
@@ -650,29 +673,11 @@ async function runPopupResumeFromFailureStates() {
   await importPopup("resume-error");
   await waitFor(() => failed.elements.statusText.textContent === "Needs setup");
   assert.equal(failed.elements.resumeButton.disabled, false);
+  assert.equal(failed.elements.stopButton.textContent, "Setup Needed");
+  assert.equal(failed.elements.resumeButton.textContent, "Retry Connection");
   failed.elements.resumeButton.click();
   await waitFor(() => failed.sent.some((message) => message.type === "RESUME_BROWSER_CONTROL"));
   await waitFor(() => failed.elements.statusText.textContent === "Connected");
-}
-
-async function runPopupCleanupAction() {
-  const harness = installPopupHarness([
-    { state: "disconnected", message: "native host disconnected" },
-    { state: "disconnected", message: "native host disconnected" },
-  ], {
-    cleanupResult: { closedTabs: 2, releasedTabs: 1, keptDeliverables: 3 },
-  });
-  await importPopup("cleanup-action");
-  await waitFor(() => harness.elements.statusText.textContent === "Reconnecting");
-  assert.equal(harness.elements.cleanupButton.disabled, false);
-  harness.elements.cleanupButton.click();
-  await waitFor(() => harness.sent.some((message) => message.type === "CLEAN_UP_BROWSER_TABS"));
-  await waitFor(() => /Closed 2, released 1, kept 3 deliverables/.test(harness.elements.cleanupResult.textContent));
-  await waitFor(() => harness.elements.cleanupButton.disabled === false);
-
-  harness.storageChanges.emit({ [statusKey]: { newValue: { state: "stopped" } } }, "local");
-  assert.equal(harness.elements.statusText.textContent, "You are in control");
-  assert.equal(harness.elements.cleanupButton.disabled, false);
 }
 
 async function runPopupInitialFailure(label, responses, expectedDetail) {
@@ -733,8 +738,6 @@ function installPopupHarness(responses, options = {}) {
     dot: new FakeElement(),
     statusText: new FakeElement(),
     detailText: new FakeElement(),
-    cleanupButton: new FakeElement(),
-    cleanupResult: new FakeElement(),
     versionText: new FakeElement(),
     stopButton: new FakeElement(),
     resumeButton: new FakeElement(),
@@ -755,8 +758,6 @@ function installPopupHarness(responses, options = {}) {
     ["#status-dot", elements.dot],
     ["#status-text", elements.statusText],
     ["#detail-text", elements.detailText],
-    ["#cleanup-button", elements.cleanupButton],
-    ["#cleanup-result", elements.cleanupResult],
     ["#version-text", elements.versionText],
     ["#stop-button", elements.stopButton],
     ["#resume-button", elements.resumeButton],
@@ -819,9 +820,6 @@ function installPopupHarness(responses, options = {}) {
         if (message?.type === "CLEAR_DEBUG_LOGS") {
           debugState = { ...debugState, entries: [] };
           return debugState;
-        }
-        if (message?.type === "CLEAN_UP_BROWSER_TABS") {
-          return options.cleanupResult ?? { closedTabs: 0, releasedTabs: 0, keptDeliverables: 0 };
         }
         const next = responses.shift();
         if (next instanceof Error) throw next;

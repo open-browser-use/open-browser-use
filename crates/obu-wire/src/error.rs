@@ -10,41 +10,11 @@
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
-/// Defensive or backend timeout.
-pub const ERR_TIMEOUT: i32 = -1000;
-/// Requested object was not found.
-pub const ERR_NOT_FOUND: i32 = -1001;
-/// Operation is disallowed at the server level.
-pub const ERR_DISALLOWED: i32 = -1002;
-/// Feature is not implemented.
-pub const ERR_NOT_IMPLEMENTED: i32 = -1003;
-/// Protocol violation.
-pub const ERR_PROTOCOL: i32 = -1004;
-/// No usable browser backend is available.
-pub const ERR_NO_BACKEND: i32 = -1005;
-/// Peer has too many concurrent in-flight requests.
-pub const ERR_OVERLOADED: i32 = -1006;
-/// Generic I/O failure.
-pub const ERR_IO: i32 = -1099;
-
-/// Peer/auth gate rejected the connection.
-///
-/// D9 and the Phase 9 failure-mode test pin wrong capability-token auth to
-/// `-1100`, so the dispatcher uses this code for first-frame auth rejection.
-pub const ERR_PEER_AUTH: i32 = -1100;
-/// Capability-token specific guard code for later structured policy surfaces.
-pub const ERR_CAPABILITY_TOKEN: i32 = -1101;
-/// Command-level guard rejection.
-pub const ERR_CMD_DISALLOWED: i32 = -1102;
-
-/// Page or target has closed.
-pub const ERR_PAGE_CLOSED: i32 = -1200;
-/// CDP command failed.
-pub const ERR_CDP_FAILURE: i32 = -1201;
-/// Tab has not been attached.
-pub const ERR_TAB_NOT_ATTACHED: i32 = -1202;
-/// Native browser dialog needs an explicit user/agent decision.
-pub const ERR_DIALOG_REQUIRES_DECISION: i32 = -1203;
+// Wire error code constants live in a generated sibling file; re-export them
+// here so the existing `obu_wire::error::ERR_*` paths keep resolving.
+#[path = "error_codes.generated.rs"]
+mod codes;
+pub use codes::*;
 
 /// JSON-RPC 2.0 standard error codes plus an open server-error range.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

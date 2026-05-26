@@ -35,6 +35,11 @@ pub enum TabOrigin {
     User,
 }
 
+impl TabOrigin {
+    /// Every origin variant. Pinned to `control-vocab.json` (`tabOrigins`).
+    pub const ALL: [TabOrigin; 2] = [TabOrigin::Agent, TabOrigin::User];
+}
+
 /// Lifecycle state for a tab known to the host.
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -45,6 +50,15 @@ pub enum TabStatus {
     Handoff,
     /// Preserved as a stable deliverable outside active browser control.
     Deliverable,
+}
+
+impl TabStatus {
+    /// Every status variant. Pinned to `control-vocab.json` (`tabStatuses`).
+    pub const ALL: [TabStatus; 3] = [
+        TabStatus::Active,
+        TabStatus::Handoff,
+        TabStatus::Deliverable,
+    ];
 }
 
 /// Mutable per-tab record.

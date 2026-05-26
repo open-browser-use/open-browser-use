@@ -7,11 +7,29 @@ const EXTENSION_CHANNEL = "__OBU_EXTENSION_CHANNEL__";
 type ExtensionChannel = "unpacked-dev" | "store";
 
 type HostStatus = {
-  state: "disconnected" | "connecting" | "connected" | "version_mismatch" | "stopped" | "error";
+  state:
+    | "disconnected"
+    | "connecting"
+    | "hello_pending"
+    | "connected"
+    | "heartbeat_failed"
+    | "reconnect_scheduled"
+    | "version_mismatch"
+    | "stopping"
+    | "stopped"
+    | "cleanup_failed"
+    | "error";
   message?: string;
   diagnosis?: HostDiagnosis;
   hostVersion?: string;
   deliverableTabs?: number;
+  overlayRelease?: Array<{
+    tabId: number;
+    state: "release_pending" | "release_failed" | "release_abandoned";
+    failures?: number;
+    sessionId: string;
+    turnId: string;
+  }>;
   retryDelayMs?: number;
   nextRetryAt?: number;
   pendingExtensionUpdate?: {
@@ -19,6 +37,7 @@ type HostStatus = {
     pendingSince: number;
     state: "waiting_for_idle";
   };
+  browserControl?: "human_takeover";
 };
 
 type HostDiagnosis =
@@ -50,19 +69,11 @@ type DebugLogStatus = {
   maxEntries?: number;
 };
 
-type CleanupBrowserTabsResult = {
-  closedTabs: number;
-  releasedTabs: number;
-  keptDeliverables: number;
-};
-
 const dot = document.querySelector<HTMLSpanElement>("#status-dot");
 const shell = document.querySelector<HTMLElement>("#shell");
 const statusPanel = document.querySelector<HTMLElement>("#status-panel");
 const statusText = document.querySelector<HTMLParagraphElement>("#status-text");
 const detailText = document.querySelector<HTMLParagraphElement>("#detail-text");
-const cleanupButton = document.querySelector<HTMLButtonElement>("#cleanup-button");
-const cleanupResult = document.querySelector<HTMLParagraphElement>("#cleanup-result");
 const setupPanel = document.querySelector<HTMLElement>("#setup-panel");
 const setupLabel = document.querySelector<HTMLParagraphElement>("#setup-label");
 const setupText = document.querySelector<HTMLParagraphElement>("#setup-text");
@@ -98,15 +109,11 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
 });
 
 stopButton!.addEventListener("click", () => {
-  void sendControlMessage("STOP_BROWSER_CONTROL", stopButton!);
+  void sendControlMessage("TAKE_BROWSER_CONTROL", stopButton!);
 });
 
 resumeButton!.addEventListener("click", () => {
   void sendControlMessage("RESUME_BROWSER_CONTROL", resumeButton!);
-});
-
-cleanupButton?.addEventListener("click", () => {
-  void cleanUpBrowserTabs();
 });
 
 settingsButton?.addEventListener("click", () => {
@@ -197,7 +204,7 @@ async function refreshDebugStatus(): Promise<void> {
   }
 }
 
-async function sendControlMessage(type: "STOP_BROWSER_CONTROL" | "RESUME_BROWSER_CONTROL", button: HTMLButtonElement): Promise<void> {
+async function sendControlMessage(type: "TAKE_BROWSER_CONTROL" | "RESUME_BROWSER_CONTROL", button: HTMLButtonElement): Promise<void> {
   button.disabled = true;
   try {
     const status = await chrome.runtime.sendMessage({ type });
@@ -210,28 +217,6 @@ async function sendControlMessage(type: "STOP_BROWSER_CONTROL" | "RESUME_BROWSER
     render({ state: "error", message: errorMessage(error) });
   } finally {
     await refreshStatus();
-  }
-}
-
-async function cleanUpBrowserTabs(): Promise<void> {
-  cleanupButton!.disabled = true;
-  cleanupResult!.textContent = "";
-  try {
-    const result = await chrome.runtime.sendMessage({ type: "CLEAN_UP_BROWSER_TABS" });
-    if (isCleanupBrowserTabsResult(result)) {
-      cleanupResult!.textContent = msg("cleanupResult", [
-        String(result.closedTabs),
-        String(result.releasedTabs),
-        String(result.keptDeliverables),
-      ]);
-    } else {
-      cleanupResult!.textContent = msg("nativeHostStatusUnavailable");
-    }
-    await refreshStatus();
-  } catch (error) {
-    cleanupResult!.textContent = msg("cleanupFailed", [errorMessage(error)]);
-  } finally {
-    cleanupButton!.disabled = false;
   }
 }
 
@@ -329,8 +314,159 @@ function render(status: HostStatus): void {
   statusText!.textContent = statusLabel(status);
   detailText!.textContent = statusDetail(status, advice);
   renderSetup(status, advice, wasConnected);
-  stopButton!.disabled = status.state !== "connected";
-  resumeButton!.disabled = !canResume(status);
+  renderActionButtons(status);
+}
+
+type ActionButtonSemantics = {
+  label: string;
+  description: string;
+  disabled: boolean;
+  emphasis: "primary" | "secondary" | "status";
+};
+
+function renderActionButtons(status: HostStatus): void {
+  applyActionButton(stopButton!, stopButtonSemantics(status));
+  applyActionButton(resumeButton!, resumeButtonSemantics(status));
+}
+
+function applyActionButton(button: HTMLButtonElement, semantics: ActionButtonSemantics): void {
+  button.textContent = semantics.label;
+  button.disabled = semantics.disabled;
+  button.setAttribute("aria-label", semantics.description);
+  button.setAttribute("title", semantics.description);
+  setDataAttribute(button, "data-action-emphasis", semantics.emphasis);
+}
+
+function stopButtonSemantics(status: HostStatus): ActionButtonSemantics {
+  if (status.state === "connected" && status.browserControl === "human_takeover") {
+    return {
+      label: msg("stopButtonUserControl", undefined, "You Have Control"),
+      description: msg("stopButtonUserControlDescription", undefined, "You are using the browser directly."),
+      disabled: true,
+      emphasis: "status",
+    };
+  }
+  switch (status.state) {
+    case "connected":
+      return {
+        label: msg("stopButtonTakeControl", undefined, "Take Control"),
+        description: msg("stopButtonTakeControlDescription", undefined, "Pause agent control so you can use this browser yourself."),
+        disabled: false,
+        emphasis: "primary",
+      };
+    case "stopping":
+      return {
+        label: msg("stopButtonTakingControl", undefined, "Taking Control"),
+        description: msg("stopButtonTakingControlDescription", undefined, "The agent is releasing browser control."),
+        disabled: true,
+        emphasis: "status",
+      };
+    case "stopped":
+      return {
+        label: msg("stopButtonUserControl", undefined, "You Have Control"),
+        description: msg("stopButtonUserControlDescription", undefined, "You are using the browser directly."),
+        disabled: true,
+        emphasis: "status",
+      };
+    case "version_mismatch":
+      return {
+        label: msg("stopButtonUpdateNeeded", undefined, "Update Needed"),
+        description: msg("stopButtonUpdateNeededDescription", undefined, "Update the local host before changing browser control."),
+        disabled: true,
+        emphasis: "status",
+      };
+    case "error":
+    case "cleanup_failed":
+      return {
+        label: msg("stopButtonSetupNeeded", undefined, "Setup Needed"),
+        description: msg("stopButtonSetupNeededDescription", undefined, "Repair setup before taking or returning browser control."),
+        disabled: true,
+        emphasis: "status",
+      };
+    case "connecting":
+    case "hello_pending":
+      return {
+        label: msg("stopButtonAgentConnecting", undefined, "Agent Connecting"),
+        description: msg("stopButtonAgentConnectingDescription", undefined, "The agent is still connecting to browser control."),
+        disabled: true,
+        emphasis: "status",
+      };
+    case "disconnected":
+    case "heartbeat_failed":
+    case "reconnect_scheduled":
+      return {
+        label: msg("stopButtonAgentOffline", undefined, "Agent Offline"),
+        description: msg("stopButtonAgentOfflineDescription", undefined, "There is no active agent control to take over."),
+        disabled: true,
+        emphasis: "status",
+      };
+  }
+}
+
+function resumeButtonSemantics(status: HostStatus): ActionButtonSemantics {
+  if (status.state === "connected" && status.browserControl === "human_takeover") {
+    return {
+      label: msg("resumeButtonReturnToAgent", undefined, "Return to Agent"),
+      description: msg("resumeButtonReturnToAgentDescription", undefined, "Give browser control back to the agent."),
+      disabled: false,
+      emphasis: "primary",
+    };
+  }
+  switch (status.state) {
+    case "connected":
+      return {
+        label: msg("resumeButtonAgentControl", undefined, "Agent Has Control"),
+        description: msg("resumeButtonAgentControlDescription", undefined, "The agent already controls the browser."),
+        disabled: true,
+        emphasis: "status",
+      };
+    case "stopping":
+      return {
+        label: msg("resumeButtonWait", undefined, "Wait"),
+        description: msg("resumeButtonWaitDescription", undefined, "Wait until browser control has fully stopped."),
+        disabled: true,
+        emphasis: "status",
+      };
+    case "stopped":
+      return {
+        label: msg("resumeButtonReturnToAgent", undefined, "Return to Agent"),
+        description: msg("resumeButtonReturnToAgentDescription", undefined, "Give browser control back to the agent."),
+        disabled: false,
+        emphasis: "primary",
+      };
+    case "version_mismatch":
+      return {
+        label: msg("resumeButtonReconnectAfterUpdate", undefined, "Reconnect After Update"),
+        description: msg("resumeButtonReconnectAfterUpdateDescription", undefined, "Reconnect after the local host has been updated."),
+        disabled: false,
+        emphasis: "primary",
+      };
+    case "error":
+    case "cleanup_failed":
+      return {
+        label: msg("resumeButtonRetryConnection", undefined, "Retry Connection"),
+        description: msg("resumeButtonRetryConnectionDescription", undefined, "Try to reconnect after setup is repaired."),
+        disabled: false,
+        emphasis: "primary",
+      };
+    case "disconnected":
+    case "heartbeat_failed":
+    case "reconnect_scheduled":
+      return {
+        label: msg("resumeButtonReconnectAgent", undefined, "Reconnect Agent"),
+        description: msg("resumeButtonReconnectAgentDescription", undefined, "Reconnect the agent to browser control."),
+        disabled: false,
+        emphasis: "primary",
+      };
+    case "connecting":
+    case "hello_pending":
+      return {
+        label: msg("resumeButtonConnecting", undefined, "Connecting"),
+        description: msg("resumeButtonConnectingDescription", undefined, "The agent is connecting now."),
+        disabled: true,
+        emphasis: "status",
+      };
+  }
 }
 
 function renderSetup(status: HostStatus, advice: NativeHostAdvice, wasConnected: boolean): void {
@@ -397,27 +533,35 @@ function renderDebug(debug: DebugLogStatus, overrideText?: string): void {
     : debugDisabledLabel(debug.entries.length);
 }
 
-function canResume(status: HostStatus): boolean {
-  return ["disconnected", "error", "stopped", "version_mismatch"].includes(status.state);
-}
-
 function statusClass(state: HostStatus["state"]): string {
   if (state === "connected") return "connected";
-  if (state === "connecting" || state === "disconnected") return "reconnecting";
-  if (state === "error" || state === "version_mismatch") return "attention";
+  if (state === "connecting" || state === "hello_pending" || state === "disconnected" || state === "reconnect_scheduled") return "reconnecting";
+  if (state === "error" || state === "cleanup_failed" || state === "version_mismatch") return "attention";
   return "";
 }
 
 function statusLabel(status: HostStatus): string {
+  if (status.state === "connected" && status.browserControl === "human_takeover") {
+    return msg("statusStopped");
+  }
   switch (status.state) {
     case "connected":
       return msg("statusConnected");
     case "connecting":
+    case "hello_pending":
       return msg("statusConnecting");
+    case "reconnect_scheduled":
+      return msg("statusReconnecting");
+    case "heartbeat_failed":
+      return msg("statusReconnecting");
     case "version_mismatch":
       return msg("statusUpdateNeeded");
+    case "stopping":
+      return msg("statusStopped");
     case "stopped":
       return msg("statusStopped");
+    case "cleanup_failed":
+      return msg("statusNeedsSetup");
     case "error":
       return msg("statusNeedsSetup");
     case "disconnected":
@@ -426,24 +570,27 @@ function statusLabel(status: HostStatus): string {
 }
 
 function detailLabel(status: HostStatus): string {
+  if (status.state === "connected" && status.browserControl === "human_takeover") {
+    return msg("stoppedDetail");
+  }
   if (status.state === "connected") {
     return status.hostVersion
       ? msg("hostVersionLabel", [status.hostVersion])
       : msg("hostReady");
   }
-  if (status.state === "connecting") {
+  if (status.state === "connecting" || status.state === "hello_pending") {
     return msg("connectingNativeHost");
   }
-  if (status.state === "disconnected") {
+  if (status.state === "disconnected" || status.state === "heartbeat_failed" || status.state === "reconnect_scheduled") {
     return msg("disconnectedDetail");
   }
   if (status.state === "version_mismatch") {
     return msg("versionMismatchDetail");
   }
-  if (status.state === "stopped") {
+  if (status.state === "stopping" || status.state === "stopped") {
     return msg("stoppedDetail");
   }
-  if (status.state === "error") {
+  if (status.state === "error" || status.state === "cleanup_failed") {
     return msg("errorDetail");
   }
   return "";
@@ -462,7 +609,9 @@ function statusDetail(status: HostStatus, advice: NativeHostAdvice): string {
 }
 
 function visibleStatusMessage(status: HostStatus): string {
-  if (status.state === "connecting" || status.state === "stopped") return knownStatusMessage(status.message);
+  if (status.state === "connecting" || status.state === "hello_pending" || status.state === "stopping" || status.state === "stopped" || status.state === "cleanup_failed") {
+    return knownStatusMessage(status.message);
+  }
   return "";
 }
 
@@ -534,7 +683,7 @@ function nativeHostAdvice(status: HostStatus): NativeHostAdvice {
         showSetup: false,
       };
     case undefined:
-      if (status.state === "error") {
+      if (status.state === "error" || status.state === "cleanup_failed") {
         return withSetup(
           msg("adviceRepairSetup"),
           msg("setupTextRepairSetup"),
@@ -577,7 +726,7 @@ function agentHandoffForChannel(channel: string, runtimeExtensionId: string | un
 }
 
 function retryLabel(status: HostStatus): string {
-  if (status.state === "connected" || status.state === "stopped" || status.state === "version_mismatch") return "";
+  if (status.state === "connected" || status.state === "stopped" || status.state === "cleanup_failed" || status.state === "version_mismatch") return "";
   const nextRetryAt = typeof status.nextRetryAt === "number" ? status.nextRetryAt : undefined;
   const retryDelayMs = typeof status.retryDelayMs === "number" ? status.retryDelayMs : undefined;
   if (nextRetryAt === undefined && retryDelayMs === undefined) return "";
@@ -588,7 +737,7 @@ function retryLabel(status: HostStatus): string {
 
 function normalizeDiagnosis(status: HostStatus): HostDiagnosis | undefined {
   if (status.state === "version_mismatch") return "version_mismatch";
-  if (status.state === "connected" || status.state === "connecting" || status.state === "stopped") return undefined;
+  if (status.state === "connected" || status.state === "connecting" || status.state === "hello_pending" || status.state === "stopping" || status.state === "stopped") return undefined;
   if (status.diagnosis) return status.diagnosis;
   const message = status.message ?? "";
   if (/specified native messaging host.*not found/i.test(message)) {
@@ -689,16 +838,6 @@ function isDebugLogStatus(value: unknown): value is DebugLogStatus {
     typeof value === "object" &&
     typeof (value as { enabled?: unknown }).enabled === "boolean" &&
     Array.isArray((value as { entries?: unknown }).entries)
-  );
-}
-
-function isCleanupBrowserTabsResult(value: unknown): value is CleanupBrowserTabsResult {
-  return (
-    value !== null &&
-    typeof value === "object" &&
-    typeof (value as { closedTabs?: unknown }).closedTabs === "number" &&
-    typeof (value as { releasedTabs?: unknown }).releasedTabs === "number" &&
-    typeof (value as { keptDeliverables?: unknown }).keptDeliverables === "number"
   );
 }
 

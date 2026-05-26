@@ -16,6 +16,8 @@ pub enum KernelState {
     Executing,
     /// Kernel is restarting.
     Restarting,
+    /// Last lifecycle attempt failed; kernel must re-boot before next exec.
+    Failed,
 }
 
 /// One `display()` entry captured for the final tool result.

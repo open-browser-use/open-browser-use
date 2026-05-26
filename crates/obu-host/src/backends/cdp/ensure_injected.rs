@@ -233,7 +233,8 @@ async function evaluateOnPage(functionSource, arg) {
 }
 
 async function resolveActionPoint(selector, arg) {
-  return await evaluateOnSelector(selector, async (element, injected, options, scope) => {
+  try {
+    return await evaluateOnSelector(selector, async (element, injected, options, scope) => {
     const requiredStates = options.requiredStates || [];
     const waitForAnimationFrame = () => new Promise((resolve) => {
       const view = element.ownerDocument?.defaultView;
@@ -287,12 +288,60 @@ async function resolveActionPoint(selector, arg) {
       if (!state.matches) throw new Error("Element is not " + stateName);
     }
     const frameOffset = scope.prepareFrameChainForPointerAction();
-    if (!rect || rect.width <= 0 || rect.height <= 0) throw new Error("Element does not have a clickable bounding box");
-    return {
-      x: Math.max(0, frameOffset.left + rect.left + rect.width / 2),
-      y: Math.max(0, frameOffset.top + rect.top + rect.height / 2),
+    if (!rect || rect.width <= 0 || rect.height <= 0) return { resolution: "no_clickable_box" };
+    const doc = element.ownerDocument;
+    const view = doc.defaultView || window;
+    const vw = { left: 0, top: 0, right: view.innerWidth, bottom: view.innerHeight };
+    const intersectArea = (r) => {
+      const l = Math.max(r.left, vw.left), rt = Math.min(r.right, vw.right);
+      const t = Math.max(r.top, vw.top), b = Math.min(r.bottom, vw.bottom);
+      return Math.max(0, rt - l) * Math.max(0, b - t);
     };
-  }, arg);
+    // Largest-visible client rect, falling back to the bounding rect.
+    const rects = Array.from(element.getClientRects()).filter((r) => r.width > 0 && r.height > 0);
+    const candidates = (rects.length ? rects : [rect])
+      .map((r) => ({ r, area: intersectArea(r) }))
+      .sort((a, b) => b.area - a.area)
+      .map((c) => c.r);
+    const describe = (node) => {
+      if (!node || node.nodeType !== 1) return "unknown element";
+      const id = node.id ? '#' + node.id : '';
+      const cls = node.classList && node.classList.length ? "." + Array.from(node.classList).slice(0, 2).join(".") : "";
+      return (node.tagName || "node").toLowerCase() + id + cls;
+    };
+    const hitAccepts = (lx, ly) => {
+      const stack = typeof doc.elementsFromPoint === "function" ? doc.elementsFromPoint(lx, ly) : [doc.elementFromPoint(lx, ly)];
+      for (const hit of stack) {
+        if (!hit) continue;
+        if (view.getComputedStyle && view.getComputedStyle(hit).pointerEvents === 'none') continue;
+        if (hit === element || element.contains(hit) || hit.contains(element)) return { ok: true };
+        return { ok: false, by: describe(hit) };
+      }
+      return { ok: false, by: "no element at point" };
+    };
+    if (!candidates.length || intersectArea(candidates[0]) <= 0) return { resolution: "outside_viewport" };
+    const doHitTest = options.hitTest !== false;
+    let occludedBy = null;
+    for (const candidate of candidates) {
+      const lx = candidate.left + candidate.width / 2;
+      const ly = candidate.top + candidate.height / 2;
+      if (!doHitTest) {
+        return { x: Math.max(0, frameOffset.left + lx), y: Math.max(0, frameOffset.top + ly) };
+      }
+      const verdict = hitAccepts(lx, ly);
+      if (verdict.ok) {
+        return { x: Math.max(0, frameOffset.left + lx), y: Math.max(0, frameOffset.top + ly) };
+      }
+      occludedBy = verdict.by;
+    }
+    return { resolution: "occluded", by: occludedBy || "unknown element" };
+    }, arg);
+  } catch (error) {
+    if (error && error.message === unsupportedFrameAccessMessage) {
+      return { resolution: "cross_origin_unreachable", reason: error.message };
+    }
+    throw error;
+  }
 }
 "#
 }

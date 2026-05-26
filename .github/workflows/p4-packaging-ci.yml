@@ -30,8 +30,32 @@ jobs:
       - name: Rust format
         run: cargo fmt --all -- --check
 
+      - name: Wire method generation check
+        run: node scripts/generate-wire-methods.mjs --check
+
+      - name: Error code generation check
+        run: node scripts/generate-error-codes.mjs --check
+
       - name: Install JS dependencies
         run: pnpm install --frozen-lockfile
+
+      - name: Install ShellCheck
+        run: brew install shellcheck
+
+      - name: Lint installer
+        run: shellcheck scripts/install.sh
+
+      - name: Installer PATH-config smoke
+        run: node scripts/install-path-config-smoke.mjs
+
+      - name: Installer network smoke
+        run: node scripts/install-network-smoke.mjs
+
+      - name: Control vocab generation check
+        run: pnpm check:control-vocab
+
+      - name: Descriptor vocab generation check
+        run: pnpm check:descriptor-vocab
 
       - name: Typecheck
         run: pnpm -r typecheck
@@ -110,6 +134,15 @@ jobs:
         with:
           name: open-browser-use-current-curl
           path: dist/curl/*
+
+      - name: Make extension artifact
+        run: node scripts/make-extension-artifact.mjs
+
+      - name: Upload extension artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: open-browser-use-extension
+          path: dist/extension/*
 
       - name: Setup WebExtension smoke
         env:

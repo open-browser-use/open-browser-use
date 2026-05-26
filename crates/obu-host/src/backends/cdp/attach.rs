@@ -45,6 +45,15 @@ pub async fn attach(backend: &CdpBackend, tab_id: &str) -> Result<()> {
         )
         .await
         .map_err(HostError::from)?;
+    backend
+        .transport()
+        .send_command(
+            "Target.setAutoAttach",
+            json!({ "autoAttach": true, "flatten": true, "waitForDebuggerOnStart": false }),
+            Some(&session_id),
+        )
+        .await
+        .map_err(HostError::from)?;
     Ok(())
 }
 

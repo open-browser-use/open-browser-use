@@ -20,6 +20,7 @@ use crate::ops::playwright::runtime::{
     self, PlaywrightCommandBackend, PlaywrightRuntimeBackend, PlaywrightTextInputBackend,
     timeout_ms,
 };
+use crate::ops::point::{self, PointCdpBackend};
 use crate::tab_state::TabId;
 
 /// Route a Playwright/locator method to the CDP implementation.
@@ -68,6 +69,31 @@ impl PlaywrightRuntimeBackend for CdpBackend {
         )
         .await
     }
+
+    async fn playwright_top_level_session(&self, tab_id: &str) -> Option<String> {
+        let record = self.registry().get(&TabId::new(tab_id)).ok().flatten()?;
+        record.cdp_session_id
+    }
+
+    async fn playwright_oopif_session_for_frame(&self, frame_id: &str) -> Option<String> {
+        self.oopif_sessions()
+            .lock()
+            .await
+            .session_for_frame(frame_id)
+    }
+
+    async fn execute_playwright_cdp_on_session(
+        &self,
+        _ctx: &BackendRequestContext,
+        session_id: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        self.transport()
+            .send_command(method, params, Some(session_id))
+            .await
+            .map_err(HostError::from)
+    }
 }
 
 #[async_trait]
@@ -97,21 +123,30 @@ impl PlaywrightTextInputBackend for CdpBackend {
         key: &str,
     ) -> Result<()> {
         let session_id = require_session(self, tab_id)?;
-        for event_type in ["keyDown", "keyUp"] {
+        for event in crate::ops::keyboard::keypress_events(&json!({ "key": key }))? {
             self.transport()
-                .send_command(
-                    "Input.dispatchKeyEvent",
-                    json!({
-                        "type": event_type,
-                        "key": key,
-                        "text": if key.chars().count() == 1 { key } else { "" },
-                    }),
-                    Some(&session_id),
-                )
+                .send_command("Input.dispatchKeyEvent", event, Some(&session_id))
                 .await
                 .map_err(HostError::from)?;
         }
         Ok(())
+    }
+}
+
+#[async_trait]
+impl PointCdpBackend for CdpBackend {
+    async fn execute_point_cdp(
+        &self,
+        _ctx: &BackendRequestContext,
+        tab_id: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        let session_id = require_session(self, tab_id)?;
+        self.transport()
+            .send_command(method, params, Some(&session_id))
+            .await
+            .map_err(HostError::from)
     }
 }
 
@@ -155,6 +190,22 @@ impl PlaywrightCommandBackend for CdpBackend {
         params: Value,
     ) -> Result<Value> {
         tab_screenshot::screenshot_with_params(self, params).await
+    }
+
+    async fn playwright_element_info(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value> {
+        point::element_info(self, ctx, params).await
+    }
+
+    async fn playwright_element_screenshot(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value> {
+        point::element_screenshot(self, ctx, params).await
     }
 
     async fn wait_for_playwright_url(
@@ -361,10 +412,11 @@ async fn download_path(
         )
         .await?;
         if handle_ops::download_progress_is_canceled(&progress) {
-            return Err(HostError::CdpFailure(format!(
-                "download {} was canceled; event={progress}",
-                download_id.0
-            )));
+            let reason = format!("download {} was canceled", download_id.0);
+            backend
+                .registry()
+                .mark_download_failed(&download_id, &state, reason.clone())?;
+            return Err(HostError::CdpFailure(format!("{reason}; event={progress}")));
         }
         let path = handle_ops::download_progress_file_path(&progress);
         handle_ops::mark_download_completed(backend.registry(), &download_id, &mut state, path)?;
@@ -377,13 +429,18 @@ fn handle_owner_session(
     backend: &CdpBackend,
     tab_id: &str,
 ) -> Result<Option<String>> {
-    if ctx.session_id.is_some() {
-        return Ok(ctx.session_id.clone());
+    let session_id = ctx.session_id.clone().ok_or_else(|| {
+        HostError::Protocol(format!(
+            "playwright handle creation for tab {tab_id} requires session_id"
+        ))
+    })?;
+    if ctx.turn_id.as_deref().unwrap_or_default().is_empty() {
+        return Err(HostError::Protocol(format!(
+            "playwright handle creation for tab {tab_id} requires turn_id"
+        )));
     }
-    Ok(backend
-        .registry()
-        .get(&TabId::new(tab_id))?
-        .and_then(|record| record.session_id))
+    let _ = backend.registry().get(&TabId::new(tab_id))?;
+    Ok(Some(session_id))
 }
 
 async fn download_frame_ids(backend: &CdpBackend, session_id: &str) -> Result<HashSet<String>> {

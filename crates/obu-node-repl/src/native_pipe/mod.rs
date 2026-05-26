@@ -1,7 +1,7 @@
 //! Native-pipe broker support.
 //!
-//! Phase 2A starts with the kernel/broker frame definitions. The connection
-//! broker itself is wired into `repl_manager` in the next slice.
+//! Defines the kernel/broker frame protocol. The connection broker is wired
+//! into `repl_manager` — `JsRuntimeManager` owns a `NativePipeBroker`.
 
 pub mod broker;
 pub mod connection;

@@ -23,8 +23,8 @@ Browser:
   keep multiple Tab handles when a workflow needs more than one tab
   .user.discoverTabs() -> UserTabRef[] / .user.history() / .user.claimTab()
   .name(label) / .turnEnded() to mark a turn boundary while keeping active tabs controlled
-  .yieldControl() / .resumeControl() to let a human take over and then resume the same task tab
-  .finalizeTabs({keep?}) / .finalize() / .finishTurn({keep?}) to close, release, hand off, or preserve tabs
+  .yieldControl() / .resumeControlResult() to let a human take over and resume with structured blocked-repair diagnostics
+  .finalizeTabs({keep?}) / .finalize() / .finishTurn({keep?, endTurnOnPartial?}) to close, release, hand off, or preserve tabs
   .clearLifecycleDiagnostics()
 
 Tab:
@@ -37,9 +37,10 @@ Tab:
   .screenshot({type?, quality?, clip?, fullPage?}) -> Image with toBase64(); use display(await tab.screenshot())
   .screenshotForModel({clip?, artifactMode?}) -> compact screenshot summary or inline bytes
   .domSnapshot() -> model-safe Playwright DOM/ARIA snapshot string
+  .playwright.elementInfo({x,y}) / .playwright.elementScreenshot({x,y}) -> point-level inspection
   .evaluate(expressionOrFn, {maxJsonBytes?}) -> capped JSON-safe page result
   .snapshotText({maxItems?, maxTextLength?}) -> compact page text summary
-  .cua.click() / .dblclick() / .scroll() / .type() / .keypress() / .drag() / .dragPath() / .move()
+  .cua.click() / .dblclick() / .scroll() / .type() / .keypress() / .drag() / .dragPath() / .move() / .download_media() / .get_visible_screenshot()
   .clipboard.readText() / .writeText() / .read() / .write()
   .dom_cua.get_visible_dom({format:"text"}) / .dom_cua.text() -> LLM-readable visible DOM-CUA
   .dev.cdp(method, params)

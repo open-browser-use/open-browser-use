@@ -18,6 +18,8 @@ fn agent_browser_mcp_usage_fast_work_rules() {
         "Keep a `Tab` handle and use `await tab.goto(url)`",
         "Reuse the last `tab.domSnapshot()` or `tab.snapshotText()` result",
         "Avoid broad browser-boundary loops",
+        "Prefer locators by role and accessible name",
+        "Prefer Playwright locators, then DOM-CUA node ids",
         "Arm `waitForEvent(\"download\")` or `waitForEvent(\"filechooser\")` before the",
         "Use `browser.turnEnded()` to mark a turn boundary",
         "`browser.finishTurn(...)` first finalizes tabs",

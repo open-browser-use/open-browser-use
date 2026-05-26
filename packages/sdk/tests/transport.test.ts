@@ -40,6 +40,10 @@ class FakeConnection implements NativePipeConnection {
   respond(id: unknown, result: unknown): void {
     this.emit("data", this.encoder.encode(new TextEncoder().encode(JSON.stringify({ jsonrpc: "2.0", id, result }))));
   }
+
+  respondError(id: unknown, error: unknown): void {
+    this.emit("data", this.encoder.encode(new TextEncoder().encode(JSON.stringify({ jsonrpc: "2.0", id, error }))));
+  }
 }
 
 describe("Transport", () => {
@@ -67,7 +71,7 @@ describe("Transport", () => {
     await expect(transport.sendRequest("getInfo", {}, 100)).resolves.toBe("first");
   });
 
-  it("times out, removes pending, and ignores a late response", async () => {
+  it("times out, exposes pending reconcile, and records late success", async () => {
     vi.useFakeTimers();
     const connection = new FakeConnection();
     const transport = new Transport(connection);
@@ -79,7 +83,83 @@ describe("Transport", () => {
     const assertion = expect(promise).rejects.toMatchObject({ code: ERR_TIMEOUT });
     await vi.advanceTimersByTimeAsync(5011);
     await assertion;
+    expect(transport.diagnostics().request_lifecycle).toMatchObject([
+      {
+        kind: "timed_out_pending_reconcile",
+        requestId,
+        method: "getInfo",
+        timeoutMs: 10,
+        defensiveOvershootMs: 5000,
+        nextAction: "observe_reconcile",
+      },
+    ]);
     connection.respond(requestId, { value: "late" });
+    expect(transport.diagnostics().request_lifecycle).toMatchObject([
+      {
+        kind: "timed_out_late_success",
+        requestId,
+        method: "getInfo",
+        nextAction: "observe_reconcile",
+      },
+    ]);
+    vi.useRealTimers();
+  });
+
+  it("records late timeout errors with structured data", async () => {
+    vi.useFakeTimers();
+    const connection = new FakeConnection();
+    const transport = new Transport(connection);
+    let requestId: unknown;
+    connection.onWrite = (request) => {
+      requestId = request.id;
+    };
+    const promise = transport.sendRequest("tab_goto", {}, 10);
+    const assertion = expect(promise).rejects.toMatchObject({ code: ERR_TIMEOUT });
+    await vi.advanceTimersByTimeAsync(5011);
+    await assertion;
+    connection.respondError(requestId, {
+      code: -1203,
+      message: "dialog_requires_decision",
+      data: { code: "dialog_requires_decision", dialog_type: "confirm" },
+    });
+    expect(transport.diagnostics().request_lifecycle).toMatchObject([
+      {
+        kind: "timed_out_late_error",
+        requestId,
+        method: "tab_goto",
+        error: {
+          code: -1203,
+          message: "dialog_requires_decision",
+          data: { code: "dialog_requires_decision", dialog_type: "confirm" },
+        },
+        nextAction: "inspect_error",
+      },
+    ]);
+    vi.useRealTimers();
+  });
+
+  it("records transport close after a timed-out request as terminal lifecycle", async () => {
+    vi.useFakeTimers();
+    const connection = new FakeConnection();
+    const transport = new Transport(connection);
+    let requestId: unknown;
+    connection.onWrite = (request) => {
+      requestId = request.id;
+    };
+    const promise = transport.sendRequest("tab_close", {}, 10);
+    const assertion = expect(promise).rejects.toMatchObject({ code: ERR_TIMEOUT });
+    await vi.advanceTimersByTimeAsync(5011);
+    await assertion;
+    connection.emit("close");
+    expect(transport.diagnostics().request_lifecycle).toMatchObject([
+      {
+        kind: "timed_out_late_transport_closed",
+        requestId,
+        method: "tab_close",
+        reason: "transport closed",
+        nextAction: "reconnect_or_retry",
+      },
+    ]);
     vi.useRealTimers();
   });
 

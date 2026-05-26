@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "type": "webextension",
+  "name": "chrome",
+  "socketPath": "/tmp/open-browser-use-runtime/webextension/example.sock",
+  "sdk_auth_token": "fixture-sdk-auth-token",
+  "pid": 12345,
+  "startedAt": "1779408000000",
+  "metadata": {
+    "native_host_name": "dev.obu.host",
+    "browser_kind": "chrome",
+    "extension_id": "fixture-extension-id",
+    "extension_version": "0.1.0",
+    "extension_instance_id": "fixture-extension-instance",
+    "manifest_version": 3,
+    "profileIdHash": "fixture-profile-hash",
+    "profileIsLastUsed": true,
+    "profileOrdering": 1,
+    "profileRuntimeBinding": "webextension",
+    "profile_metadata": {
+      "profileIdHash": "fixture-profile-hash",
+      "profileIsLastUsed": true,
+      "profileOrdering": 1,
+      "profileRuntimeBinding": "webextension",
+      "diagnostics": {
+        "profilePathRedacted": "/Users/<redacted>/Library/Application Support/Chrome/Profile 1"
+      }
+    }
+  }
+}

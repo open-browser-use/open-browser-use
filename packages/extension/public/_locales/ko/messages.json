@@ -77,10 +77,94 @@
     "message": "Agent 설정 핸드오프 복사"
   },
   "stopButton": {
-    "message": "직접 제어"
+    "message": "제어 가져오기"
   },
   "resumeButton": {
-    "message": "재개"
+    "message": "Agent 다시 연결"
+  },
+  "stopButtonTakeControl": {
+    "message": "제어 가져오기"
+  },
+  "stopButtonTakeControlDescription": {
+    "message": "Agent 제어를 일시 중지하고 이 브라우저를 직접 사용합니다."
+  },
+  "stopButtonTakingControl": {
+    "message": "제어 가져오는 중"
+  },
+  "stopButtonTakingControlDescription": {
+    "message": "Agent가 브라우저 제어를 해제하고 있습니다."
+  },
+  "stopButtonUserControl": {
+    "message": "직접 제어 중"
+  },
+  "stopButtonUserControlDescription": {
+    "message": "브라우저를 직접 사용하고 있습니다."
+  },
+  "stopButtonUpdateNeeded": {
+    "message": "업데이트 필요"
+  },
+  "stopButtonUpdateNeededDescription": {
+    "message": "브라우저 제어를 전환하기 전에 로컬 호스트를 업데이트하세요."
+  },
+  "stopButtonSetupNeeded": {
+    "message": "설정 필요"
+  },
+  "stopButtonSetupNeededDescription": {
+    "message": "제어를 가져오거나 돌려주기 전에 설정을 복구하세요."
+  },
+  "stopButtonAgentConnecting": {
+    "message": "Agent 연결 중"
+  },
+  "stopButtonAgentConnectingDescription": {
+    "message": "Agent가 아직 브라우저 제어에 연결 중입니다."
+  },
+  "stopButtonAgentOffline": {
+    "message": "Agent 오프라인"
+  },
+  "stopButtonAgentOfflineDescription": {
+    "message": "가져올 활성 Agent 제어가 없습니다."
+  },
+  "resumeButtonAgentControl": {
+    "message": "Agent 제어 중"
+  },
+  "resumeButtonAgentControlDescription": {
+    "message": "Agent가 이미 브라우저를 제어하고 있습니다."
+  },
+  "resumeButtonWait": {
+    "message": "대기"
+  },
+  "resumeButtonWaitDescription": {
+    "message": "브라우저 제어가 완전히 중지될 때까지 기다리세요."
+  },
+  "resumeButtonReturnToAgent": {
+    "message": "Agent에 돌려주기"
+  },
+  "resumeButtonReturnToAgentDescription": {
+    "message": "브라우저 제어를 Agent에게 돌려줍니다."
+  },
+  "resumeButtonReconnectAfterUpdate": {
+    "message": "업데이트 후 재연결"
+  },
+  "resumeButtonReconnectAfterUpdateDescription": {
+    "message": "로컬 호스트가 업데이트된 후 다시 연결합니다."
+  },
+  "resumeButtonRetryConnection": {
+    "message": "연결 재시도"
+  },
+  "resumeButtonRetryConnectionDescription": {
+    "message": "설정을 복구한 후 다시 연결을 시도합니다."
+  },
+  "resumeButtonReconnectAgent": {
+    "message": "Agent 다시 연결"
+  },
+  "resumeButtonReconnectAgentDescription": {
+    "message": "Agent를 브라우저 제어에 다시 연결합니다."
+  },
+  "resumeButtonConnecting": {
+    "message": "연결 중"
+  },
+  "resumeButtonConnectingDescription": {
+    "message": "Agent가 연결 중입니다."
   },
   "cleanupButton": {
     "message": "브라우저 탭 정리"
@@ -219,6 +303,17 @@
     "message": "$count$개의 전달 가능 탭이 있습니다. browser.deliverables()를 사용한 뒤 claim()으로 복구하세요.",
     "placeholders": {
       "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "pendingExtensionUpdate": {
+    "message": "브라우저 제어가 유휴 상태가 되면 확장 프로그램 업데이트가 적용됩니다."
+  },
+  "pendingExtensionUpdateVersion": {
+    "message": "브라우저 제어가 유휴 상태가 되면 확장 프로그램 업데이트 $version$이 적용됩니다.",
+    "placeholders": {
+      "version": {
         "content": "$1"
       }
     }

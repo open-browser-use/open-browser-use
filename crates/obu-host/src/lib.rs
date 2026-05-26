@@ -7,6 +7,7 @@
 
 pub mod backends;
 pub mod cli;
+pub mod coordinate_space;
 pub mod diagnostics;
 pub mod dispatcher;
 pub mod error;
@@ -14,7 +15,13 @@ pub mod methods;
 pub mod native_messaging;
 pub(crate) mod ops;
 pub mod peer_auth;
+pub mod peer_lifecycle;
 pub mod policy;
+pub mod registry_lifecycle;
+pub mod runtime_descriptor_lifecycle;
 pub mod service_registry;
 pub mod socket;
 pub mod tab_state;
+pub mod task_lifecycle;
+pub mod task_store;
+pub mod task_store_actor;

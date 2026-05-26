@@ -80,7 +80,7 @@ async fn webext_requires_session_context_before_browser_side_effects() {
     let value = dispatch_default(methods::ATTACH, json!({ "tab_id": "fake-id" })).await;
 
     assert_eq!(value["id"], 1);
-    assert_eq!(value["error"]["code"], -1004);
+    assert_eq!(value["error"]["code"], -32602);
     assert!(
         value["error"]["message"]
             .as_str()

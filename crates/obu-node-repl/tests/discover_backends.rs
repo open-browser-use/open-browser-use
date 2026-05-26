@@ -1,4 +1,7 @@
-use obu_node_repl::repl_manager::{DiscoveredBackend, JsRuntimeManager, ManagerOptions};
+use obu_node_repl::repl_manager::{
+    DiscoveredBackend, JsRuntimeManager, ManagerOptions, RuntimeDescriptorReadReasonCode,
+    RuntimeDescriptorReadState, RuntimeDescriptorSetupReasonCode, RuntimeDescriptorSetupState,
+};
 use obu_node_repl::{Cli, cli};
 use serde_json::json;
 use std::ffi::OsString;
@@ -55,6 +58,8 @@ async fn browser_status_reports_missing_sdk_and_no_backend() {
     let status = manager.browser_status().await.unwrap();
 
     assert_eq!(status["sdk_bootstrap"], json!("missing"));
+    assert_eq!(status["kernel_lifecycle"]["kind"], json!("idle"));
+    assert_eq!(status["kernel_lifecycle"]["generation"], json!(0));
     assert_eq!(status["backends"], json!([]));
     assert_eq!(status["product_error"]["code"], json!("setup_missing"));
     assert_eq!(
@@ -217,7 +222,10 @@ async fn exec_frames_include_obu_turn_metadata() {
     let result = manager
         .exec(
             r#"
-globalThis.obuRepl.requestMeta["x-obu-turn-metadata"]
+({
+    turn: globalThis.obuRepl.requestMeta["x-obu-turn-metadata"],
+    runtime: globalThis.obuRepl.requestMeta["x-obu-runtime-metadata"],
+})
 "#,
             None,
         )
@@ -225,14 +233,19 @@ globalThis.obuRepl.requestMeta["x-obu-turn-metadata"]
         .unwrap();
 
     assert_eq!(
-        result.result["session_id"],
+        result.result["turn"]["session_id"],
         json!("obu-session-for-metadata-test")
     );
     assert!(
-        result.result["turn_id"]
+        result.result["turn"]["turn_id"]
             .as_str()
             .unwrap()
             .starts_with("exec-")
+    );
+    assert!(
+        result.result["runtime"]["kernel_generation"].is_number(),
+        "runtime metadata must carry a numeric kernel_generation: {:#}",
+        result.result
     );
 }
 
@@ -316,6 +329,10 @@ async fn runtime_descriptor_discovery_hides_sdk_auth_token() {
         options.backends[0].metadata.as_ref().unwrap()["extension_id"],
         json!("ext-id")
     );
+    assert_eq!(
+        options.backends[0].metadata.as_ref().unwrap()["runtimeDescriptorLifecycle"]["state"],
+        json!("fresh")
+    );
     assert_eq!(options.backend_auth_tokens.len(), 1);
 
     let manager = JsRuntimeManager::new(options).await.unwrap();
@@ -327,6 +344,10 @@ async fn runtime_descriptor_discovery_hides_sdk_auth_token() {
     assert_eq!(result.result[0]["type"], json!("webextension"));
     assert!(result.result[0].get("sdk_auth_token").is_none());
     assert!(result.result[0].get("metadata").is_some());
+    assert_eq!(
+        result.result[0]["metadata"]["runtimeDescriptorLifecycle"]["state"],
+        json!("fresh")
+    );
     server.join().unwrap();
 }
 
@@ -526,7 +547,16 @@ async fn browser_status_refreshes_live_kernel_descriptor_inventory() {
                             "state": "waiting_for_idle",
                             "version": "0.2.0",
                             "pendingSince": 123
-                        }
+                        },
+                        "overlay_release": [
+                            {
+                                "tabId": 42,
+                                "state": "release_failed",
+                                "failures": 1,
+                                "sessionId": "session",
+                                "turnId": "turn"
+                            }
+                        ]
                     }
                 }
             },
@@ -550,12 +580,24 @@ async fn browser_status_refreshes_live_kernel_descriptor_inventory() {
         json!("beforeunload")
     );
     assert_eq!(
+        status["backends"][0]["metadata"]["runtimeDescriptorLifecycle"]["state"],
+        json!("fresh")
+    );
+    assert_eq!(
         status["advisories"][0]["code"],
         json!("pending_extension_update")
     );
     assert_eq!(
         status["advisories"][0]["pending_update"]["version"],
         json!("0.2.0")
+    );
+    assert_eq!(
+        status["advisories"][1]["code"],
+        json!("overlay_release_pending")
+    );
+    assert_eq!(
+        status["advisories"][1]["overlay_release"][0]["state"],
+        json!("release_failed")
     );
     server.join().unwrap();
 
@@ -629,6 +671,143 @@ async fn browser_status_prioritizes_missing_sdk_over_stale_descriptor_diagnostic
 
 #[cfg(unix)]
 #[tokio::test]
+async fn runtime_descriptor_discovery_reports_missing_descriptor_dir_as_setup_missing() {
+    let _env_guard = ENV_LOCK.lock().await;
+    let runtime_dir = tempfile::tempdir().unwrap();
+    make_runtime_root_owner_only(runtime_dir.path());
+    let _runtime = EnvVarGuard::set("OBU_RUNTIME_DIR", &runtime_dir.path().to_string_lossy());
+    let _backends = EnvVarGuard::remove("OBU_BACKENDS");
+    let _extra = EnvVarGuard::remove("OBU_EXTRA_BACKENDS");
+    let sdk_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("sdk-good");
+    let sdk_dir = sdk_dir.to_string_lossy().to_string();
+    let _module_dirs = EnvVarGuard::set("OBU_NODE_REPL_MODULE_DIRS", &sdk_dir);
+    let _trust = EnvVarGuard::set("OBU_TRUST_ALL_CODE", "1");
+
+    let options = ManagerOptions::from_cli(&Cli {
+        verbosity: 0,
+        session_id: Some("descriptor-session".into()),
+        working_dir: None,
+        command: cli::Command::Mcp {
+            transport: cli::McpTransport::Stdio,
+        },
+    })
+    .unwrap();
+
+    assert!(options.backends.is_empty());
+    assert_eq!(options.backend_discovery_diagnostics.len(), 1);
+    assert!(
+        options.backend_discovery_diagnostics[0]
+            .source
+            .ends_with("webextension")
+    );
+    assert_eq!(
+        options.backend_discovery_diagnostics[0].setup_lifecycle_state,
+        Some(RuntimeDescriptorSetupState::Missing)
+    );
+    assert_eq!(
+        options.backend_discovery_diagnostics[0].setup_reason_code,
+        Some(RuntimeDescriptorSetupReasonCode::DescriptorDirMissing)
+    );
+    assert_eq!(
+        options.backend_discovery_diagnostics[0].lifecycle_state,
+        None
+    );
+    assert_eq!(options.backend_discovery_diagnostics[0].reason_code, None);
+
+    let manager = JsRuntimeManager::new(options).await.unwrap();
+    let status = manager.browser_status().await.unwrap();
+    assert_eq!(status["sdk_bootstrap"], json!("available"));
+    assert_eq!(status["product_error"]["code"], json!("setup_missing"));
+    assert_eq!(
+        status["diagnostics"][0]["setup_lifecycle_state"],
+        json!("missing")
+    );
+    assert_eq!(
+        status["diagnostics"][0]["setup_reason_code"],
+        json!("descriptor_dir_missing")
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
+async fn runtime_descriptor_discovery_reports_empty_descriptor_dir_as_popup_boundary() {
+    let _env_guard = ENV_LOCK.lock().await;
+    let runtime_dir = tempfile::tempdir().unwrap();
+    make_runtime_root_owner_only(runtime_dir.path());
+    let _runtime = EnvVarGuard::set("OBU_RUNTIME_DIR", &runtime_dir.path().to_string_lossy());
+    let _backends = EnvVarGuard::remove("OBU_BACKENDS");
+    let _extra = EnvVarGuard::remove("OBU_EXTRA_BACKENDS");
+    let sdk_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("sdk-good");
+    let sdk_dir = sdk_dir.to_string_lossy().to_string();
+    let _module_dirs = EnvVarGuard::set("OBU_NODE_REPL_MODULE_DIRS", &sdk_dir);
+    let _trust = EnvVarGuard::set("OBU_TRUST_ALL_CODE", "1");
+
+    let descriptor_dir = runtime_dir.path().join("webextension");
+    std::fs::create_dir_all(&descriptor_dir).unwrap();
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&descriptor_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+
+    let options = ManagerOptions::from_cli(&Cli {
+        verbosity: 0,
+        session_id: Some("descriptor-session".into()),
+        working_dir: None,
+        command: cli::Command::Mcp {
+            transport: cli::McpTransport::Stdio,
+        },
+    })
+    .unwrap();
+
+    assert!(options.backends.is_empty());
+    assert_eq!(options.backend_discovery_diagnostics.len(), 1);
+    assert_eq!(
+        options.backend_discovery_diagnostics[0].setup_lifecycle_state,
+        Some(RuntimeDescriptorSetupState::NoDescriptor)
+    );
+    assert_eq!(
+        options.backend_discovery_diagnostics[0].setup_reason_code,
+        Some(RuntimeDescriptorSetupReasonCode::DescriptorMissing)
+    );
+
+    let manager = JsRuntimeManager::new(options).await.unwrap();
+    let status = manager.browser_status().await.unwrap();
+    assert_eq!(status["sdk_bootstrap"], json!("available"));
+    assert_eq!(
+        status["product_error"]["code"],
+        json!("browser_popup_boundary")
+    );
+    assert_eq!(
+        status["diagnostics"][0]["setup_lifecycle_state"],
+        json!("no_descriptor")
+    );
+    assert_eq!(
+        status["diagnostics"][0]["setup_reason_code"],
+        json!("descriptor_missing")
+    );
+
+    let result = manager
+        .exec("globalThis.obuRepl.discoverBackendDiagnostics()", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        result.result[0]["setup_lifecycle_state"],
+        json!("no_descriptor")
+    );
+    assert_eq!(
+        result.result[0]["setup_reason_code"],
+        json!("descriptor_missing")
+    );
+}
+
+#[cfg(unix)]
+#[tokio::test]
 async fn runtime_descriptor_discovery_reports_stale_descriptor_without_removing_it() {
     let _env_guard = ENV_LOCK.lock().await;
     let runtime_dir = tempfile::tempdir().unwrap();
@@ -677,6 +856,14 @@ async fn runtime_descriptor_discovery_reports_stale_descriptor_without_removing_
         options.backend_discovery_diagnostics[0]
             .reason
             .contains("descriptor probe failed")
+    );
+    assert_eq!(
+        options.backend_discovery_diagnostics[0].lifecycle_state,
+        Some(RuntimeDescriptorReadState::Stale)
+    );
+    assert_eq!(
+        options.backend_discovery_diagnostics[0].reason_code,
+        Some(RuntimeDescriptorReadReasonCode::DescriptorProbeFailed)
     );
     assert!(descriptor_path.exists());
 
@@ -740,6 +927,14 @@ async fn runtime_descriptor_discovery_exposes_ignored_descriptor_diagnostics() {
         options.backend_discovery_diagnostics[0].reason,
         "unsupported schema_version 999"
     );
+    assert_eq!(
+        options.backend_discovery_diagnostics[0].lifecycle_state,
+        Some(RuntimeDescriptorReadState::Invalid)
+    );
+    assert_eq!(
+        options.backend_discovery_diagnostics[0].reason_code,
+        Some(RuntimeDescriptorReadReasonCode::UnsupportedSchemaVersion)
+    );
 
     let manager = JsRuntimeManager::new(options).await.unwrap();
     let result = manager
@@ -751,12 +946,97 @@ async fn runtime_descriptor_discovery_exposes_ignored_descriptor_diagnostics() {
         result.result[0]["reason"],
         json!("unsupported schema_version 999")
     );
+    assert_eq!(result.result[0]["lifecycle_state"], json!("invalid"));
+    assert_eq!(
+        result.result[0]["reason_code"],
+        json!("unsupported_schema_version")
+    );
     assert!(
         result.result[0]["source"]
             .as_str()
             .unwrap()
             .ends_with("future.json")
     );
+}
+
+#[tokio::test]
+async fn runtime_descriptor_discovery_reports_malformed_json_as_invalid_descriptor() {
+    let _env_guard = ENV_LOCK.lock().await;
+    let runtime_dir = tempfile::tempdir().unwrap();
+    make_runtime_root_owner_only(runtime_dir.path());
+    let _runtime = EnvVarGuard::set("OBU_RUNTIME_DIR", &runtime_dir.path().to_string_lossy());
+    let _backends = EnvVarGuard::remove("OBU_BACKENDS");
+    let _extra = EnvVarGuard::remove("OBU_EXTRA_BACKENDS");
+    let sdk_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("sdk-good");
+    let sdk_dir = sdk_dir.to_string_lossy().to_string();
+    let _module_dirs = EnvVarGuard::set("OBU_NODE_REPL_MODULE_DIRS", &sdk_dir);
+    let _trust = EnvVarGuard::set("OBU_TRUST_ALL_CODE", "1");
+
+    let descriptor_dir = runtime_dir.path().join("webextension");
+    std::fs::create_dir_all(&descriptor_dir).unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&descriptor_dir, std::fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    let descriptor_path = descriptor_dir.join("broken.json");
+    std::fs::write(&descriptor_path, "{").unwrap();
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&descriptor_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+    }
+
+    let options = ManagerOptions::from_cli(&Cli {
+        verbosity: 0,
+        session_id: Some("descriptor-session".into()),
+        working_dir: None,
+        command: cli::Command::Mcp {
+            transport: cli::McpTransport::Stdio,
+        },
+    })
+    .unwrap();
+
+    assert!(options.backends.is_empty());
+    assert_eq!(options.backend_discovery_diagnostics.len(), 1);
+    assert_eq!(
+        options.backend_discovery_diagnostics[0].lifecycle_state,
+        Some(RuntimeDescriptorReadState::Invalid)
+    );
+    assert_eq!(
+        options.backend_discovery_diagnostics[0].reason_code,
+        Some(RuntimeDescriptorReadReasonCode::DescriptorJsonInvalid)
+    );
+    assert!(
+        options.backend_discovery_diagnostics[0]
+            .reason
+            .contains("descriptor_json_invalid")
+    );
+
+    let manager = JsRuntimeManager::new(options).await.unwrap();
+    let status = manager.browser_status().await.unwrap();
+    assert_eq!(status["product_error"]["code"], json!("invalid_descriptor"));
+    assert_eq!(
+        status["diagnostics"][0]["reason_code"],
+        json!("descriptor_json_invalid")
+    );
+    assert_eq!(
+        status["diagnostics"][0]["lifecycle_state"],
+        json!("invalid")
+    );
+
+    let result = manager
+        .exec("globalThis.obuRepl.discoverBackendDiagnostics()", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        result.result[0]["reason_code"],
+        json!("descriptor_json_invalid")
+    );
+    assert_eq!(result.result[0]["lifecycle_state"], json!("invalid"));
 }
 
 #[cfg(unix)]
@@ -767,6 +1047,13 @@ async fn runtime_descriptor_discovery_rejects_unsafe_runtime_root() {
     let _runtime = EnvVarGuard::set("OBU_RUNTIME_DIR", &runtime_dir.path().to_string_lossy());
     let _backends = EnvVarGuard::remove("OBU_BACKENDS");
     let _extra = EnvVarGuard::remove("OBU_EXTRA_BACKENDS");
+    let sdk_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("tests")
+        .join("fixtures")
+        .join("sdk-good");
+    let sdk_dir = sdk_dir.to_string_lossy().to_string();
+    let _module_dirs = EnvVarGuard::set("OBU_NODE_REPL_MODULE_DIRS", &sdk_dir);
+    let _trust = EnvVarGuard::set("OBU_TRUST_ALL_CODE", "1");
     {
         use std::os::unix::fs::PermissionsExt;
         std::fs::set_permissions(runtime_dir.path(), std::fs::Permissions::from_mode(0o755))
@@ -793,6 +1080,27 @@ async fn runtime_descriptor_discovery_rejects_unsafe_runtime_root() {
         options.backend_discovery_diagnostics[0]
             .reason
             .contains("owner-only")
+    );
+    assert_eq!(
+        options.backend_discovery_diagnostics[0].setup_lifecycle_state,
+        Some(RuntimeDescriptorSetupState::Invalid)
+    );
+    assert_eq!(
+        options.backend_discovery_diagnostics[0].setup_reason_code,
+        Some(RuntimeDescriptorSetupReasonCode::RuntimeRootInvalid)
+    );
+
+    let manager = JsRuntimeManager::new(options).await.unwrap();
+    let status = manager.browser_status().await.unwrap();
+    assert_eq!(status["sdk_bootstrap"], json!("available"));
+    assert_eq!(status["product_error"]["code"], json!("setup_missing"));
+    assert_eq!(
+        status["diagnostics"][0]["setup_lifecycle_state"],
+        json!("invalid")
+    );
+    assert_eq!(
+        status["diagnostics"][0]["setup_reason_code"],
+        json!("runtime_root_invalid")
     );
 }
 

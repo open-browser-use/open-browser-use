@@ -13,13 +13,25 @@
     "coverage:rust": "sh scripts/coverage-rust.sh",
     "coverage:sdk": "pnpm --filter @open-browser-use/sdk coverage",
     "assemble:payload": "node scripts/assemble-payload.mjs",
+    "generate:wire-methods": "node scripts/generate-wire-methods.mjs",
+    "check:wire-methods": "node scripts/generate-wire-methods.mjs --check",
+    "generate:error-codes": "node scripts/generate-error-codes.mjs",
+    "check:error-codes": "node scripts/generate-error-codes.mjs --check",
+    "generate:control-vocab": "tsx scripts/generate-control-vocab.mjs",
+    "check:control-vocab": "tsx scripts/generate-control-vocab.mjs --check",
+    "generate:descriptor-vocab": "tsx scripts/generate-descriptor-vocab.mjs",
+    "check:descriptor-vocab": "tsx scripts/generate-descriptor-vocab.mjs --check",
+    "check:state-continuity": "cargo test -p obu-host --test e2e_node_repl_to_webextension fake_webextension_node_repl_preserves_shopping_state_across_cells",
     "make:extension-store-artifact": "node scripts/make-extension-store-artifact.mjs",
+    "make:extension-artifact": "node scripts/make-extension-artifact.mjs",
     "fetch:node-runtime": "node scripts/fetch-node-runtime.mjs",
     "make:curl-artifact": "node scripts/make-curl-artifact.mjs",
     "smoke:agent-adapters": "node scripts/agent-adapter-smoke.mjs",
     "smoke:cli-runtime-deps": "node scripts/cli-runtime-deps-smoke.mjs",
     "smoke:curl-install": "node scripts/curl-install-smoke.mjs",
+    "smoke:install-path-config": "node scripts/install-path-config-smoke.mjs",
     "smoke:install-refresh-safety": "node scripts/install-refresh-safety-smoke.mjs",
+    "smoke:install-network": "node scripts/install-network-smoke.mjs",
     "smoke:cargo-dist": "node scripts/cargo-dist-smoke.mjs",
     "smoke:mcp-stdio-clean": "node scripts/mcp-stdio-clean-smoke.mjs",
     "smoke:mcp-client-compat": "cargo test -p obu-node-repl --test mcp_stdio mcp_stdio_client_compat_profiles_preserve_structured_content_resources_and_progress",
@@ -38,6 +50,7 @@
     "typecheck": "pnpm -r typecheck"
   },
   "devDependencies": {
+    "tsx": "4.19.2",
     "typescript": "5.7.3"
   }
 }

@@ -1,8 +1,14 @@
 //! Configuration for peer-auth allow-lists.
+//!
+//! NOTE: `MacAllowList` is scaffolding for macOS code-signing peer-auth and is
+//! NOT yet wired into the live peer-auth gate (`peer_auth::unix`), which
+//! currently enforces a same-user uid check plus the capability token.
+//! Resolving the peer's code identity (audit token -> SecCode -> bundle/team)
+//! must land before this can be enforced.
 
 use serde::{Deserialize, Serialize};
 
-/// Allow-list for macOS SecCode peer auth.
+/// Allow-list for macOS SecCode peer auth (scaffolding; see module note).
 ///
 /// open-browser-use defines its own allow-list instead of relying on another
 /// application's bundle or team identifiers.

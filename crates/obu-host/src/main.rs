@@ -10,6 +10,7 @@ use obu_host::{
     diagnostics,
     dispatcher::Dispatcher,
     peer_auth::{PeerAuthGate, PeerAuthMode, unix::UnixPeerAuthGate},
+    peer_lifecycle::PeerLifecycleDiagnostics,
     policy::ConfiguredHostPolicy,
     socket::{self, Listener, unix::UnixSockListener},
 };
@@ -41,7 +42,9 @@ async fn main() -> anyhow::Result<()> {
 
     let mut listener = UnixSockListener::bind(&socket_path)?;
     let peer_auth_mode = PeerAuthMode::parse(&args.peer_auth);
-    let peer_auth = UnixPeerAuthGate::new(peer_auth_mode);
+    let peer_diagnostics = PeerLifecycleDiagnostics::default();
+    let peer_auth =
+        UnixPeerAuthGate::new_with_diagnostics(peer_auth_mode, peer_diagnostics.clone());
     let registry = Arc::new(obu_host::service_registry::ServiceRegistry::default());
     let backend: Arc<dyn BrowserBackend> = match args.cdp_url.as_deref() {
         Some(url) => {
@@ -50,10 +53,13 @@ async fn main() -> anyhow::Result<()> {
         }
         None => Arc::new(WebExtensionBackend::default()),
     };
-    let dispatcher = Arc::new(Dispatcher::new_with_policy(
+    let task_store = open_task_store();
+    let dispatcher = Arc::new(Dispatcher::new_with_policy_peer_diagnostics_and_task_store(
         env!("CARGO_PKG_VERSION").into(),
         backend,
         Arc::new(ConfiguredHostPolicy::from_env()),
+        peer_diagnostics,
+        task_store,
     ));
     let capability_token = args.capability_token.clone();
 
@@ -78,6 +84,27 @@ async fn main() -> anyhow::Result<()> {
                 tracing::warn!(error = %err, "peer rejected");
                 drop(peer);
             }
+        }
+    }
+}
+
+/// Provision the durable task store under `<runtime_dir>/tasks`.
+///
+/// The directory is created owner-only before the store opens. A failure here
+/// is non-fatal: the host keeps running and `browser.tasks.*` RPCs resolve to
+/// `task_store_unavailable` rather than taking down the whole broker.
+fn open_task_store() -> Option<obu_host::task_store_actor::TaskStoreHandle> {
+    use obu_wire::runtime_dir::{ensure_owner_only_dir, resolve_runtime_dir};
+
+    let task_dir = resolve_runtime_dir().join("tasks");
+    match ensure_owner_only_dir(&task_dir)
+        .map_err(anyhow::Error::from)
+        .and_then(|_| obu_host::task_store_actor::TaskStoreHandle::open(task_dir))
+    {
+        Ok(handle) => Some(handle),
+        Err(error) => {
+            tracing::warn!(%error, "task store unavailable; browser.tasks.* will fail");
+            None
         }
     }
 }

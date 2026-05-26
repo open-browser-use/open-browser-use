@@ -15,11 +15,13 @@ use obu_host::{
     dispatcher::Dispatcher,
     error::{DialogRequiresDecision, HostError, Result},
     methods,
-    policy::{HostPolicy, PolicyContext, disallowed},
+    peer_auth::{PeerAuthGate, PeerAuthMode, unix::UnixPeerAuthGate},
+    peer_lifecycle::PeerLifecycleDiagnostics,
+    policy::{HostPolicy, PermissivePolicy, PolicyContext, disallowed},
     socket::{Listener, unix::UnixSockListener},
 };
 use obu_wire::{
-    ErrorObject, FrameCodec,
+    ErrorCode, ErrorObject, FrameCodec,
     error::{ERR_DIALOG_REQUIRES_DECISION, ERR_NOT_IMPLEMENTED},
 };
 
@@ -60,11 +62,33 @@ async fn getinfo_then_ping_round_trip() {
             .iter()
             .any(|method| method == methods::DOM_CUA_CLICK)
     );
+    assert!(
+        info["result"]["capabilities"]["supported_methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|method| method != methods::EXECUTE_UNHANDLED_COMMAND)
+    );
+    assert!(
+        info["result"]["capabilities"]["unsupported_methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|method| method != methods::EXECUTE_UNHANDLED_COMMAND)
+    );
     assert_eq!(info["result"]["capabilities"]["viewport"]["set"], true);
     assert_eq!(info["result"]["capabilities"]["visibility"]["get"], true);
     assert_eq!(
         info["result"]["capabilities"]["budgeted_outputs"]["dom_cua_get_visible_dom"],
         true
+    );
+    assert_eq!(
+        info["result"]["metadata"]["diagnostics"]["peer"]["recent_events"][0]["kind"],
+        "first_frame_dispatch"
+    );
+    assert_eq!(
+        info["result"]["metadata"]["diagnostics"]["peer"]["recent_event_count"],
+        1
     );
 
     framed
@@ -132,6 +156,99 @@ async fn capability_token_auth_frame_is_required_when_configured() {
 }
 
 #[tokio::test]
+async fn getinfo_preserves_shared_peer_auth_and_dispatch_diagnostics() {
+    let dir = tempfile::tempdir().unwrap();
+    let path = dir.path().join("peer-diagnostics.sock");
+    let mut listener = UnixSockListener::bind(&path).unwrap();
+    let diagnostics = PeerLifecycleDiagnostics::default();
+    let server_diagnostics = diagnostics.clone();
+
+    let server = tokio::spawn(async move {
+        let dispatcher = Dispatcher::new_with_policy_and_peer_diagnostics(
+            "0.1.0".into(),
+            Arc::new(RecordingBackend::default()),
+            Arc::new(PermissivePolicy),
+            server_diagnostics.clone(),
+        );
+        for _ in 0..2 {
+            let mut peer = listener.accept().await.unwrap();
+            let gate: Box<dyn PeerAuthGate<UnixStream>> =
+                Box::new(UnixPeerAuthGate::new_with_diagnostics(
+                    PeerAuthMode::Auto,
+                    server_diagnostics.clone(),
+                ));
+            gate.authorize(&mut peer).await.unwrap();
+            dispatcher
+                .serve_peer(peer.stream, Some("secret"))
+                .await
+                .unwrap();
+        }
+    });
+
+    tokio::time::sleep(Duration::from_millis(50)).await;
+    let rejected_client = UnixStream::connect(&path).await.unwrap();
+    let mut rejected = Framed::new(rejected_client, FrameCodec);
+    rejected
+        .send(frame(json!({
+            "jsonrpc": "2.0",
+            "method": methods::PING,
+            "params": {},
+            "id": 1,
+        })))
+        .await
+        .unwrap();
+    let rejected_response = read_json(&mut rejected).await;
+    assert_eq!(
+        rejected_response["error"]["message"],
+        "first frame must be auth when capability token is enabled"
+    );
+    drop(rejected);
+
+    let accepted_client = UnixStream::connect(&path).await.unwrap();
+    let mut accepted = Framed::new(accepted_client, FrameCodec);
+    accepted
+        .send(frame(json!({
+            "jsonrpc": "2.0",
+            "method": "auth",
+            "params": { "capability_token": "secret" },
+            "id": 2,
+        })))
+        .await
+        .unwrap();
+    let auth = read_json(&mut accepted).await;
+    assert_eq!(auth["result"], Value::Null);
+    accepted
+        .send(frame(json!({
+            "jsonrpc": "2.0",
+            "method": methods::GET_INFO,
+            "params": {},
+            "id": 3,
+        })))
+        .await
+        .unwrap();
+    let info = read_json(&mut accepted).await;
+    let events = info["result"]["metadata"]["diagnostics"]["peer"]["recent_events"]
+        .as_array()
+        .unwrap();
+    let kinds = events
+        .iter()
+        .filter_map(|event| event["kind"].as_str())
+        .collect::<Vec<_>>();
+    assert!(kinds.contains(&"os_credential_accepted"));
+    assert!(kinds.contains(&"first_frame_missing_auth"));
+    assert!(kinds.contains(&"peer_closed"));
+    assert!(kinds.contains(&"first_frame_auth"));
+    assert!(kinds.contains(&"auth_accepted"));
+    assert_eq!(
+        info["result"]["metadata"]["diagnostics"]["peer"]["recent_event_count"],
+        events.len()
+    );
+
+    drop(accepted);
+    server.await.unwrap();
+}
+
+#[tokio::test]
 async fn execute_cdp_rejects_non_tab_targets() {
     let dir = tempfile::tempdir().unwrap();
     let path = dir.path().join("target-shape.sock");
@@ -152,6 +269,8 @@ async fn execute_cdp_rejects_non_tab_targets() {
             "jsonrpc": "2.0",
             "method": methods::EXECUTE_CDP,
             "params": {
+                "session_id": "session",
+                "turn_id": "turn",
                 "target": { "targetId": "target-1" },
                 "method": "Runtime.evaluate",
                 "commandParams": {}
@@ -201,12 +320,12 @@ async fn backend_error_response_does_not_poison_later_requests() {
         .unwrap();
     let error = read_json(&mut framed).await;
     assert_eq!(error["id"], 1);
-    assert_eq!(error["error"]["code"], -1004);
+    assert_eq!(error["error"]["code"], ErrorCode::InvalidParams.value());
     assert!(
         error["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("requires session_id")
+            .contains("missing session_id")
     );
 
     framed
@@ -246,6 +365,68 @@ async fn host_policy_blocks_direct_navigation_before_backend_call() {
 
     assert_eq!(response["error"]["code"], -1002);
     assert!(backend.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
+async fn mutating_methods_require_session_and_turn_before_policy_or_backend() {
+    let cases = vec![
+        (
+            methods::CREATE_TAB,
+            json!({ "url": "https://blocked.example/" }),
+            "missing session_id",
+        ),
+        (
+            methods::CREATE_TAB,
+            json!({ "session_id": "s", "url": "https://blocked.example/" }),
+            "missing turn_id",
+        ),
+        (
+            methods::EXECUTE_CDP,
+            json!({
+                "target": { "tabId": "7" },
+                "method": "Runtime.evaluate",
+                "commandParams": {}
+            }),
+            "missing session_id",
+        ),
+        (
+            methods::TAB_GOTO,
+            json!({ "tab_id": "7", "url": "https://blocked.example/" }),
+            "missing session_id",
+        ),
+    ];
+
+    for (method, params, message) in cases {
+        let backend = Arc::new(RecordingBackend::default());
+        let response = one_request(
+            Dispatcher::new_with_policy(
+                "0.1.0".into(),
+                backend.clone(),
+                Arc::new(BlockNavigationPolicy),
+            ),
+            json!({
+                "jsonrpc": "2.0",
+                "method": method,
+                "params": params,
+                "id": 1,
+            }),
+        )
+        .await;
+
+        assert_eq!(
+            response["error"]["code"],
+            ErrorCode::InvalidParams.value(),
+            "{method}"
+        );
+        assert!(
+            response["error"]["message"]
+                .as_str()
+                .unwrap()
+                .contains(message),
+            "{method}: {response:#}"
+        );
+        assert!(backend.calls.lock().unwrap().is_empty(), "{method}");
+    }
 }
 
 #[tokio::test]
@@ -337,7 +518,7 @@ async fn host_policy_blocks_raw_cdp_from_denied_current_origin_before_backend_ca
             .unwrap()
             .contains("current origin blocked")
     );
-    assert_eq!(backend.calls.lock().unwrap().as_slice(), ["tab_url"]);
+    assert_eq!(backend.calls.lock().unwrap().as_slice(), ["policy_url"]);
 }
 
 #[tokio::test]
@@ -487,7 +668,7 @@ async fn host_policy_current_origin_uses_backend_url_not_caller_url() {
             .unwrap()
             .contains("current origin blocked")
     );
-    assert_eq!(backend.calls.lock().unwrap().as_slice(), ["tab_url"]);
+    assert_eq!(backend.calls.lock().unwrap().as_slice(), ["policy_url"]);
 }
 
 #[tokio::test]
@@ -538,7 +719,7 @@ async fn host_policy_blocks_transfer_helpers_from_denied_current_origin_before_b
                 .unwrap()
                 .contains("current origin blocked")
         );
-        assert_eq!(backend.calls.lock().unwrap().as_slice(), ["tab_url"]);
+        assert_eq!(backend.calls.lock().unwrap().as_slice(), ["policy_url"]);
     }
 }
 
@@ -605,7 +786,7 @@ async fn host_policy_blocks_tab_current_origin_helpers_before_backend_call() {
         assert_eq!(response["error"]["data"]["command"], method, "{method}");
         assert_eq!(
             backend.calls.lock().unwrap().as_slice(),
-            ["tab_url"],
+            ["policy_url"],
             "{method}"
         );
     }
@@ -686,6 +867,31 @@ async fn cdp_capability_gate_rejects_profile_history_before_default_empty_result
 }
 
 #[tokio::test]
+async fn execute_unhandled_command_is_not_advertised_as_backend_supported() {
+    let backend = Arc::new(RecordingBackend::default());
+    let response = one_request(
+        Dispatcher::new("0.1.0".into(), backend.clone()),
+        json!({
+            "jsonrpc": "2.0",
+            "method": methods::EXECUTE_UNHANDLED_COMMAND,
+            "params": {},
+            "id": 1,
+        }),
+    )
+    .await;
+
+    assert_eq!(response["error"]["code"], ERR_NOT_IMPLEMENTED);
+    assert!(
+        response["error"]["message"]
+            .as_str()
+            .unwrap()
+            .contains("backend not implemented: executeUnhandledCommand")
+    );
+    assert!(response["error"]["data"].is_null());
+    assert!(backend.calls.lock().unwrap().is_empty());
+}
+
+#[tokio::test]
 async fn dispatcher_preserves_dialog_requires_decision_error_data() {
     let response = one_request(
         Dispatcher::new("0.1.0".into(), Arc::new(DialogErrorBackend)),
@@ -731,11 +937,18 @@ async fn getinfo_exposes_backend_capability_matrix() {
 
     assert_eq!(response["result"]["capabilities"]["backend"], "cdp");
     assert!(
-        response["result"]["capabilities"]["unsupported_methods"]
+        response["result"]["capabilities"]["supported_methods"]
             .as_array()
             .unwrap()
             .iter()
             .any(|method| method == methods::DOM_CUA_CLICK)
+    );
+    assert!(
+        response["result"]["capabilities"]["unsupported_methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|method| method == methods::DOM_CUA_DOWNLOAD_MEDIA)
     );
     assert!(
         response["result"]["capabilities"]["unsupported_methods"]
@@ -751,11 +964,18 @@ async fn getinfo_exposes_backend_capability_matrix() {
             .iter()
             .any(|method| method == methods::BROWSER_VIEWPORT_SET)
     );
+    assert!(
+        response["result"]["capabilities"]["unsupported_methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|method| method != methods::EXECUTE_UNHANDLED_COMMAND)
+    );
     assert!(response["result"]["capabilities"]["viewport"].is_null());
     assert!(response["result"]["capabilities"]["visibility"].is_null());
     assert_eq!(
         response["result"]["capabilities"]["budgeted_outputs"]["dom_cua_get_visible_dom"],
-        false
+        true
     );
     assert!(
         response["result"]["capabilities"]["supported_methods"]
@@ -764,6 +984,39 @@ async fn getinfo_exposes_backend_capability_matrix() {
             .iter()
             .any(|method| method == methods::PLAYWRIGHT_LOCATOR_CLICK)
     );
+    assert!(
+        response["result"]["capabilities"]["supported_methods"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .all(|method| method != methods::EXECUTE_UNHANDLED_COMMAND)
+    );
+}
+
+#[tokio::test]
+async fn generated_webextension_methods_are_dispatcher_routable() {
+    for (method, _cdp, webextension) in methods::BACKEND_METHOD_SUPPORT {
+        if *webextension != methods::BackendMethodSupport::Implemented {
+            continue;
+        }
+
+        let response = one_request(
+            Dispatcher::new("0.1.0".into(), Arc::new(RecordingBackend::default())),
+            json!({
+                "jsonrpc": "2.0",
+                "method": method,
+                "params": routability_params(),
+                "id": 1,
+            }),
+        )
+        .await;
+
+        assert_ne!(
+            response["error"]["code"],
+            ErrorCode::MethodNotFound.value(),
+            "{method} is marked implemented for WebExtension but is not routed: {response:#}"
+        );
+    }
 }
 
 #[tokio::test]
@@ -1023,6 +1276,52 @@ async fn browser_tabs_content_reports_policy_denied_redirect_per_url() {
     assert_eq!(results[1]["text"], "one");
 }
 
+#[tokio::test]
+async fn task_methods_reject_user_runtime_params() {
+    let response = one_request(
+        Dispatcher::new_for_test(),
+        json!({
+            "jsonrpc": "2.0",
+            "method": methods::TASKS_RESUME,
+            "params": {
+                "taskId": "task-1",
+                "session_id": "session-1",
+                "turn_id": "turn-1",
+                "_runtime": { "kernel_generation": 99 }
+            },
+            "id": 1,
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        response["error"]["data"]["code"],
+        "untrusted_runtime_metadata"
+    );
+
+    // The bare `runtime` key in params is rejected as well, not just `_runtime`.
+    let bare_runtime = one_request(
+        Dispatcher::new_for_test(),
+        json!({
+            "jsonrpc": "2.0",
+            "method": methods::TASKS_RESUME,
+            "params": {
+                "taskId": "task-1",
+                "session_id": "session-1",
+                "turn_id": "turn-1",
+                "runtime": { "kernel_generation": 99 }
+            },
+            "id": 2,
+        }),
+    )
+    .await;
+
+    assert_eq!(
+        bare_runtime["error"]["data"]["code"],
+        "untrusted_runtime_metadata"
+    );
+}
+
 fn frame(value: serde_json::Value) -> bytes::Bytes {
     bytes::Bytes::from(serde_json::to_vec(&value).unwrap())
 }
@@ -1048,6 +1347,35 @@ async fn one_request(dispatcher: Dispatcher, request: serde_json::Value) -> serd
 async fn read_json(framed: &mut Framed<UnixStream, FrameCodec>) -> serde_json::Value {
     let bytes = framed.next().await.unwrap().unwrap();
     serde_json::from_slice(&bytes).unwrap()
+}
+
+fn routability_params() -> Value {
+    json!({
+        "session_id": "session",
+        "turn_id": "turn",
+        "tab_id": "42",
+        "url": "https://example.test/",
+        "urls": [],
+        "selector": "body",
+        "state": "visible",
+        "text": "hello",
+        "key": "Enter",
+        "x": 1,
+        "y": 1,
+        "button": "left",
+        "deltaX": 0,
+        "deltaY": 10,
+        "from": { "x": 1, "y": 1 },
+        "to": { "x": 2, "y": 2 },
+        "path": [{ "x": 1, "y": 1 }, { "x": 2, "y": 2 }],
+        "method": "Runtime.evaluate",
+        "params": {},
+        "expression": "1 + 1",
+        "timeout": 1,
+        "load_state": "load",
+        "contentType": "text",
+        "files": [],
+    })
 }
 
 #[derive(Clone)]
@@ -1288,6 +1616,15 @@ impl BrowserBackend for RecordingBackend {
     ) -> Result<Value> {
         self.calls.lock().unwrap().push(methods::EXECUTE_CDP.into());
         Ok(Value::Null)
+    }
+
+    async fn current_url_for_policy(
+        &self,
+        _ctx: &BackendRequestContext,
+        _tab_id: &str,
+    ) -> Result<String> {
+        self.calls.lock().unwrap().push("policy_url".into());
+        Ok("https://blocked.example/current".into())
     }
 
     async fn tab_command_with_context(

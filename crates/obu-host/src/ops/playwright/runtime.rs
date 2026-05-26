@@ -10,7 +10,12 @@ use tokio::time::Instant;
 use crate::backends::BackendRequestContext;
 use crate::error::{HostError, Result};
 use crate::methods;
+use crate::ops::action_point::{
+    ActionPointResolution, RESOLUTION_CROSS_ORIGIN_UNREACHABLE, RESOLUTION_NO_CLICKABLE_BOX,
+    RESOLUTION_OCCLUDED, RESOLUTION_OUTSIDE_VIEWPORT, RESOLUTION_TRANSFORMED_FRAME_UNSUPPORTED,
+};
 use crate::ops::cua as cua_ops;
+use crate::ops::dom_cua;
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const RETRY_DELAY_MS: u64 = 100;
@@ -45,6 +50,31 @@ pub(crate) trait PlaywrightRuntimeBackend {
         tab_id: &str,
         expression: String,
     ) -> Result<Value>;
+
+    /// The tab's top-level CDP session id (None for backends without sessions).
+    async fn playwright_top_level_session(&self, _tab_id: &str) -> Option<String> {
+        None
+    }
+
+    /// The OOPIF session owning the frame whose devtools frameId is `frame_id`.
+    async fn playwright_oopif_session_for_frame(&self, _frame_id: &str) -> Option<String> {
+        None
+    }
+
+    /// Run a CDP command on a specific session (top-level or OOPIF). Default:
+    /// unsupported. `ctx` carries the session/turn the WebExtension transport
+    /// needs to address `executeCdp`; the raw-socket CDP backend ignores it.
+    async fn execute_playwright_cdp_on_session(
+        &self,
+        _ctx: &BackendRequestContext,
+        _session_id: &str,
+        _method: &str,
+        _params: Value,
+    ) -> Result<Value> {
+        Err(HostError::NotImplemented(
+            "execute_playwright_cdp_on_session is not supported by this backend".into(),
+        ))
+    }
 }
 
 #[async_trait]
@@ -82,6 +112,18 @@ pub(crate) trait PlaywrightCommandBackend: PlaywrightTextInputBackend + Sync {
     ) -> Result<Value>;
 
     async fn screenshot_playwright_page(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value>;
+
+    async fn playwright_element_info(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value>;
+
+    async fn playwright_element_screenshot(
         &self,
         ctx: &BackendRequestContext,
         params: Value,
@@ -182,6 +224,10 @@ where
             .await
         }
         methods::PLAYWRIGHT_SCREENSHOT => backend.screenshot_playwright_page(ctx, params).await,
+        methods::PLAYWRIGHT_ELEMENT_INFO => backend.playwright_element_info(ctx, params).await,
+        methods::PLAYWRIGHT_ELEMENT_SCREENSHOT => {
+            backend.playwright_element_screenshot(ctx, params).await
+        }
         methods::PLAYWRIGHT_WAIT_FOR_TIMEOUT => wait_for_timeout(params).await,
         methods::PLAYWRIGHT_WAIT_FOR_URL => backend.wait_for_playwright_url(ctx, params).await,
         methods::PLAYWRIGHT_WAIT_FOR_LOAD_STATE => {
@@ -240,6 +286,67 @@ async fn wait_for_timeout(params: Value) -> Result<Value> {
     Ok(Value::Null)
 }
 
+pub(crate) fn map_resolve_action_point_result(value: &Value) -> Result<(f64, f64)> {
+    if let Some(resolution) = value.get("resolution").and_then(Value::as_str) {
+        let outcome = match resolution {
+            RESOLUTION_OCCLUDED => ActionPointResolution::Occluded {
+                by: value
+                    .get("by")
+                    .and_then(Value::as_str)
+                    .unwrap_or("unknown element")
+                    .to_string(),
+            },
+            RESOLUTION_OUTSIDE_VIEWPORT => ActionPointResolution::OutsideViewport,
+            RESOLUTION_NO_CLICKABLE_BOX => ActionPointResolution::NoClickableBox,
+            RESOLUTION_TRANSFORMED_FRAME_UNSUPPORTED => {
+                ActionPointResolution::TransformedFrameUnsupported
+            }
+            RESOLUTION_CROSS_ORIGIN_UNREACHABLE => ActionPointResolution::CrossOriginUnreachable {
+                reason: value
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .unwrap_or("cross-origin frame is not reachable via the selector path")
+                    .to_string(),
+            },
+            other => {
+                return Err(HostError::CdpFailure(format!(
+                    "resolveActionPoint returned unknown resolution: {other}"
+                )));
+            }
+        };
+        return Err(outcome.into_host_error());
+    }
+    let x = value
+        .get("x")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| HostError::CdpFailure("resolveActionPoint missing x".into()))?;
+    let y = value
+        .get("y")
+        .and_then(Value::as_f64)
+        .ok_or_else(|| HostError::CdpFailure("resolveActionPoint missing y".into()))?;
+    Ok((x, y))
+}
+
+/// Split a Playwright selector at the FIRST cross-frame hop into
+/// `(frame-locator selector, in-frame selector)`. Returns `None` when there is no
+/// `enter-frame` hop. Used by the OOPIF resolver to run the frame part on the
+/// top-level session and the remainder on the owning OOPIF session.
+///
+/// The literal marker must stay in sync with the SDK/Playwright frame-hop
+/// selector serialization; if it ever diverges, a cross-origin selector falls
+/// back gracefully to the typed `cross_origin_unreachable` error (the
+/// `splits_selector_at_first_enter_frame` test pins the current form).
+pub(crate) fn split_first_enter_frame(selector: &str) -> Option<(String, String)> {
+    const MARKER: &str = " >> internal:control=enter-frame >> ";
+    let index = selector.find(MARKER)?;
+    let frame = selector[..index].trim().to_string();
+    let inner = selector[index + MARKER.len()..].trim().to_string();
+    if frame.is_empty() || inner.is_empty() {
+        return None;
+    }
+    Some((frame, inner))
+}
+
 pub(crate) async fn resolve_action_point<B>(
     backend: &B,
     ctx: &BackendRequestContext,
@@ -252,13 +359,15 @@ where
 {
     let tab_id = required_str(params, "tab_id")?;
     let selector = required_str(params, "selector")?;
+    let not_forced = params.get("force").and_then(Value::as_bool) != Some(true);
     let mut states = Vec::new();
-    if require_visible && params.get("force").and_then(Value::as_bool) != Some(true) {
+    if require_visible && not_forced {
         states.push("visible");
     }
-    if require_enabled && params.get("force").and_then(Value::as_bool) != Some(true) {
+    if require_enabled && not_forced {
         states.push("enabled");
     }
+    let hit_test = not_forced;
     let point = eval_runtime(
         backend,
         ctx,
@@ -266,20 +375,200 @@ where
         &format!(
             "window.__obuPlaywrightRuntime.resolveActionPoint({}, {})",
             js_string(selector),
-            js_value(&json!({ "requiredStates": states }))
+            js_value(&json!({ "requiredStates": states, "hitTest": hit_test }))
         ),
         timeout_ms(params),
     )
     .await?;
-    let x = point
-        .get("x")
-        .and_then(Value::as_f64)
-        .ok_or_else(|| HostError::CdpFailure("resolveActionPoint missing x".into()))?;
-    let y = point
-        .get("y")
-        .and_then(Value::as_f64)
-        .ok_or_else(|| HostError::CdpFailure("resolveActionPoint missing y".into()))?;
-    Ok((x, y))
+    // A selector that crosses into a cross-origin (OOPIF) frame can't be resolved
+    // in-page: try the cross-session CDP path before surfacing the typed error.
+    if point.get("resolution").and_then(Value::as_str) == Some(RESOLUTION_CROSS_ORIGIN_UNREACHABLE)
+        && let Some(xy) = resolve_cross_origin_action_point(backend, ctx, tab_id, selector).await?
+    {
+        return Ok(xy);
+    }
+    map_resolve_action_point_result(&point)
+}
+
+/// Resolve a Playwright selector that crosses into a cross-origin (OOPIF) frame.
+///
+/// Bounded to the common case: a SINGLE cross-origin hop with CSS selectors on
+/// both sides (CDP `DOM.querySelector`). Returns `Ok(None)` for anything it can't
+/// resolve (no hop, non-CSS selector, no OOPIF session, element not found) so the
+/// caller falls back to the typed `cross_origin_unreachable` error.
+///
+/// Assumptions (validated by the site-isolated e2e in tests/oopif_e2e.rs):
+/// - the iframe's devtools `frameId` equals its OOPIF target id (auto-attach);
+/// - an OOPIF session's `getContentQuads` returns FRAME-LOCAL coords (DOM-CUA
+///   branch 4c), so the owning iframe's root-frame content top-left (resolved on
+///   the top-level session) is added to compose the final point.
+async fn resolve_cross_origin_action_point<B>(
+    backend: &B,
+    ctx: &BackendRequestContext,
+    tab_id: &str,
+    selector: &str,
+) -> Result<Option<(f64, f64)>>
+where
+    B: PlaywrightRuntimeBackend + Sync,
+{
+    let Some((frame_selector, inner_selector)) = split_first_enter_frame(selector) else {
+        return Ok(None);
+    };
+    let Some(top_session) = backend.playwright_top_level_session(tab_id).await else {
+        return Ok(None);
+    };
+
+    // Viewport (top-level) for the final intersection/centroid math.
+    let metrics = backend
+        .execute_playwright_cdp_on_session(ctx, &top_session, "Page.getLayoutMetrics", json!({}))
+        .await?;
+    let Ok(viewport) = dom_cua::viewport_rect_from_layout_metrics(&metrics) else {
+        return Ok(None);
+    };
+
+    // Resolve the iframe element on the top-level session -> its content frameId.
+    // The iframe's top-level node_id is reused below for its root-frame box.
+    let Some((frame_id, iframe_node_id)) =
+        query_frame_id(backend, ctx, &top_session, &frame_selector).await?
+    else {
+        return Ok(None);
+    };
+    let Some(oopif_session) = backend.playwright_oopif_session_for_frame(&frame_id).await else {
+        return Ok(None);
+    };
+
+    // Resolve the inner element on the OOPIF session -> its backendNodeId.
+    let Some(backend_node_id) =
+        query_backend_node_id(backend, ctx, &oopif_session, &inner_selector).await?
+    else {
+        return Ok(None);
+    };
+
+    // Geometry on the OOPIF session (branch 4c: FRAME-LOCAL quads).
+    let quads = backend
+        .execute_playwright_cdp_on_session(
+            ctx,
+            &oopif_session,
+            "DOM.getContentQuads",
+            json!({ "backendNodeId": backend_node_id }),
+        )
+        .await?;
+    let Some((px, py)) = dom_cua::action_point_from_content_quads(&quads, viewport) else {
+        return Ok(None);
+    };
+
+    // OOPIF getContentQuads is frame-local (branch 4c); add the iframe's root-frame
+    // content top-left (resolved on the top-level session) so the dispatch lands.
+    let iframe_box = backend
+        .execute_playwright_cdp_on_session(
+            ctx,
+            &top_session,
+            "DOM.getBoxModel",
+            json!({ "nodeId": iframe_node_id }),
+        )
+        .await?;
+    let (ox, oy) = dom_cua::rect_from_box_model(&iframe_box)
+        .map(|r| (r.x, r.y))
+        .unwrap_or((0.0, 0.0));
+    Ok(Some((px + ox, py + oy)))
+}
+
+/// `DOM.querySelector` `frame_selector` on `session`'s document, then read the
+/// matched iframe's content `frameId` via `DOM.describeNode`. CSS only. Returns
+/// `(frameId, iframe_node_id)` so the caller can reuse the iframe node for its
+/// root-frame box-model (branch 4c frame-offset composition).
+async fn query_frame_id<B>(
+    backend: &B,
+    ctx: &BackendRequestContext,
+    session: &str,
+    frame_selector: &str,
+) -> Result<Option<(String, i64)>>
+where
+    B: PlaywrightRuntimeBackend + Sync,
+{
+    let Some(node_id) = query_node_id(backend, ctx, session, frame_selector).await? else {
+        return Ok(None);
+    };
+    let described = backend
+        .execute_playwright_cdp_on_session(
+            ctx,
+            session,
+            "DOM.describeNode",
+            json!({ "nodeId": node_id }),
+        )
+        .await?;
+    Ok(described
+        .get("node")
+        .and_then(|node| node.get("frameId"))
+        .and_then(Value::as_str)
+        .map(|frame_id| (frame_id.to_string(), node_id)))
+}
+
+/// `DOM.querySelector` then read the matched node's `backendNodeId`.
+async fn query_backend_node_id<B>(
+    backend: &B,
+    ctx: &BackendRequestContext,
+    session: &str,
+    selector: &str,
+) -> Result<Option<i64>>
+where
+    B: PlaywrightRuntimeBackend + Sync,
+{
+    let Some(node_id) = query_node_id(backend, ctx, session, selector).await? else {
+        return Ok(None);
+    };
+    let described = backend
+        .execute_playwright_cdp_on_session(
+            ctx,
+            session,
+            "DOM.describeNode",
+            json!({ "nodeId": node_id }),
+        )
+        .await?;
+    Ok(described
+        .get("node")
+        .and_then(|node| node.get("backendNodeId"))
+        .and_then(Value::as_i64))
+}
+
+/// `DOM.getDocument` (depth 0) for the root node id, then `DOM.querySelector`.
+/// Returns `Ok(None)` if the selector matches nothing OR is not valid CSS (the
+/// CDP call erroring is treated as "unresolvable", not fatal).
+async fn query_node_id<B>(
+    backend: &B,
+    ctx: &BackendRequestContext,
+    session: &str,
+    selector: &str,
+) -> Result<Option<i64>>
+where
+    B: PlaywrightRuntimeBackend + Sync,
+{
+    let document = backend
+        .execute_playwright_cdp_on_session(ctx, session, "DOM.getDocument", json!({ "depth": 0 }))
+        .await?;
+    let Some(root_node_id) = document
+        .get("root")
+        .and_then(|r| r.get("nodeId"))
+        .and_then(Value::as_i64)
+    else {
+        return Ok(None);
+    };
+    match backend
+        .execute_playwright_cdp_on_session(
+            ctx,
+            session,
+            "DOM.querySelector",
+            json!({ "nodeId": root_node_id, "selector": selector }),
+        )
+        .await
+    {
+        Ok(result) => Ok(result
+            .get("nodeId")
+            .and_then(Value::as_i64)
+            .filter(|id| *id != 0)),
+        // invalid CSS / not found -> unresolvable, fall back to typed error
+        Err(_) => Ok(None),
+    }
 }
 
 pub(crate) async fn click_selector<B, Click, ClickFut>(
@@ -814,7 +1103,13 @@ where
         timeout_ms(&params),
     )
     .await?;
-    Ok(json!({ "domSnapshot": value, "source": "playwright_dom_snapshot" }))
+    let dom_snapshot_text = match value.as_str() {
+        Some(text) => super::aria_prune::prune_aria_snapshot(text),
+        // Non-string value (error / unexpected eval shape) → empty snapshot,
+        // matching the SDK's `typeof … === "string" ? … : ""` coercion.
+        None => String::new(),
+    };
+    Ok(json!({ "domSnapshot": dom_snapshot_text, "source": "playwright_dom_snapshot" }))
 }
 
 pub(crate) async fn wait_for_selector_state<B>(
@@ -986,6 +1281,7 @@ fn is_fatal(error: &HostError) -> bool {
         | HostError::TabNotAttached(_)
         | HostError::PageClosed(_)
         | HostError::DialogRequiresDecision(_)
+        | HostError::Rpc { .. }
         | HostError::Timeout(_) => true,
         HostError::CdpFailure(message) => {
             message.contains("strict mode violation:")
@@ -1155,6 +1451,22 @@ mod tests {
             Ok(json!({ "kind": "screenshot" }))
         }
 
+        async fn playwright_element_info(
+            &self,
+            _ctx: &BackendRequestContext,
+            _params: Value,
+        ) -> Result<Value> {
+            Ok(json!({ "kind": "element_info" }))
+        }
+
+        async fn playwright_element_screenshot(
+            &self,
+            _ctx: &BackendRequestContext,
+            _params: Value,
+        ) -> Result<Value> {
+            Ok(json!({ "kind": "element_screenshot" }))
+        }
+
         async fn wait_for_playwright_url(
             &self,
             _ctx: &BackendRequestContext,
@@ -1311,6 +1623,23 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn dom_snapshot_prunes_aria_tree() {
+        let raw = "- generic:\n  - button \"Save\" [ref=e5]\n  - img";
+        let backend = FakeCommandBackend::new(vec![json!(raw)], false);
+
+        let result = dom_snapshot(
+            &backend,
+            &BackendRequestContext::default(),
+            json!({ "tab_id": "tab-1", "timeout_ms": 1 }),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(result["domSnapshot"].as_str().unwrap(), "- button \"Save\"");
+        assert_eq!(result["source"], json!("playwright_dom_snapshot"));
+    }
+
+    #[tokio::test]
     async fn read_all_captures_text_and_attributes_for_collection() {
         let rows = json!([
             {
@@ -1444,5 +1773,236 @@ mod tests {
                 .iter()
                 .any(|expression| expression.contains(r#""retargetInput":true"#))
         );
+    }
+}
+
+#[cfg(test)]
+mod resolve_map_tests {
+    use serde_json::json;
+
+    use super::map_resolve_action_point_result;
+    use crate::error::HostError;
+
+    #[test]
+    fn point_result_returns_xy() {
+        assert_eq!(
+            map_resolve_action_point_result(&json!({ "x": 11.0, "y": 22.0 })).unwrap(),
+            (11.0, 22.0)
+        );
+    }
+
+    #[test]
+    fn occluded_result_maps_to_resolution_error() {
+        let error = map_resolve_action_point_result(
+            &json!({ "resolution": "occluded", "by": "DIV#cover" }),
+        )
+        .unwrap_err();
+        match error {
+            HostError::Rpc {
+                data: Some(data), ..
+            } => {
+                assert_eq!(data["resolution"], "occluded");
+                assert_eq!(data["by"], "DIV#cover");
+            }
+            other => panic!("expected occluded rpc error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn no_clickable_box_maps_to_resolution_error() {
+        let error = map_resolve_action_point_result(&json!({ "resolution": "no_clickable_box" }))
+            .unwrap_err();
+        match error {
+            HostError::Rpc {
+                data: Some(data), ..
+            } => assert_eq!(data["resolution"], "no_clickable_box"),
+            other => panic!("expected no_clickable_box rpc error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn outside_viewport_maps_to_resolution_error() {
+        let error = map_resolve_action_point_result(&json!({ "resolution": "outside_viewport" }))
+            .unwrap_err();
+        match error {
+            HostError::Rpc {
+                data: Some(data), ..
+            } => assert_eq!(data["resolution"], "outside_viewport"),
+            other => panic!("expected outside_viewport rpc error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn cross_origin_unreachable_maps_to_resolution_error() {
+        let error = map_resolve_action_point_result(
+            &json!({ "resolution": "cross_origin_unreachable", "reason": "no session for frame" }),
+        )
+        .unwrap_err();
+        match error {
+            HostError::Rpc {
+                data: Some(data), ..
+            } => {
+                assert_eq!(data["resolution"], "cross_origin_unreachable");
+                assert_eq!(data["reason"], "no session for frame");
+            }
+            other => panic!("expected cross_origin_unreachable rpc error, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn missing_coordinates_is_cdp_failure() {
+        assert!(matches!(
+            map_resolve_action_point_result(&json!({})).unwrap_err(),
+            HostError::CdpFailure(_)
+        ));
+    }
+
+    #[test]
+    fn splits_selector_at_first_enter_frame() {
+        assert_eq!(
+            super::split_first_enter_frame("iframe >> internal:control=enter-frame >> #inner"),
+            Some(("iframe".to_string(), "#inner".to_string()))
+        );
+        assert_eq!(super::split_first_enter_frame("#plain-css"), None);
+        // Only the FIRST hop splits; nested remainder is preserved verbatim.
+        assert_eq!(
+            super::split_first_enter_frame(
+                "a >> internal:control=enter-frame >> b >> internal:control=enter-frame >> c"
+            ),
+            Some((
+                "a".to_string(),
+                "b >> internal:control=enter-frame >> c".to_string()
+            ))
+        );
+    }
+}
+
+#[cfg(test)]
+mod oopif_resolver_tests {
+    use async_trait::async_trait;
+
+    use super::*;
+
+    /// Fake backend that serves canned CDP responses keyed by `(session, method)`
+    /// and a fixed top-level/OOPIF session topology. Implements ONLY the trait's
+    /// required methods + the three OOPIF defaults the resolver consumes.
+    struct FakeOopifBackend {
+        /// When `false`, `playwright_oopif_session_for_frame` returns `None`.
+        has_oopif_session: bool,
+    }
+
+    impl FakeOopifBackend {
+        fn new() -> Self {
+            Self {
+                has_oopif_session: true,
+            }
+        }
+    }
+
+    #[async_trait]
+    impl PlaywrightRuntimeBackend for FakeOopifBackend {
+        async fn ensure_playwright_runtime(
+            &self,
+            _ctx: &BackendRequestContext,
+            _tab_id: &str,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn evaluate_playwright_runtime(
+            &self,
+            _ctx: &BackendRequestContext,
+            _tab_id: &str,
+            _expression: String,
+        ) -> Result<Value> {
+            Ok(Value::Null)
+        }
+
+        async fn playwright_top_level_session(&self, _tab_id: &str) -> Option<String> {
+            Some("TOP".to_string())
+        }
+
+        async fn playwright_oopif_session_for_frame(&self, frame_id: &str) -> Option<String> {
+            if self.has_oopif_session && frame_id == "FRAME-1" {
+                Some("OOPIF".to_string())
+            } else {
+                None
+            }
+        }
+
+        async fn execute_playwright_cdp_on_session(
+            &self,
+            _ctx: &BackendRequestContext,
+            session_id: &str,
+            method: &str,
+            _params: Value,
+        ) -> Result<Value> {
+            Ok(match (session_id, method) {
+                ("TOP", "Page.getLayoutMetrics") => json!({
+                    "cssVisualViewport": {
+                        "pageX": 0.0,
+                        "pageY": 0.0,
+                        "clientWidth": 100.0,
+                        "clientHeight": 100.0
+                    }
+                }),
+                ("TOP", "DOM.getDocument") => json!({ "root": { "nodeId": 1 } }),
+                ("TOP", "DOM.querySelector") => json!({ "nodeId": 2 }),
+                ("TOP", "DOM.describeNode") => json!({ "node": { "frameId": "FRAME-1" } }),
+                // The iframe's root-frame box: content top-left (30,60). Branch 4c
+                // adds this to the frame-local inner centroid.
+                ("TOP", "DOM.getBoxModel") => json!({
+                    "model": { "content": [30.0, 60.0, 90.0, 60.0, 90.0, 120.0, 30.0, 120.0], "width": 60.0, "height": 60.0 }
+                }),
+                ("OOPIF", "DOM.getDocument") => json!({ "root": { "nodeId": 10 } }),
+                ("OOPIF", "DOM.querySelector") => json!({ "nodeId": 11 }),
+                ("OOPIF", "DOM.describeNode") => json!({ "node": { "backendNodeId": 77 } }),
+                ("OOPIF", "DOM.getContentQuads") => json!({
+                    "quads": [[10.0, 10.0, 30.0, 10.0, 30.0, 30.0, 10.0, 30.0]]
+                }),
+                other => panic!("unexpected CDP call: {other:?}"),
+            })
+        }
+    }
+
+    fn ctx() -> BackendRequestContext {
+        BackendRequestContext {
+            session_id: Some("s".into()),
+            turn_id: Some("t".into()),
+            client_timeout_ms: None,
+            trusted_kernel_generation: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn cross_origin_selector_resolves_to_inner_point() {
+        let fake = FakeOopifBackend::new();
+        let point = resolve_cross_origin_action_point(
+            &fake,
+            &ctx(),
+            "t",
+            "iframe >> internal:control=enter-frame >> #inner",
+        )
+        .await
+        .unwrap();
+        // 20x20 quad at (10,10)-(30,30) -> frame-local centroid (20,20). Branch 4c
+        // composes the iframe's root-frame content top-left (30,60): (50,80).
+        assert_eq!(point, Some((50.0, 80.0)));
+    }
+
+    #[tokio::test]
+    async fn no_session_for_frame_is_unresolvable() {
+        let fake = FakeOopifBackend {
+            has_oopif_session: false,
+        };
+        let point = resolve_cross_origin_action_point(
+            &fake,
+            &ctx(),
+            "t",
+            "iframe >> internal:control=enter-frame >> #inner",
+        )
+        .await
+        .unwrap();
+        assert_eq!(point, None);
     }
 }

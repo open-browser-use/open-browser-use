@@ -1,3 +1,19 @@
+import {
+  activeOverlayState,
+  overlayTakeoverState,
+  parseCursorArrival,
+  planContentScriptPreparation,
+  planCursorArrival,
+  planOverlayActivation,
+  planOverlayReleaseRequest,
+  planOverlayReleaseResult,
+  planOverlayReplacement,
+  releasePendingOverlayState,
+  type OverlayCursorTarget,
+  type OverlayLifecycleState,
+  type OverlayTakeoverState,
+} from "./lifecycle/overlay_machine.js";
+
 const CURSOR_ARRIVAL_TIMEOUT_MS = 750;
 const CONTENT_PING_TIMEOUT_MS = 1_000;
 const CONTENT_SCRIPT_HANDLER = "__OBU_CURSOR_CONTENT_SCRIPT_HANDLE_MESSAGE__";
@@ -39,10 +55,14 @@ export type CdpInputBypass = {
 
 export type InputBypassEventFamily = "pointer" | "wheel" | "touch" | "keyboard" | "text";
 
-export type CursorTarget = {
-  x: number;
-  y: number;
-  sequence?: number;
+export type CursorTarget = OverlayCursorTarget;
+
+export type OverlayReleaseDiagnostic = {
+  tabId: number;
+  state: "release_pending" | "release_failed" | "release_abandoned";
+  failures?: number;
+  sessionId: string;
+  turnId: string;
 };
 
 type CursorArrivalWaiter = {
@@ -53,12 +73,8 @@ type CursorArrivalWaiter = {
   resolve(value: boolean): void;
 };
 
-type ActiveTakeover = {
-  sessionId: string;
-  turnId: string;
-  lockInputs: boolean;
-  lastCursor?: CursorTarget;
-};
+type ActiveTakeover = OverlayTakeoverState;
+type OverlayState = OverlayLifecycleState;
 
 type FrameScope = "all" | "top";
 
@@ -66,7 +82,7 @@ export class OverlayCoordinator {
   private nextCursorSequence = 1;
   private nextCaptureSuppression = 1;
   private cursorArrivalWaiters = new Map<number, CursorArrivalWaiter>();
-  private activeTakeovers = new Map<number, ActiveTakeover>();
+  private overlayStates = new Map<number, OverlayState>();
   private contentScriptPreparations = new Map<number, Promise<boolean>>();
 
   constructor(
@@ -79,20 +95,21 @@ export class OverlayCoordinator {
     savedCursor?: CursorTarget,
     options: { rehydrateCursor?: boolean } = {},
   ): Promise<void> {
-    const previous = this.activeTakeovers.get(tabId);
-    const state: ActiveTakeover = {
+    const plan = planOverlayActivation({
+      previous: overlayTakeoverState(this.overlayStates.get(tabId)),
       sessionId: sessionParams.session_id,
       turnId: sessionParams.turn_id,
-      lockInputs: true,
-      lastCursor: previous?.lastCursor ?? savedCursor,
-    };
-    this.activeTakeovers.set(tabId, state);
-    await this.sendTakeoverState(tabId, state);
-    if (state.lastCursor && options.rehydrateCursor !== false) await this.sendSavedCursor(tabId, state);
+      savedCursor,
+      rehydrateCursor: options.rehydrateCursor !== false,
+    });
+    this.overlayStates.set(tabId, activeOverlayState(plan.state));
+    await this.sendTakeoverState(tabId, plan.state);
+    if (plan.sendSavedCursor) await this.sendSavedCursor(tabId, plan.state);
   }
 
   async reassert(tabId: number): Promise<void> {
-    const state = this.activeTakeovers.get(tabId);
+    const current = this.overlayStates.get(tabId);
+    const state = current?.kind === "active" ? current.takeover : undefined;
     if (!state) return;
     if (!await this.sendTakeoverState(tabId, state)) return;
     if (!state.lastCursor) return;
@@ -107,35 +124,67 @@ export class OverlayCoordinator {
   }
 
   forget(tabId: number): void {
-    this.activeTakeovers.delete(tabId);
+    this.overlayStates.delete(tabId);
     this.rejectWaitersForTab(tabId);
   }
 
   activeTabIds(): number[] {
-    return [...this.activeTakeovers.keys()];
+    return [...this.overlayStates.keys()];
   }
 
   async syncForeground(): Promise<void> {
-    for (const tabId of this.activeTabIds()) {
-      if (await this.isTabVisible(tabId)) {
+    for (const [tabId, state] of [...this.overlayStates]) {
+      if (state.kind === "release_abandoned") {
+        // Terminal state — do not re-send hide; degraded-overlay diagnostics cover it.
+        continue;
+      } else if (state.kind === "release_pending" || state.kind === "release_failed") {
+        await this.hide(tabId);
+      } else if (await this.isTabVisible(tabId)) {
         await this.reassert(tabId);
       } else {
-        await this.sendContentMessage(tabId, { type: "OBU_CURSOR_HIDE" }, { prepare: false });
+        await this.hide(tabId);
       }
     }
   }
 
   async replaceTabId(removedTabId: number, addedTabId: number): Promise<void> {
-    const state = this.activeTakeovers.get(removedTabId);
-    this.activeTakeovers.delete(removedTabId);
+    const previous = this.overlayStates.get(removedTabId);
+    const plan = planOverlayReplacement(overlayTakeoverState(previous));
+    this.overlayStates.delete(removedTabId);
     this.rejectWaitersForTab(removedTabId);
-    if (!state) return;
-    this.activeTakeovers.set(addedTabId, state);
-    await this.reassert(addedTabId);
+    if (plan.kind === "drop") return;
+    if (previous?.kind === "release_abandoned") {
+      // Carry over abandoned state to new tab — do not re-send hide.
+      this.overlayStates.set(addedTabId, previous);
+    } else if (previous?.kind === "release_pending" || previous?.kind === "release_failed") {
+      this.overlayStates.set(addedTabId, releasePendingOverlayState(plan.state));
+      await this.hide(addedTabId);
+    } else {
+      this.overlayStates.set(addedTabId, activeOverlayState(plan.state));
+      await this.reassert(addedTabId);
+    }
   }
 
   hasPendingActivity(): boolean {
-    return this.cursorArrivalWaiters.size > 0 || this.contentScriptPreparations.size > 0;
+    // Note: release_abandoned is terminal — it does not count as pending activity.
+    return this.cursorArrivalWaiters.size > 0
+      || this.contentScriptPreparations.size > 0
+      || [...this.overlayStates.values()].some((state) => state.kind === "release_pending" || state.kind === "release_failed");
+  }
+
+  releaseDiagnostics(): OverlayReleaseDiagnostic[] {
+    const diagnostics = [];
+    for (const [tabId, state] of this.overlayStates) {
+      if (state.kind !== "release_pending" && state.kind !== "release_failed" && state.kind !== "release_abandoned") continue;
+      diagnostics.push({
+        tabId,
+        state: state.kind,
+        ...(state.kind === "release_failed" || state.kind === "release_abandoned" ? { failures: state.failures } : {}),
+        sessionId: state.takeover.sessionId,
+        turnId: state.takeover.turnId,
+      });
+    }
+    return diagnostics;
   }
 
   async moveMouse(tabId: number, sessionParams: SessionParams, x: number, y: number): Promise<unknown> {
@@ -207,21 +256,33 @@ export class OverlayCoordinator {
   }
 
   handleCursorArrived(message: unknown): void {
-    if (!isRecord(message) || typeof message.sequence !== "number") return;
-    const waiter = this.cursorArrivalWaiters.get(message.sequence);
-    if (!waiter) return;
-    if (message.sessionId !== waiter.sessionId) return;
-    if (message.turnId !== waiter.turnId) return;
-    this.cursorArrivalWaiters.delete(message.sequence);
+    const arrival = parseCursorArrival(message);
+    const waiter = arrival ? this.cursorArrivalWaiters.get(arrival.sequence) : undefined;
+    const plan = planCursorArrival(arrival, waiter);
+    if (plan.kind === "ignore" || !waiter) return;
+    this.cursorArrivalWaiters.delete(plan.sequence);
     clearTimeout(waiter.timer);
     waiter.resolve(true);
     this.onPendingUpdateTrigger("cursor_arrived");
   }
 
   async hide(tabId: number): Promise<void> {
-    this.activeTakeovers.delete(tabId);
+    const plan = planOverlayReleaseRequest(this.overlayStates.get(tabId));
+    if (plan.kind === "release_abandoned") {
+      // Retry cap exceeded — record the terminal abandoned state without sending another hide.
+      this.overlayStates.set(tabId, plan.next);
+      return;
+    }
+    if (plan.kind === "send_hide") this.overlayStates.set(tabId, plan.next);
+    const sent = await this.sendContentMessage(tabId, { type: "OBU_CURSOR_HIDE" }, { prepare: false });
+    if (plan.kind === "noop") return;
+    const next = planOverlayReleaseResult(plan.next, sent);
+    if (next) {
+      this.overlayStates.set(tabId, next);
+      return;
+    }
+    this.overlayStates.delete(tabId);
     this.rejectWaitersForTab(tabId);
-    await this.sendContentMessage(tabId, { type: "OBU_CURSOR_HIDE" }, { prepare: false });
   }
 
   private async sendTakeoverState(tabId: number, state: ActiveTakeover): Promise<boolean> {
@@ -275,16 +336,22 @@ export class OverlayCoordinator {
   }
 
   private async prepareContentScript(tabId: number): Promise<boolean> {
-    if (await this.pingContentScript(tabId)) return true;
+    const pingSucceeded = await this.pingContentScript(tabId);
     let pending = this.contentScriptPreparations.get(tabId);
-    if (!pending) {
+    const plan = planContentScriptPreparation({
+      pingSucceeded,
+      preparationPending: pending !== undefined,
+    });
+    if (plan.kind === "ready") return true;
+    if (plan.kind === "await_pending" && pending) return await pending;
+    if (plan.kind === "inject") {
       pending = this.injectContentScript(tabId).finally(() => {
         this.contentScriptPreparations.delete(tabId);
         this.onPendingUpdateTrigger("content_script_prepared");
       });
       this.contentScriptPreparations.set(tabId, pending);
     }
-    return await pending;
+    return pending ? await pending : false;
   }
 
   private async pingContentScript(tabId: number): Promise<boolean> {
@@ -351,8 +418,8 @@ export class OverlayCoordinator {
   }
 
   private rememberCursorTarget(tabId: number, cursor: CursorTarget): void {
-    const state = this.activeTakeovers.get(tabId);
-    if (state) state.lastCursor = cursor;
+    const state = this.overlayStates.get(tabId);
+    if (state?.kind === "active") state.takeover.lastCursor = cursor;
   }
 
   private async isTabVisible(tabId: number): Promise<boolean> {

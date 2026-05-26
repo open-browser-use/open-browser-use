@@ -18,6 +18,9 @@ pub struct BackendRequestContext {
     pub turn_id: Option<String>,
     /// Client-requested timeout in milliseconds.
     pub client_timeout_ms: Option<u64>,
+    /// Trusted kernel generation injected by node-repl via the frame-level
+    /// runtime envelope. Never populated from caller-supplied params.
+    pub trusted_kernel_generation: Option<i64>,
 }
 
 tokio::task_local! {
@@ -59,44 +62,46 @@ impl BackendKind {
     }
 }
 
-/// Methods that are known not to be supported by a backend kind.
+/// Methods that are known to be unsupported by a backend kind.
 pub fn unsupported_methods(kind: BackendKind) -> &'static [&'static str] {
     match kind {
-        BackendKind::Cdp => &[
-            methods::GET_USER_HISTORY,
-            methods::CUA_DOWNLOAD_MEDIA,
-            methods::DOM_CUA_GET_VISIBLE_DOM,
-            methods::DOM_CUA_CLICK,
-            methods::DOM_CUA_DOUBLE_CLICK,
-            methods::DOM_CUA_SCROLL,
-            methods::DOM_CUA_TYPE,
-            methods::DOM_CUA_KEYPRESS,
-            methods::DOM_CUA_DOWNLOAD_MEDIA,
-            methods::TAB_CLIPBOARD_READ_TEXT,
-            methods::TAB_CLIPBOARD_WRITE_TEXT,
-            methods::TAB_CLIPBOARD_READ,
-            methods::TAB_CLIPBOARD_WRITE,
-            methods::BROWSER_VIEWPORT_SET,
-            methods::BROWSER_VIEWPORT_RESET,
-            methods::BROWSER_VISIBILITY_SET,
-            methods::BROWSER_VISIBILITY_GET,
-        ],
-        BackendKind::WebExtension => &[],
+        BackendKind::Cdp => methods::CDP_UNSUPPORTED_METHODS,
+        BackendKind::WebExtension => methods::WEBEXTENSION_UNSUPPORTED_METHODS,
     }
 }
 
-/// Whether a backend kind advertises support for an inbound method.
+/// Backend support state for an inbound method, when the method is in the manifest.
+pub fn method_support(kind: BackendKind, method: &str) -> Option<methods::BackendMethodSupport> {
+    methods::BACKEND_METHOD_SUPPORT
+        .iter()
+        .find_map(|(candidate, cdp, webextension)| {
+            (*candidate == method).then_some(match kind {
+                BackendKind::Cdp => *cdp,
+                BackendKind::WebExtension => *webextension,
+            })
+        })
+}
+
+/// Whether a method should pass the backend capability gate before routing.
 pub fn method_supported(kind: BackendKind, method: &str) -> bool {
-    !unsupported_methods(kind).contains(&method)
+    !matches!(
+        method_support(kind, method),
+        Some(methods::BackendMethodSupport::Unsupported)
+    )
 }
 
 /// Stable capability payload exposed by `getInfo`.
 pub fn capabilities_for_kind(kind: BackendKind) -> Value {
     let unsupported = unsupported_methods(kind);
-    let supported = methods::ALL_INBOUND_METHODS
+    let supported = methods::BACKEND_METHOD_SUPPORT
         .iter()
-        .copied()
-        .filter(|method| !unsupported.contains(method))
+        .filter_map(|(method, cdp, webextension)| {
+            let state = match kind {
+                BackendKind::Cdp => *cdp,
+                BackendKind::WebExtension => *webextension,
+            };
+            (state == methods::BackendMethodSupport::Implemented).then_some(*method)
+        })
         .collect::<Vec<_>>();
     let mut capabilities = json!({
         "backend": kind.as_str(),
@@ -168,6 +173,15 @@ pub trait BrowserBackend: Send + Sync {
         method_supported(self.kind(), method)
     }
 
+    /// Return whether this backend owns request deadline tracking for a method.
+    ///
+    /// Backends that send non-cancellable browser effects across another
+    /// transport should keep their own correlation through timeout and late
+    /// completion instead of letting the dispatcher drop the in-flight future.
+    fn owns_request_deadline(&self, _method: &str) -> bool {
+        false
+    }
+
     /// Attach to a tab.
     async fn attach(&self, _tab_id: &str) -> Result<()> {
         Err(HostError::NotImplemented("attach".into()))
@@ -202,6 +216,15 @@ pub trait BrowserBackend: Send + Sync {
         params: Value,
     ) -> Result<Value> {
         self.execute_cdp(tab_id, method, params).await
+    }
+
+    /// Read a tab's current URL for host policy without mutating host lifecycle state.
+    async fn current_url_for_policy(
+        &self,
+        _ctx: &BackendRequestContext,
+        _tab_id: &str,
+    ) -> Result<String> {
+        Err(HostError::NotImplemented("current_url_for_policy".into()))
     }
 
     /// Create a tab.
@@ -359,6 +382,304 @@ pub trait BrowserBackend: Send + Sync {
         params: Value,
     ) -> Result<Value> {
         self.tab_command(method, params).await
+    }
+}
+
+/// Lifecycle and backend metadata operations used by the dispatcher.
+#[async_trait]
+pub(crate) trait LifecycleBackendOps {
+    async fn ping(&self) -> Result<&'static str>;
+    fn clear_lifecycle_diagnostics(&self) -> Result<Value>;
+}
+
+#[async_trait]
+impl<T> LifecycleBackendOps for T
+where
+    T: BrowserBackend + ?Sized,
+{
+    async fn ping(&self) -> Result<&'static str> {
+        BrowserBackend::ping(self).await
+    }
+
+    fn clear_lifecycle_diagnostics(&self) -> Result<Value> {
+        BrowserBackend::clear_lifecycle_diagnostics(self)
+    }
+}
+
+/// Session, tab ownership, and profile-history operations used by the dispatcher.
+#[async_trait]
+pub(crate) trait SessionBackendOps {
+    async fn create_tab_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        url: Option<String>,
+    ) -> Result<Value>;
+    async fn list_tabs_with_context(&self, ctx: &BackendRequestContext) -> Result<Value>;
+    async fn current_tab_with_context(&self, ctx: &BackendRequestContext) -> Result<Value>;
+    async fn selected_tab_with_context(&self, ctx: &BackendRequestContext) -> Result<Value>;
+    async fn list_user_tabs_with_context(&self, ctx: &BackendRequestContext) -> Result<Value>;
+    async fn claim_user_tab_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        tab_id: &str,
+    ) -> Result<Value>;
+    async fn finalize_tabs_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value>;
+    async fn name_session_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value>;
+    async fn turn_ended_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value>;
+    async fn yield_control_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value>;
+    async fn resume_control_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value>;
+    async fn get_user_history_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value>;
+}
+
+#[async_trait]
+impl<T> SessionBackendOps for T
+where
+    T: BrowserBackend + ?Sized,
+{
+    async fn create_tab_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        url: Option<String>,
+    ) -> Result<Value> {
+        BrowserBackend::create_tab_with_context(self, ctx, url).await
+    }
+
+    async fn list_tabs_with_context(&self, ctx: &BackendRequestContext) -> Result<Value> {
+        BrowserBackend::list_tabs_with_context(self, ctx).await
+    }
+
+    async fn current_tab_with_context(&self, ctx: &BackendRequestContext) -> Result<Value> {
+        BrowserBackend::current_tab_with_context(self, ctx).await
+    }
+
+    async fn selected_tab_with_context(&self, ctx: &BackendRequestContext) -> Result<Value> {
+        BrowserBackend::selected_tab_with_context(self, ctx).await
+    }
+
+    async fn list_user_tabs_with_context(&self, ctx: &BackendRequestContext) -> Result<Value> {
+        BrowserBackend::list_user_tabs_with_context(self, ctx).await
+    }
+
+    async fn claim_user_tab_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        tab_id: &str,
+    ) -> Result<Value> {
+        BrowserBackend::claim_user_tab_with_context(self, ctx, tab_id).await
+    }
+
+    async fn finalize_tabs_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value> {
+        BrowserBackend::finalize_tabs_with_context(self, ctx, params).await
+    }
+
+    async fn name_session_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value> {
+        BrowserBackend::name_session_with_context(self, ctx, params).await
+    }
+
+    async fn turn_ended_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value> {
+        BrowserBackend::turn_ended_with_context(self, ctx, params).await
+    }
+
+    async fn yield_control_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value> {
+        BrowserBackend::yield_control_with_context(self, ctx, params).await
+    }
+
+    async fn resume_control_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value> {
+        BrowserBackend::resume_control_with_context(self, ctx, params).await
+    }
+
+    async fn get_user_history_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        params: Value,
+    ) -> Result<Value> {
+        BrowserBackend::get_user_history_with_context(self, ctx, params).await
+    }
+}
+
+/// Raw CDP attachment and command operations used by the dispatcher.
+#[async_trait]
+pub(crate) trait CdpBackendOps {
+    async fn attach_with_context(&self, ctx: &BackendRequestContext, tab_id: &str) -> Result<()>;
+    async fn detach_with_context(&self, ctx: &BackendRequestContext, tab_id: &str) -> Result<()>;
+    async fn execute_cdp_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        tab_id: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value>;
+}
+
+#[async_trait]
+impl<T> CdpBackendOps for T
+where
+    T: BrowserBackend + ?Sized,
+{
+    async fn attach_with_context(&self, ctx: &BackendRequestContext, tab_id: &str) -> Result<()> {
+        BrowserBackend::attach_with_context(self, ctx, tab_id).await
+    }
+
+    async fn detach_with_context(&self, ctx: &BackendRequestContext, tab_id: &str) -> Result<()> {
+        BrowserBackend::detach_with_context(self, ctx, tab_id).await
+    }
+
+    async fn execute_cdp_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        tab_id: &str,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        BrowserBackend::execute_cdp_with_context(self, ctx, tab_id, method, params).await
+    }
+}
+
+/// Browser-level control operations used by the dispatcher.
+#[async_trait]
+pub(crate) trait BrowserControlOps {
+    async fn browser_command_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        method: &str,
+        params: Value,
+    ) -> Result<Value>;
+}
+
+#[async_trait]
+impl<T> BrowserControlOps for T
+where
+    T: BrowserBackend + ?Sized,
+{
+    async fn browser_command_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        BrowserBackend::browser_command_with_context(self, ctx, method, params).await
+    }
+}
+
+/// Coordinate and DOM-CUA operations used by the dispatcher.
+#[async_trait]
+pub(crate) trait CuaBackendOps {
+    async fn cua_command_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        method: &str,
+        params: Value,
+    ) -> Result<Value>;
+}
+
+#[async_trait]
+impl<T> CuaBackendOps for T
+where
+    T: BrowserBackend + ?Sized,
+{
+    async fn cua_command_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        BrowserBackend::cua_command_with_context(self, ctx, method, params).await
+    }
+}
+
+/// Playwright-shaped page operations used by the dispatcher.
+#[async_trait]
+pub(crate) trait PlaywrightBackendOps {
+    async fn playwright_command_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        method: &str,
+        params: Value,
+    ) -> Result<Value>;
+}
+
+#[async_trait]
+impl<T> PlaywrightBackendOps for T
+where
+    T: BrowserBackend + ?Sized,
+{
+    async fn playwright_command_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        BrowserBackend::playwright_command_with_context(self, ctx, method, params).await
+    }
+}
+
+/// Generic tab operations used by the dispatcher.
+#[async_trait]
+pub(crate) trait TabBackendOps {
+    async fn tab_command_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        method: &str,
+        params: Value,
+    ) -> Result<Value>;
+}
+
+#[async_trait]
+impl<T> TabBackendOps for T
+where
+    T: BrowserBackend + ?Sized,
+{
+    async fn tab_command_with_context(
+        &self,
+        ctx: &BackendRequestContext,
+        method: &str,
+        params: Value,
+    ) -> Result<Value> {
+        BrowserBackend::tab_command_with_context(self, ctx, method, params).await
     }
 }
 

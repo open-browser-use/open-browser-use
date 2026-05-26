@@ -1,5 +1,5 @@
 import { withSessionMeta } from "./session-meta.js";
-import { Guards } from "./guards.js";
+import { Guards, type CommandabilityGuard } from "./guards.js";
 import type { Transport } from "./wire/transport.js";
 import * as M from "./wire/methods.js";
 
@@ -11,6 +11,7 @@ export class TabDev {
     private readonly transport: Transport,
     guardsOrTabId: Guards | string,
     tabId?: string,
+    private readonly ensureCommandable?: CommandabilityGuard,
   ) {
     this.guards = guardsOrTabId instanceof Guards ? guardsOrTabId : new Guards();
     this.tabId = guardsOrTabId instanceof Guards ? (tabId ?? "") : guardsOrTabId;
@@ -21,6 +22,7 @@ export class TabDev {
     params: Record<string, unknown> = {},
     opts: { timeout?: number } = {},
   ): Promise<T> {
+    this.ensureCommandable?.(M.EXECUTE_CDP);
     const command = {
       command: M.EXECUTE_CDP,
       tab_id: this.tabId,

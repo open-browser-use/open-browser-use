@@ -19,10 +19,32 @@ export function getSessionMeta(): { session_id?: string; turn_id?: string } {
   return cachedSessionId ? { session_id: cachedSessionId } : {};
 }
 
+export function getRuntimeMeta(): { kernel_generation?: number } {
+  const meta = (globalThis as { obuRepl?: { requestMeta?: unknown } }).obuRepl?.requestMeta;
+  if (meta && typeof meta === "object") {
+    const runtime = (meta as MetaRecord)["x-obu-runtime-metadata"];
+    if (runtime && typeof runtime === "object") {
+      const generation = (runtime as MetaRecord).kernel_generation;
+      if (typeof generation === "number" && Number.isFinite(generation)) {
+        return { kernel_generation: generation };
+      }
+    }
+  }
+  return {};
+}
+
 export function withSessionMeta<P extends Record<string, unknown>>(
   params: P,
 ): P & { session_id?: string; turn_id?: string } {
   return { ...params, ...getSessionMeta() };
+}
+
+export function getSessionLifecycleContext(): { sessionId?: string; turnId?: string } {
+  const meta = getSessionMeta();
+  return {
+    ...(meta.session_id !== undefined ? { sessionId: meta.session_id } : {}),
+    ...(meta.turn_id !== undefined ? { turnId: meta.turn_id } : {}),
+  };
 }
 
 export function clearSessionMetaCacheForTests(): void {

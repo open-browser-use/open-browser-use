@@ -1,6 +1,6 @@
 import { Guards } from "./guards.js";
 import { ERR_NOT_IMPLEMENTED, ObuError } from "./errors.js";
-import { Tab, type TabMetadata } from "./tab.js";
+import { Tab, type TabMetadata, type TabRuntimeContext } from "./tab.js";
 import { tabFromWire, tabIdFromWire, tabMetadata, type TabWire } from "./tab_wire.js";
 import { withSessionMeta } from "./session-meta.js";
 import type { Transport } from "./wire/transport.js";
@@ -32,6 +32,7 @@ export class UserTabRef {
     private readonly guards: Guards,
     public readonly id: string,
     metadata: TabMetadata = {},
+    private readonly runtimeContext: TabRuntimeContext = {},
   ) {
     this.tab_id = id;
     this.tabId = id;
@@ -49,7 +50,7 @@ export class UserTabRef {
       withSessionMeta({ tab_id: this.id }),
       opts.timeout,
     );
-    return tabFromWire(this.transport, this.guards, row, "claimUserTab");
+    return tabFromWire(this.transport, this.guards, row, "claimUserTab", this.runtimeContext);
   }
 }
 
@@ -59,6 +60,7 @@ export class BrowserUser {
     private readonly guards: Guards,
     private readonly supportsMethod: (method: string) => boolean = () => true,
     private readonly backendType?: string,
+    private readonly runtimeContext: TabRuntimeContext = {},
   ) {}
 
   async discoverTabs(): Promise<UserTabRef[]> {
@@ -68,10 +70,10 @@ export class BrowserUser {
   }
 
   /** @deprecated Use discoverTabs(), then claim the returned UserTabRef explicitly. */
-  async openTabs(): Promise<Tab[]> {
+  async openTabs(): Promise<UserTabRef[]> {
     await this.guards.ensureCommandAllowed({ command: M.GET_USER_TABS });
     const rows = await this.transport.sendRequest<TabWire[]>(M.GET_USER_TABS, withSessionMeta({}));
-    return rows.map((row) => tabFromWire(this.transport, this.guards, row, "getUserTabs"));
+    return rows.map((row) => this.#userTabRefFromWire(row, "getUserTabs"));
   }
 
   async history(query: BrowserHistoryQuery = {}): Promise<BrowserHistoryItem[]> {
@@ -107,12 +109,12 @@ export class BrowserUser {
       M.CLAIM_USER_TAB,
       withSessionMeta({ tab_id: id }),
     );
-    return tabFromWire(this.transport, this.guards, row, "claimUserTab");
+    return tabFromWire(this.transport, this.guards, row, "claimUserTab", this.runtimeContext);
   }
 
   #userTabRefFromWire(row: TabWire, method: string): UserTabRef {
     const id = tabIdFromWire(row, `${method} response missing tab_id`);
-    return new UserTabRef(this.transport, this.guards, id, tabMetadata(row));
+    return new UserTabRef(this.transport, this.guards, id, tabMetadata(row), this.runtimeContext);
   }
 }
 

@@ -77,10 +77,94 @@
     "message": "复制设置提示词"
   },
   "stopButton": {
-    "message": "我来接管"
+    "message": "接管控制"
   },
   "resumeButton": {
-    "message": "继续"
+    "message": "重新连接 Agent"
+  },
+  "stopButtonTakeControl": {
+    "message": "接管控制"
+  },
+  "stopButtonTakeControlDescription": {
+    "message": "暂停 Agent 控制，改由你自己操作这个浏览器。"
+  },
+  "stopButtonTakingControl": {
+    "message": "正在接管"
+  },
+  "stopButtonTakingControlDescription": {
+    "message": "Agent 正在释放浏览器控制权。"
+  },
+  "stopButtonUserControl": {
+    "message": "你正在控制"
+  },
+  "stopButtonUserControlDescription": {
+    "message": "你正在直接使用浏览器。"
+  },
+  "stopButtonUpdateNeeded": {
+    "message": "需要更新"
+  },
+  "stopButtonUpdateNeededDescription": {
+    "message": "先更新本地主机，再切换浏览器控制权。"
+  },
+  "stopButtonSetupNeeded": {
+    "message": "需要设置"
+  },
+  "stopButtonSetupNeededDescription": {
+    "message": "先修复设置，再接管或交还浏览器控制权。"
+  },
+  "stopButtonAgentConnecting": {
+    "message": "Agent 正在连接"
+  },
+  "stopButtonAgentConnectingDescription": {
+    "message": "Agent 仍在连接浏览器控制。"
+  },
+  "stopButtonAgentOffline": {
+    "message": "Agent 离线"
+  },
+  "stopButtonAgentOfflineDescription": {
+    "message": "当前没有可接管的 Agent 控制。"
+  },
+  "resumeButtonAgentControl": {
+    "message": "Agent 正在控制"
+  },
+  "resumeButtonAgentControlDescription": {
+    "message": "Agent 已经在控制浏览器。"
+  },
+  "resumeButtonWait": {
+    "message": "请稍候"
+  },
+  "resumeButtonWaitDescription": {
+    "message": "等浏览器控制完全停止后再继续。"
+  },
+  "resumeButtonReturnToAgent": {
+    "message": "交还给 Agent"
+  },
+  "resumeButtonReturnToAgentDescription": {
+    "message": "把浏览器控制权交还给 Agent。"
+  },
+  "resumeButtonReconnectAfterUpdate": {
+    "message": "更新后重连"
+  },
+  "resumeButtonReconnectAfterUpdateDescription": {
+    "message": "本地主机更新完成后重新连接。"
+  },
+  "resumeButtonRetryConnection": {
+    "message": "重试连接"
+  },
+  "resumeButtonRetryConnectionDescription": {
+    "message": "修复设置后尝试重新连接。"
+  },
+  "resumeButtonReconnectAgent": {
+    "message": "重新连接 Agent"
+  },
+  "resumeButtonReconnectAgentDescription": {
+    "message": "重新连接 Agent 到浏览器控制。"
+  },
+  "resumeButtonConnecting": {
+    "message": "正在连接"
+  },
+  "resumeButtonConnectingDescription": {
+    "message": "Agent 正在连接。"
   },
   "cleanupButton": {
     "message": "清理浏览器标签页"
@@ -219,6 +303,17 @@
     "message": "有 $count$ 个可交付标签页。使用 browser.deliverables()，然后用 claim() 恢复它们。",
     "placeholders": {
       "count": {
+        "content": "$1"
+      }
+    }
+  },
+  "pendingExtensionUpdate": {
+    "message": "扩展更新会在浏览器控制空闲后应用。"
+  },
+  "pendingExtensionUpdateVersion": {
+    "message": "扩展更新 $version$ 会在浏览器控制空闲后应用。",
+    "placeholders": {
+      "version": {
         "content": "$1"
       }
     }

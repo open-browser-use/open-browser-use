@@ -12,6 +12,8 @@ expression: excerpt
 - Keep a `Tab` handle and use `await tab.goto(url)` for same-task or same-site
 - Reuse the last `tab.domSnapshot()` or `tab.snapshotText()` result until
 - Avoid broad browser-boundary loops such as `all()` followed by many uncached
+5. Prefer locators by role and accessible name, then visible text, then stable
+6. Prefer Playwright locators, then DOM-CUA node ids, then coordinate-CUA, then
 - Arm `waitForEvent("download")` or `waitForEvent("filechooser")` before the
 - Use `browser.turnEnded()` to mark a turn boundary while keeping active tabs
 controlled. `browser.finishTurn(...)` first finalizes tabs and should be used

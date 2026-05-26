@@ -1,0 +1,21 @@
+{
+  "schemaVersion": 1,
+  "codes": [
+    { "constant": "ERR_TIMEOUT", "code": -1000, "doc": ["Defensive or backend timeout."] },
+    { "constant": "ERR_NOT_FOUND", "code": -1001, "doc": ["Requested object was not found."] },
+    { "constant": "ERR_DISALLOWED", "code": -1002, "doc": ["Operation is disallowed at the server level."] },
+    { "constant": "ERR_NOT_IMPLEMENTED", "code": -1003, "doc": ["Feature is not implemented."] },
+    { "constant": "ERR_PROTOCOL", "code": -1004, "doc": ["Protocol violation."] },
+    { "constant": "ERR_NO_BACKEND", "code": -1005, "doc": ["No usable browser backend is available."] },
+    { "constant": "ERR_OVERLOADED", "code": -1006, "doc": ["Peer has too many concurrent in-flight requests."] },
+    { "constant": "ERR_CONFLICT", "code": -1007, "doc": ["Request conflicts with an existing durable task/session/turn owner."] },
+    { "constant": "ERR_IO", "code": -1099, "doc": ["Generic I/O failure."] },
+    { "constant": "ERR_PEER_AUTH", "code": -1100, "doc": ["Peer/auth gate rejected the connection.", "", "D9 and the Phase 9 failure-mode test pin wrong capability-token auth to", "`-1100`, so the dispatcher uses this code for first-frame auth rejection."] },
+    { "constant": "ERR_CAPABILITY_TOKEN", "code": -1101, "doc": ["Capability-token specific guard code for later structured policy surfaces."] },
+    { "constant": "ERR_CMD_DISALLOWED", "code": -1102, "doc": ["Command-level guard rejection."] },
+    { "constant": "ERR_PAGE_CLOSED", "code": -1200, "doc": ["Page or target has closed."] },
+    { "constant": "ERR_CDP_FAILURE", "code": -1201, "doc": ["CDP command failed."] },
+    { "constant": "ERR_TAB_NOT_ATTACHED", "code": -1202, "doc": ["Tab has not been attached."] },
+    { "constant": "ERR_DIALOG_REQUIRES_DECISION", "code": -1203, "doc": ["Native browser dialog needs an explicit user/agent decision."] }
+  ]
+}

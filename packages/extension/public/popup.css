@@ -1,44 +1,40 @@
 :root {
-  color-scheme: light;
-  --font-ui: "SF Pro Text", -apple-system, BlinkMacSystemFont, "Segoe UI Variable", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
-  --font-title: "SF Pro Display", -apple-system, BlinkMacSystemFont, "Segoe UI Variable Display", "Segoe UI", ui-sans-serif, system-ui, sans-serif;
+  color-scheme: dark;
+  --font-ui: "Avenir Next", "Helvetica Neue", Helvetica, ui-sans-serif, system-ui, sans-serif;
+  --font-title: "Avenir Next", "Helvetica Neue", Helvetica, ui-sans-serif, system-ui, sans-serif;
   --font-mono: "SFMono-Regular", ui-monospace, Menlo, Consolas, monospace;
   --type-caption: 0.6875rem;
   --type-small: 0.75rem;
   --type-body: 0.8125rem;
   --type-body-strong: 0.875rem;
-  --type-title: 1.0625rem;
-  --type-status: 1rem;
+  --type-title: 1.425rem;
+  --type-status: 1.18rem;
   --weight-regular: 400;
   --weight-medium: 500;
-  --weight-semibold: 580;
-  --weight-bold: 640;
-  --surface: oklch(0.976 0.006 230);
-  --panel: oklch(0.996 0.004 230);
-  --panel-muted: oklch(0.955 0.007 230);
-  --ink: oklch(0.21 0.014 235);
-  --ink-soft: oklch(0.39 0.018 235);
-  --muted: oklch(0.55 0.018 235);
-  --line: oklch(0.87 0.012 235);
-  --line-strong: oklch(0.77 0.018 235);
-  --button-primary: oklch(0.22 0.014 235);
-  --button-primary-hover: oklch(0.3 0.018 235);
-  --brand-soft: oklch(0.93 0.046 158);
-  --brand-ink: oklch(0.28 0.074 158);
-  --brand-text: oklch(0.985 0.006 158);
-  --green: oklch(0.58 0.125 155);
-  --green-soft: oklch(0.935 0.045 155);
-  --green-ink: oklch(0.33 0.075 155);
-  --blue: oklch(0.56 0.09 240);
-  --blue-soft: oklch(0.935 0.035 240);
-  --amber: oklch(0.68 0.12 75);
-  --amber-soft: oklch(0.94 0.045 75);
-  --red: oklch(0.54 0.135 30);
-  --red-soft: oklch(0.981 0.012 35);
-  --red-line: oklch(0.68 0.08 30);
-  --shadow: 0 0.75rem 1.5rem oklch(0.27 0.02 235 / 0.07);
-  --focus-ring: 0 0 0 0.1875rem oklch(0.38 0.052 245 / 0.22);
-  --radius: 8px;
+  --weight-semibold: 500;
+  --weight-bold: 560;
+  --surface: #070707;
+  --panel: #070707;
+  --panel-muted: #111111;
+  --ink: #f0f0f0;
+  --ink-soft: #d6d6d6;
+  --muted: #adadad;
+  --line: rgb(240 240 240 / 0.16);
+  --line-strong: rgb(240 240 240 / 0.28);
+  --button-primary: #f0f0f0;
+  --button-primary-hover: #ffffff;
+  --brand-soft: #f0f0f0;
+  --brand-ink: #f0f0f0;
+  --brand-text: #070707;
+  --state-connected: #f0f0f0;
+  --state-reconnecting: #adadad;
+  --state-attention: #ffffff;
+  --state-stopped: #777777;
+  --state-soft: #0d0d0d;
+  --state-line: rgb(240 240 240 / 0.28);
+  --shadow: none;
+  --focus-ring: 0 0 0 1px #f0f0f0, 0 0 0 5px rgb(240 240 240 / 0.12);
+  --radius: 0;
   --space-1: 0.25rem;
   --space-2: 0.375rem;
   --space-3: 0.5rem;
@@ -60,7 +56,6 @@ body {
   width: 23.75rem;
   margin: 0;
   background: var(--surface);
-  border-radius: 0 0 var(--radius) var(--radius);
   color: var(--ink);
   font: var(--weight-regular) var(--type-body) / 1.42 var(--font-ui);
   font-kerning: normal;
@@ -69,15 +64,14 @@ body {
   -webkit-font-smoothing: antialiased;
   letter-spacing: 0;
   overflow: hidden;
-  text-rendering: optimizeLegibility;
+  text-rendering: geometricPrecision;
 }
 
 .shell {
   display: grid;
-  gap: var(--space-4);
+  gap: var(--space-5);
   min-height: 100%;
-  padding: var(--space-6);
-  border-radius: 0 0 var(--radius) var(--radius);
+  padding: var(--space-7);
 }
 
 .header {
@@ -104,19 +98,20 @@ body {
 .brand-mark-wrap {
   flex: 0 0 auto;
   display: grid;
-  width: 2.25rem;
-  height: 2.25rem;
+  width: 2rem;
+  height: 2rem;
   place-items: center;
   border: 0;
-  border-radius: 10px;
+  border-radius: 0;
   background: transparent;
   box-shadow: none;
 }
 
 .brand-mark {
   display: block;
-  width: 1.875rem;
-  height: 1.875rem;
+  width: 1.65rem;
+  height: 1.65rem;
+  filter: grayscale(1) contrast(1.08);
 }
 
 .brand-link {
@@ -126,33 +121,36 @@ body {
   width: fit-content;
   max-width: 100%;
   align-items: center;
-  border-radius: 5px;
+  padding-bottom: 0.125rem;
+  border-bottom: 1px solid transparent;
+  border-radius: 0;
   color: var(--brand-ink);
-  outline-offset: 0.1875rem;
   text-decoration: none;
   transition:
-    background 150ms cubic-bezier(0.22, 1, 0.36, 1),
+    border-color 150ms cubic-bezier(0.22, 1, 0.36, 1),
     color 150ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
 .brand-link:hover {
-  background: var(--brand-soft);
-  color: var(--ink);
+  border-color: var(--line-strong);
+  color: var(--brand-ink);
 }
 
 .brand-link:focus-visible {
-  outline: 0;
-  box-shadow: var(--focus-ring);
+  outline: 1px solid var(--ink);
+  outline-offset: 5px;
+  box-shadow: none;
 }
 
 .brand-wordmark {
   color: var(--brand-ink);
   font-family: var(--font-title);
-  font-size: 0.9375rem;
-  font-weight: var(--weight-semibold);
-  line-height: 1.1;
+  font-size: 0.92rem;
+  font-weight: var(--weight-medium);
+  line-height: 1;
   overflow: hidden;
   text-overflow: ellipsis;
+  text-transform: lowercase;
   white-space: nowrap;
 }
 
@@ -161,10 +159,10 @@ body {
   margin: 0;
   color: var(--muted);
   font-size: var(--type-caption);
-  font-weight: var(--weight-medium);
-  line-height: 1;
-  letter-spacing: 0;
-  text-transform: uppercase;
+  font-weight: var(--weight-regular);
+  line-height: 1.05;
+  letter-spacing: 0.08em;
+  text-transform: lowercase;
 }
 
 h1,
@@ -173,7 +171,7 @@ h2 {
   color: var(--ink);
   font-family: var(--font-ui);
   font-size: var(--type-body-strong);
-  font-weight: var(--weight-semibold);
+  font-weight: var(--weight-medium);
   letter-spacing: 0;
 }
 
@@ -181,9 +179,11 @@ h1 {
   min-width: 0;
   font-family: var(--font-title);
   font-size: var(--type-title);
-  font-weight: var(--weight-semibold);
-  line-height: 1.16;
+  font-weight: var(--weight-medium);
+  line-height: 0.98;
   text-align: start;
+  text-transform: lowercase;
+  text-wrap: balance;
 }
 
 h2 {
@@ -204,9 +204,9 @@ h2 {
   height: 1.75rem;
   place-items: center;
   border: 0;
-  border-radius: var(--radius);
+  border-radius: 0;
   background: transparent;
-  color: var(--ink-soft);
+  color: var(--muted);
   cursor: pointer;
   transition:
     background 150ms cubic-bezier(0.22, 1, 0.36, 1),
@@ -225,13 +225,14 @@ h2 {
 }
 
 .icon-button:not(:disabled):hover {
-  background: var(--panel-muted);
+  background: transparent;
   color: var(--ink);
 }
 
 .icon-button:focus-visible {
-  outline: 0;
-  box-shadow: var(--focus-ring);
+  outline: 1px solid var(--ink);
+  outline-offset: 4px;
+  box-shadow: none;
 }
 
 .version-pill {
@@ -240,11 +241,11 @@ h2 {
   padding: 0.25rem 0 0.25rem var(--space-1);
   overflow: hidden;
   border: 0;
-  border-radius: 999px;
+  border-radius: 0;
   background: transparent;
-  color: var(--ink-soft);
+  color: var(--muted);
   font-size: var(--type-small);
-  font-weight: var(--weight-medium);
+  font-weight: var(--weight-regular);
   text-align: end;
   text-overflow: ellipsis;
   text-transform: none;
@@ -280,15 +281,16 @@ h2 {
   color: var(--ink);
   font-family: var(--font-title);
   font-size: var(--type-status);
-  font-weight: var(--weight-semibold);
-  line-height: 1.2;
+  font-weight: var(--weight-medium);
+  line-height: 1;
   letter-spacing: 0;
+  text-transform: lowercase;
 }
 
 .detail {
   min-height: 1.125rem;
   margin: var(--space-2) 0 0;
-  color: var(--ink-soft);
+  color: var(--muted);
   font-size: var(--type-body);
   font-weight: var(--weight-regular);
   line-height: 1.45;
@@ -301,54 +303,54 @@ h2 {
   width: 0.625rem;
   height: 0.625rem;
   margin-top: var(--space-1);
-  border: 1px solid oklch(1 0.004 230);
+  border: 1px solid var(--ink);
   border-radius: 50%;
   background: var(--muted);
-  box-shadow: 0 0 0 0.1875rem oklch(0.55 0.018 235 / 0.12);
+  box-shadow: 0 0 0 0.1875rem rgb(240 240 240 / 0.08);
 }
 
 .dot.connected {
-  background: var(--green);
-  box-shadow: 0 0 0 0.1875rem oklch(0.58 0.125 155 / 0.16);
+  background: var(--state-connected);
+  box-shadow: 0 0 0 0.1875rem rgb(240 240 240 / 0.14);
 }
 
 .dot.reconnecting {
-  background: var(--blue);
-  box-shadow: 0 0 0 0.1875rem oklch(0.56 0.09 240 / 0.14);
+  background: var(--state-reconnecting);
+  box-shadow: 0 0 0 0.1875rem rgb(240 240 240 / 0.1);
   animation: status-pulse 1.5s cubic-bezier(0.22, 1, 0.36, 1) infinite;
 }
 
 .dot.attention {
-  background: var(--amber);
-  box-shadow: 0 0 0 0.1875rem oklch(0.68 0.12 75 / 0.16);
+  background: var(--state-attention);
+  box-shadow: 0 0 0 0.1875rem rgb(240 240 240 / 0.12);
 }
 
 .shell[data-state="error"] .dot,
 .shell[data-state="version_mismatch"] .dot {
-  background: var(--red);
-  box-shadow: 0 0 0 0.1875rem oklch(0.56 0.155 30 / 0.13);
+  background: var(--state-attention);
+  box-shadow: 0 0 0 0.1875rem rgb(240 240 240 / 0.12);
 }
 
 .shell[data-state="connected"] .status-panel {
-  border-color: oklch(0.77 0.058 155);
-  background: oklch(0.987 0.012 155);
+  border-color: var(--state-line);
+  background: var(--panel);
 }
 
 .shell[data-state="connecting"] .status-panel,
 .shell[data-state="disconnected"] .status-panel {
-  border-color: oklch(0.79 0.048 240);
-  background: oklch(0.984 0.01 240);
+  border-color: var(--state-line);
+  background: var(--panel);
 }
 
 .shell[data-state="stopped"] .status-panel {
-  border-color: oklch(0.82 0.064 75);
-  background: oklch(0.986 0.014 75);
+  border-color: var(--state-line);
+  background: var(--panel);
 }
 
 .shell[data-state="error"] .status-panel,
 .shell[data-state="version_mismatch"] .status-panel {
-  border-color: oklch(0.82 0.048 35);
-  background: var(--red-soft);
+  border-color: var(--state-line);
+  background: var(--panel);
 }
 
 @keyframes status-pulse {
@@ -365,13 +367,13 @@ h2 {
 .signal-rail {
   display: grid;
   grid-template-columns: repeat(4, 1fr);
-  gap: var(--space-1);
+  gap: var(--space-2);
   margin-top: var(--space-4);
 }
 
 .signal-rail span {
-  height: 0.1875rem;
-  border-radius: 999px;
+  height: 1px;
+  border-radius: 0;
   background: var(--line);
   transition: background 180ms cubic-bezier(0.22, 1, 0.36, 1), opacity 180ms cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -389,36 +391,21 @@ h2 {
 }
 
 .shell[data-state="connected"] .signal-rail span {
-  background: var(--green);
+  background: var(--state-connected);
 }
 
 .shell[data-state="connecting"] .signal-rail span,
 .shell[data-state="disconnected"] .signal-rail span {
-  background: var(--blue);
+  background: var(--state-reconnecting);
 }
 
 .shell[data-state="error"] .signal-rail span,
 .shell[data-state="version_mismatch"] .signal-rail span {
-  background: var(--red-line);
+  background: var(--state-attention);
 }
 
 .shell[data-state="stopped"] .signal-rail span {
-  background: var(--amber);
-}
-
-.status-actions {
-  display: grid;
-  gap: var(--space-2);
-  margin-top: var(--space-4);
-}
-
-.status-actions .detail {
-  min-height: 0;
-  margin-top: 0;
-}
-
-.status-actions .detail:empty {
-  display: none;
+  background: var(--state-stopped);
 }
 
 .setup-panel,
@@ -452,7 +439,7 @@ h2 {
 
 .prompt-toggle {
   flex: 0 0 auto;
-  color: var(--ink-soft);
+  color: var(--muted);
 }
 
 .prompt-toggle svg {
@@ -486,7 +473,7 @@ h2 {
   overflow-y: auto;
   border-top: 1px solid var(--line);
   background: var(--panel-muted);
-  color: var(--ink);
+  color: var(--ink-soft);
   cursor: copy;
   font: 0.6875rem / 1.36 var(--font-mono);
   overflow-wrap: normal;
@@ -511,43 +498,54 @@ h2 {
 
 .handoff-surface::-webkit-scrollbar-thumb {
   border: 0.125rem solid var(--panel-muted);
-  border-radius: 999px;
+  border-radius: 0;
   background: var(--line-strong);
 }
 
 .handoff-surface:hover {
-  background: oklch(0.948 0.009 230);
+  background: #151515;
+  color: var(--ink);
 }
 
 .handoff-surface:active {
-  background: oklch(0.935 0.011 230);
+  background: #1c1c1c;
 }
 
 .handoff-surface:focus-visible {
   outline: 0;
-  box-shadow: inset 0 0 0 0.125rem oklch(0.58 0.125 155 / 0.32);
+  box-shadow: inset 0 0 0 1px var(--ink);
 }
 
 .actions {
   display: grid;
   grid-template-columns: 1fr 1fr;
   gap: var(--space-3);
-  padding-top: var(--space-1);
+  padding-top: var(--space-2);
+  border-top: 1px solid var(--line);
 }
 
 .stop,
 .resume,
-.cleanup-button,
 .setup-copy,
 .debug-actions button {
+  appearance: none;
+  -webkit-appearance: none;
   width: 100%;
-  min-height: 2.25rem;
+  min-height: 2.35rem;
+  padding: 0 var(--space-4);
   border: 1px solid transparent;
-  border-radius: var(--radius);
-  font: inherit;
-  font-weight: var(--weight-semibold);
+  border-radius: 0;
+  background: transparent;
+  color: var(--ink);
+  position: relative;
+  isolation: isolate;
+  overflow: hidden;
+  font-size: var(--type-body);
+  font-weight: var(--weight-medium);
+  line-height: 1;
   letter-spacing: 0;
   cursor: pointer;
+  -webkit-text-fill-color: currentColor;
   transition:
     background 150ms cubic-bezier(0.22, 1, 0.36, 1),
     border-color 150ms cubic-bezier(0.22, 1, 0.36, 1),
@@ -556,32 +554,43 @@ h2 {
     transform 150ms cubic-bezier(0.22, 1, 0.36, 1);
 }
 
-.cleanup-button {
-  min-height: 2rem;
-  border-color: var(--line-strong);
-  background: var(--panel);
-  color: var(--ink);
-  font-size: var(--type-small);
-}
-
-.stop {
-  border-color: var(--line-strong);
-  background: var(--panel);
-  color: var(--ink);
-}
-
-.resume {
-  background: var(--button-primary);
+.actions button[data-action-emphasis="primary"] {
+  border-color: transparent;
+  background: transparent;
   color: var(--brand-text);
+  -webkit-text-fill-color: var(--brand-text);
+}
+
+.actions button[data-action-emphasis="primary"]::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: -1;
+  background: var(--button-primary);
+}
+
+.actions button[data-action-emphasis="secondary"] {
+  border-color: var(--line-strong);
+  background: transparent;
+  color: var(--ink);
+  -webkit-text-fill-color: var(--ink);
+}
+
+.actions button[data-action-emphasis="status"] {
+  border-color: transparent;
+  background: transparent;
+  color: var(--muted);
+  -webkit-text-fill-color: var(--muted);
 }
 
 .setup-copy {
   min-width: 5.75rem;
   min-height: 2rem;
   padding: 0 var(--space-3);
-  border-color: var(--line-strong);
-  background: var(--panel);
-  color: var(--ink);
+  border-color: transparent;
+  background: linear-gradient(var(--button-primary), var(--button-primary)) 50% 52% / calc(100% - var(--space-2)) 1.35em no-repeat;
+  color: var(--brand-text);
+  -webkit-text-fill-color: var(--brand-text);
   font-size: var(--type-small);
 }
 
@@ -594,53 +603,57 @@ h2 {
 .debug-actions button {
   min-height: 2rem;
   border-color: var(--line);
-  background: var(--panel);
+  color: var(--muted);
+}
+
+.actions button[data-action-emphasis="secondary"]:not(:disabled):hover,
+.debug-actions button:not(:disabled):hover {
+  border-color: var(--line-strong);
   color: var(--ink);
 }
 
-.stop:not(:disabled):hover,
-.cleanup-button:not(:disabled):hover,
-.debug-actions button:not(:disabled):hover {
-  background: var(--panel-muted);
-  border-color: var(--line-strong);
+.actions button[data-action-emphasis="primary"]:not(:disabled):hover {
+  background: transparent;
 }
 
-.resume:not(:disabled):hover {
+.actions button[data-action-emphasis="primary"]:not(:disabled):hover::before {
   background: var(--button-primary-hover);
 }
 
 .setup-copy:not(:disabled):hover {
-  background: var(--panel-muted);
-  border-color: var(--line-strong);
+  background: linear-gradient(var(--button-primary-hover), var(--button-primary-hover)) 50% 52% / 100% 1.48em no-repeat;
+  border-color: transparent;
 }
 
 .setup-panel[data-copy-state="copied"] .setup-copy {
-  background: var(--button-primary-hover);
+  background: linear-gradient(var(--button-primary-hover), var(--button-primary-hover)) 50% 52% / 100% 1.48em no-repeat;
   border-color: transparent;
   color: var(--brand-text);
+  -webkit-text-fill-color: var(--brand-text);
 }
 
 .setup-panel[data-copy-state="copying"] .setup-copy {
-  background: var(--ink-soft);
+  background: linear-gradient(var(--muted), var(--muted)) 50% 52% / 100% 1.48em no-repeat;
   border-color: transparent;
   color: var(--brand-text);
+  -webkit-text-fill-color: var(--brand-text);
 }
 
 .setup-panel[data-copy-state="copying"] .handoff-surface {
-  background: oklch(0.95 0.008 230);
-  color: var(--ink-soft);
+  background: #101010;
+  color: var(--muted);
 }
 
 .setup-panel[data-copy-state="copied"] .handoff-surface {
-  background: var(--green-soft);
-  box-shadow: inset 0 0 0 0.0625rem oklch(0.72 0.075 155 / 0.75);
-  color: var(--green-ink);
+  background: var(--ink);
+  box-shadow: inset 0 0 0 1px var(--ink);
+  color: var(--surface);
 }
 
 .setup-panel[data-copy-state="error"] .handoff-surface {
-  background: var(--red-soft);
-  box-shadow: inset 0 0 0 0.0625rem oklch(0.68 0.09 35 / 0.6);
-  color: var(--red);
+  background: #151515;
+  box-shadow: inset 0 0 0 1px var(--line-strong);
+  color: var(--ink);
 }
 
 .setup-panel[data-copy-state="copied"] #setup-copy-text,
@@ -651,8 +664,8 @@ h2 {
   margin-top: var(--space-1);
   padding: var(--space-2) var(--space-3);
   border: 1px solid currentColor;
-  border-radius: 6px;
-  font-weight: var(--weight-semibold);
+  border-radius: 0;
+  font-weight: var(--weight-medium);
   line-height: 1.35;
   animation: copy-confirm 220ms cubic-bezier(0.22, 1, 0.36, 1);
 }
@@ -679,13 +692,13 @@ h2 {
 }
 
 .setup-panel[data-copy-state="copied"] #setup-copy-text {
-  color: var(--green-ink);
-  background: var(--green-soft);
+  color: var(--surface);
+  background: var(--ink);
 }
 
 .setup-panel[data-copy-state="error"] #setup-copy-text {
-  color: var(--red);
-  background: var(--red-soft);
+  color: var(--ink);
+  background: #151515;
 }
 
 @keyframes copy-confirm {
@@ -702,7 +715,6 @@ h2 {
 
 .stop:not(:disabled):active,
 .resume:not(:disabled):active,
-.cleanup-button:not(:disabled):active,
 .setup-copy:not(:disabled):active,
 .debug-actions button:not(:disabled):active {
   transform: translateY(1px);
@@ -710,20 +722,19 @@ h2 {
 
 .stop:focus-visible,
 .resume:focus-visible,
-.cleanup-button:focus-visible,
 .setup-copy:focus-visible,
 .debug-actions button:focus-visible {
-  outline: 0;
-  box-shadow: var(--focus-ring);
+  outline: 1px solid var(--ink);
+  outline-offset: 5px;
+  box-shadow: none;
 }
 
 .stop:disabled,
 .resume:disabled,
-.cleanup-button:disabled,
 .setup-copy:disabled,
 .debug-actions button:disabled {
   cursor: default;
-  opacity: 0.52;
+  opacity: 0.68;
 }
 
 .debug {
@@ -742,7 +753,6 @@ h2 {
 
   .stop,
   .resume,
-  .cleanup-button,
   .setup-copy,
   .handoff-surface,
   .icon-button,

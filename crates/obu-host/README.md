@@ -69,10 +69,12 @@ Resolution order is `OBU_RUNTIME_DIR`, then the platform default: Linux
 browser-launched host process and an agent shell must not rely on accidentally
 matching temporary-directory environments.
 
-The extension popup Stop action sends `stopBrowserControl`. The host marks the
-backend inactive, removes the descriptor, stops accepting new SDK peers on that
-socket, and existing SDK peers receive the stable backend-inactive error on
-browser-control methods.
+The extension popup Take Control action sends `takeBrowserControl`, which marks
+the active sessions as human takeover without closing their tabs. The lower-level
+`stopBrowserControl` request remains a hard host stop: it marks the backend
+inactive, removes the descriptor, stops accepting new SDK peers on that socket,
+and existing SDK peers receive the stable backend-inactive error on browser
+control methods.
 
 For a development install, build the host and run:
 

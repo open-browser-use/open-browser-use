@@ -1,5 +1,5 @@
 use std::sync::Arc;
-use std::time::SystemTime;
+use std::time::{Duration, SystemTime};
 
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
@@ -17,6 +17,15 @@ use obu_host::{
     tab_state::{TabId, TabOrigin, TabRecord, TabStatus},
 };
 
+fn test_context(session_id: &str) -> BackendRequestContext {
+    BackendRequestContext {
+        session_id: Some(session_id.into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+        trusted_kernel_generation: None,
+    }
+}
+
 #[tokio::test]
 async fn targets_attach_and_execute_cdp_work_against_fake_browser() {
     let (ws_url, mut requests) = spawn_fake_cdp().await;
@@ -25,7 +34,7 @@ async fn targets_attach_and_execute_cdp_work_against_fake_browser() {
         .unwrap();
 
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap();
@@ -54,6 +63,7 @@ async fn targets_attach_and_execute_cdp_work_against_fake_browser() {
             "Target.getTargets",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
             "Page.enable",
             "Runtime.evaluate",
         ],
@@ -81,6 +91,7 @@ async fn cdp_list_tabs_surfaces_preserved_host_lifecycle_semantics() {
             cdp_session_id: Some("old-session".into()),
         })
         .unwrap();
+    let events_before = registry.recent_lifecycle_events(20).unwrap().len();
 
     let listed = backend.list_tabs().await.unwrap();
 
@@ -92,6 +103,31 @@ async fn cdp_list_tabs_surfaces_preserved_host_lifecycle_semantics() {
     let record = registry.get(&TabId::new("deliverable")).unwrap().unwrap();
     assert_eq!(record.status, TabStatus::Deliverable);
     assert_eq!(record.origin, TabOrigin::Agent);
+    assert_eq!(record.url, "https://old.example");
+    assert_eq!(record.attached, true);
+    assert_eq!(
+        registry.recent_lifecycle_events(20).unwrap().len(),
+        events_before,
+        "CDP getTabs observation must not record registry lifecycle events"
+    );
+}
+
+#[tokio::test]
+async fn cdp_list_tabs_observes_unknown_targets_without_importing_registry_rows() {
+    let (ws_url, _requests) = spawn_fake_cdp().await;
+    let registry = Arc::new(ServiceRegistry::default());
+    let backend = CdpBackend::connect(&ws_url, registry.clone())
+        .await
+        .unwrap();
+
+    let listed = backend.list_tabs().await.unwrap();
+
+    assert_eq!(listed.as_array().unwrap().len(), 1);
+    assert_eq!(listed[0]["id"], "target-1");
+    assert!(
+        registry.get(&TabId::new("target-1")).unwrap().is_none(),
+        "CDP getTabs observation must not import unknown targets into the host registry"
+    );
 }
 
 #[tokio::test]
@@ -105,7 +141,19 @@ async fn cdp_current_selected_and_resume_use_only_active_session_tabs() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
+    registry
+        .set_human_takeover("session", Some("turn"), true)
+        .unwrap();
+    let error = backend
+        .turn_ended_with_context(&ctx, json!({}))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("human takeover"));
+    registry
+        .set_human_takeover("session", Some("turn"), false)
+        .unwrap();
     for (tab_id, status) in [
         ("active-b", TabStatus::Active),
         ("active-a", TabStatus::Active),
@@ -136,7 +184,12 @@ async fn cdp_current_selected_and_resume_use_only_active_session_tabs() {
     assert_eq!(current["commandable"], true);
 
     registry
-        .set_active_tab("session", "handoff", Some("turn-2"))
+        .set_active_tab("session", "active-b", Some("turn-2"))
+        .unwrap();
+    registry
+        .update(&TabId::new("active-b"), |record| {
+            record.status = TabStatus::Handoff;
+        })
         .unwrap();
     let selected = backend.selected_tab_with_context(&ctx).await.unwrap();
     assert_eq!(selected["tab_id"], "active-a");
@@ -162,6 +215,7 @@ async fn cdp_finalize_tabs_applies_host_owned_lifecycle_semantics() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let agent = backend
@@ -194,6 +248,7 @@ async fn cdp_finalize_tabs_applies_host_owned_lifecycle_semantics() {
             FileChooserState {
                 tab_id: TabId::new("handoff"),
                 owner_session_id: Some("session".into()),
+                owner_turn_id: None,
                 created_at: SystemTime::now(),
                 backend_node_id: 12,
                 is_multiple: false,
@@ -206,6 +261,7 @@ async fn cdp_finalize_tabs_applies_host_owned_lifecycle_semantics() {
             DownloadState {
                 tab_id: TabId::new("deliverable"),
                 owner_session_id: Some("session".into()),
+                owner_turn_id: None,
                 created_at: SystemTime::now(),
                 url: "https://deliverable.example/file".into(),
                 suggested_filename: "file.txt".into(),
@@ -315,6 +371,7 @@ async fn cdp_claim_user_tab_rejects_tab_owned_by_another_session() {
         session_id: Some("other-session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let error = backend
@@ -362,6 +419,7 @@ async fn cdp_claim_user_tab_allows_reclaiming_deliverable_from_previous_session(
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let claimed = backend
@@ -443,7 +501,7 @@ async fn tab_commands_navigate_and_export_content_against_fake_browser() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -513,6 +571,7 @@ async fn tab_commands_navigate_and_export_content_against_fake_browser() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
             "Page.enable",
             "Page.navigate",
             "Page.enable",
@@ -543,7 +602,7 @@ async fn execute_cdp_requires_attach() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap();
@@ -567,6 +626,7 @@ async fn cdp_goto_accepts_beforeunload_dialog() {
                 session_id: Some("session".into()),
                 turn_id: Some("turn".into()),
                 client_timeout_ms: None,
+                trusted_kernel_generation: None,
             },
             Some("about:blank".into()),
         )
@@ -614,6 +674,7 @@ async fn cdp_reload_uses_page_reload_dialog_policy_for_beforeunload() {
                 session_id: Some("session".into()),
                 turn_id: Some("turn".into()),
                 client_timeout_ms: None,
+                trusted_kernel_generation: None,
             },
             Some("about:blank".into()),
         )
@@ -657,6 +718,7 @@ async fn cdp_dialog_policy_reenables_page_after_tab_reattach() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     let created = backend
         .create_tab_with_context(&ctx, Some("about:blank".into()))
@@ -697,9 +759,11 @@ async fn cdp_dialog_policy_reenables_page_after_tab_reattach() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
             "Target.detachFromTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
             "Page.enable",
             "Page.navigate",
         ]
@@ -720,6 +784,7 @@ async fn cdp_goto_dismisses_confirm_dialog_with_structured_error() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     let created = backend
         .create_tab_with_context(&ctx, Some("about:blank".into()))
@@ -792,6 +857,7 @@ async fn cdp_close_accepts_beforeunload_dialog() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     let created = backend
         .create_tab_with_context(&ctx, Some("about:blank".into()))
@@ -821,6 +887,7 @@ async fn cdp_finalize_accepts_beforeunload_dialog_for_omitted_agent_tab() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     let created = backend
         .create_tab_with_context(&ctx, Some("about:blank".into()))
@@ -859,7 +926,7 @@ async fn cua_click_dispatches_raw_cdp_mouse_events() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -880,6 +947,7 @@ async fn cua_click_dispatches_raw_cdp_mouse_events() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
             "Page.enable",
             "Input.dispatchMouseEvent",
             "Input.dispatchMouseEvent",
@@ -890,13 +958,210 @@ async fn cua_click_dispatches_raw_cdp_mouse_events() {
 }
 
 #[tokio::test]
+async fn cdp_dom_cua_uses_dom_snapshot_and_coordinate_input() {
+    let (ws_url, mut requests) = spawn_fake_cdp().await;
+    let ctx = test_context("session");
+    let backend = CdpBackend::connect(&ws_url, Arc::new(ServiceRegistry::default()))
+        .await
+        .unwrap();
+    let created = backend
+        .create_tab_with_context(&ctx, Some("about:blank".into()))
+        .await
+        .unwrap();
+    let tab_id = created["id"].as_str().unwrap().to_string();
+    backend.attach_with_context(&ctx, &tab_id).await.unwrap();
+
+    let dom = backend
+        .cua_command_with_context(
+            &ctx,
+            methods::DOM_CUA_GET_VISIBLE_DOM,
+            json!({ "tab_id": tab_id, "format": "compact_text" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dom["nodes"][0]["node_id"], "101");
+    assert!(
+        dom["text"]
+            .as_str()
+            .unwrap()
+            .contains(r#"<button node_id=101 aria-label="Submit">Submit</button>"#)
+    );
+
+    backend
+        .cua_command_with_context(
+            &ctx,
+            methods::DOM_CUA_CLICK,
+            json!({ "tab_id": tab_id, "node_id": "101", "modifiers": ["Shift"] }),
+        )
+        .await
+        .unwrap();
+
+    let mouse = recv_until_method(&mut requests, "Input.dispatchMouseEvent").await;
+    assert_eq!(mouse["params"]["x"], 20.0);
+    assert_eq!(mouse["params"]["y"], 30.0);
+    assert_eq!(mouse["params"]["modifiers"], 8);
+}
+
+#[tokio::test]
+async fn cdp_dom_cua_scopes_node_ids_to_observation_snapshots() {
+    let (ws_url, mut requests) = spawn_fake_cdp().await;
+    let ctx = test_context("session");
+    let backend = CdpBackend::connect(&ws_url, Arc::new(ServiceRegistry::default()))
+        .await
+        .unwrap();
+    let created = backend
+        .create_tab_with_context(&ctx, Some("about:blank".into()))
+        .await
+        .unwrap();
+    let tab_id = created["id"].as_str().unwrap().to_string();
+    backend.attach_with_context(&ctx, &tab_id).await.unwrap();
+
+    let dom = backend
+        .cua_command_with_context(
+            &ctx,
+            methods::DOM_CUA_GET_VISIBLE_DOM,
+            json!({
+                "tab_id": tab_id,
+                "format": "compact_text",
+                "observation_id": "obs-1"
+            }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dom["observation_id"], "obs-1");
+    assert_eq!(dom["nodes"][0]["node_id"], "101");
+
+    let missing_observation = backend
+        .cua_command_with_context(
+            &ctx,
+            methods::DOM_CUA_CLICK,
+            json!({ "tab_id": tab_id, "node_id": "101" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        missing_observation
+            .to_string()
+            .contains("current visible DOM snapshot")
+    );
+
+    let wrong_observation = backend
+        .cua_command_with_context(
+            &ctx,
+            methods::DOM_CUA_CLICK,
+            json!({ "tab_id": tab_id, "node_id": "101", "observation_id": "obs-2" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        wrong_observation
+            .to_string()
+            .contains("current visible DOM snapshot")
+    );
+
+    let clicked = backend
+        .cua_command_with_context(
+            &ctx,
+            methods::DOM_CUA_CLICK,
+            json!({ "tab_id": tab_id, "node_id": "101", "observation_id": "obs-1" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(clicked["point"]["x"], 20.0);
+    assert_eq!(clicked["point"]["y"], 30.0);
+
+    let mouse = recv_until_method(&mut requests, "Input.dispatchMouseEvent").await;
+    assert_eq!(mouse["params"]["x"], 20.0);
+    assert_eq!(mouse["params"]["y"], 30.0);
+
+    let consumed_observation = backend
+        .cua_command_with_context(
+            &ctx,
+            methods::DOM_CUA_CLICK,
+            json!({ "tab_id": tab_id, "node_id": "101", "observation_id": "obs-1" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        consumed_observation
+            .to_string()
+            .contains("current visible DOM snapshot")
+    );
+}
+
+#[tokio::test]
+async fn cdp_dom_cua_actions_return_resolved_action_points() {
+    let (ws_url, _requests) = spawn_fake_cdp().await;
+    let ctx = test_context("session");
+    let backend = CdpBackend::connect(&ws_url, Arc::new(ServiceRegistry::default()))
+        .await
+        .unwrap();
+    let created = backend
+        .create_tab_with_context(&ctx, Some("about:blank".into()))
+        .await
+        .unwrap();
+    let tab_id = created["id"].as_str().unwrap().to_string();
+    backend.attach_with_context(&ctx, &tab_id).await.unwrap();
+
+    for (index, (method, mut params)) in [
+        (
+            methods::DOM_CUA_SCROLL,
+            json!({ "tab_id": tab_id.clone(), "node_id": "101", "deltaY": 120 }),
+        ),
+        (
+            methods::DOM_CUA_TYPE,
+            json!({ "tab_id": tab_id.clone(), "node_id": "101", "text": "hello" }),
+        ),
+        (
+            methods::DOM_CUA_KEYPRESS,
+            json!({ "tab_id": tab_id.clone(), "node_id": "101", "key": "Enter" }),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let observation_id = format!("obs-{index}");
+        backend
+            .cua_command_with_context(
+                &ctx,
+                methods::DOM_CUA_GET_VISIBLE_DOM,
+                json!({ "tab_id": tab_id.clone(), "observation_id": observation_id.clone() }),
+            )
+            .await
+            .unwrap();
+        params["observation_id"] = json!(observation_id);
+        let result = backend
+            .cua_command_with_context(&ctx, method, params.clone())
+            .await
+            .unwrap();
+        assert_eq!(result["node_id"], "101", "{method} must preserve node id");
+        assert_eq!(result["point"]["x"], 20.0, "{method} must return x");
+        assert_eq!(result["point"]["y"], 30.0, "{method} must return y");
+        assert_eq!(
+            result["point"]["coordinateSpace"], "visualViewport",
+            "{method} must return viewport coordinate space"
+        );
+        let consumed = backend
+            .cua_command_with_context(&ctx, method, params)
+            .await
+            .unwrap_err();
+        assert!(
+            consumed
+                .to_string()
+                .contains("current visible DOM snapshot"),
+            "{method} must consume observation-scoped DOM-CUA snapshots"
+        );
+    }
+}
+
+#[tokio::test]
 async fn cua_click_waits_for_navigation_when_requested() {
     let (ws_url, mut requests) = spawn_fake_cdp().await;
     let backend = CdpBackend::connect(&ws_url, Arc::new(ServiceRegistry::default()))
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -924,6 +1189,7 @@ async fn cua_click_waits_for_navigation_when_requested() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
             "Page.enable",
             "Input.dispatchMouseEvent",
             "Input.dispatchMouseEvent",
@@ -942,7 +1208,7 @@ async fn cua_commands_validate_payloads_and_dispatch_expected_input_events() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -955,6 +1221,7 @@ async fn cua_commands_validate_payloads_and_dispatch_expected_input_events() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
         ],
     )
     .await;
@@ -973,8 +1240,9 @@ async fn cua_commands_validate_payloads_and_dispatch_expected_input_events() {
     let key_down = recv_until_method(&mut requests, "Input.dispatchKeyEvent").await;
     assert_eq!(key_down["method"], "Input.dispatchKeyEvent");
     assert_eq!(key_down["params"]["type"], "keyDown");
-    assert_eq!(key_down["params"]["key"], "x");
-    assert_eq!(key_down["params"]["text"], "x");
+    assert_eq!(key_down["params"]["key"], "X");
+    assert_eq!(key_down["params"]["text"], "");
+    assert_eq!(key_down["params"]["unmodifiedText"], "");
     assert_eq!(key_down["params"]["modifiers"], 15);
     let key_up = recv_until_method(&mut requests, "Input.dispatchKeyEvent").await;
     assert_eq!(key_up["params"]["type"], "keyUp");
@@ -1075,7 +1343,7 @@ async fn cdp_cua_input_sequences_enable_page_once_per_command() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -1088,6 +1356,7 @@ async fn cdp_cua_input_sequences_enable_page_once_per_command() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
         ],
     )
     .await;
@@ -1159,7 +1428,7 @@ async fn cdp_drag_releases_mouse_when_move_fails() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -1205,7 +1474,7 @@ async fn cdp_scroll_falls_back_to_mouse_wheel_when_synthesized_gesture_fails() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -1238,13 +1507,66 @@ async fn cdp_scroll_falls_back_to_mouse_wheel_when_synthesized_gesture_fails() {
 }
 
 #[tokio::test]
+async fn cdp_modified_scroll_uses_mouse_wheel_without_synthesized_gesture() {
+    let (ws_url, mut requests) = spawn_fake_cdp().await;
+    let backend = CdpBackend::connect(&ws_url, Arc::new(ServiceRegistry::default()))
+        .await
+        .unwrap();
+    let created = backend
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
+        .await
+        .unwrap();
+    let tab_id = created["id"].as_str().unwrap().to_string();
+    backend.attach(&tab_id).await.unwrap();
+
+    backend
+        .cua_command(
+            methods::CUA_SCROLL,
+            json!({
+                "tab_id": tab_id,
+                "x": 10,
+                "y": 20,
+                "deltaX": 3,
+                "deltaY": -4,
+                "modifiers": ["Shift"]
+            }),
+        )
+        .await
+        .unwrap();
+
+    let mut observed = Vec::new();
+    while observed.len() < 2 {
+        let request = requests.recv().await.unwrap();
+        if request["method"] == "Input.synthesizeScrollGesture"
+            || request["method"] == "Input.dispatchMouseEvent"
+        {
+            observed.push(request);
+        }
+    }
+    assert_eq!(observed[0]["method"], "Input.dispatchMouseEvent");
+    assert_eq!(observed[0]["params"]["type"], "mouseMoved");
+    assert_eq!(observed[0]["params"]["modifiers"], 8);
+    assert_eq!(observed[1]["method"], "Input.dispatchMouseEvent");
+    assert_eq!(observed[1]["params"]["type"], "mouseWheel");
+    assert_eq!(observed[1]["params"]["modifiers"], 8);
+    assert_eq!(observed[1]["params"]["deltaX"], 3.0);
+    assert_eq!(observed[1]["params"]["deltaY"], -4.0);
+
+    let next = tokio::time::timeout(Duration::from_millis(50), requests.recv()).await;
+    assert!(
+        next.is_err(),
+        "modified scroll should not enqueue a synthesized gesture"
+    );
+}
+
+#[tokio::test]
 async fn cua_commands_reject_malformed_coordinates_drag_paths_and_tab_ids() {
     let (ws_url, _requests) = spawn_fake_cdp().await;
     let backend = CdpBackend::connect(&ws_url, Arc::new(ServiceRegistry::default()))
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -1282,7 +1604,7 @@ async fn playwright_click_routes_through_injected_runtime_and_cua() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -1307,6 +1629,7 @@ async fn playwright_click_routes_through_injected_runtime_and_cua() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
             "Page.enable",
             "Runtime.evaluate",
             "Page.enable",
@@ -1327,7 +1650,7 @@ async fn playwright_fill_uses_shared_text_input_fallback() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -1339,6 +1662,7 @@ async fn playwright_fill_uses_shared_text_input_fallback() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
         ],
     )
     .await;
@@ -1381,7 +1705,7 @@ async fn playwright_press_uses_shared_focus_runtime_before_keyboard_events() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -1393,6 +1717,7 @@ async fn playwright_press_uses_shared_focus_runtime_before_keyboard_events() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
         ],
     )
     .await;
@@ -1439,7 +1764,7 @@ async fn playwright_locator_click_forwards_navigation_wait_to_cua() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -1467,6 +1792,7 @@ async fn playwright_locator_click_forwards_navigation_wait_to_cua() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
             "Page.enable",
             "Runtime.evaluate",
             "Page.enable",
@@ -1489,7 +1815,7 @@ async fn playwright_wait_states_and_action_point_failures_are_encoded() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -1548,14 +1874,15 @@ async fn file_chooser_wait_returns_handle_and_set_files_uses_backend_node() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
     backend.attach(&tab_id).await.unwrap();
 
     let handle = backend
-        .playwright_command(
+        .playwright_command_with_context(
+            &test_context("session"),
             methods::PLAYWRIGHT_WAIT_FOR_FILE_CHOOSER,
             json!({ "tab_id": tab_id, "timeout_ms": 500 }),
         )
@@ -1565,7 +1892,8 @@ async fn file_chooser_wait_returns_handle_and_set_files_uses_backend_node() {
     assert_eq!(handle["is_multiple"], true);
 
     backend
-        .playwright_command(
+        .playwright_command_with_context(
+            &test_context("session"),
             methods::PLAYWRIGHT_FILE_CHOOSER_SET_FILES,
             json!({ "file_chooser_id": file_chooser_id, "files": ["/tmp/upload.txt"] }),
         )
@@ -1579,6 +1907,7 @@ async fn file_chooser_wait_returns_handle_and_set_files_uses_backend_node() {
             "Target.createTarget",
             "Target.attachToTarget",
             "Emulation.setFocusEmulationEnabled",
+            "Target.setAutoAttach",
             "Page.enable",
             "DOM.enable",
             "Page.setInterceptFileChooserDialog",
@@ -1617,7 +1946,7 @@ async fn cdp_wait_for_download_ignores_unrelated_frame_event() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -1626,6 +1955,7 @@ async fn cdp_wait_for_download_ignores_unrelated_frame_event() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let download = backend
@@ -1677,7 +2007,7 @@ async fn cdp_download_path_rejects_canceled_progress_without_timing_out() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -1686,6 +2016,7 @@ async fn cdp_download_path_rejects_canceled_progress_without_timing_out() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let download = backend
@@ -1723,7 +2054,7 @@ async fn cdp_file_chooser_rejects_wrong_session_without_consuming() {
         .await
         .unwrap();
     let created = backend
-        .create_tab(Some("about:blank".into()))
+        .create_tab_with_context(&test_context("session"), Some("about:blank".into()))
         .await
         .unwrap();
     let tab_id = created["id"].as_str().unwrap().to_string();
@@ -1732,11 +2063,13 @@ async fn cdp_file_chooser_rejects_wrong_session_without_consuming() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     let other_ctx = BackendRequestContext {
         session_id: Some("other-session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let handle = backend
@@ -1847,6 +2180,7 @@ async fn assert_runtime_evaluate_dialog_requires_decision(dialog_type: &'static 
                 session_id: Some("session".into()),
                 turn_id: Some("turn".into()),
                 client_timeout_ms: None,
+                trusted_kernel_generation: None,
             },
             Some("about:blank".into()),
         )
@@ -1886,6 +2220,7 @@ async fn assert_runtime_evaluate_dialog_accepted(dialog_type: &'static str) {
                 session_id: Some("session".into()),
                 turn_id: Some("turn".into()),
                 client_timeout_ms: None,
+                trusted_kernel_generation: None,
             },
             Some("about:blank".into()),
         )
@@ -2062,6 +2397,7 @@ fn fake_result(method: &str, params: &Value) -> Value {
         | "Emulation.setFocusEmulationEnabled"
         | "Target.detachFromTarget"
         | "Page.enable"
+        | "DOM.scrollIntoViewIfNeeded"
         | "Page.handleJavaScriptDialog"
         | "DOM.enable"
         | "Page.setInterceptFileChooserDialog"
@@ -2107,6 +2443,60 @@ fn fake_result(method: &str, params: &Value) -> Value {
             "entries": [{ "id": 1, "url": "about:blank" }, { "id": 2, "url": "https://example.test/" }]
         }),
         "Page.captureScreenshot" => json!({ "data": "iVBORw0KGgo=" }),
+        "Page.getLayoutMetrics" => json!({
+            "cssVisualViewport": {
+                "pageX": 0,
+                "pageY": 0,
+                "clientWidth": 800,
+                "clientHeight": 600
+            }
+        }),
+        "DOM.getDocument" => json!({
+            "root": {
+                "nodeName": "HTML",
+                "nodeType": 1,
+                "backendNodeId": 100,
+                "children": [
+                    {
+                        "nodeName": "BUTTON",
+                        "nodeType": 1,
+                        "backendNodeId": 101,
+                        "attributes": ["aria-label", "Submit"],
+                        "children": [
+                            {
+                                "nodeName": "#text",
+                                "nodeType": 3,
+                                "nodeValue": "Submit",
+                                "backendNodeId": 102
+                            }
+                        ]
+                    }
+                ]
+            }
+        }),
+        "DOM.getBoxModel" => {
+            let backend_node_id = params
+                .get("backendNodeId")
+                .and_then(Value::as_i64)
+                .unwrap_or(0);
+            match backend_node_id {
+                101 => json!({
+                    "model": {
+                        "content": [10, 20, 30, 20, 30, 40, 10, 40],
+                        "border": [10, 20, 30, 20, 30, 40, 10, 40]
+                    }
+                }),
+                _ => json!({
+                    "model": {
+                        "content": [0, 0, 0, 0, 0, 0, 0, 0],
+                        "border": [0, 0, 0, 0, 0, 0, 0, 0]
+                    }
+                }),
+            }
+        }
+        "DOM.getContentQuads" => json!({
+            "quads": [[10, 20, 30, 20, 30, 40, 10, 40]]
+        }),
         "Page.printToPDF" => json!({ "data": "JVBERi0=" }),
         "Target.closeTarget" => json!({ "success": true }),
         other => json!({ "unexpectedMethod": other }),

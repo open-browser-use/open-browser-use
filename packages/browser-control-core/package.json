@@ -1,0 +1,35 @@
+{
+  "name": "@open-browser-use/browser-control-core",
+  "version": "0.1.7",
+  "private": true,
+  "description": "Pure browser-control protocol types, planners, and fixtures for open-browser-use.",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.mjs",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.mjs",
+      "types": "./dist/index.d.ts"
+    },
+    "./fixtures": {
+      "import": "./dist/fixtures.mjs",
+      "types": "./dist/fixtures.d.ts"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/node": "22.10.5",
+    "tsup": "8.3.5",
+    "typescript": "5.7.3",
+    "vitest": "3.0.4"
+  },
+  "engines": {
+    "node": ">=22.22.0"
+  }
+}

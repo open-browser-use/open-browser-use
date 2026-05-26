@@ -24,6 +24,7 @@ async fn webext_backend_normalizes_extension_tab_dtos() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: Some(1234),
+        trusted_kernel_generation: None,
     };
 
     let created = backend
@@ -62,6 +63,7 @@ async fn webext_backend_exposes_current_and_selected_with_ownership_boundary() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -95,6 +97,17 @@ async fn webext_backend_exposes_current_and_selected_with_ownership_boundary() {
         .yield_control_with_context(&ctx, json!({}))
         .await
         .unwrap();
+    let call_count_after_yield = transport.calls.lock().unwrap().len();
+    let error = backend
+        .turn_ended_with_context(&ctx, json!({}))
+        .await
+        .unwrap_err();
+    assert!(error.to_string().contains("human takeover"));
+    assert_eq!(
+        transport.calls.lock().unwrap().len(),
+        call_count_after_yield,
+        "turnEnded during human takeover must not be sent to the extension"
+    );
     let resumed = backend
         .resume_control_with_context(&ctx, json!({}))
         .await
@@ -110,13 +123,14 @@ async fn webext_backend_exposes_current_and_selected_with_ownership_boundary() {
 }
 
 #[tokio::test]
-async fn webext_backend_reconciles_session_tabs_missing_after_get_tabs() {
+async fn webext_backend_get_tabs_is_pure_observation_without_host_reconcile() {
     let transport = Arc::new(FakeTransport::default());
     let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport);
     let ctx = BackendRequestContext {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     let stale_tab = TabId::new("99");
     backend
@@ -140,6 +154,7 @@ async fn webext_backend_reconciles_session_tabs_missing_after_get_tabs() {
             FileChooserState {
                 tab_id: stale_tab.clone(),
                 owner_session_id: Some("session".into()),
+                owner_turn_id: None,
                 created_at: SystemTime::now(),
                 backend_node_id: 4,
                 is_multiple: false,
@@ -149,21 +164,11 @@ async fn webext_backend_reconciles_session_tabs_missing_after_get_tabs() {
 
     let listed = backend.list_tabs_with_context(&ctx).await.unwrap();
     assert_eq!(listed[0]["id"], "42");
-    assert!(backend.registry().get(&stale_tab).unwrap().is_none());
-    assert!(
-        backend
-            .registry()
-            .describe_missing_tab(&stale_tab)
-            .unwrap()
-            .contains("not returned by WebExtension getTabs")
-    );
-    assert!(
-        backend
-            .registry()
-            .describe_missing_file_chooser(&FileChooserId("chooser-stale".into()))
-            .unwrap()
-            .contains("not returned by WebExtension getTabs")
-    );
+    assert!(backend.registry().get(&stale_tab).unwrap().is_some());
+    let counts = backend.registry().lifecycle_counts().unwrap();
+    assert_eq!(counts.stale_tabs, 0);
+    assert_eq!(counts.stale_file_choosers, 0);
+    assert_eq!(counts.file_choosers, 1);
 }
 
 #[tokio::test]
@@ -174,6 +179,7 @@ async fn webext_backend_marks_tab_screenshot_as_overlay_suppressed() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -208,6 +214,7 @@ async fn webext_backend_preserves_host_tab_lifecycle_when_get_tabs_omits_state()
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     let deliverable_tab = TabId::new("42");
     backend
@@ -224,13 +231,19 @@ async fn webext_backend_preserves_host_tab_lifecycle_when_get_tabs_omits_state()
             cdp_session_id: None,
         })
         .unwrap();
+    let events_before = backend
+        .registry()
+        .recent_lifecycle_events(20)
+        .unwrap()
+        .len();
 
     backend.list_tabs_with_context(&ctx).await.unwrap();
 
     let record = backend.registry().get(&deliverable_tab).unwrap().unwrap();
     assert_eq!(record.origin, TabOrigin::User);
     assert_eq!(record.status, TabStatus::Deliverable);
-    assert_eq!(record.url, "https://example.com");
+    assert_eq!(record.url, "https://old-deliverable.example");
+    assert_eq!(record.title, "Old Deliverable");
     assert_eq!(
         backend
             .registry()
@@ -250,11 +263,20 @@ async fn webext_backend_preserves_host_tab_lifecycle_when_get_tabs_omits_state()
     );
     assert_eq!(
         diagnostics["lifecycle"]["deliverable_tab_summaries"][0]["url"],
-        "https://example.com"
+        "https://old-deliverable.example"
     );
     assert_eq!(
         diagnostics["lifecycle"]["deliverable_tab_summaries"][0]["title"],
-        "Example"
+        "Old Deliverable"
+    );
+    assert_eq!(
+        backend
+            .registry()
+            .recent_lifecycle_events(20)
+            .unwrap()
+            .len(),
+        events_before,
+        "getTabs observation must not record registry lifecycle events"
     );
 }
 
@@ -266,24 +288,28 @@ async fn webext_backend_rehydrates_deliverables_from_get_tabs_side_channel() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let listed = backend.list_tabs_with_context(&ctx).await.unwrap();
     assert_eq!(listed.as_array().unwrap().len(), 1);
     assert_eq!(listed[0]["id"], "42");
 
-    let active_record = backend.registry().get(&TabId::new("42")).unwrap().unwrap();
-    assert_eq!(active_record.status, TabStatus::Active);
-    let deliverable_record = backend.registry().get(&TabId::new("8")).unwrap().unwrap();
-    assert_eq!(deliverable_record.status, TabStatus::Deliverable);
-    assert_eq!(deliverable_record.url, "https://deliverable.example");
+    assert!(
+        backend.registry().get(&TabId::new("42")).unwrap().is_none(),
+        "getTabs observation must not import active tab rows into the host registry"
+    );
+    assert!(
+        backend.registry().get(&TabId::new("8")).unwrap().is_none(),
+        "getTabs observation must not rehydrate deliverable side-channel rows"
+    );
     assert_eq!(
         backend
             .registry()
             .lifecycle_counts()
             .unwrap()
             .deliverable_tabs,
-        1
+        0
     );
 }
 
@@ -295,6 +321,7 @@ async fn webext_backend_rejects_non_decimal_tab_ids() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let error = backend
@@ -312,6 +339,7 @@ async fn webext_backend_normalizes_user_tabs_history_and_finalize() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let user_tabs = backend.list_user_tabs_with_context(&ctx).await.unwrap();
@@ -352,6 +380,7 @@ async fn webext_backend_normalizes_user_tabs_history_and_finalize() {
             FileChooserState {
                 tab_id: TabId::new("7"),
                 owner_session_id: Some("session".into()),
+                owner_turn_id: None,
                 created_at: SystemTime::now(),
                 backend_node_id: 3,
                 is_multiple: false,
@@ -365,6 +394,7 @@ async fn webext_backend_normalizes_user_tabs_history_and_finalize() {
             DownloadState {
                 tab_id: TabId::new("8"),
                 owner_session_id: Some("session".into()),
+                owner_turn_id: None,
                 created_at: SystemTime::now(),
                 url: "https://deliverable.example/file".into(),
                 suggested_filename: "file.txt".into(),
@@ -436,6 +466,7 @@ async fn webext_backend_rejects_claim_for_tab_owned_by_another_session() {
         session_id: Some("other-session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let error = backend
@@ -470,6 +501,7 @@ async fn webext_backend_rejects_non_active_host_records_before_direct_operations
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     for (tab_id, status) in [("7", TabStatus::Handoff), ("8", TabStatus::Deliverable)] {
         backend
@@ -532,6 +564,7 @@ async fn webext_backend_allows_reclaiming_deliverable_from_previous_session() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let claimed = backend
@@ -556,6 +589,7 @@ async fn webext_backend_routes_tab_cua_and_clipboard_via_execute_cdp() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let url = backend
@@ -606,6 +640,7 @@ async fn webext_backend_cua_click_waits_for_navigation_when_requested() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -683,13 +718,14 @@ impl ExtensionTransport for NavigatingFakeTransport {
 }
 
 #[tokio::test]
-async fn webext_backend_scroll_uses_script_fallback_without_cdp_input() {
+async fn webext_backend_scroll_uses_real_cdp_input_before_script_fallback() {
     let transport = Arc::new(FakeTransport::default());
     let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
     let ctx = BackendRequestContext {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -702,20 +738,69 @@ async fn webext_backend_scroll_uses_script_fallback_without_cdp_input() {
         .unwrap();
 
     let calls = transport.calls.lock().unwrap();
+    assert!(calls.iter().any(|(method, params)| {
+        method == "moveMouse" && params["x"] == 10.0 && params["y"] == 20.0
+    }));
     let execute = calls
         .iter()
         .filter(|(method, _)| method == "executeCdp")
         .map(|(_, params)| params)
         .collect::<Vec<_>>();
-    let runtime = execute
+    let gesture = execute
         .iter()
-        .find(|params| params["method"] == "Runtime.evaluate")
-        .expect("expected Runtime.evaluate call");
-    assert_eq!(execute.len(), 2);
-    let expression = runtime["commandParams"]["expression"].as_str().unwrap();
-    assert!(expression.contains("document.elementFromPoint(x, y)"));
-    assert!(expression.contains("node.scrollBy"));
-    assert!(expression.contains("window.scrollBy"));
+        .find(|params| params["method"] == "Input.synthesizeScrollGesture")
+        .expect("expected Input.synthesizeScrollGesture call");
+    assert_eq!(gesture["commandParams"]["x"], 10.0);
+    assert_eq!(gesture["commandParams"]["y"], 20.0);
+    assert_eq!(gesture["commandParams"]["xDistance"], -3.0);
+    assert_eq!(gesture["commandParams"]["yDistance"], 4.0);
+}
+
+#[tokio::test]
+async fn webext_backend_modified_scroll_uses_mouse_wheel_without_gesture() {
+    let transport = Arc::new(FakeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+        trusted_kernel_generation: None,
+    };
+
+    backend
+        .cua_command_with_context(
+            &ctx,
+            "cua_scroll",
+            json!({
+                "tab_id": "42",
+                "x": 10,
+                "y": 20,
+                "deltaX": 3,
+                "deltaY": -4,
+                "modifiers": ["Shift"]
+            }),
+        )
+        .await
+        .unwrap();
+
+    let calls = transport.calls.lock().unwrap();
+    assert!(calls.iter().any(|(method, params)| {
+        method == "moveMouse" && params["x"] == 10.0 && params["y"] == 20.0
+    }));
+    assert!(!calls.iter().any(|(method, params)| {
+        method == "executeCdp" && params["method"] == "Input.synthesizeScrollGesture"
+    }));
+    let wheel = calls
+        .iter()
+        .find(|(method, params)| {
+            method == "executeCdp"
+                && params["method"] == "Input.dispatchMouseEvent"
+                && params["commandParams"]["type"] == "mouseWheel"
+        })
+        .expect("expected modified mouseWheel event");
+    assert_eq!(wheel.1["commandParams"]["modifiers"], 8);
+    assert_eq!(wheel.1["commandParams"]["deltaX"], 3.0);
+    assert_eq!(wheel.1["commandParams"]["deltaY"], -4.0);
 }
 
 #[tokio::test]
@@ -726,6 +811,7 @@ async fn webext_backend_supports_rich_clipboard_wire_items() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let read = backend
@@ -780,6 +866,7 @@ async fn webext_backend_rejects_invalid_rich_clipboard_items() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let error = backend
@@ -808,6 +895,7 @@ async fn webext_backend_rejects_rich_clipboard_validation_edges() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     let cases = [
         (
@@ -872,6 +960,7 @@ async fn webext_backend_detach_cleans_virtual_clipboard_state_and_injection() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -914,6 +1003,7 @@ async fn webext_backend_finalize_cleans_virtual_clipboard_state_before_backend_c
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -969,6 +1059,7 @@ async fn webext_backend_tab_close_removes_host_registry_record_immediately() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -982,6 +1073,7 @@ async fn webext_backend_tab_close_removes_host_registry_record_immediately() {
             FileChooserState {
                 tab_id: TabId::new("42"),
                 owner_session_id: Some("session".into()),
+                owner_turn_id: None,
                 created_at: SystemTime::now(),
                 backend_node_id: 3,
                 is_multiple: false,
@@ -995,6 +1087,7 @@ async fn webext_backend_tab_close_removes_host_registry_record_immediately() {
             DownloadState {
                 tab_id: TabId::new("42"),
                 owner_session_id: Some("session".into()),
+                owner_turn_id: None,
                 created_at: SystemTime::now(),
                 url: "https://example.com/file".into(),
                 suggested_filename: "file.txt".into(),
@@ -1088,6 +1181,7 @@ async fn webext_backend_type_uses_virtual_clipboard_paste() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -1120,6 +1214,7 @@ async fn webext_backend_dom_type_uses_virtual_clipboard_paste_after_focus() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -1155,6 +1250,7 @@ async fn webext_backend_keypress_routes_or_blocks_clipboard_shortcuts() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     let primary_modifier = if cfg!(target_os = "macos") {
         "Meta"
@@ -1181,6 +1277,24 @@ async fn webext_backend_keypress_routes_or_blocks_clipboard_shortcuts() {
             &ctx,
             "cua_keypress",
             json!({ "tab_id": "42", "keys": [primary_modifier, "v"], "modifiers": [primary_modifier] }),
+        )
+        .await
+        .unwrap();
+
+    backend
+        .cua_command_with_context(
+            &ctx,
+            "cua_keypress",
+            json!({ "tab_id": "42", "key": "ControlOrMeta+V" }),
+        )
+        .await
+        .unwrap();
+
+    backend
+        .cua_command_with_context(
+            &ctx,
+            "cua_keypress",
+            json!({ "tab_id": "42", "keys": ["ControlOrMeta+V"] }),
         )
         .await
         .unwrap();
@@ -1245,6 +1359,7 @@ async fn webext_backend_dom_cua_uses_backend_node_ids() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let dom = backend
@@ -1275,6 +1390,20 @@ async fn webext_backend_dom_cua_uses_backend_node_ids() {
             .contains(r#"[101] <button aria-label="Submit"> Submit"#)
     );
     assert!(!dom_text["text"].as_str().unwrap().contains("Overlay"));
+    let dom_compact_text = backend
+        .cua_command_with_context(
+            &ctx,
+            "dom_cua_get_visible_dom",
+            json!({ "tab_id": "42", "format": "compact_text" }),
+        )
+        .await
+        .unwrap();
+    assert!(
+        dom_compact_text["text"]
+            .as_str()
+            .unwrap()
+            .contains(r#"<button node_id=101 aria-label="Submit">Submit</button>"#)
+    );
 
     backend
         .cua_command_with_context(
@@ -1299,6 +1428,303 @@ async fn webext_backend_dom_cua_uses_backend_node_ids() {
 }
 
 #[tokio::test]
+async fn webext_backend_dom_cua_scopes_node_ids_to_observation_snapshots() {
+    let transport = Arc::new(FakeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+        trusted_kernel_generation: None,
+    };
+
+    let dom = backend
+        .cua_command_with_context(
+            &ctx,
+            "dom_cua_get_visible_dom",
+            json!({ "tab_id": "42", "format": "compact_text", "observation_id": "obs-1" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(dom["observation_id"], "obs-1");
+    assert_eq!(dom["nodes"][0]["node_id"], "101");
+
+    let missing_observation = backend
+        .cua_command_with_context(
+            &ctx,
+            "dom_cua_click",
+            json!({ "tab_id": "42", "node_id": "101" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        missing_observation
+            .to_string()
+            .contains("requires a current visible DOM snapshot")
+    );
+
+    let wrong_observation = backend
+        .cua_command_with_context(
+            &ctx,
+            "dom_cua_click",
+            json!({ "tab_id": "42", "node_id": "101", "observation_id": "obs-2" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        wrong_observation
+            .to_string()
+            .contains("requires a current visible DOM snapshot")
+    );
+
+    let clicked = backend
+        .cua_command_with_context(
+            &ctx,
+            "dom_cua_click",
+            json!({ "tab_id": "42", "node_id": "101", "observation_id": "obs-1" }),
+        )
+        .await
+        .unwrap();
+    assert_eq!(clicked["point"]["x"], 20.0);
+    assert_eq!(clicked["point"]["y"], 30.0);
+
+    let calls = transport.calls.lock().unwrap();
+    assert!(calls.iter().any(|(method, params)| {
+        method == "executeCdp"
+            && params["method"] == "Input.dispatchMouseEvent"
+            && params["commandParams"]["x"] == 20.0
+            && params["commandParams"]["y"] == 30.0
+    }));
+    drop(calls);
+
+    let consumed_observation = backend
+        .cua_command_with_context(
+            &ctx,
+            "dom_cua_click",
+            json!({ "tab_id": "42", "node_id": "101", "observation_id": "obs-1" }),
+        )
+        .await
+        .unwrap_err();
+    assert!(
+        consumed_observation
+            .to_string()
+            .contains("requires a current visible DOM snapshot")
+    );
+}
+
+#[tokio::test]
+async fn webext_backend_dom_cua_observation_actions_consume_snapshot_scope() {
+    let transport = Arc::new(FakeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport);
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+        trusted_kernel_generation: None,
+    };
+
+    for (index, (method, mut params)) in [
+        (
+            "dom_cua_scroll",
+            json!({ "tab_id": "42", "node_id": "101", "deltaY": 120 }),
+        ),
+        (
+            "dom_cua_type",
+            json!({ "tab_id": "42", "node_id": "101", "text": "hello" }),
+        ),
+        (
+            "dom_cua_keypress",
+            json!({ "tab_id": "42", "node_id": "101", "key": "Enter" }),
+        ),
+    ]
+    .into_iter()
+    .enumerate()
+    {
+        let observation_id = format!("obs-{index}");
+        backend
+            .cua_command_with_context(
+                &ctx,
+                "dom_cua_get_visible_dom",
+                json!({ "tab_id": "42", "observation_id": observation_id.clone() }),
+            )
+            .await
+            .unwrap();
+        params["observation_id"] = json!(observation_id);
+
+        let result = backend
+            .cua_command_with_context(&ctx, method, params.clone())
+            .await
+            .unwrap();
+        assert_eq!(result["node_id"], "101", "{method} must preserve node id");
+        assert_eq!(result["point"]["x"], 20.0, "{method} must return x");
+        assert_eq!(result["point"]["y"], 30.0, "{method} must return y");
+
+        let consumed = backend
+            .cua_command_with_context(&ctx, method, params)
+            .await
+            .unwrap_err();
+        assert!(
+            consumed
+                .to_string()
+                .contains("requires a current visible DOM snapshot"),
+            "{method} must consume observation-scoped DOM-CUA snapshots"
+        );
+    }
+}
+
+#[tokio::test]
+async fn webext_backend_dom_cua_click_forwards_modifiers_to_mouse_events() {
+    let transport = Arc::new(FakeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+        trusted_kernel_generation: None,
+    };
+
+    backend
+        .cua_command_with_context(&ctx, "dom_cua_get_visible_dom", json!({ "tab_id": "42" }))
+        .await
+        .unwrap();
+    backend
+        .cua_command_with_context(
+            &ctx,
+            "dom_cua_click",
+            json!({ "tab_id": "42", "node_id": "101", "modifiers": ["Shift"] }),
+        )
+        .await
+        .unwrap();
+
+    let calls = transport.calls.lock().unwrap();
+    let mouse_events = calls
+        .iter()
+        .filter(|(method, params)| {
+            method == "executeCdp" && params["method"] == "Input.dispatchMouseEvent"
+        })
+        .map(|(_, params)| params["commandParams"].clone())
+        .collect::<Vec<_>>();
+    assert!(
+        mouse_events.len() >= 3,
+        "expected move, press, and release events"
+    );
+    assert_eq!(mouse_events[0]["type"], "mouseMoved");
+    assert_eq!(mouse_events[1]["type"], "mousePressed");
+    assert_eq!(mouse_events[2]["type"], "mouseReleased");
+    assert!(
+        mouse_events
+            .iter()
+            .take(3)
+            .all(|event| event["modifiers"] == 8)
+    );
+}
+
+#[tokio::test]
+async fn webext_backend_dom_cua_modified_scroll_uses_mouse_wheel() {
+    let transport = Arc::new(FakeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+        trusted_kernel_generation: None,
+    };
+
+    backend
+        .cua_command_with_context(&ctx, "dom_cua_get_visible_dom", json!({ "tab_id": "42" }))
+        .await
+        .unwrap();
+    backend
+        .cua_command_with_context(
+            &ctx,
+            "dom_cua_scroll",
+            json!({
+                "tab_id": "42",
+                "node_id": "101",
+                "deltaX": 3,
+                "deltaY": -4,
+                "modifiers": ["Shift"]
+            }),
+        )
+        .await
+        .unwrap();
+
+    let calls = transport.calls.lock().unwrap();
+    assert!(!calls.iter().any(|(method, params)| {
+        method == "executeCdp" && params["method"] == "Input.synthesizeScrollGesture"
+    }));
+    let wheel = calls
+        .iter()
+        .find(|(method, params)| {
+            method == "executeCdp"
+                && params["method"] == "Input.dispatchMouseEvent"
+                && params["commandParams"]["type"] == "mouseWheel"
+        })
+        .expect("expected DOM-CUA modified scroll to use mouseWheel");
+    assert_eq!(wheel.1["commandParams"]["x"], 20.0);
+    assert_eq!(wheel.1["commandParams"]["y"], 30.0);
+    assert_eq!(wheel.1["commandParams"]["modifiers"], 8);
+    assert_eq!(wheel.1["commandParams"]["deltaX"], 3.0);
+    assert_eq!(wheel.1["commandParams"]["deltaY"], -4.0);
+}
+
+#[tokio::test]
+async fn webext_backend_dom_cua_keypress_modifiers_skip_focus_click() {
+    let transport = Arc::new(FakeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+        trusted_kernel_generation: None,
+    };
+
+    backend
+        .cua_command_with_context(&ctx, "dom_cua_get_visible_dom", json!({ "tab_id": "42" }))
+        .await
+        .unwrap();
+    backend
+        .cua_command_with_context(
+            &ctx,
+            "dom_cua_keypress",
+            json!({ "tab_id": "42", "node_id": "101", "key": "L", "modifiers": ["Shift"] }),
+        )
+        .await
+        .unwrap();
+
+    let calls = transport.calls.lock().unwrap();
+    let mouse_events = calls
+        .iter()
+        .filter(|(method, params)| {
+            method == "executeCdp" && params["method"] == "Input.dispatchMouseEvent"
+        })
+        .map(|(_, params)| params["commandParams"].clone())
+        .collect::<Vec<_>>();
+    assert!(
+        mouse_events.len() >= 3,
+        "expected unmodified focus click before keypress"
+    );
+    assert!(
+        mouse_events
+            .iter()
+            .take(3)
+            .all(|event| event["modifiers"] == 0)
+    );
+
+    let key_events = calls
+        .iter()
+        .filter(|(method, params)| {
+            method == "executeCdp" && params["method"] == "Input.dispatchKeyEvent"
+        })
+        .map(|(_, params)| params["commandParams"].clone())
+        .collect::<Vec<_>>();
+    assert_eq!(key_events.len(), 2);
+    assert!(key_events.iter().all(|event| event["modifiers"] == 8));
+    assert_eq!(key_events[0]["key"], "L");
+    assert_eq!(key_events[0]["code"], "KeyL");
+}
+
+#[tokio::test]
 async fn webext_backend_dom_cua_rejects_node_outside_current_snapshot() {
     let transport = Arc::new(FakeTransport::default());
     let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport);
@@ -1306,6 +1732,7 @@ async fn webext_backend_dom_cua_rejects_node_outside_current_snapshot() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -1329,6 +1756,47 @@ async fn webext_backend_dom_cua_rejects_node_outside_current_snapshot() {
 }
 
 #[tokio::test]
+async fn webext_backend_dom_cua_node_less_scroll_uses_viewport_space_center() {
+    let transport = Arc::new(LayoutMetricsTransport {
+        calls: Mutex::new(Vec::new()),
+        metrics: json!({
+            "visualViewport": {
+                "pageX": 50,
+                "pageY": 1000,
+                "clientWidth": 800,
+                "clientHeight": 600
+            }
+        }),
+    });
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+        trusted_kernel_generation: None,
+    };
+
+    backend
+        .cua_command_with_context(
+            &ctx,
+            "dom_cua_scroll",
+            json!({ "tab_id": "42", "deltaY": 120 }),
+        )
+        .await
+        .unwrap();
+
+    let calls = transport.calls.lock().unwrap();
+    let gesture = calls
+        .iter()
+        .find(|(method, params)| {
+            method == "executeCdp" && params["method"] == "Input.synthesizeScrollGesture"
+        })
+        .expect("expected synthesized scroll gesture");
+    assert_eq!(gesture.1["commandParams"]["x"], 400.0);
+    assert_eq!(gesture.1["commandParams"]["y"], 300.0);
+}
+
+#[tokio::test]
 async fn webext_backend_routes_locator_click_through_playwright_runtime() {
     let transport = Arc::new(NavigatingFakeTransport::default());
     let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
@@ -1336,6 +1804,7 @@ async fn webext_backend_routes_locator_click_through_playwright_runtime() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -1391,6 +1860,7 @@ async fn webext_backend_playwright_fill_uses_shared_virtual_text_input_fallback(
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -1422,6 +1892,7 @@ async fn webext_backend_playwright_press_uses_shared_focus_runtime() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -1457,6 +1928,7 @@ async fn webext_backend_releases_drag_when_move_fails() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let error = backend
@@ -1528,13 +2000,26 @@ async fn webext_backend_exposes_extension_status_diagnostics() {
                 "state": "waiting_for_idle",
                 "version": "0.2.0",
                 "pendingSince": 123
-            }
+            },
+            "overlay_release": [
+                {
+                    "tabId": 42,
+                    "state": "release_failed",
+                    "failures": 1,
+                    "sessionId": "session",
+                    "turnId": "turn"
+                }
+            ]
         }),
     );
 
     assert_eq!(
         backend.diagnostics()["extension"]["pending_update"]["version"],
         "0.2.0"
+    );
+    assert_eq!(
+        backend.diagnostics()["extension"]["overlay_release"][0]["state"],
+        "release_failed"
     );
 }
 
@@ -1547,6 +2032,7 @@ async fn webext_backend_accepts_alert_dialog_and_continues_operation() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     backend
         .create_tab_with_context(&ctx, Some("https://example.com".into()))
@@ -1628,6 +2114,7 @@ async fn webext_backend_records_extension_handled_beforeunload_without_duplicate
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     backend
         .create_tab_with_context(&ctx, Some("https://example.com".into()))
@@ -1695,6 +2182,7 @@ async fn webext_backend_dismisses_confirm_dialog_and_returns_structured_error() 
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     backend
         .create_tab_with_context(&ctx, Some("https://example.com".into()))
@@ -1768,6 +2256,7 @@ async fn webext_backend_runtime_evaluate_accepts_alert_dialog() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     backend
         .create_tab_with_context(&ctx, Some("https://example.com".into()))
@@ -1833,6 +2322,7 @@ async fn webext_backend_runtime_evaluate_accepts_beforeunload_dialog() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     backend
         .create_tab_with_context(&ctx, Some("https://example.com".into()))
@@ -1908,6 +2398,7 @@ async fn webext_backend_finalize_accepts_beforeunload_dialog_for_omitted_agent_t
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     backend
         .create_tab_with_context(&ctx, Some("https://example.com".into()))
@@ -1992,6 +2483,7 @@ async fn webext_backend_waits_for_file_chooser_events_and_sets_files() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let waiter_backend = backend.clone();
@@ -2082,11 +2574,13 @@ async fn webext_backend_rejects_handle_use_from_wrong_session_without_consuming(
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     let other_ctx = BackendRequestContext {
         session_id: Some("other-session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -2096,6 +2590,7 @@ async fn webext_backend_rejects_handle_use_from_wrong_session_without_consuming(
             FileChooserState {
                 tab_id: TabId::new("42"),
                 owner_session_id: Some("session".into()),
+                owner_turn_id: None,
                 created_at: SystemTime::now(),
                 backend_node_id: 123,
                 is_multiple: false,
@@ -2157,6 +2652,7 @@ async fn webext_backend_rejects_handle_use_from_wrong_session_without_consuming(
             DownloadState {
                 tab_id: TabId::new("42"),
                 owner_session_id: Some("session".into()),
+                owner_turn_id: None,
                 created_at: SystemTime::now(),
                 url: "https://example.com/file.txt".into(),
                 suggested_filename: "file.txt".into(),
@@ -2217,6 +2713,7 @@ async fn webext_backend_waits_for_download_change_path() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     let waiter_backend = backend.clone();
@@ -2337,6 +2834,7 @@ async fn webext_backend_routes_media_download_helpers() {
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
 
     backend
@@ -2400,9 +2898,371 @@ fn runtime_expression<'a>(
         .unwrap()
 }
 
+/// Transport for the OOPIF (out-of-process iframe) parity tests. Records every
+/// `executeCdp` request (so the `target` routing can be asserted) and serves a
+/// two-frame topology: a top-level document with no in-process iframe children
+/// plus an OOPIF child session (`CHILD-1`) that owns a single button.
+#[derive(Default)]
+struct OopifBridgeTransport {
+    calls: Mutex<Vec<(String, Value)>>,
+}
+
+impl OopifBridgeTransport {
+    /// The `target.sessionId` an `executeCdp` request was addressed to (the
+    /// OOPIF child session), or `None` for a top-level (`{ tabId }`) command.
+    fn cdp_target_session(params: &Value) -> Option<String> {
+        params
+            .get("target")
+            .and_then(|target| target.get("sessionId"))
+            .and_then(Value::as_str)
+            .map(str::to_string)
+    }
+}
+
+#[async_trait]
+impl ExtensionTransport for OopifBridgeTransport {
+    async fn request(&self, method: &str, params: Value) -> Result<Value> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((method.to_string(), params.clone()));
+        if method != "executeCdp" {
+            return Ok(match method {
+                "createTab" => json!({
+                    "tab": { "tabId": 42, "url": "https://shop.test/", "title": "Shop" }
+                }),
+                _ => Value::Null,
+            });
+        }
+        let cdp_method = params
+            .get("method")
+            .and_then(Value::as_str)
+            .unwrap_or_default();
+        let command_params = params.get("commandParams").cloned().unwrap_or(Value::Null);
+        let session = Self::cdp_target_session(&params);
+        let backend_node_id = command_params.get("backendNodeId").and_then(Value::as_i64);
+        let node_id = command_params.get("nodeId").and_then(Value::as_i64);
+        // `DOM.getDocument` is used by two paths: DOM-CUA enumeration (depth -1,
+        // backendNodeId tree) and the Playwright resolver (depth 0, nodeId root).
+        let is_shallow_document = command_params.get("depth").and_then(Value::as_i64) == Some(0);
+        Ok(match (cdp_method, session.as_deref()) {
+            // Playwright runtime mount check + cross-origin action-point resolution.
+            ("Runtime.evaluate", _) => {
+                let expr = command_params
+                    .get("expression")
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                if expr.contains("__obuPlaywrightInjected") {
+                    json!({ "result": { "value": true } })
+                } else if expr.contains("resolveActionPoint") {
+                    // In-page resolution can't reach the cross-origin frame; this is
+                    // the signal that drives the cross-session CDP fallback.
+                    json!({ "result": { "value": { "resolution": "cross_origin_unreachable", "reason": "oopif" } } })
+                } else {
+                    json!({ "result": { "value": "" } })
+                }
+            }
+            ("Page.getLayoutMetrics", _) => json!({
+                "visualViewport": { "pageX": 0, "pageY": 0, "clientWidth": 800, "clientHeight": 600 }
+            }),
+            // Playwright resolver: top-level document root (nodeId form).
+            ("DOM.getDocument", None) if is_shallow_document => json!({
+                "root": { "nodeId": 1 }
+            }),
+            // Playwright resolver: OOPIF child document root (nodeId form).
+            ("DOM.getDocument", Some("CHILD-1")) if is_shallow_document => json!({
+                "root": { "nodeId": 800 }
+            }),
+            // Playwright resolver: querySelector on each session.
+            ("DOM.querySelector", None) => json!({ "nodeId": 2 }), // the <iframe>
+            ("DOM.querySelector", Some("CHILD-1")) => json!({ "nodeId": 810 }), // inner button
+            // Playwright resolver: describeNode -> frameId (top) / backendNodeId (child).
+            ("DOM.describeNode", None) if node_id == Some(2) => json!({
+                "node": { "frameId": "FRAME-1" }
+            }),
+            ("DOM.describeNode", Some("CHILD-1")) if node_id == Some(810) => json!({
+                "node": { "backendNodeId": 900 }
+            }),
+            // Playwright resolver: the iframe's root-frame box (by top-level nodeId).
+            ("DOM.getBoxModel", None) if node_id == Some(2) => json!({
+                "model": { "content": [40, 50, 140, 50, 140, 150, 40, 150], "width": 100, "height": 100 }
+            }),
+            // Top-level document: only the agent overlay, no in-process iframe nodes.
+            ("DOM.getDocument", None) => json!({
+                "root": { "nodeName": "HTML", "backendNodeId": 1, "children": [] }
+            }),
+            // OOPIF child document: one cross-origin button (backendNodeId 900).
+            ("DOM.getDocument", Some("CHILD-1")) => json!({
+                "root": {
+                    "nodeName": "HTML",
+                    "backendNodeId": 800,
+                    "children": [
+                        { "nodeName": "BUTTON", "backendNodeId": 900, "attributes": ["aria-label", "Buy"] }
+                    ]
+                }
+            }),
+            // The OOPIF button's frame-local box (branch 4c: frame-local geometry).
+            ("DOM.getBoxModel", Some("CHILD-1")) if backend_node_id == Some(900) => json!({
+                "model": { "content": [10, 10, 30, 10, 30, 30, 10, 30], "width": 20, "height": 20 }
+            }),
+            ("DOM.getContentQuads", Some("CHILD-1")) if backend_node_id == Some(900) => json!({
+                "quads": [[10, 10, 30, 10, 30, 30, 10, 30]]
+            }),
+            ("DOM.scrollIntoViewIfNeeded", _) => Value::Null,
+            // Frame-chain offset: the OOPIF's owning <iframe> sits at (40,50) in the
+            // root frame; resolved on the PARENT (top-level) session.
+            ("DOM.getFrameOwner", None) => json!({ "backendNodeId": 500 }),
+            ("DOM.getBoxModel", None) if backend_node_id == Some(500) => json!({
+                "model": { "content": [40, 50, 140, 50, 140, 150, 40, 150], "width": 100, "height": 100 }
+            }),
+            ("Input.dispatchMouseEvent", _) => json!({}),
+            _ => json!({}),
+        })
+    }
+}
+
+/// `onCDPEvent` payload for an OOPIF `Target.attachedToTarget` under `tab_id`,
+/// matching the shape the extension forwards (child id in `params.sessionId`,
+/// owning tab in `source.tabId`).
+fn oopif_attached_event(tab_id: i64, child_session: &str, frame_id: &str) -> Value {
+    json!({
+        "session_id": "session",
+        "source": { "tabId": tab_id },
+        "method": "Target.attachedToTarget",
+        "params": {
+            "sessionId": child_session,
+            "waitingForDebugger": false,
+            "targetInfo": { "targetId": frame_id, "type": "iframe", "url": "https://oop.test/inner" }
+        }
+    })
+}
+
+fn oopif_ctx() -> BackendRequestContext {
+    BackendRequestContext {
+        session_id: Some("session".into()),
+        turn_id: Some("turn".into()),
+        client_timeout_ms: None,
+        trusted_kernel_generation: None,
+    }
+}
+
+/// Count OOPIF-tagged nodes in a fresh visible-DOM snapshot. The session map is
+/// `pub(crate)`, so the integration test observes its state through the public
+/// snapshot path: an OOPIF session is enumerated iff it is in the map.
+async fn oopif_node_count(backend: &WebExtensionBackend, ctx: &BackendRequestContext) -> usize {
+    let snapshot = backend
+        .cua_command_with_context(ctx, "dom_cua_get_visible_dom", json!({ "tab_id": "42" }))
+        .await
+        .unwrap();
+    snapshot["nodes"]
+        .as_array()
+        .map(|nodes| {
+            nodes
+                .iter()
+                .filter(|node| node["session_id"] == "CHILD-1")
+                .count()
+        })
+        .unwrap_or(0)
+}
+
+#[tokio::test]
+async fn webext_forwarded_attach_and_detach_events_drive_the_oopif_session_map() {
+    let transport = Arc::new(OopifBridgeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = oopif_ctx();
+    backend
+        .create_tab_with_context(&ctx, Some("https://shop.test/".into()))
+        .await
+        .unwrap();
+
+    // No OOPIF nodes until the extension forwards an attach event.
+    assert_eq!(oopif_node_count(&backend, &ctx).await, 0);
+
+    backend.handle_notification("onCDPEvent", oopif_attached_event(42, "CHILD-1", "FRAME-1"));
+    assert_eq!(
+        oopif_node_count(&backend, &ctx).await,
+        1,
+        "attachedToTarget should add the OOPIF session to the map"
+    );
+
+    // A detach for the child prunes it back out.
+    backend.handle_notification(
+        "onCDPEvent",
+        json!({
+            "session_id": "session",
+            "source": { "tabId": 42 },
+            "method": "Target.detachedFromTarget",
+            "params": { "sessionId": "CHILD-1" }
+        }),
+    );
+    assert_eq!(
+        oopif_node_count(&backend, &ctx).await,
+        0,
+        "detachedFromTarget should prune the OOPIF session from the map"
+    );
+}
+
+#[tokio::test]
+async fn webext_dom_cua_snapshot_enumerates_oopif_nodes_via_child_session() {
+    let transport = Arc::new(OopifBridgeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = oopif_ctx();
+    backend
+        .create_tab_with_context(&ctx, Some("https://shop.test/".into()))
+        .await
+        .unwrap();
+    backend.handle_notification("onCDPEvent", oopif_attached_event(42, "CHILD-1", "FRAME-1"));
+
+    let snapshot = backend
+        .cua_command_with_context(&ctx, "dom_cua_get_visible_dom", json!({ "tab_id": "42" }))
+        .await
+        .unwrap();
+
+    // The cross-origin button is in the snapshot, tagged with its owning session.
+    let nodes = snapshot["nodes"].as_array().expect("nodes array");
+    let oopif_node = nodes
+        .iter()
+        .find(|node| node["session_id"] == "CHILD-1")
+        .expect("OOPIF node must be enumerated into the snapshot");
+    assert_eq!(oopif_node["node_id"], "900");
+
+    // Its document was fetched on the CHILD-1 session, not the top-level tab.
+    let calls = transport.calls.lock().unwrap();
+    assert!(
+        calls.iter().any(|(method, params)| {
+            method == "executeCdp"
+                && params["method"] == "DOM.getDocument"
+                && params["target"]["sessionId"] == "CHILD-1"
+        }),
+        "OOPIF DOM.getDocument must route to the child session"
+    );
+}
+
+#[tokio::test]
+async fn webext_dom_cua_click_routes_geometry_to_oopif_session_and_composes_offset() {
+    let transport = Arc::new(OopifBridgeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = oopif_ctx();
+    backend
+        .create_tab_with_context(&ctx, Some("https://shop.test/".into()))
+        .await
+        .unwrap();
+    backend.handle_notification("onCDPEvent", oopif_attached_event(42, "CHILD-1", "FRAME-1"));
+
+    backend
+        .cua_command_with_context(&ctx, "dom_cua_get_visible_dom", json!({ "tab_id": "42" }))
+        .await
+        .unwrap();
+    let result = backend
+        .cua_command_with_context(
+            &ctx,
+            "dom_cua_click",
+            json!({ "tab_id": "42", "node_id": "900" }),
+        )
+        .await
+        .unwrap();
+
+    // Frame-local centroid (20,20) + the <iframe>'s root-frame content top-left
+    // (40,50) = (60,70). Branch 4c: OOPIF quads are frame-local, so the click path
+    // composes oopif_root_offset before dispatching on the top-level session.
+    assert_eq!(result["point"]["x"], 60.0);
+    assert_eq!(result["point"]["y"], 70.0);
+
+    let calls = transport.calls.lock().unwrap();
+    // Geometry routed to the OOPIF session.
+    assert!(
+        calls.iter().any(|(method, params)| {
+            method == "executeCdp"
+                && params["method"] == "DOM.getContentQuads"
+                && params["target"]["sessionId"] == "CHILD-1"
+        }),
+        "getContentQuads must route to the OOPIF child session"
+    );
+    // Frame-owner offset resolved on the PARENT (top-level) session.
+    assert!(
+        calls.iter().any(|(method, params)| {
+            method == "executeCdp"
+                && params["method"] == "DOM.getFrameOwner"
+                && params["target"].get("sessionId").is_none()
+        }),
+        "DOM.getFrameOwner must resolve on the top-level (parent) session"
+    );
+    // The click dispatched on the top-level tab at the composed point.
+    let press = calls
+        .iter()
+        .find(|(method, params)| {
+            method == "executeCdp"
+                && params["method"] == "Input.dispatchMouseEvent"
+                && params["commandParams"]["type"] == "mousePressed"
+        })
+        .expect("a mousePressed event should be dispatched");
+    assert_eq!(press.1["commandParams"]["x"], 60.0);
+    assert_eq!(press.1["commandParams"]["y"], 70.0);
+}
+
+#[tokio::test]
+async fn webext_playwright_cross_origin_click_routes_through_child_session() {
+    let transport = Arc::new(OopifBridgeTransport::default());
+    let backend = WebExtensionBackend::dev_chrome(json!({})).with_transport(transport.clone());
+    let ctx = oopif_ctx();
+    backend
+        .create_tab_with_context(&ctx, Some("https://shop.test/".into()))
+        .await
+        .unwrap();
+    backend.handle_notification("onCDPEvent", oopif_attached_event(42, "CHILD-1", "FRAME-1"));
+
+    backend
+        .playwright_command_with_context(
+            &ctx,
+            "playwright_locator_click",
+            json!({
+                "tab_id": "42",
+                "selector": "iframe >> internal:control=enter-frame >> #buy"
+            }),
+        )
+        .await
+        .unwrap();
+
+    let calls = transport.calls.lock().unwrap();
+    // The inner element is resolved on the OOPIF child session.
+    assert!(
+        calls.iter().any(|(method, params)| {
+            method == "executeCdp"
+                && params["method"] == "DOM.querySelector"
+                && params["target"]["sessionId"] == "CHILD-1"
+        }),
+        "the inner selector must be queried on the OOPIF child session"
+    );
+    // Its geometry is read on the OOPIF child session.
+    assert!(
+        calls.iter().any(|(method, params)| {
+            method == "executeCdp"
+                && params["method"] == "DOM.getContentQuads"
+                && params["target"]["sessionId"] == "CHILD-1"
+        }),
+        "the inner element's quads must be read on the OOPIF child session"
+    );
+    // Frame-local centroid (20,20) + iframe root-frame top-left (40,50) = (60,70).
+    let press = calls
+        .iter()
+        .find(|(method, params)| {
+            method == "executeCdp"
+                && params["method"] == "Input.dispatchMouseEvent"
+                && params["commandParams"]["type"] == "mousePressed"
+        })
+        .expect("a mousePressed event should be dispatched");
+    assert_eq!(press.1["commandParams"]["x"], 60.0);
+    assert_eq!(press.1["commandParams"]["y"], 70.0);
+}
+
 #[derive(Default)]
 struct FakeTransport {
     calls: Mutex<Vec<(String, Value)>>,
+}
+
+struct LayoutMetricsTransport {
+    calls: Mutex<Vec<(String, Value)>>,
+    metrics: Value,
 }
 
 struct DialogBlockingTransport {
@@ -2446,6 +3306,7 @@ async fn assert_webext_runtime_evaluate_dialog_requires_decision(dialog_type: &'
         session_id: Some("session".into()),
         turn_id: Some("turn".into()),
         client_timeout_ms: None,
+        trusted_kernel_generation: None,
     };
     backend
         .create_tab_with_context(&ctx, Some("https://example.com".into()))
@@ -2594,6 +3455,28 @@ impl ExtensionTransport for FakeTransport {
                     "logicalActive": true
                 }
             }),
+            "executeCdp" => fake_cdp_response(&params),
+            _ => Value::Null,
+        })
+    }
+}
+
+#[async_trait]
+impl ExtensionTransport for LayoutMetricsTransport {
+    async fn request(&self, method: &str, params: Value) -> Result<Value> {
+        self.calls
+            .lock()
+            .unwrap()
+            .push((method.to_string(), params.clone()));
+        if method == "executeCdp"
+            && params
+                .get("method")
+                .and_then(Value::as_str)
+                .is_some_and(|method| method == "Page.getLayoutMetrics")
+        {
+            return Ok(self.metrics.clone());
+        }
+        Ok(match method {
             "executeCdp" => fake_cdp_response(&params),
             _ => Value::Null,
         })
