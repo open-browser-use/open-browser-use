@@ -82,12 +82,12 @@ test("configureAgents times out hung shell adapters with a manual action", async
 
   const steps = await configureAgents({
     agents: ["claude-code"],
+    // Include a real PATH so the adapter's `sleep` resolves. With only `bin` on
+    // PATH, some shells (notably the CI runner's) can't find `sleep`, so the
+    // script exits 127 immediately and the run is misclassified as "did not
+    // complete" instead of timing out — this reproduced only on CI.
+    env: { PATH: `${bin}${path.delimiter}${process.env.PATH ?? ""}` },
     server: server(root),
-    env: { PATH: bin },
-    // Comfortably longer than shell-process startup. A tiny value (e.g. 25ms)
-    // races process spawn on slow CI runners, so the exit/error event can beat
-    // the timer and the run is misclassified as "did not complete". The adapter
-    // sleeps 5s, so this still fires well before the process would finish.
     adapterTimeoutMs: 500,
   });
 
