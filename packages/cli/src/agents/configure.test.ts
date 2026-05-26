@@ -84,12 +84,16 @@ test("configureAgents times out hung shell adapters with a manual action", async
     agents: ["claude-code"],
     server: server(root),
     env: { PATH: bin },
-    adapterTimeoutMs: 25,
+    // Comfortably longer than shell-process startup. A tiny value (e.g. 25ms)
+    // races process spawn on slow CI runners, so the exit/error event can beat
+    // the timer and the run is misclassified as "did not complete". The adapter
+    // sleeps 5s, so this still fires well before the process would finish.
+    adapterTimeoutMs: 500,
   });
 
   assert.equal(steps[0]?.status, "manual_action_required");
   assert.match(steps[0]?.message ?? "", /timed out/);
-  assert.equal(steps[0]?.details?.timeout_ms, 25);
+  assert.equal(steps[0]?.details?.timeout_ms, 500);
   assert.match(steps[0]?.nextActions?.[0]?.value ?? "", /mcp-config --agent=claude-code --print/);
 });
 
