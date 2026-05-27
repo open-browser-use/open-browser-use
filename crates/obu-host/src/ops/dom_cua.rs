@@ -623,6 +623,16 @@ pub(crate) fn snapshot_node_ids(nodes: &[Value]) -> HashSet<String> {
         .collect()
 }
 
+/// Elements whose text is source/non-rendered content (CSS, JS, <noscript>
+/// fallbacks, inert <template> bodies) and must never leak into an accessible
+/// label or snapshotText aggregate.
+fn is_non_content_tag(node: &Value) -> bool {
+    matches!(
+        node_tag(node).as_str(),
+        "style" | "script" | "noscript" | "template"
+    )
+}
+
 fn append_text(node: &Value, out: &mut String, max_len: usize) {
     if out.len() >= max_len || is_hidden_subtree(node) {
         return;
@@ -631,10 +641,7 @@ fn append_text(node: &Value, out: &mut String, max_len: usize) {
     // (CSS, JS, <noscript> fallbacks, inert <template> bodies) that must never
     // leak into an element's accessible label — e.g. a styled <button> that
     // inlines a <style> would otherwise surface the stylesheet in snapshotText().
-    if matches!(
-        node_tag(node).as_str(),
-        "style" | "script" | "noscript" | "template"
-    ) {
+    if is_non_content_tag(node) {
         return;
     }
     if node
@@ -709,6 +716,13 @@ mod tests {
             ]
         });
         assert_eq!(aggregate_text(&node, 240), "Add to cart");
+    }
+
+    #[test]
+    fn non_content_tags_are_filtered() {
+        assert!(is_non_content_tag(&json!({ "nodeName": "STYLE" })));
+        assert!(is_non_content_tag(&json!({ "nodeName": "script" })));
+        assert!(!is_non_content_tag(&json!({ "nodeName": "BUTTON" })));
     }
 
     #[test]
