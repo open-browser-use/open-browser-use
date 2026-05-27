@@ -4,7 +4,7 @@ use obu_wire::{
         ERR_CAPABILITY_TOKEN, ERR_CDP_FAILURE, ERR_CMD_DISALLOWED, ERR_CONFLICT,
         ERR_DIALOG_REQUIRES_DECISION, ERR_DISALLOWED, ERR_IO, ERR_NO_BACKEND, ERR_NOT_FOUND,
         ERR_NOT_IMPLEMENTED, ERR_OVERLOADED, ERR_PAGE_CLOSED, ERR_PEER_AUTH, ERR_PROTOCOL,
-        ERR_TAB_NOT_ATTACHED, ERR_TIMEOUT,
+        ERR_TAB_NOT_ATTACHED, ERR_TIMEOUT, ERR_TRANSPORT_CLOSED,
     },
 };
 
@@ -50,6 +50,7 @@ fn ranges_are_disjoint() {
         ERR_NO_BACKEND,
         ERR_OVERLOADED,
         ERR_IO,
+        ERR_TRANSPORT_CLOSED,
     ];
     let guards = [ERR_PEER_AUTH, ERR_CAPABILITY_TOKEN, ERR_CMD_DISALLOWED];
     let backend = [
@@ -80,6 +81,7 @@ fn generated_codes_have_exact_values() {
     assert_eq!(ERR_OVERLOADED, -1006);
     assert_eq!(ERR_CONFLICT, -1007);
     assert_eq!(ERR_IO, -1099);
+    assert_eq!(ERR_TRANSPORT_CLOSED, -1098);
     assert_eq!(ERR_PEER_AUTH, -1100);
     assert_eq!(ERR_CAPABILITY_TOKEN, -1101);
     assert_eq!(ERR_CMD_DISALLOWED, -1102);

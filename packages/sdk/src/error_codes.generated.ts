@@ -20,6 +20,14 @@ export const ERR_CONFLICT = -1007;
 /** Generic I/O failure. */
 export const ERR_IO = -1099;
 /**
+ * Transport (native pipe / host process / browser bridge) closed before the request completed.
+ *
+ * Distinct from ERR_IO so a caller can tell a recoverable transport close (host
+ * restart / MV3 service-worker recycle, auto-reconnected on the next send) from a
+ * generic I/O fault.
+ */
+export const ERR_TRANSPORT_CLOSED = -1098;
+/**
  * Peer/auth gate rejected the connection.
  *
  * D9 and the Phase 9 failure-mode test pin wrong capability-token auth to

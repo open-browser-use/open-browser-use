@@ -21,6 +21,12 @@ pub const ERR_OVERLOADED: i32 = -1006;
 pub const ERR_CONFLICT: i32 = -1007;
 /// Generic I/O failure.
 pub const ERR_IO: i32 = -1099;
+/// Transport (native pipe / host process / browser bridge) closed before the request completed.
+///
+/// Distinct from ERR_IO so a caller can tell a recoverable transport close (host
+/// restart / MV3 service-worker recycle, auto-reconnected on the next send) from a
+/// generic I/O fault.
+pub const ERR_TRANSPORT_CLOSED: i32 = -1098;
 /// Peer/auth gate rejected the connection.
 ///
 /// D9 and the Phase 9 failure-mode test pin wrong capability-token auth to

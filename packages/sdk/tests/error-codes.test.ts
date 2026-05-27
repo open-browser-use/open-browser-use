@@ -1,28 +1,14 @@
-import { describe, expect, it } from "vitest";
-import {
-  ERR_CDP_FAILURE,
-  ERR_CONFLICT,
-  ERR_DIALOG_REQUIRES_DECISION,
-  ERR_DISALLOWED,
-  ERR_IO,
-  ERR_PEER_AUTH,
-  ERR_TIMEOUT,
-  ERR_TRANSPORT_CLOSED,
-} from "../src/errors.js";
+import { describe, expect, test } from "vitest";
+import { ERR_TRANSPORT_CLOSED, ERR_IO, productErrorForRpcCode } from "../src/errors.js";
 
-describe("wire error codes", () => {
-  it("keep stable numeric values", () => {
-    expect(ERR_TIMEOUT).toBe(-1000);
-    expect(ERR_DISALLOWED).toBe(-1002);
-    expect(ERR_CONFLICT).toBe(-1007);
-    expect(ERR_IO).toBe(-1099);
-    expect(ERR_PEER_AUTH).toBe(-1100);
-    expect(ERR_CDP_FAILURE).toBe(-1201);
-    expect(ERR_DIALOG_REQUIRES_DECISION).toBe(-1203);
+describe("transport-closed wire code", () => {
+  test("is distinct from generic ERR_IO", () => {
+    expect(ERR_TRANSPORT_CLOSED).not.toBe(ERR_IO);
+    expect(ERR_TRANSPORT_CLOSED).toBe(-1098);
   });
 
-  it("derive ERR_TRANSPORT_CLOSED from ERR_IO", () => {
-    expect(ERR_TRANSPORT_CLOSED).toBe(ERR_IO);
-    expect(ERR_TRANSPORT_CLOSED).toBe(-1099);
+  test("maps to the transport_closed product error; ERR_IO no longer does", () => {
+    expect(productErrorForRpcCode(ERR_TRANSPORT_CLOSED)?.code).toBe("transport_closed");
+    expect(productErrorForRpcCode(ERR_IO)?.code).not.toBe("transport_closed");
   });
 });

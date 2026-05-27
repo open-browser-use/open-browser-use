@@ -137,9 +137,9 @@ export const PRODUCT_ERROR_SCHEMA = [
   {
     "code": "transport_closed",
     "title": "Transport closed",
-    "summary": "The native pipe, host process, or browser bridge closed before the request completed.",
+    "summary": "The native pipe, host process, or browser bridge closed before the request completed. New requests auto-reconnect on the next send; an in-flight request rejects and may be safely reissued.",
     "jsonRpcCodes": [
-      -1099
+      -1098
     ],
     "nextAction": {
       "kind": "run_verify",

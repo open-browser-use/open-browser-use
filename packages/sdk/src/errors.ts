@@ -1,5 +1,4 @@
 import { PRODUCT_ERROR_SCHEMA } from "./product_errors.generated.js";
-import { ERR_IO } from "./error_codes.generated.js";
 
 export class ObuError extends Error {
   constructor(
@@ -28,9 +27,6 @@ export class ObuError extends Error {
 }
 
 export * from "./error_codes.generated.js";
-
-// ERR_IO is imported as a local binding for the ERR_TRANSPORT_CLOSED alias below; "export *" re-exports the codes but does not bind them locally.
-export const ERR_TRANSPORT_CLOSED = ERR_IO;
 
 export type ProductErrorEntry = (typeof PRODUCT_ERROR_SCHEMA)[number];
 export type ProductErrorCode = ProductErrorEntry["code"];

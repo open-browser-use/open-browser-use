@@ -121,8 +121,8 @@
     {
       "code": "transport_closed",
       "title": "Transport closed",
-      "summary": "The native pipe, host process, or browser bridge closed before the request completed.",
-      "jsonRpcCodes": [-1099],
+      "summary": "The native pipe, host process, or browser bridge closed before the request completed. New requests auto-reconnect on the next send; an in-flight request rejects and may be safely reissued.",
+      "jsonRpcCodes": [-1098],
       "nextAction": {
         "kind": "run_verify",
         "summary": "Check browser_status, then rerun verify if the backend is no longer available.",
