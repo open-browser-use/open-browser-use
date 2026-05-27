@@ -94,6 +94,7 @@ let currentStatus: HostStatus | undefined;
 let currentDebug: DebugLogStatus = { enabled: false, entries: [] };
 let setupCopyResetTimer: ReturnType<typeof setTimeout> | undefined;
 let setupPromptExpanded = true;
+const isPairingPage = shell?.classList.contains("pairing-shell") ?? false;
 
 void start();
 
@@ -120,7 +121,7 @@ settingsButton?.addEventListener("click", () => {
   void openSettings();
 });
 
-copyAgentButton!.addEventListener("click", () => {
+copyAgentButton?.addEventListener("click", () => {
   void copyAgentHandoff();
 });
 
@@ -129,13 +130,13 @@ promptToggleButton?.addEventListener("click", () => {
   applyPromptExpansion();
 });
 
-agentHandoff!.addEventListener("click", () => {
-  if (agentHandoff!.hidden) return;
+agentHandoff?.addEventListener("click", () => {
+  if (agentHandoff.hidden) return;
   void copyAgentHandoff();
 });
 
-agentHandoff!.addEventListener("keydown", (event) => {
-  if (agentHandoff!.hidden) return;
+agentHandoff?.addEventListener("keydown", (event) => {
+  if (agentHandoff.hidden) return;
   if (event.key !== "Enter" && event.key !== " ") return;
   event.preventDefault();
   void copyAgentHandoff();
@@ -171,7 +172,7 @@ function renderStaticShell(): void {
   applyDocumentLocale();
   applyStaticMessages();
   versionText!.textContent = msg("versionLabel", [chrome.runtime.getManifest().version]);
-  copyAgentButton!.textContent = agentCopyButtonLabel();
+  if (copyAgentButton) copyAgentButton.textContent = agentCopyButtonLabel();
 }
 
 async function openSettings(): Promise<void> {
@@ -257,9 +258,10 @@ async function clearDebugLogs(): Promise<void> {
 }
 
 async function copyAgentHandoff(): Promise<void> {
+  if (!copyAgentButton || !agentHandoff) return;
   await copySetupText({
-    button: copyAgentButton!,
-    text: (agentHandoff!.textContent ?? "").trim(),
+    button: copyAgentButton,
+    text: (agentHandoff.textContent ?? "").trim(),
     unavailable: msg("copyAgentUnavailable"),
     success: msg("copyAgentSuccess"),
   });
@@ -470,6 +472,7 @@ function resumeButtonSemantics(status: HostStatus): ActionButtonSemantics {
 }
 
 function renderSetup(status: HostStatus, advice: NativeHostAdvice, wasConnected: boolean): void {
+  if (!setupPanel || !setupLabel || !setupText || !agentHandoff) return;
   const text = advice.showSetup
     ? advice.setupText ?? ""
     : msg("agentSetupDefaultText");
@@ -484,7 +487,9 @@ function renderSetup(status: HostStatus, advice: NativeHostAdvice, wasConnected:
   setupLabel!.textContent = label;
   setupText!.textContent = text;
   agentHandoff!.textContent = handoff;
-  if (status.state === "connected" && !wasConnected) {
+  if (isPairingPage) {
+    setupPromptExpanded = true;
+  } else if (status.state === "connected" && !wasConnected) {
     setupPromptExpanded = false;
   } else if (status.state !== "connected" && wasConnected) {
     setupPromptExpanded = true;
@@ -494,14 +499,15 @@ function renderSetup(status: HostStatus, advice: NativeHostAdvice, wasConnected:
   applyPromptExpansion();
   if (changed) {
     clearSetupCopyResetTimer();
-    copyAgentButton!.textContent = agentCopyButtonLabel();
-    setupCopyText!.textContent = "";
+    if (copyAgentButton) copyAgentButton.textContent = agentCopyButtonLabel();
+    if (setupCopyText) setupCopyText.textContent = "";
     removeDataAttribute(setupPanel, "data-copy-state");
   }
 }
 
 function applyPromptExpansion(): void {
-  agentHandoff!.hidden = !setupPromptExpanded;
+  if (!agentHandoff) return;
+  agentHandoff.hidden = !setupPromptExpanded;
   setDataAttribute(setupPanel, "data-prompt-expanded", setupPromptExpanded ? "true" : "false");
   setDataAttribute(promptToggleButton, "aria-expanded", setupPromptExpanded ? "true" : "false");
 }

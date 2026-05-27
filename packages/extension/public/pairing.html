@@ -9,17 +9,20 @@
   </head>
   <body>
     <main id="shell" class="shell pairing-shell">
-      <section class="pairing-hero" aria-labelledby="pairing-title">
+      <header class="pairing-top">
+        <div class="brand-identity">
+          <span class="brand-mark-wrap" aria-hidden="true">
+            <img class="brand-mark" src="icons/icon-48.png" width="40" height="40" alt="" />
+          </span>
+          <a class="brand-link brand-wordmark" href="https://open-browser-use.xyz" target="_blank" rel="noopener noreferrer">open browser use</a>
+          <span id="version-text" class="pairing-version" data-i18n="versionFallback">Version</span>
+        </div>
+      </header>
+
+      <section class="pairing-stage" aria-labelledby="pairing-title">
         <div class="pairing-copy">
-          <div class="brand-identity">
-            <span class="brand-mark-wrap" aria-hidden="true">
-              <img class="brand-mark" src="icons/icon-48.png" width="40" height="40" alt="" />
-            </span>
-            <a class="brand-link brand-wordmark" href="https://open-browser-use.xyz" target="_blank" rel="noopener noreferrer">open browser use</a>
-            <span id="version-text" class="pairing-version" data-i18n="versionFallback">Version</span>
-          </div>
-          <h1 id="pairing-title">pair chrome with your agent</h1>
-          <p class="pairing-tagline">local browser control. exact handoff. verify until ready.</p>
+          <p class="label">Browser bridge</p>
+          <h1 id="pairing-title">open browser use</h1>
         </div>
 
         <section id="status-panel" class="status-panel pairing-status" aria-live="polite">
@@ -27,60 +30,10 @@
             <div>
               <p class="label" data-i18n="nativeHostLabel">Native host</p>
               <p id="status-text" class="value" data-i18n="checkingStatus">Checking...</p>
+              <p id="detail-text" class="detail"></p>
             </div>
             <span id="status-dot" class="dot" aria-hidden="true"></span>
           </div>
-          <p id="detail-text" class="detail"></p>
-          <div class="signal-rail" aria-hidden="true">
-            <span></span>
-            <span></span>
-            <span></span>
-            <span></span>
-          </div>
-        </section>
-      </section>
-
-      <section class="pairing-workspace">
-        <section id="setup-panel" class="setup-panel pairing-setup">
-          <div class="panel-head">
-            <div>
-              <p id="setup-label" class="label" data-i18n="setupLabel">Setup</p>
-              <h2 data-i18n="agentHandoffTitle">Agent handoff</h2>
-            </div>
-            <div class="setup-actions">
-              <button
-                id="prompt-toggle-button"
-                class="prompt-toggle icon-button"
-                type="button"
-                aria-label="Agent handoff"
-                aria-controls="agent-handoff"
-                aria-expanded="true"
-                title="Agent handoff"
-                data-i18n-aria-label="agentHandoffTitle"
-                data-i18n-title="agentHandoffTitle"
-              >
-                <svg aria-hidden="true" viewBox="0 0 24 24" width="15" height="15">
-                  <path d="m6 9 6 6 6-6" />
-                </svg>
-              </button>
-              <button id="copy-agent-button" class="setup-copy" type="button" data-i18n="copyForAgent">Copy for Agent</button>
-            </div>
-          </div>
-          <div class="handoff-copy">
-            <p id="setup-text" class="detail"></p>
-            <p id="setup-copy-text" class="detail" aria-live="polite"></p>
-          </div>
-          <div
-            id="agent-handoff"
-            class="handoff-surface"
-            role="button"
-            tabindex="0"
-            aria-label="Copy Agent setup handoff"
-            aria-describedby="setup-text setup-copy-text"
-            title="Copy for Agent"
-            data-i18n-aria-label="copyAgentSetupHandoff"
-            data-i18n-title="copyForAgent"
-          >Install, repair, or adapt open-browser-use for this browser extension.</div>
         </section>
       </section>
     </main>
