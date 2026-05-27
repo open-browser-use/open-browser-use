@@ -655,6 +655,45 @@ async fn nav_failure_error_data_strips_url_secret_but_keeps_diagnostics() {
     assert_eq!(payload["navigation"]["retryable"], json!(true));
 }
 
+/// Regression lock: the durable event's error.code must be a numeric wire code
+/// (e.g. -1204), never a structural enum form like {"Server":-1204}, so agents
+/// and tooling can match on it directly.
+#[tokio::test]
+async fn failed_command_error_code_is_numeric() {
+    let dispatcher =
+        Dispatcher::new_for_test_with_backend_and_temp_task_store(Arc::new(NavFailureBackend));
+    let response = dispatch_for_test(
+        &dispatcher,
+        methods::TAB_GOTO,
+        json!({
+            "session_id": "session-nav",
+            "turn_id": "turn-nav",
+            "tab_id": "42",
+            "url": "http://127.0.0.1:1/path?token=SUPERSECRET"
+        }),
+    )
+    .await;
+    assert!(
+        response.get("error").is_some(),
+        "tab_goto unexpectedly succeeded: {response:#}"
+    );
+
+    let tasks = dispatch_for_test(&dispatcher, methods::TASKS_LIST, json!({ "limit": 10 })).await;
+    let task_id = tasks["result"][0]["taskId"]
+        .as_str()
+        .expect("task id")
+        .to_string();
+    let command = await_browser_command_event(&dispatcher, &task_id).await;
+    // The event's `error` lives inside the durable `payload` JSON string.
+    let payload: Value = serde_json::from_str(command["payload"].as_str().expect("payload string"))
+        .expect("payload parses as json");
+    assert!(
+        payload["error"]["code"].is_i64(),
+        "error.code must be a numeric wire code, got {:#}",
+        payload["error"]["code"]
+    );
+}
+
 /// A second finalize for the SAME turn must NOT create a second segment
 /// (`ensure_turn_segment` is idempotent), though it appends a second event.
 #[tokio::test]

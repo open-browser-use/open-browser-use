@@ -1696,8 +1696,8 @@ fn command_result_summary(method: &str, result: &Value) -> Option<Value> {
         | methods::CLAIM_USER_TAB
         | methods::RESUME_CONTROL => tab_command_result_summary(result),
         methods::GET_TABS | methods::GET_USER_TABS => tab_list_command_result_summary(result),
-        methods::TAB_EVALUATE
-        | methods::TAB_SNAPSHOT_TEXT
+        methods::TAB_EVALUATE => Some(evaluate_command_result_summary(result)),
+        methods::TAB_SNAPSHOT_TEXT
         | methods::TAB_SCREENSHOT
         | methods::TAB_CONTENT_EXPORT
         | methods::TAB_CLIPBOARD_READ
@@ -1826,6 +1826,21 @@ fn redacted_command_result_summary(result: &Value) -> Value {
         "reason": "sensitive_or_large_result",
         "valueType": command_value_type(result),
     })
+}
+
+/// `tab_evaluate` returns the agent's OWN script output. Small primitive results
+/// (bool, number, or short string) are safe and useful to surface verbatim so the
+/// agent can observe what it computed; larger or structured results may include
+/// page content, so they fall back to the redacted summary like other big payloads.
+fn evaluate_command_result_summary(result: &Value) -> Value {
+    let is_small_primitive = result.is_boolean()
+        || result.is_number()
+        || (result.is_string() && result.as_str().is_some_and(|s| s.chars().count() <= 64));
+    if is_small_primitive {
+        json!({ "type": command_value_type(result), "value": result })
+    } else {
+        redacted_command_result_summary(result)
+    }
 }
 
 /// Strip a `user:pass@` userinfo segment from a URL's authority, scoped ONLY to
@@ -1982,10 +1997,8 @@ fn is_sensitive_command_param(key: &str) -> bool {
     matches!(
         key.as_str(),
         "authorization"
-            | "body"
             | "content"
             | "cookie"
-            | "data"
             | "expression"
             | "html"
             | "password"
@@ -2546,6 +2559,63 @@ mod tests {
         assert!(
             summary.get("jsonBytes").is_none(),
             "must not serialize full result to count bytes"
+        );
+    }
+
+    #[test]
+    fn redaction_denylist_drops_generic_structural_keys_but_keeps_secrets() {
+        // Curated sensitive names still redacted:
+        for k in [
+            "authorization",
+            "cookie",
+            "password",
+            "token",
+            "value",
+            "text",
+            "html",
+            "script",
+            "expression",
+            "content",
+        ] {
+            assert!(is_sensitive_command_param(k), "{k} must stay sensitive");
+        }
+        // Generic structural names are no longer over-redacted:
+        assert!(!is_sensitive_command_param("body"));
+        assert!(!is_sensitive_command_param("data"));
+        // Substring fallbacks still catch obviously-secret keys:
+        assert!(is_sensitive_command_param("api_token"));
+        assert!(is_sensitive_command_param("client_secret"));
+        assert!(is_sensitive_command_param("user_password"));
+    }
+
+    #[test]
+    fn evaluate_summary_surfaces_small_primitives_and_redacts_big_results() {
+        // Small primitives surfaced verbatim.
+        assert_eq!(
+            evaluate_command_result_summary(&json!(true)),
+            json!({ "type": "boolean", "value": true })
+        );
+        assert_eq!(
+            evaluate_command_result_summary(&json!(42)),
+            json!({ "type": "number", "value": 42 })
+        );
+        assert_eq!(
+            evaluate_command_result_summary(&json!("ok")),
+            json!({ "type": "string", "value": "ok" })
+        );
+        // Long strings and structured values are redacted.
+        let long = "x".repeat(65);
+        assert_eq!(
+            evaluate_command_result_summary(&json!(long))["type"],
+            "redacted"
+        );
+        assert_eq!(
+            evaluate_command_result_summary(&json!({ "a": 1 }))["type"],
+            "redacted"
+        );
+        assert_eq!(
+            evaluate_command_result_summary(&json!([1, 2, 3]))["type"],
+            "redacted"
         );
     }
 
