@@ -430,10 +430,7 @@ async fn mcp_stdio_drains_tracked_background_operations() {
     .await;
     let drained = read_json(&mut reader).await;
     assert_eq!(drained["id"], 2);
-    assert_eq!(
-        drained["result"]["structuredContent"]["result"],
-        "done"
-    );
+    assert_eq!(drained["result"]["structuredContent"]["result"], "done");
 
     send(
         &mut stdin,
