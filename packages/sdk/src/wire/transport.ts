@@ -75,11 +75,17 @@ export class Transport {
   #nextId = 1;
   #pending = new Map<number, Pending>();
   #timedOutRequests = new Map<number, TransportRequestLifecycle>();
+  #sessionIdOverride: string | undefined;
 
   constructor(private readonly connection: NativePipeConnection) {
     this.connection.on("data", (chunk) => this.#onData(chunk));
     this.connection.on("close", () => this.#onClose("transport closed"));
     this.connection.on("error", (error) => this.#onClose(String(error ?? "transport error")));
+  }
+
+  setSessionIdOverride(sessionId: string | undefined): this {
+    this.#sessionIdOverride = sessionId;
+    return this;
   }
 
   async sendRequest<R = unknown>(
@@ -102,11 +108,14 @@ export class Transport {
     // The host reads kernel_generation from this envelope and rejects
     // `runtime`/`_runtime` inside params. `runtime` is omitted entirely when no
     // frameMeta.runtime is supplied so existing requests stay byte-identical.
+    const scopedParams = this.#sessionIdOverride
+      ? { ...params, session_id: this.#sessionIdOverride }
+      : params;
     const payload = {
       jsonrpc: "2.0",
       id,
       method,
-      params: { ...params, client_timeout_ms: timeoutMs },
+      params: { ...scopedParams, client_timeout_ms: timeoutMs },
       ...(frameMeta?.runtime !== undefined ? { runtime: frameMeta.runtime } : {}),
     };
 

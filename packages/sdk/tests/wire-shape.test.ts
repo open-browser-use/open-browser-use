@@ -946,6 +946,39 @@ describe("SDK wire-shape contracts", () => {
     }
   });
 
+  it("Browser.finalizeTabs merges host-enriched snake_case ids with empty extension camelCase ids", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    transport.responses.set(M.FINALIZE_TABS, {
+      status: "ok",
+      actions: [],
+      closedTabIds: [],
+      closed_tab_ids: ["tab-preclosed"],
+      releasedTabIds: [],
+      released_tab_ids: ["tab-released"],
+      keptTabs: [],
+      deliverableTabs: [],
+      finalTabs: { handoff: [], deliverable: [], activeTabId: null },
+      failures: [],
+      diagnostics: { reconciledFromChrome: true, reconciliationSource: "chrome.tabs" },
+    });
+    const browser = new Browser(
+      asTransport(transport),
+      { type: "webextension", name: "chrome", capabilities: {} },
+      { type: "webextension", name: "chrome", socketPath: "/tmp/webext", metadata: {} },
+      new Guards(),
+    );
+
+    try {
+      await expect(browser.finalizeTabs()).resolves.toMatchObject({
+        closedTabIds: ["tab-preclosed"],
+        releasedTabIds: ["tab-released"],
+      });
+    } finally {
+      restoreMeta();
+    }
+  });
+
   it("Browser.finalizeTabs exposes fatal reconciliation results without success aliases", async () => {
     const restoreMeta = setRequestMeta();
     const transport = new FakeTransport();

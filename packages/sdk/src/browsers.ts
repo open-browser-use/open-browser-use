@@ -1,6 +1,7 @@
 import { Browser } from "./browser.js";
 import { ObuError, ERR_NO_BACKEND, productErrorData } from "./errors.js";
 import { Guards } from "./guards.js";
+import { getSessionMeta } from "./session-meta.js";
 import type { ConnectedBackend } from "./runtime.js";
 
 export type DiscoveredBackend = {
@@ -34,6 +35,8 @@ export type BrowserGetOptions = {
 const CHROMIUM_FAMILY = new Set(["chrome", "edge", "brave", "arc", "chromium", "playwright"]);
 
 export class Browsers {
+  private nextBrowserSessionSequence = 1;
+
   constructor(
     private readonly connector: RuntimeConnector,
     private readonly defaultGuards = new Guards(),
@@ -55,7 +58,15 @@ export class Browsers {
       opts,
     );
     const connected = await this.connector.connectBackend(backend);
+    connected.transport.setSessionIdOverride(this.allocateBrowserSessionId());
     return new Browser(connected.transport, connected.info, connected.backend, opts.guards ?? this.defaultGuards);
+  }
+
+  private allocateBrowserSessionId(): string | undefined {
+    const runtimeSessionId = getSessionMeta().session_id;
+    if (!runtimeSessionId) return undefined;
+    const sequence = this.nextBrowserSessionSequence++;
+    return `${runtimeSessionId}:browser:${sequence}`;
   }
 }
 
