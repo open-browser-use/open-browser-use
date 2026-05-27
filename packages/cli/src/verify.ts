@@ -549,44 +549,47 @@ export function verifyExitCode(report: VerifyReport): number {
 
 export function formatVerifyReport(report: VerifyReport): string {
   if (report.result === "ready") {
-    const backend = report.mcpRuntime.cli.backends[0];
-    const descriptor = typeof report.browser.descriptor?.file === "string" ? report.browser.descriptor.file : "descriptor";
     return [
-      `open-browser-use is ${report.verificationTarget === "agent_runtime" ? "agent-runtime-ready" : "CLI-ready"}.`,
+      "Result: ready",
+      `Target: ${report.verificationTarget}`,
       `Agent: ${report.agent.id}`,
-      `Browser: ${report.browser.kind} ${report.browser.channel === "store" ? "Store extension" : "extension"} ${report.browser.extensionId}`,
-      `Backend: ${backend?.type ?? "webextension"} descriptor ${descriptor} responded to getInfo`,
-      `MCP runtime: direct probe found ${report.mcpRuntime.cli.backendCount ?? 0} usable backend${report.mcpRuntime.cli.backendCount === 1 ? "" : "s"}`,
-      `Agent runtime: ${report.readiness.agentRuntime === "ready" ? "ready" : "not checked"}`,
+      `Browser: ${report.browser.kind} ${report.browser.channel} ${report.browser.extensionId}`,
+      formatVerifyBackendLine(report),
+      "Next: none",
     ].join("\n");
   }
 
   if (report.result === "needs_browser_popup") {
-    const rerun = report.nextAction?.rerun;
     return [
-      "Browser popup required.",
+      `Result: ${report.result}`,
       ...formatProductErrorLine(report.productError),
-      "Local setup is correct, but no active WebExtension descriptor exists yet.",
-      report.nextAction?.message ?? "Open the open-browser-use pairing page. Click Resume if enabled.",
-      ...(rerun ? ["If it already shows Connected, wait briefly and rerun:", `  ${rerun}`] : []),
+      `Next: ${report.nextAction?.message ?? "Open the open-browser-use pairing page. Click Resume if enabled."}`,
+      ...formatVerifyNextActionDetails(report.nextAction),
     ].join("\n");
   }
 
   if (report.result === "needs_repair") {
     return [
-      "Repair required.",
+      `Result: ${report.result}`,
       ...formatProductErrorLine(report.productError),
-      report.nextAction?.message ?? "A deterministic open-browser-use repair is available.",
+      `Next: ${report.nextAction?.message ?? "A deterministic open-browser-use repair is available."}`,
       ...formatVerifyNextActionDetails(report.nextAction),
     ].join("\n");
   }
 
   return [
-    "Manual action required.",
+    `Result: ${report.result}`,
     ...formatProductErrorLine(report.productError),
-    report.nextAction?.message ?? "The selected target needs manual action before open-browser-use can verify readiness.",
+    `Next: ${report.nextAction?.message ?? "The selected target needs manual action before open-browser-use can verify readiness."}`,
     ...formatVerifyNextActionDetails(report.nextAction),
   ].join("\n");
+}
+
+function formatVerifyBackendLine(report: VerifyReport): string {
+  const count = report.mcpRuntime.cli.backendCount ?? 0;
+  const backendType = report.mcpRuntime.cli.backends[0]?.type;
+  const countLabel = count === 1 ? "1 usable" : `${count} usable backends`;
+  return backendType ? `Backend: ${countLabel} (${backendType})` : `Backend: ${countLabel}`;
 }
 
 function formatProductErrorLine(productError: ProductErrorSummary | null): string[] {

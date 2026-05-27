@@ -565,7 +565,7 @@ test("verify asks for profile selection when multiple matching profiles are ambi
   });
 
   assert.equal(human.code, 1);
-  assert.match(human.stdout, /Manual action required\./);
+  assert.match(human.stdout, /Result: needs_manual_action/);
   assert.match(human.stdout, new RegExp(`Profile:\\n  ${escapeRegExp(defaultProfile)}`));
   assert.match(human.stdout, /Rerun:\n  .*verify/);
 });
