@@ -157,6 +157,9 @@ mod tests {
 }
 ```
 
+Add one more assertion: every registry key resolves through
+`source_for_anchor(...)` with matching entrypoint and CodeGraph fields.
+
 Also add cross-language contract fixtures before implementing the Rust types:
 
 - `valid-basic.ndjson` contains `run.started`, `mcp.tool.started`,
@@ -195,6 +198,8 @@ In `crates/obu-node-repl/Cargo.toml`, add `rusqlite` to runtime dependencies for
 rusqlite = { workspace = true }
 ```
 
+Confirm the workspace `rusqlite` features include FTS5 for `obu-node-repl`.
+
 Create `crates/obu-node-repl/src/dev_log/mod.rs`:
 
 ```rust
@@ -207,7 +212,7 @@ pub use event::{
     DevLogPruning, DevLogRedaction, DevLogSource, DevLogState, validate_event_family,
 };
 pub use redaction::{RedactedValue, RedactionLimits, redact_value};
-pub use source_anchor::{SourceAnchor, source_anchor, registry};
+pub use source_anchor::{SourceAnchor, source_anchor, source_for_anchor, registry};
 ```
 
 Create `crates/obu-node-repl/src/dev_log/event.rs` with these public shapes:
@@ -455,6 +460,10 @@ pub fn source_anchor(key: &str) -> Option<&'static SourceAnchor> {
     SOURCE_ANCHORS.iter().find(|anchor| anchor.key == key)
 }
 ```
+
+Also add `source_for_anchor(key: &str) -> DevLogSource` and export it from
+`mod.rs`. It maps the registry row into `DevLogSource.entrypoint` plus
+`codegraph.query`, with `emitter = None`; unknown keys fail loudly.
 
 Create `crates/obu-node-repl/src/dev_log/redaction.rs` with an explicit recursive
 walker rather than ad hoc string replacement:
@@ -1148,9 +1157,16 @@ cargo test -p obu-node-repl --test mcp_stdio logs_failure_context_includes_real_
 Expected: FAIL with tool `logs_timeline`/`logs_failure_context` not found or
 missing log events.
 
-- [ ] **Step 3: Add query tool schemas and tool names**
+- [ ] **Step 3: Add dev-mode query tool schemas and tool names**
 
-In `ObuServer::tools()`, add tools:
+Gate log tools by dev-log mode:
+
+- non-dev list-tools stays at the existing five tools;
+- dev-mode list-tools adds the seven `logs_*` tools below;
+- direct `logs_*` calls while disabled return a structured "dev logs disabled"
+  error and do not create or read log state.
+
+In the dev-log-enabled tool list, add:
 
 ```rust
 Tool::new("logs_list_runs", "Return recent dev-log runs.", LOGS_LIST_RUNS_SCHEMA.clone()),
@@ -1162,10 +1178,7 @@ Tool::new("logs_source_context", "Group dev-log events by source anchor.", LOGS_
 Tool::new("logs_rebuild_index", "Rebuild the dev-log SQLite index from NDJSON.", LOGS_REBUILD_INDEX_SCHEMA.clone()),
 ```
 
-Update existing exact tool-list assertions in `crates/obu-node-repl/src/mcp_server.rs`
-and `crates/obu-node-repl/tests/mcp_stdio.rs` in the same task. They currently
-assert the old five-tool list, so adding `logs_*` without updating those tests
-will fail unrelated verification.
+Update exact tool-list assertions for both modes.
 
 Each query tool returns `structuredContent` with explicit keys:
 
@@ -1211,7 +1224,7 @@ match name.as_ref() {
 }
 ```
 
-Each `call_logs_*` helper decodes its own args, calls the matching function in `dev_log::query`, and returns `structuredContent`. `call_logs_sql` must enforce the read-only SQL guardrails from the spec before executing. Do not rely on a string prefix allowlist. The implementation must:
+Each `call_logs_*` helper first checks dev-log mode, decodes its own args, calls the matching function in `dev_log::query`, and returns `structuredContent`. `call_logs_sql` must enforce the read-only SQL guardrails from the spec before executing. Do not rely on a string prefix allowlist. The implementation must:
 
 - open a dedicated read-only connection for the call;
 - prepare exactly one statement and reject trailing SQL;
@@ -1235,11 +1248,9 @@ anchor/codegraph query, and structured error fields.
 Before wrapping calls, construct and pass the aggregator explicitly. In
 `run_stdio_server_with_options`, if `ManagerOptions.dev_log_config` is `Some`,
 call `DevLogAggregator::start(config)` exactly once, store the cloneable producer
-handle in `ObuServer`, and pass a clone into `JsRuntimeManager` so kernel
-lifecycle events and `dev_log_event` demux use the same per-run sequence stream.
-If dev logs are disabled, no aggregator is constructed and no dev-log files are
-created. Add integration coverage for both `obu mcp stdio --dev-logs` without
-`--dev-log-run-id` and default non-dev mode.
+handle in `ObuServer`, and use it for MCP-tool wrapping/query tool routing in
+this task. Task 5 threads the same handle into `JsRuntimeManager`. Disabled mode
+constructs no aggregator and writes no dev-log files.
 
 Add a helper in `mcp_server.rs`:
 
@@ -1303,6 +1314,7 @@ git commit -m "feat: expose dev log MCP tools"
 ## Task 5: Kernel Lifecycle And `dev_log_event` Frame Demux
 
 **Files:**
+- Modify: `crates/obu-node-repl/src/mcp_server.rs`
 - Modify: `crates/obu-node-repl/src/native_pipe/protocol.rs`
 - Modify: `crates/obu-node-repl/src/repl_manager/mod.rs`
 - Modify: `crates/obu-node-repl/embedded/kernel.js`
@@ -1376,6 +1388,10 @@ Pass `Option<DevLogAggregator>` into the demux task from `JsRuntimeManager`.
 This call must only enqueue into the bounded writer channel; the stdout demux
 must never perform NDJSON fsync or SQLite insertion inline, because that would
 serialize kernel frame routing behind dev-log I/O.
+
+Add `dev_log: Option<DevLogAggregator>` to `JsRuntimeManager`, update `new(...)`,
+and pass the same aggregator clone to `JsRuntimeManager` and `ObuServer` before
+any kernel boot can spawn the demux.
 
 - [ ] **Step 4: Emit node-repl-owned lifecycle and exec events**
 
@@ -1525,9 +1541,9 @@ git commit -m "feat: bridge kernel dev log events"
 - Modify: `packages/sdk/src/browser.ts`
 - Modify: `packages/sdk/src/browser_tabs.ts`
 - Modify: `packages/sdk/src/browser_user.ts`
-- Test: `packages/sdk/tests/dev-log.test.ts`
-- Test: `packages/sdk/tests/browsers.test.ts`
-- Test: `packages/sdk/tests/browser.test.ts`
+- Create: `packages/sdk/tests/dev-log.test.ts`
+- Modify: `packages/sdk/tests/browsers.test.ts`
+- Create: `packages/sdk/tests/browser.test.ts`
 
 - [ ] **Step 1: Write failing SDK dev-log tests**
 
@@ -1818,7 +1834,7 @@ emitDevLog({
 });
 ```
 
-On each successful return, emit `backend.select` with `status: "succeeded"` and `output` containing `{ type, name, socketPath }`. In `noBackend`, emit `backend.select` with `status: "failed"` and `error.productErrorCode = "no_backend"`.
+On each successful return, emit `backend.select` with `status: "succeeded"` and `output` containing `{ type, name, socketPath }`. `selectBackend` has several branch returns, so implement this with a single selected-backend exit path or a small helper that every successful branch calls; do not rely on manually duplicating emission at each return site. In `noBackend`, emit `backend.select` with `status: "failed"` and `error.productErrorCode = "no_backend"`.
 
 In `Browsers.list()` and `Browsers.diagnostics()`, emit `backend.discovery` with the number of visible backends and diagnostics. In `Browsers.get()`, wrap `connectBackend` so pre-transport connection failures are visible:
 
@@ -2065,12 +2081,16 @@ emitDevLog({
   level: "info",
   ids: {},
   source: createSource("sdk.HighLevelActionResult.transition"),
-  operation: { kind: "high_level_action", name: this.name, status: next },
+  operation: { kind: "high_level_action", name: this.name, status: highLevelOperationStatus(next) },
   state: { machine: `high_level_action.${this.name}`, from: this.trace.state, to: next },
   summary: `${this.name} transitioned ${this.trace.state} -> ${next}`,
 });
 this.trace.transition(next);
 ```
+
+`highLevelOperationStatus(next)` maps terminal states to
+`succeeded|partial|blocked|failed|cancelled` and maps in-progress states to
+`started`; raw `HighLevelActionState` stays in `state.to`.
 
 - [ ] **Step 6: Emit task lifecycle events**
 
@@ -2133,20 +2153,20 @@ Add to `crates/obu-node-repl/tests/native_pipe_broker.rs`:
 ```rust
 #[tokio::test]
 async fn native_pipe_broker_emits_lifecycle_for_connect_failures() {
-    let (outbox_tx, mut outbox_rx) = tokio::sync::mpsc::channel(8);
+    let (outbox_tx, _outbox_rx) = tokio::sync::mpsc::channel(8);
     let events = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
     let sink_events = events.clone();
-    let broker = NativePipeBroker::new_for_tests_with_lifecycle_sink(outbox_tx, move |draft| {
+    let broker = std::sync::Arc::new(NativePipeBroker::new_for_tests_with_lifecycle_sink(outbox_tx, move |draft| {
         sink_events.lock().unwrap().push(draft);
-    });
+    }));
 
-    broker.dispatch_request(NativePipeRequest {
+    let response = broker.dispatch(NativePipeRequest {
         id: "native-pipe-1".into(),
         token: "token".into(),
         op: NativePipeOp::Connect { path: "/not/allowed.sock".into() },
     }).await;
 
-    let _response = outbox_rx.recv().await.unwrap();
+    assert!(!response.ok);
     let events = events.lock().unwrap();
     assert!(events.iter().any(|event| event.event == "native_pipe.lifecycle"));
     assert!(events.iter().any(|event| event.operation.as_ref().unwrap().status.as_deref() == Some("failed")));
@@ -2203,7 +2223,8 @@ cargo test -p obu-node-repl --test native_pipe_broker native_pipe_broker_emits_l
 pnpm --filter @open-browser-use/sdk test -- browser.test.ts
 ```
 
-Expected: FAIL with missing `new_for_tests_with_lifecycle_sink` and missing SDK diagnostic log events.
+Expected: FAIL with missing `new_for_tests_with_lifecycle_sink`, missing lifecycle
+sink emission from `dispatch`, and missing SDK diagnostic log events.
 
 - [ ] **Step 4: Emit native-pipe lifecycle events**
 
@@ -2217,30 +2238,12 @@ Emit `native_pipe.lifecycle` in `dispatch`, `connect`, `write`, `close`, and `re
 
 - [ ] **Step 5: Surface host peer/task lifecycle diagnostics**
 
-In `crates/obu-host/src/dispatcher.rs`, ensure `peer_lifecycle_metadata()` includes recent events already recorded by `PeerLifecycleDiagnostics`, with fields derived from the current `PeerLifecycleDiagnosticEvent` shape (`kind`, `reason`, `at_unix_ms`). Derive `nextAction` from `kind` when useful:
+In `crates/obu-host/src/dispatcher.rs`, make `peer_lifecycle_metadata()` additive:
 
-```rust
-fn peer_event_next_action(kind: PeerLifecycleEventKind) -> Option<&'static str> {
-    match kind {
-        PeerLifecycleEventKind::AuthRejected | PeerLifecycleEventKind::OsCredentialRejected => Some("check capability token and peer authorization"),
-        PeerLifecycleEventKind::FirstFrameMissingAuth => Some("send auth as the first native-pipe frame"),
-        PeerLifecycleEventKind::PeerClosed | PeerLifecycleEventKind::RequestCancelled => Some("reconnect and retry the request if it is idempotent"),
-        _ => None,
-    }
-}
-
-let recent_events = self.inner.peer_diagnostics.recent_events(20);
-json!({
-    "recent_event_count": recent_events.len(),
-    "recent_events": recent_events.into_iter().map(|event| json!({
-        "machine": "host.peer",
-        "event": event.kind,
-        "reason": event.reason,
-        "atUnixMs": event.at_unix_ms,
-        "nextAction": peer_event_next_action(event.kind),
-    })).collect::<Vec<_>>(),
-})
-```
+- keep existing `recent_events[].kind`, `reason`, and `at_unix_ms`;
+- add only `machine`, optional `event`, `atUnixMs`, and `nextAction`;
+- derive `nextAction` from auth rejection, missing auth, peer closed, and request
+  cancelled kinds.
 
 In `crates/obu-host/src/task_lifecycle.rs`, add a helper:
 
@@ -2254,7 +2257,9 @@ pub fn task_lifecycle_diagnostic(from: TaskState, to: TaskState) -> serde_json::
 }
 ```
 
-Use it in task-store resume/complete response diagnostics where task transitions are already made.
+Use it in task-store resume/complete response diagnostics. The source anchor
+still points at the canonical `TaskLifecycle::transition`; emission may happen at
+the task-store layer.
 
 - [ ] **Step 6: Preserve extension lifecycle snapshots**
 
@@ -2269,6 +2274,8 @@ In `packages/extension/src/background.ts`, `publishExtensionStatus()` already se
 ```
 
 Add `native_transport: nativeTransport.currentStatus()` to that notification. In `native_transport_controller.ts`, keep `state`, `message`, `diagnosis`, and `updatedAt` stable in `currentStatus()`.
+`extension_diagnostics()` currently clones stored JSON, so this field should
+pass through; add a regression test if an allowlist is introduced.
 
 - [ ] **Step 7: Normalize surfaced host/extension diagnostics into dev-log events**
 
@@ -2320,6 +2327,7 @@ Run:
 ```bash
 cargo test -p obu-node-repl --test native_pipe_broker native_pipe_broker_emits_lifecycle_for_connect_failures
 cargo test -p obu-host native_messaging
+cargo test -p obu-host
 pnpm --filter @open-browser-use/sdk test -- browser.test.ts
 pnpm --filter @open-browser-use/extension test
 ```
@@ -2611,6 +2619,7 @@ Run:
 
 ```bash
 cargo test -p obu-node-repl
+cargo test -p obu-host
 pnpm --filter @open-browser-use/sdk test
 pnpm --filter @open-browser-use/sdk typecheck
 pnpm --filter @open-browser-use/extension test
@@ -2666,9 +2675,10 @@ Spec coverage:
 - NDJSON plus SQLite/FTS source/index split, including live and rebuild FTS population: Task 2.
 - Source anchors and CodeGraph queries: Tasks 1, 6, and 7.
 - Cross-process writer ownership and `dev_log_event` bridge: Task 5.
-- MCP query tools and no contamination by `logs_*`: Task 4.
+- Dev-mode-gated MCP query tools and no contamination by `logs_*`: Task 4.
 - Pruning tombstones, inline payload budgeting, run retention, and rebuild metadata: Task 9.
 - Backend/kernel/SDK/task failure paths/native-pipe/host/extension coverage: Tasks 5 through 8.
+- Host regression coverage, including peer diagnostic metadata shape: Tasks 8 and 10.
 - Redaction implementation, metadata wiring, and payload caps: Tasks 1, 2, and 9.
 - Docs and smoke validation: Tasks 9 and 10.
 
