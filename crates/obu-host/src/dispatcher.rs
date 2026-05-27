@@ -576,12 +576,23 @@ impl Dispatcher {
         }
         event.insert("params".to_string(), params);
         if let Some(error) = response.error.as_ref() {
+            // The error message and `data` can echo the failed URL verbatim (e.g.
+            // `navigation failed: <netError> (<url>)`), and that URL routinely
+            // carries credentials in its query/fragment. Summarize `data` (which
+            // redacts a `url`-keyed string and truncates long blobs while keeping
+            // short `netError`/`retryable` fields intact), then scrub any raw
+            // URL the message inherited from that same `data.url`.
+            let data = error
+                .data
+                .as_ref()
+                .map(|d| summarize_command_value(None, d));
+            let message = redact_url_in_message(&error.message, error.data.as_ref());
             event.insert(
                 "error".to_string(),
                 json!({
                     "code": &error.code,
-                    "message": &error.message,
-                    "data": &error.data,
+                    "message": message,
+                    "data": data,
                 }),
             );
         }
@@ -1674,7 +1685,10 @@ fn command_params_summary(params: &Value) -> Value {
 
 fn command_result_summary(method: &str, result: &Value) -> Option<Value> {
     match method {
-        methods::TAB_URL | methods::TAB_TITLE => Some(string_command_result_summary(result)),
+        // `tab_url` returns a URL whose query/fragment may carry credentials, so
+        // it is redacted before measuring/storing; `tab_title` is plain text.
+        methods::TAB_URL => Some(url_command_result_summary(result)),
+        methods::TAB_TITLE => Some(string_command_result_summary(result)),
         methods::FINALIZE_TABS => Some(finalize_command_result_summary(result)),
         methods::CREATE_TAB
         | methods::GET_CURRENT_TAB
@@ -1697,6 +1711,16 @@ fn command_result_summary(method: &str, result: &Value) -> Option<Value> {
             Some(redacted_command_result_summary(result))
         }
         _ => None,
+    }
+}
+
+/// Result summary for `tab_url`: identical shape to `string_command_result_summary`
+/// but redacts the URL's query/fragment first so credentials in a `?token=…` or
+/// `#access_token=…` are never measured or persisted.
+fn url_command_result_summary(result: &Value) -> Value {
+    match result.as_str() {
+        Some(text) => string_command_result_summary(&Value::String(redact_url(text))),
+        None => string_command_result_summary(result),
     }
 }
 
@@ -1783,7 +1807,14 @@ fn summarize_tab_like_result(value: &Value) -> Option<Value> {
         "commandable",
     ] {
         if let Some(value) = object.get(key) {
-            tab.insert(key.to_string(), summarize_command_value(Some(key), value));
+            // The `url` key may carry credentials in its query/fragment; redact a
+            // string value to scheme+host+path. Non-string values fall back to the
+            // generic summarizer.
+            let summarized = match (key, value) {
+                ("url", Value::String(raw)) => Value::String(redact_url(raw)),
+                _ => summarize_command_value(Some(key), value),
+            };
+            tab.insert(key.to_string(), summarized);
         }
     }
     (!tab.is_empty()).then_some(Value::Object(tab))
@@ -1798,9 +1829,91 @@ fn redacted_command_result_summary(result: &Value) -> Value {
     })
 }
 
+/// Strip a `user:pass@` userinfo segment from a URL's authority, scoped ONLY to
+/// the authority that follows `://` so a `@` in a path/query, a `mailto:` (which
+/// has no `://`), or an IPv6 host (`http://[::1]:8080/p`) is left intact.
+fn strip_userinfo(url: &str) -> String {
+    if let Some(scheme_end) = url.find("://") {
+        let (prefix, rest) = url.split_at(scheme_end + 3); // prefix includes "://"
+        let authority_end = rest.find(['/', '?']).unwrap_or(rest.len());
+        let (authority, tail) = rest.split_at(authority_end);
+        if let Some(at) = authority.rfind('@') {
+            return format!("{prefix}{}{tail}", &authority[at + 1..]);
+        }
+    }
+    url.to_string()
+}
+
+/// Strip credential-bearing parts from a URL for durable logging, keeping
+/// scheme+host+path for debuggability. Removes the fragment and query string
+/// (which routinely carry tokens, signed-URL credentials, and OAuth callback
+/// codes) AND a `user:pass@` userinfo segment — all of which must not be
+/// persisted to `tasks.db`.
+fn redact_url(raw: &str) -> String {
+    let no_fragment = raw.split('#').next().unwrap_or(raw);
+    let (base, had_query) = match no_fragment.split_once('?') {
+        Some((base, _query)) => (base, true),
+        None => (no_fragment, false),
+    };
+    // Strip userinfo from the no-query base so the authority scan (which stops at
+    // the first `/` or `?`) isn't confused by a query that's already gone.
+    let base = strip_userinfo(base);
+    if had_query {
+        format!("{base}?…")
+    } else {
+        base
+    }
+}
+
+/// Scrub a raw URL out of an error message before durable logging.
+///
+/// Structured errors such as `NavigationFailed` format their message as
+/// `navigation failed: <netError> (<url>)`, embedding the failed URL verbatim —
+/// including any `?token=` credentials. The same URL is carried structurally in
+/// `error.data.url`, so we replace its exact occurrences in the message with the
+/// query/fragment-stripped form. When `data.url` is absent we leave the message
+/// untouched (there is no structured URL to key off, and the message is already
+/// drawn from a fixed set of host-authored format strings).
+fn redact_url_in_message(message: &str, error_data: Option<&Value>) -> String {
+    let Some(raw_url) = error_data
+        .and_then(|data| data.get("url"))
+        .and_then(Value::as_str)
+    else {
+        return message.to_string();
+    };
+    let redacted = redact_url(raw_url);
+    if redacted == raw_url {
+        message.to_string()
+    } else {
+        message.replace(raw_url, &redacted)
+    }
+}
+
+/// True for object keys whose string value is a URL we must redact before
+/// persisting (query/fragment may carry credentials). Case-insensitive so
+/// `url`, `URL`, `finalUrl`, etc. are all covered.
+fn is_url_command_param(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    key == "url" || key.ends_with("url")
+}
+
 fn summarize_command_value(key: Option<&str>, value: &Value) -> Value {
     if key.is_some_and(is_sensitive_command_param) {
         return redact_command_value(value);
+    }
+    // URL-valued keys keep scheme+host+path but drop the query/fragment, which
+    // routinely carry tokens/credentials. A `?token=…` shorter than 512 chars
+    // would otherwise survive the length rule below verbatim.
+    if key.is_some_and(is_url_command_param)
+        && let Value::String(text) = value
+    {
+        let redacted = redact_url(text);
+        let length = redacted.chars().count();
+        return if length > 512 {
+            json!({ "truncated": true, "length": length })
+        } else {
+            Value::String(redacted)
+        };
     }
     match value {
         Value::String(text) => {
@@ -2423,6 +2536,134 @@ mod tests {
         assert_eq!(bad["outcome"], json!("error"));
         assert_eq!(bad["netError"], json!("net::ERR_CONNECTION_RESET"));
         assert_eq!(bad["retryable"], json!(true));
+    }
+
+    #[test]
+    fn redact_url_strips_query_and_fragment() {
+        // Query and fragment both carry secrets; only scheme+host+path survive.
+        assert_eq!(
+            redact_url("https://site.test/cb?token=SUPERSECRET#frag"),
+            "https://site.test/cb?…"
+        );
+        // No-query URL is returned unchanged.
+        assert_eq!(
+            redact_url("https://site.test/path/here"),
+            "https://site.test/path/here"
+        );
+        // A fragment-only URL drops the fragment (no `?…` since there was no query).
+        assert_eq!(
+            redact_url("https://site.test/page#section-2"),
+            "https://site.test/page"
+        );
+        // A fragment carrying a query-looking secret (after `#`) is still stripped:
+        // the fragment is removed before the `?` split, so nothing leaks.
+        let r = redact_url("https://site.test/page#access_token=SUPERSECRET");
+        assert_eq!(r, "https://site.test/page");
+        assert!(!r.contains("SUPERSECRET"));
+
+        // Userinfo credentials in the authority are stripped, host is retained.
+        let r = redact_url("http://user:pass@host/p?token=SECRET");
+        assert!(!r.contains("user"), "userinfo user leaked: {r}");
+        assert!(!r.contains("pass"), "userinfo pass leaked: {r}");
+        assert!(!r.contains("SECRET"), "query secret leaked: {r}");
+        assert!(r.contains("host"), "host should survive: {r}");
+        assert_eq!(r, "http://host/p?…");
+
+        // Userinfo without a query still drops the credentials and adds no `?…`.
+        assert_eq!(redact_url("https://u:p@host/path"), "https://host/path");
+
+        // Scoping edge cases the userinfo strip must NOT over-reach on:
+        // - `mailto:` has no `://`, so the `@` in the address is untouched (only
+        //   the query becomes `?…`).
+        assert_eq!(redact_url("mailto:a@b.com?subject=x"), "mailto:a@b.com?…");
+        // - IPv6 literal host is preserved verbatim.
+        assert_eq!(redact_url("http://[::1]:8080/p?x"), "http://[::1]:8080/p?…");
+        // - `data:` URLs have no authority; left unchanged.
+        assert_eq!(redact_url("data:text/plain,hello"), "data:text/plain,hello");
+        // - empty string stays empty.
+        assert_eq!(redact_url(""), "");
+        // - an `@` in the PATH (not the authority) is not mistaken for userinfo.
+        assert_eq!(redact_url("https://host/u@v/p"), "https://host/u@v/p");
+    }
+
+    /// Pin the Display↔redaction seam: `NavigationFailed`'s message embeds the
+    /// failed URL verbatim, and the dispatcher scrubs it using the URL anchored in
+    /// `error.data.url`. If the Display format or the `data.url` anchor ever drift
+    /// apart, the message-level redaction would silently re-leak — this goes RED.
+    #[test]
+    fn navigation_failed_message_redaction_is_coupled_to_data() {
+        let err = HostError::NavigationFailed {
+            url: "http://h/p?token=SECRET".into(),
+            net_error: "net::ERR_X".into(),
+            retryable: true,
+        };
+        // Reproduce EXACTLY what build_browser_command_event consumes: the rpc
+        // error object's message + data, both derived from the same HostError.
+        let rpc = host_err_to_rpc(err);
+        let redacted = redact_url_in_message(&rpc.message, rpc.data.as_ref());
+        assert!(
+            !redacted.contains("SECRET"),
+            "URL secret survived in error message: {redacted}"
+        );
+        // The diagnostic netError must remain in the message.
+        assert!(
+            redacted.contains("net::ERR_X"),
+            "netError should survive in message: {redacted}"
+        );
+        // And the structured data still carries netError/retryable intact.
+        let data = rpc.data.as_ref().expect("nav error has data");
+        assert_eq!(data["netError"], json!("net::ERR_X"));
+        assert_eq!(data["retryable"], json!(true));
+    }
+
+    #[test]
+    fn summarize_tab_like_result_redacts_url() {
+        let tab = summarize_tab_like_result(&json!({
+            "url": "https://x.test/p?token=SECRET",
+            "title": "T",
+        }))
+        .expect("tab summary");
+        // Serialize the whole summary and assert the secret is gone but the host
+        // (debuggability) survives.
+        let serialized = serde_json::to_string(&tab).expect("serialize tab summary");
+        assert!(
+            serialized.contains("x.test"),
+            "host should survive for debuggability: {serialized}"
+        );
+        assert!(
+            !serialized.contains("SECRET"),
+            "query secret leaked into tab summary: {serialized}"
+        );
+        // The redacted url keeps scheme+host+path and marks the dropped query.
+        assert_eq!(tab["url"], json!("https://x.test/p?…"));
+        // Non-url fields are untouched.
+        assert_eq!(tab["title"], json!("T"));
+    }
+
+    #[test]
+    fn url_command_result_summary_redacts_but_title_does_not() {
+        // TAB_URL routes through url_command_result_summary => value redacted.
+        let url_summary =
+            command_result_summary(methods::TAB_URL, &json!("https://x.test/p?token=SECRET"))
+                .expect("url summary");
+        assert_eq!(
+            url_summary,
+            json!({ "type": "string", "value": "https://x.test/p?…" })
+        );
+        let serialized = serde_json::to_string(&url_summary).unwrap();
+        assert!(
+            !serialized.contains("SECRET"),
+            "url secret leaked: {serialized}"
+        );
+
+        // TAB_TITLE stays on the plain string summary (titles are not URLs).
+        let title_summary =
+            command_result_summary(methods::TAB_TITLE, &json!("My ?token=looking title"))
+                .expect("title summary");
+        assert_eq!(
+            title_summary,
+            json!({ "type": "string", "value": "My ?token=looking title" })
+        );
     }
 
     /// Long-task resume inherits the dispatcher's turn-authority gate:

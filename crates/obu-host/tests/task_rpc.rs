@@ -200,6 +200,47 @@ impl BrowserBackend for FailingCommandBackend {
     }
 }
 
+/// A backend whose tab commands fail with a `NavigationFailed` carrying a URL
+/// that has a query-string secret. This exercises the durable-logging path
+/// where `error.data` is built from the failed navigation (`url`, `netError`,
+/// `retryable`), so the integration test can prove the persisted event strips
+/// the URL secret while preserving the navigation diagnostics.
+struct NavFailureBackend;
+
+#[async_trait]
+impl BrowserBackend for NavFailureBackend {
+    fn kind(&self) -> BackendKind {
+        BackendKind::WebExtension
+    }
+
+    fn id(&self) -> &str {
+        "nav-failure-test"
+    }
+
+    async fn current_url_for_policy(
+        &self,
+        _ctx: &BackendRequestContext,
+        _tab_id: &str,
+    ) -> HostResult<String> {
+        Ok("https://example.test/current".into())
+    }
+
+    async fn tab_command_with_context(
+        &self,
+        _ctx: &BackendRequestContext,
+        _method: &str,
+        _params: Value,
+    ) -> HostResult<Value> {
+        // A deterministically-unreachable URL with a query secret. The host maps
+        // this to ERR_NAVIGATION_FAILED with `error.data.url` = this string.
+        Err(HostError::NavigationFailed {
+            url: "http://127.0.0.1:1/path?token=SUPERSECRET".into(),
+            net_error: "net::ERR_CONNECTION_REFUSED".into(),
+            retryable: true,
+        })
+    }
+}
+
 /// Build a dispatcher whose WebExtension backend can SUCCESSFULLY finalize a
 /// session (a stub transport plus the session pre-registered as agent-owned), so
 /// the finalize evidence side effect (Task 10) actually runs.
@@ -543,6 +584,75 @@ async fn failed_command_records_durable_error_event() {
             .expect("error message")
             .contains("synthetic tab failure")
     );
+}
+
+/// A navigation failure carries the failed URL in `error.data.url`, and that URL
+/// routinely embeds credentials in its query string. The durable
+/// `browser_command` event must NOT persist the query secret, yet the navigation
+/// diagnostics (`netError`/`retryable`) must survive both in the summarized
+/// `error.data` and in the lifted `navigation` tag.
+#[tokio::test]
+async fn nav_failure_error_data_strips_url_secret_but_keeps_diagnostics() {
+    let dispatcher =
+        Dispatcher::new_for_test_with_backend_and_temp_task_store(Arc::new(NavFailureBackend));
+    let response = dispatch_for_test(
+        &dispatcher,
+        methods::TAB_GOTO,
+        json!({
+            "session_id": "session-nav",
+            "turn_id": "turn-nav",
+            "tab_id": "42",
+            "url": "http://127.0.0.1:1/path?token=SUPERSECRET"
+        }),
+    )
+    .await;
+    assert!(
+        response.get("error").is_some(),
+        "tab_goto unexpectedly succeeded: {response:#}"
+    );
+
+    let tasks = dispatch_for_test(&dispatcher, methods::TASKS_LIST, json!({ "limit": 10 })).await;
+    let task_id = tasks["result"][0]["taskId"]
+        .as_str()
+        .expect("task id")
+        .to_string();
+    let command = await_browser_command_event(&dispatcher, &task_id).await;
+    let payload_text = command["payload"].as_str().expect("payload is a string");
+
+    // The security invariant: the query secret must not survive ANYWHERE in the
+    // persisted event payload (neither in params, error.data, nor navigation).
+    assert!(
+        !payload_text.contains("SUPERSECRET"),
+        "URL query secret leaked into durable payload: {payload_text}"
+    );
+
+    let payload: Value = serde_json::from_str(payload_text).expect("payload parses as json");
+    assert_eq!(payload["method"], methods::TAB_GOTO);
+    assert_eq!(payload["status"], "error");
+
+    // Navigation diagnostics survive in the summarized error.data: the host
+    // (scheme+host) is retained for debuggability and the netError/retryable
+    // fields are intact.
+    assert!(
+        payload["error"]["data"]["url"]
+            .as_str()
+            .is_some_and(|u| u.contains("127.0.0.1") && !u.contains("SUPERSECRET")),
+        "error.data.url should keep host but drop secret: {payload:#}"
+    );
+    assert_eq!(
+        payload["error"]["data"]["netError"],
+        json!("net::ERR_CONNECTION_REFUSED")
+    );
+    assert_eq!(payload["error"]["data"]["retryable"], json!(true));
+
+    // The lifted navigation tag (built from the RAW error data, before durable
+    // summarization) also retains the diagnostics.
+    assert_eq!(payload["navigation"]["outcome"], json!("error"));
+    assert_eq!(
+        payload["navigation"]["netError"],
+        json!("net::ERR_CONNECTION_REFUSED")
+    );
+    assert_eq!(payload["navigation"]["retryable"], json!(true));
 }
 
 /// A second finalize for the SAME turn must NOT create a second segment
