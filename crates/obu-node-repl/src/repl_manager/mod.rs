@@ -823,12 +823,12 @@ impl JsRuntimeManager {
 
     #[cfg(test)]
     fn mark_backend_inventory_dirty_for_tests(&self) {
-        self.backend_inventory_dirty.store(true, Ordering::Release);
+        self.backend_inventory_dirty.store(true, Ordering::Relaxed);
     }
 
     #[cfg(test)]
     fn backend_inventory_dirty_for_tests(&self) -> bool {
-        self.backend_inventory_dirty.load(Ordering::Acquire)
+        self.backend_inventory_dirty.load(Ordering::Relaxed)
     }
 
     async fn kill_kernel(&self) {
@@ -879,7 +879,7 @@ impl JsRuntimeManager {
         // Peek, don't consume: the broker clears the flag only when a connection
         // is successfully re-established, so every exec keeps re-discovering until
         // the restarted host is reachable (handles slow host relaunch).
-        if !self.backend_inventory_dirty.load(Ordering::Acquire) {
+        if !self.backend_inventory_dirty.load(Ordering::Relaxed) {
             return Ok(());
         }
         self.refresh_backend_inventory().await?;

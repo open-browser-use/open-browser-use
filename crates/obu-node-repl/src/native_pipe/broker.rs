@@ -168,8 +168,10 @@ impl NativePipeBroker {
         });
 
         // A live, authenticated connection means the host is reachable again:
-        // clear the dirty flag a prior disconnect set so exec stops re-discovering.
-        self.inventory_dirty.store(false, Ordering::Release);
+        // clear the dirty flag. Relaxed is sufficient — the flag publishes no
+        // data (the real inventory is re-read from the filesystem on the next
+        // exec); it is only a one-way "re-discover next time" signal.
+        self.inventory_dirty.store(false, Ordering::Relaxed);
 
         Ok(Some(serde_json::json!({ "connection_id": connection_id })))
     }
@@ -249,7 +251,9 @@ impl NativePipeBroker {
         // The connection dropped (host restart / MV3 service-worker recycle):
         // flag the inventory dirty so the next exec re-discovers the live backend
         // descriptor and cached SDK handles can reconnect to the new socket.
-        self.inventory_dirty.store(true, Ordering::Release);
+        // Relaxed: the flag carries no data of its own (the next exec re-reads the
+        // inventory from the filesystem), so no release/acquire pairing is needed.
+        self.inventory_dirty.store(true, Ordering::Relaxed);
         self.connections.lock().await.remove(&connection_id);
     }
 
