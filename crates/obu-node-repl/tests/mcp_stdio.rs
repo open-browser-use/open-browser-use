@@ -816,6 +816,108 @@ async fn assert_client_profile_round_trip(
     assert!(status.success(), "{client_name}");
 }
 
+#[tokio::test]
+async fn mcp_stdio_late_background_op_returns_real_value_not_masked() {
+    // A tracked op whose callback fires after its exec finished has no live exec to
+    // drain into. It must surface its REAL settlement, not a masked
+    // "exec context not found" rejection.
+    let bin = env!("CARGO_BIN_EXE_obu-node-repl");
+    let runtime_dir = tempdir().unwrap();
+    let mut child = Command::new(bin)
+        .arg("mcp")
+        .arg("stdio")
+        .env("OBU_RUNTIME_DIR", runtime_dir.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+
+    let mut stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(_line)) = lines.next_line().await {}
+    });
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": { "name": "obu-node-repl-test", "version": "0.0.0" }
+            }
+        }),
+    )
+    .await;
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {}
+        }),
+    )
+    .await;
+
+    let mut reader = BufReader::new(stdout).lines();
+    let init = read_json(&mut reader).await;
+    assert_eq!(init["id"], 1);
+
+    // Cell A: schedule a tracked op to fire ~10ms later (after this cell finalizes).
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "js",
+                "arguments": {
+                    "source": "globalThis.__late = new Promise((resolve) => setTimeout(() => { Promise.resolve(globalThis.obuRepl.trackBackgroundOperation(Promise.resolve(\"real-value\"))).then(resolve, (e) => resolve(\"MASKED:\" + e.message)); }, 10)); \"scheduled\";"
+                }
+            }
+        }),
+    )
+    .await;
+    let scheduled = read_json(&mut reader).await;
+    assert_eq!(scheduled["id"], 2);
+
+    // Cell B: await the late settlement.
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "js",
+                "arguments": { "source": "await globalThis.__late;" }
+            }
+        }),
+    )
+    .await;
+    let result = read_json(&mut reader).await;
+    assert_eq!(result["id"], 3);
+    assert_eq!(
+        result["result"]["structuredContent"]["result"], "real-value",
+        "late op was masked instead of returning its real value: {result:#}"
+    );
+
+    drop(stdin);
+    let status = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(status.success());
+}
+
 async fn send(stdin: &mut tokio::process::ChildStdin, value: Value) {
     stdin.write_all(value.to_string().as_bytes()).await.unwrap();
     stdin.write_all(b"\n").await.unwrap();

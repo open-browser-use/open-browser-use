@@ -2137,8 +2137,11 @@ const obuRepl = Object.freeze({
     let execState;
     try {
       execState = getCurrentExecState();
-    } catch (error) {
-      return makeRejectedThenable(error);
+    } catch {
+      // No live exec to drain into: the operation can't be tracked, but masking
+      // its real settlement with a rejection is worse than not tracking it.
+      // Return it untouched so the late callback sees the real value.
+      return Promise.resolve(operation);
     }
     return trackExecBackgroundOperation(execState, Promise.resolve(operation));
   },
