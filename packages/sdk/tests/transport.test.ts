@@ -349,6 +349,35 @@ describe("Transport", () => {
     await expect(promise).rejects.toMatchObject({ code: ERR_TRANSPORT_CLOSED });
   });
 
+  it("concurrent sends after close trigger exactly one reconnect", async () => {
+    let made = 0;
+    const first = new FakeConnection();
+    const second = new FakeConnection();
+    // Each write to the reconnected socket is answered by correlating on the
+    // written request id, just like the other reconnect tests.
+    second.onWrite = (request) => second.respond(request.id, { value: "ok" });
+    const transport = new Transport(first, async () => {
+      made++;
+      return second;
+    });
+    // Drive an initial request so the connection is "live", then close it so the
+    // next NEW requests take the transparent reconnect branch.
+    first.onWrite = (request) => first.respond(request.id, { value: "live" });
+    await expect(transport.sendRequest("tab_url", {}, 1000)).resolves.toBe("live");
+    first.emit("close");
+
+    // Both sends are issued synchronously BEFORE either reconnect resolves, so
+    // they must share the single in-flight reconnect rather than each spinning
+    // up its own connection.
+    const a = transport.sendRequest("tab_url", {}, 1000);
+    const b = transport.sendRequest("tab_title", {}, 1000);
+    await Promise.all([a, b]);
+    expect(made).toBe(1);
+    expect(transport.diagnostics().reconnects).toBe(1);
+    // The superseded fresh connection is never created, so nothing leaks.
+    expect(first.ended).toBe(true);
+  });
+
   it("rejects with transport_closed when reconnect keeps failing", async () => {
     const saved = {
       attempts: process.env.OBU_RECONNECT_MAX_ATTEMPTS,

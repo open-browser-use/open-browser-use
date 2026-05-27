@@ -90,6 +90,7 @@ export class Transport {
   #sessionIdOverride: string | undefined;
   #connection: NativePipeConnection;
   #reconnect: TransportReconnect | undefined;
+  #reconnectInFlight: Promise<void> | undefined;
   #reconnects = 0;
   #maxReconnectAttempts: number;
   #reconnectBackoffMs: number;
@@ -157,7 +158,22 @@ export class Transport {
     return this.#sendRaw<R>(method, params, timeoutMs, frameMeta);
   }
 
-  async #tryReconnect(): Promise<void> {
+  // Single-flight reconnect: concurrent NEW sends issued after the transport
+  // closed (host died / MV3 recycle) must AWAIT ONE reconnect, not each spin up
+  // their own. Without this, every concurrent caller invoked the reconnect
+  // factory, leaking the superseded fresh socket and resetting the
+  // decoder/reconnect counter once per caller. The in-flight promise is cleared
+  // once settled so a later close can reconnect again.
+  #tryReconnect(): Promise<void> {
+    if (this.#reconnectInFlight) return this.#reconnectInFlight;
+    const attempt = this.#reconnectOnce().finally(() => {
+      this.#reconnectInFlight = undefined;
+    });
+    this.#reconnectInFlight = attempt;
+    return attempt;
+  }
+
+  async #reconnectOnce(): Promise<void> {
     if (this.#disposed || !this.#reconnect) {
       throw new ObuError(
         ERR_TRANSPORT_CLOSED,
@@ -174,6 +190,14 @@ export class Transport {
       }
       try {
         const connection = await this.#reconnect();
+        // End the old (dead) connection before swapping so its socket isn't
+        // leaked across the reconnect. The transport already closed, so this is
+        // best-effort cleanup; the catch covers a socket that is already gone.
+        try {
+          this.#connection.end();
+        } catch {
+          /* old socket already gone */
+        }
         this.#detachListeners();
         this.#decoder = new FrameDecoder();
         this.#attachListeners(connection);
