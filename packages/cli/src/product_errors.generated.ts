@@ -146,5 +146,17 @@ export const PRODUCT_ERROR_SCHEMA = [
       "summary": "Check browser_status, then rerun verify if the backend is no longer available.",
       "command": "obu verify --agent=<agent-id> --browser=<browser> --channel=<extension-channel> --extension-id=<extension-id>"
     }
+  },
+  {
+    "code": "navigation_failed",
+    "title": "Navigation failed",
+    "summary": "The page could not be loaded due to a network-layer failure (connection reset, DNS, TLS, refused).",
+    "jsonRpcCodes": [
+      -1204
+    ],
+    "nextAction": {
+      "kind": "manual",
+      "summary": "If error.data.retryable is true, retry with backoff; otherwise report error.data.netError and stop."
+    }
   }
 ] as const;

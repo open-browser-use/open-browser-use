@@ -38,3 +38,10 @@ export const ERR_CDP_FAILURE = -1201;
 export const ERR_TAB_NOT_ATTACHED = -1202;
 /** Native browser dialog needs an explicit user/agent decision. */
 export const ERR_DIALOG_REQUIRES_DECISION = -1203;
+/**
+ * Navigation failed at the network layer (connection reset, DNS, TLS, refused).
+ *
+ * Carries structured data { netError, url, retryable } so agents can tell a
+ * retryable site/network failure from a protocol error.
+ */
+export const ERR_NAVIGATION_FAILED = -1204;

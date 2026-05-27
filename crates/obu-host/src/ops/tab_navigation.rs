@@ -34,9 +34,12 @@ where
     if let Some(error_text) = result.get("errorText").and_then(Value::as_str)
         && !error_text.is_empty()
     {
-        return Err(HostError::CdpFailure(format!(
-            "Page.navigate: {error_text}"
-        )));
+        let (net_error, retryable) = classify_net_error(error_text);
+        return Err(HostError::NavigationFailed {
+            url: url.to_string(),
+            net_error,
+            retryable,
+        });
     }
     wait_for_load_state(backend, tab_id, "load", Some(DEFAULT_WAIT_MS)).await?;
     backend.refresh_tab_metadata(tab_id).await?;
@@ -83,7 +86,7 @@ where
     B: TabNavigationBackend + Sync,
 {
     wait_until(timeout_ms.unwrap_or(DEFAULT_WAIT_MS), || async {
-        Ok(url(backend, tab_id).await? == expected_url)
+        Ok(url_matches(expected_url, &url(backend, tab_id).await?))
     })
     .await?;
     Ok(Value::Null)
@@ -260,11 +263,103 @@ where
     }
 }
 
+/// Match an `actual` URL against a `pattern` using Playwright-style globbing:
+/// `*` matches any (possibly empty) run of characters; every other character —
+/// including `?` (a URL query separator, never a wildcard) — matches literally.
+/// A pattern with no `*` is therefore an exact match (back-compatible).
+pub(crate) fn url_matches(pattern: &str, actual: &str) -> bool {
+    let p: Vec<char> = pattern.chars().collect();
+    let a: Vec<char> = actual.chars().collect();
+    let (mut pi, mut ai) = (0usize, 0usize);
+    let (mut star, mut mark) = (None::<usize>, 0usize);
+    while ai < a.len() {
+        if pi < p.len() && p[pi] == '*' {
+            star = Some(pi);
+            mark = ai;
+            pi += 1;
+        } else if pi < p.len() && p[pi] == a[ai] {
+            pi += 1;
+            ai += 1;
+        } else if let Some(s) = star {
+            pi = s + 1;
+            mark += 1;
+            ai = mark;
+        } else {
+            return false;
+        }
+    }
+    while pi < p.len() && p[pi] == '*' {
+        pi += 1;
+    }
+    pi == p.len()
+}
+
+/// Classify a Chrome `Page.navigate` errorText into (normalized net error,
+/// retryable). Transient connectivity failures are retryable; DNS/cert/policy
+/// failures are not. Unknown strings default to non-retryable so an agent
+/// reports rather than hammering.
+pub(crate) fn classify_net_error(error_text: &str) -> (String, bool) {
+    const RETRYABLE: &[&str] = &[
+        "ERR_CONNECTION_RESET",
+        "ERR_CONNECTION_CLOSED",
+        "ERR_CONNECTION_ABORTED",
+        "ERR_CONNECTION_REFUSED",
+        "ERR_CONNECTION_TIMED_OUT",
+        "ERR_TIMED_OUT",
+        "ERR_NETWORK_CHANGED",
+        "ERR_EMPTY_RESPONSE",
+        "ERR_SOCKET_NOT_CONNECTED",
+    ];
+    let retryable = RETRYABLE.iter().any(|code| error_text.contains(code));
+    (error_text.to_string(), retryable)
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::Mutex;
 
     use super::*;
+
+    #[test]
+    fn url_matches_exact_when_no_wildcard() {
+        assert!(url_matches("https://x.com/a", "https://x.com/a"));
+        assert!(!url_matches("https://x.com/a", "https://x.com/b"));
+    }
+
+    #[test]
+    fn url_matches_supports_glob_and_double_glob() {
+        assert!(url_matches(
+            "**/search**",
+            "https://www.google.com/search?q=hi"
+        ));
+        assert!(url_matches(
+            "*google.com/search*",
+            "https://www.google.com/search?q=hi"
+        ));
+        assert!(!url_matches(
+            "**/results**",
+            "https://www.google.com/search?q=hi"
+        ));
+    }
+
+    #[test]
+    fn url_matches_treats_question_mark_literally() {
+        // '?' is a query separator in URLs, NOT a wildcard.
+        assert!(url_matches("https://x.com/p?q=1", "https://x.com/p?q=1"));
+        assert!(!url_matches("https://x.com/p?q=1", "https://x.com/pXq=1"));
+    }
+
+    #[test]
+    fn classify_net_error_marks_transient_failures_retryable() {
+        assert_eq!(
+            classify_net_error("net::ERR_CONNECTION_RESET"),
+            ("net::ERR_CONNECTION_RESET".to_string(), true)
+        );
+        assert!(classify_net_error("net::ERR_TIMED_OUT").1);
+        assert!(!classify_net_error("net::ERR_NAME_NOT_RESOLVED").1);
+        assert!(!classify_net_error("net::ERR_CERT_DATE_INVALID").1);
+        assert!(!classify_net_error("weird").1);
+    }
 
     #[derive(Default)]
     struct FakeCdpExecutor {

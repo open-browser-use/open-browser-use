@@ -1290,6 +1290,9 @@ fn is_fatal(error: &HostError) -> bool {
                 )
                 || message.contains("Cross-origin or out-of-process iframes are not supported")
         }
+        // A non-retryable navigation failure (DNS, cert, refused) is fatal; a
+        // transient one (connection reset/timeout) may succeed on retry.
+        HostError::NavigationFailed { retryable, .. } => !retryable,
         HostError::Io(_) | HostError::Frame(_) => false,
     }
 }

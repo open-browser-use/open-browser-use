@@ -16,6 +16,7 @@
     { "constant": "ERR_PAGE_CLOSED", "code": -1200, "doc": ["Page or target has closed."] },
     { "constant": "ERR_CDP_FAILURE", "code": -1201, "doc": ["CDP command failed."] },
     { "constant": "ERR_TAB_NOT_ATTACHED", "code": -1202, "doc": ["Tab has not been attached."] },
-    { "constant": "ERR_DIALOG_REQUIRES_DECISION", "code": -1203, "doc": ["Native browser dialog needs an explicit user/agent decision."] }
+    { "constant": "ERR_DIALOG_REQUIRES_DECISION", "code": -1203, "doc": ["Native browser dialog needs an explicit user/agent decision."] },
+    { "constant": "ERR_NAVIGATION_FAILED", "code": -1204, "doc": ["Navigation failed at the network layer (connection reset, DNS, TLS, refused).", "", "Carries structured data { netError, url, retryable } so agents can tell a", "retryable site/network failure from a protocol error."] }
   ]
 }

@@ -40,6 +40,17 @@ pub enum HostError {
     #[error("cdp failure: {0}")]
     CdpFailure(String),
 
+    /// Navigation failed at the network layer (Chrome `Page.navigate` errorText).
+    #[error("navigation failed: {net_error} ({url})")]
+    NavigationFailed {
+        /// URL that failed to load.
+        url: String,
+        /// Normalized Chromium net error (e.g. `net::ERR_CONNECTION_RESET`).
+        net_error: String,
+        /// True when a retry may succeed (transient network failure).
+        retryable: bool,
+    },
+
     /// Operation timed out.
     #[error("timeout: {0}")]
     Timeout(String),

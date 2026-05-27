@@ -17,8 +17,8 @@ use obu_wire::{
     ErrorCode, ErrorObject, FrameCodec, Request, Response, RpcMessage,
     envelope::Id,
     error::{
-        ERR_CDP_FAILURE, ERR_DIALOG_REQUIRES_DECISION, ERR_OVERLOADED, ERR_PAGE_CLOSED,
-        ERR_TAB_NOT_ATTACHED,
+        ERR_CDP_FAILURE, ERR_DIALOG_REQUIRES_DECISION, ERR_NAVIGATION_FAILED, ERR_OVERLOADED,
+        ERR_PAGE_CLOSED, ERR_TAB_NOT_ATTACHED,
     },
     error::{
         ERR_CONFLICT, ERR_IO, ERR_NO_BACKEND, ERR_NOT_FOUND, ERR_NOT_IMPLEMENTED, ERR_PEER_AUTH,
@@ -532,6 +532,18 @@ impl Dispatcher {
                     "data": &error.data,
                 }),
             );
+        }
+        let nav_status = if response.error.is_some() {
+            "error"
+        } else {
+            "ok"
+        };
+        if let Some(nav) = navigation_event_field(
+            method,
+            nav_status,
+            response.error.as_ref().and_then(|err| err.data.as_ref()),
+        ) {
+            event.insert("navigation".to_string(), nav);
         }
         if let Some(result) = response
             .result
@@ -1634,7 +1646,9 @@ fn command_result_summary(method: &str, result: &Value) -> Option<Value> {
         | methods::PLAYWRIGHT_DOWNLOAD_PATH
         | methods::CUA_DOWNLOAD_MEDIA
         | methods::DOM_CUA_DOWNLOAD_MEDIA
-        | methods::PLAYWRIGHT_LOCATOR_DOWNLOAD_MEDIA => Some(redacted_command_result_summary(result)),
+        | methods::PLAYWRIGHT_LOCATOR_DOWNLOAD_MEDIA => {
+            Some(redacted_command_result_summary(result))
+        }
         _ => None,
     }
 }
@@ -2291,6 +2305,7 @@ fn host_err_to_rpc(error: HostError) -> ErrorObject {
         HostError::PageClosed(_) => ErrorCode::Server(ERR_PAGE_CLOSED),
         HostError::Timeout(_) => ErrorCode::Server(obu_wire::error::ERR_TIMEOUT),
         HostError::CdpFailure(_) => ErrorCode::Server(ERR_CDP_FAILURE),
+        HostError::NavigationFailed { .. } => ErrorCode::Server(ERR_NAVIGATION_FAILED),
         HostError::TabNotAttached(_) => ErrorCode::Server(ERR_TAB_NOT_ATTACHED),
         HostError::DialogRequiresDecision(_) => ErrorCode::Server(ERR_DIALOG_REQUIRES_DECISION),
         HostError::Rpc { .. } => unreachable!("handled above"),
@@ -2299,6 +2314,16 @@ fn host_err_to_rpc(error: HostError) -> ErrorObject {
     };
     let data = match &error {
         HostError::DialogRequiresDecision(dialog) => Some(dialog.data.clone()),
+        HostError::NavigationFailed {
+            url,
+            net_error,
+            retryable,
+        } => Some(json!({
+            "code": "navigation_failed",
+            "url": url,
+            "netError": net_error,
+            "retryable": retryable,
+        })),
         _ => None,
     };
     let error = ErrorObject::new(code, error.to_string());
@@ -2308,10 +2333,50 @@ fn host_err_to_rpc(error: HostError) -> ErrorObject {
     }
 }
 
+/// Structured navigation tag for `task_events`, present only for navigation
+/// methods. On failure it lifts `netError`/`retryable` out of the structured
+/// error data so navigation outcomes are queryable without parsing the error
+/// blob.
+fn navigation_event_field(method: &str, status: &str, error_data: Option<&Value>) -> Option<Value> {
+    if !matches!(
+        method,
+        methods::TAB_GOTO | methods::TAB_RELOAD | methods::TAB_BACK | methods::TAB_FORWARD
+    ) {
+        return None;
+    }
+    let mut nav = serde_json::Map::new();
+    nav.insert("outcome".to_string(), json!(status));
+    if let Some(data) = error_data {
+        if let Some(net_error) = data.get("netError") {
+            nav.insert("netError".to_string(), net_error.clone());
+        }
+        if let Some(retryable) = data.get("retryable") {
+            nav.insert("retryable".to_string(), retryable.clone());
+        }
+    }
+    Some(Value::Object(nav))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::backends::BackendRequestContext;
+
+    #[test]
+    fn navigation_event_field_tags_nav_methods_only() {
+        // Non-navigation method => no navigation tag.
+        assert!(navigation_event_field("tab_click", "ok", None).is_none());
+        // Successful goto => outcome ok.
+        let ok = navigation_event_field(methods::TAB_GOTO, "ok", None).expect("nav field");
+        assert_eq!(ok["outcome"], json!("ok"));
+        // Failed goto => lifts netError/retryable out of the structured error data.
+        let data = json!({"code":"navigation_failed","netError":"net::ERR_CONNECTION_RESET","retryable":true});
+        let bad =
+            navigation_event_field(methods::TAB_GOTO, "error", Some(&data)).expect("nav field");
+        assert_eq!(bad["outcome"], json!("error"));
+        assert_eq!(bad["netError"], json!("net::ERR_CONNECTION_RESET"));
+        assert_eq!(bad["retryable"], json!(true));
+    }
 
     /// Long-task resume inherits the dispatcher's turn-authority gate:
     /// `RESUME_CONTROL` is a mutation-context method, so a resume request that

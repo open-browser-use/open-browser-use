@@ -38,3 +38,8 @@ pub const ERR_CDP_FAILURE: i32 = -1201;
 pub const ERR_TAB_NOT_ATTACHED: i32 = -1202;
 /// Native browser dialog needs an explicit user/agent decision.
 pub const ERR_DIALOG_REQUIRES_DECISION: i32 = -1203;
+/// Navigation failed at the network layer (connection reset, DNS, TLS, refused).
+///
+/// Carries structured data { netError, url, retryable } so agents can tell a
+/// retryable site/network failure from a protocol error.
+pub const ERR_NAVIGATION_FAILED: i32 = -1204;
