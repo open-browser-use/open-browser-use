@@ -1554,7 +1554,15 @@ impl TaskStore {
     /// caller's fields) before appending, so [`TaskStore::append_typed_event`]'s
     /// kind-match invariant holds. No segment and no owner are created. Fails
     /// with `invalid_resume_token` if no pending/attached attempt matches.
-    pub fn complete_resume_blocked(&self, token: &str, payload: serde_json::Value) -> Result<()> {
+    ///
+    /// Returns the affected task's `task_id` (already resolved during the token
+    /// lookup) so the caller can project the `Blocked` task state without a
+    /// second token→task lookup.
+    pub fn complete_resume_blocked(
+        &self,
+        token: &str,
+        payload: serde_json::Value,
+    ) -> Result<String> {
         let AttachableAttempt {
             attempt_id,
             task_id,
@@ -1606,7 +1614,7 @@ impl TaskStore {
             "resume_attempt_blocked",
             serde_json::Value::Object(event),
         )?;
-        Ok(())
+        Ok(task_id)
     }
 }
 

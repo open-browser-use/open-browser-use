@@ -921,6 +921,178 @@ async fn resume_complete_blocked_persists_real_repair_detail() {
     );
 }
 
+/// A resume attempt that has only *begun* projects [`Resuming`].
+///
+/// The task must first reach `Running` (a successful command), because
+/// `Created -> Resuming` is not a legal transition — the projection is correctly
+/// skipped from `Created`. So we drive a successful `TAB_URL` (which the
+/// `CommandEventBackend` answers, projecting Running), then begin a resume under a
+/// DIFFERENT session/turn and assert the projected state advances to `resuming`.
+#[tokio::test]
+async fn resume_begin_projects_resuming() {
+    let dispatcher =
+        Dispatcher::new_for_test_with_backend_and_temp_task_store(Arc::new(CommandEventBackend));
+    let task_id = drive_task_to_running(&dispatcher, "session-run", "turn-run").await;
+
+    let begin = dispatch_resume(&dispatcher, &task_id, "session-b", "turn-b", 7).await;
+    assert!(
+        begin.get("error").is_none(),
+        "resume begin failed: {begin:#}"
+    );
+
+    let state = poll_task_state(&dispatcher, "resuming").await;
+    assert_eq!(
+        state, "resuming",
+        "begun resume attempt should project Resuming"
+    );
+}
+
+/// A resume attempt that *gives up* projects [`Blocked`].
+///
+/// Same Running prerequisite as the resuming case; we begin a resume (advancing to
+/// `Resuming`), then complete it as `blocked`, and assert the projected state
+/// reaches `blocked`. `Resuming -> Blocked` is a legal transition.
+#[tokio::test]
+async fn resume_blocked_projects_blocked() {
+    let dispatcher =
+        Dispatcher::new_for_test_with_backend_and_temp_task_store(Arc::new(CommandEventBackend));
+    let task_id = drive_task_to_running(&dispatcher, "session-run", "turn-run").await;
+
+    let begin = dispatch_resume(&dispatcher, &task_id, "session-b", "turn-b", 7).await;
+    assert!(
+        begin.get("error").is_none(),
+        "resume begin failed: {begin:#}"
+    );
+    let resume_token = begin["result"]["resumeToken"]
+        .as_str()
+        .expect("begin returns a resumeToken")
+        .to_string();
+
+    let complete = dispatch_resume_complete(
+        &dispatcher,
+        json!({
+            "taskId": task_id,
+            "session_id": "session-b",
+            "turn_id": "turn-b",
+            "resumeToken": resume_token,
+            "status": "blocked",
+            "repair": { "action": "reauthenticate", "url": "https://login.example.test/" },
+        }),
+        7,
+    )
+    .await;
+    assert!(
+        complete.get("error").is_none(),
+        "resume complete (blocked) failed: {complete:#}"
+    );
+
+    let state = poll_task_state(&dispatcher, "blocked").await;
+    assert_eq!(
+        state, "blocked",
+        "a blocked resume completion should project Blocked"
+    );
+}
+
+/// A resume attempt that *attaches* projects [`Running`] again.
+///
+/// We drive the task to `Running`, begin a resume (advancing to `Resuming`), then
+/// complete it as `attached` — which materializes the execution owner + segment —
+/// and assert the projected state returns to `running` (`Resuming -> Running`).
+/// The completion generation (`7`) is passed straight through to
+/// `ensure_turn_segment` and recorded on the segment; `complete_resume_attached`
+/// does NOT cross-check it against begin's recorded generation, so matching begin's
+/// `7` is incidental, not load-bearing for the attach. The test stays sound because
+/// the mid-test `poll_task_state("resuming")` guard proves the real
+/// `Resuming -> Running` transition rather than a no-op.
+#[tokio::test]
+async fn resume_attached_projects_running() {
+    let dispatcher =
+        Dispatcher::new_for_test_with_backend_and_temp_task_store(Arc::new(CommandEventBackend));
+    let task_id = drive_task_to_running(&dispatcher, "session-run", "turn-run").await;
+
+    let begin = dispatch_resume(&dispatcher, &task_id, "session-b", "turn-b", 7).await;
+    assert!(
+        begin.get("error").is_none(),
+        "resume begin failed: {begin:#}"
+    );
+    let resume_token = begin["result"]["resumeToken"]
+        .as_str()
+        .expect("begin returns a resumeToken")
+        .to_string();
+
+    // Confirm we actually passed through Resuming before completing, so the final
+    // `running` assertion proves a Resuming -> Running projection (not a no-op).
+    assert_eq!(poll_task_state(&dispatcher, "resuming").await, "resuming");
+
+    let complete = dispatch_resume_complete(
+        &dispatcher,
+        json!({
+            "taskId": task_id,
+            "session_id": "session-b",
+            "turn_id": "turn-b",
+            "resumeToken": resume_token,
+            "status": "attached",
+        }),
+        7,
+    )
+    .await;
+    assert!(
+        complete.get("error").is_none(),
+        "resume complete (attached) failed: {complete:#}"
+    );
+    assert_eq!(complete["result"]["status"], "attached");
+
+    let state = poll_task_state(&dispatcher, "running").await;
+    assert_eq!(
+        state, "running",
+        "an attached resume completion should project Running"
+    );
+}
+
+/// Drive a successful `TAB_URL` command (which the `CommandEventBackend` answers)
+/// so the task is projected `Running`, then return its id. The command event — and
+/// thus the Running projection — is written fire-and-forget off the RPC path, so we
+/// poll until the state settles. Reused by the resume-projection tests, which all
+/// require the task to be past `Created` before a resume transition is legal.
+async fn drive_task_to_running(dispatcher: &Dispatcher, session_id: &str, turn_id: &str) -> String {
+    let response = dispatch_for_test(
+        dispatcher,
+        methods::TAB_URL,
+        json!({ "session_id": session_id, "turn_id": turn_id, "tab_id": "42" }),
+    )
+    .await;
+    assert!(
+        response.get("error").is_none(),
+        "tab_url failed: {response:#}"
+    );
+    let state = poll_task_state(dispatcher, "running").await;
+    assert_eq!(state, "running", "task should be Running before resume");
+    let tasks = dispatch_for_test(dispatcher, methods::TASKS_LIST, json!({ "limit": 10 })).await;
+    tasks["result"][0]["taskId"]
+        .as_str()
+        .expect("task id")
+        .to_string()
+}
+
+/// Poll `tasksList` until the first task reaches `want` (50 x 20ms), returning the
+/// last observed state. Task-state projections are written asynchronously, so a
+/// direct read can race ahead of the projection.
+async fn poll_task_state(dispatcher: &Dispatcher, want: &str) -> String {
+    let mut state = String::new();
+    for _ in 0..50 {
+        let tasks =
+            dispatch_for_test(dispatcher, methods::TASKS_LIST, json!({ "limit": 10 })).await;
+        if let Some(s) = tasks["result"][0]["state"].as_str() {
+            state = s.to_string();
+            if state == want {
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    state
+}
+
 /// Send a `tasksResumeComplete` with a trusted generation envelope (sibling of
 /// `params`), mirroring how the SDK commits the terminal completion.
 async fn dispatch_resume_complete(

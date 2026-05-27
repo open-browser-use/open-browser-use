@@ -208,13 +208,23 @@ impl TaskStoreHandle {
                             generation,
                             reply,
                         } => {
-                            let result = store
-                                .complete_resume_attached(&token, generation)
-                                .map_err(|error| error.to_string())
-                                .and_then(|outcome| {
+                            let result = match store.complete_resume_attached(&token, generation) {
+                                Ok(outcome) => {
+                                    // The resumed segment is now the attached
+                                    // browser-side-effect authority: project Running.
+                                    project_task_state(
+                                        &store,
+                                        &outcome.task_id,
+                                        TaskState::Running,
+                                        &SessionTurnEvidence::running_on_turn(
+                                            outcome.segment.turn_id.clone(),
+                                        ),
+                                    );
                                     serde_json::to_value(outcome.segment)
                                         .map_err(|error| error.to_string())
-                                });
+                                }
+                                Err(error) => Err(error.to_string()),
+                            };
                             // Terminal state reached: evict the cached raw token
                             // so the map stays bounded.
                             evict_resume_token(&mut raw_resume_tokens, &token);
@@ -225,9 +235,20 @@ impl TaskStoreHandle {
                             payload,
                             reply,
                         } => {
-                            let result = store
-                                .complete_resume_blocked(&token, payload)
-                                .map_err(|error| error.to_string());
+                            let result = match store.complete_resume_blocked(&token, payload) {
+                                Ok(task_id) => {
+                                    // Resume gave up: project Blocked (control-state
+                                    // projection; transition guarded as always).
+                                    project_task_state(
+                                        &store,
+                                        &task_id,
+                                        TaskState::Blocked,
+                                        &SessionTurnEvidence::blocked(),
+                                    );
+                                    Ok(())
+                                }
+                                Err(error) => Err(error.to_string()),
+                            };
                             // Terminal state reached: evict the cached raw token
                             // so the map stays bounded.
                             evict_resume_token(&mut raw_resume_tokens, &token);
@@ -524,6 +545,17 @@ fn resume_begin(
 
     let plan = serde_json::to_value(plan).map_err(|error| error.to_string())?;
     let episode = serde_json::to_value(episode).map_err(|error| error.to_string())?;
+
+    // A resume attempt has begun: project Resuming. Best-effort and guarded — a
+    // task still in `Created` (no prior Running) legally has no `Resuming`
+    // transition, so this is simply skipped there.
+    project_task_state(
+        store,
+        task_id,
+        TaskState::Resuming,
+        &SessionTurnEvidence::resuming(),
+    );
+
     Ok(json!({
         "resumeToken": resume_token,
         "attemptId": attempt_id,

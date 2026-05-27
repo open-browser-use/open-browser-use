@@ -227,6 +227,26 @@ impl SessionTurnEvidence {
             control_state: None,
         }
     }
+
+    /// Evidence that a resume attempt is in progress
+    /// (`control_state == Some(ControlProjection::Resuming)`); all other fields
+    /// default. Supports [`TaskState::Resuming`].
+    pub fn resuming() -> Self {
+        Self {
+            control_state: Some(ControlProjection::Resuming),
+            ..Default::default()
+        }
+    }
+
+    /// Evidence that a resume gave up
+    /// (`control_state == Some(ControlProjection::Blocked)`); all other fields
+    /// default. Supports [`TaskState::Blocked`].
+    pub fn blocked() -> Self {
+        Self {
+            control_state: Some(ControlProjection::Blocked),
+            ..Default::default()
+        }
+    }
 }
 
 /// Host-side projection of session/turn lifecycle truth (Finding 8).
