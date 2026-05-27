@@ -120,7 +120,7 @@ impl FromStr for TaskState {
 ///
 /// Terminal states ([`TaskState::Completed`], [`TaskState::Cancelled`],
 /// [`TaskState::Failed`]) return an empty slice.
-fn allowed_transitions(state: TaskState) -> &'static [TaskState] {
+pub(crate) fn allowed_transitions(state: TaskState) -> &'static [TaskState] {
     use TaskState::*;
     match state {
         Created => &[Running, Cancelling, Failed],
@@ -210,6 +210,21 @@ impl SessionTurnEvidence {
         Self {
             control_state: Some(ControlProjection::HumanTakeover),
             ..Default::default()
+        }
+    }
+
+    /// Evidence that a task is actively running on `turn_id`: a live, open turn
+    /// whose attached segment just accepted a browser-side effect. The four
+    /// conditions are ASSERTED from an observed success (a successful browser
+    /// command, or an attached resume) — the success itself is the proof; they are
+    /// not independently probed. Supports [`TaskState::Running`].
+    pub fn running_on_turn(turn_id: impl Into<String>) -> Self {
+        Self {
+            current_turn_id: Some(turn_id.into()),
+            turn_open: true,
+            tab_commandable: true,
+            segment_attached: true,
+            control_state: None,
         }
     }
 }

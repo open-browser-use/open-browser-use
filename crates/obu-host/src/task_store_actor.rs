@@ -19,6 +19,9 @@ use anyhow::{Result, anyhow};
 use serde_json::{Value, json};
 use tokio::sync::{mpsc, oneshot};
 
+use crate::task_lifecycle::{
+    SessionTurnEvidence, TaskState, allowed_transitions, task_state_allowed,
+};
 use crate::task_store::{
     EpisodeExport, NewTask, ResumeAttemptBegin, Segment, TASK_STORE_SCHEMA_VERSION, TaskListFilter,
     TaskStore, TaskSummary, now_millis, plan_task_resume,
@@ -652,10 +655,55 @@ fn record_command_event(
     );
     payload.insert("turnId".to_string(), Value::String(turn_id.to_string()));
     payload.insert("at".to_string(), Value::Number(now_millis().into()));
+    let succeeded = payload.get("status").and_then(Value::as_str) == Some("ok");
     store
         .append_typed_event(&task_id, "browser_command", Value::Object(payload))
         .map_err(|e| e.to_string())?;
+
+    // Project Running: a successful browser command proves the turn is open, the
+    // tab is commandable, and this segment is the attached authority. Best-effort
+    // and guarded (see project_task_state) so a terminal/cancelling task is never
+    // revived and illegal transitions are skipped.
+    if succeeded {
+        project_task_state(
+            store,
+            &task_id,
+            TaskState::Running,
+            &SessionTurnEvidence::running_on_turn(turn_id),
+        );
+    }
     Ok(())
+}
+
+/// Best-effort forward projection: persist `target` only if the evidence supports
+/// it AND it is a legal one-step transition from the current state. Never fails the
+/// caller — task-state is an observability projection, not control flow — and logs
+/// on error.
+fn project_task_state(
+    store: &TaskStore,
+    task_id: &str,
+    target: TaskState,
+    evidence: &SessionTurnEvidence,
+) {
+    let current = match store.task_state(task_id) {
+        Ok(state) => state,
+        Err(error) => {
+            tracing::warn!(%error, task_id, ?target, "project_task_state: read failed");
+            return;
+        }
+    };
+    if current == target {
+        return;
+    }
+    if !task_state_allowed(target, evidence) {
+        return;
+    }
+    if !allowed_transitions(current).contains(&target) {
+        return;
+    }
+    if let Err(error) = store.set_state(task_id, target) {
+        tracing::warn!(%error, task_id, ?target, "project_task_state: set_state failed");
+    }
 }
 
 /// Evict the cached raw token whose value matches `token`.

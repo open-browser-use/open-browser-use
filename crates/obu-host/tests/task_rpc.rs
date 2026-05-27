@@ -406,6 +406,41 @@ async fn tab_command_records_durable_browser_command_event() {
 }
 
 #[tokio::test]
+async fn successful_command_projects_task_running() {
+    let dispatcher =
+        Dispatcher::new_for_test_with_backend_and_temp_task_store(Arc::new(CommandEventBackend));
+    let response = dispatch_for_test(
+        &dispatcher,
+        methods::TAB_URL,
+        json!({ "session_id": "session-run", "turn_id": "turn-run", "tab_id": "42" }),
+    )
+    .await;
+    assert!(
+        response.get("error").is_none(),
+        "tab_url failed: {response:#}"
+    );
+
+    // The command event — and thus the Running projection — is written
+    // asynchronously (fire-and-forget off the RPC path), so poll.
+    let mut state = String::new();
+    for _ in 0..50 {
+        let tasks =
+            dispatch_for_test(&dispatcher, methods::TASKS_LIST, json!({ "limit": 10 })).await;
+        if let Some(s) = tasks["result"][0]["state"].as_str() {
+            state = s.to_string();
+            if state == "running" {
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(
+        state, "running",
+        "task should be projected Running after a successful command"
+    );
+}
+
+#[tokio::test]
 async fn tab_title_command_records_safe_result_summary() {
     let dispatcher =
         Dispatcher::new_for_test_with_backend_and_temp_task_store(Arc::new(CommandEventBackend));
