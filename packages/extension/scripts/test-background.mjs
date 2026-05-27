@@ -683,6 +683,23 @@ assert.equal(autoAttachCommand.commandParams.flatten, true);
 assert.equal(autoAttachCommand.commandParams.autoAttach, true);
 assert.equal(autoAttachCommand.commandParams.waitForDebuggerOnStart, false);
 
+// Parity with the raw-CDP backend (crates/obu-host/src/backends/cdp/attach.rs): the
+// attach must enable focus emulation so Input.dispatchMouseEvent is processed even when
+// the agent's tab is not the foreground tab. Chrome otherwise defers mouse input for
+// hidden tabs and the dispatch hangs, surfacing as a false-success no-op click.
+const focusEmulationCommand = calls.debuggerSendCommand.find(
+  (call) =>
+    call.method === "Emulation.setFocusEmulationEnabled" &&
+    call.target.tabId === 1 &&
+    call.target.sessionId === undefined,
+);
+assert.ok(focusEmulationCommand, "attach must enable focus emulation on the tab session");
+assert.equal(
+  focusEmulationCommand.commandParams.enabled,
+  true,
+  "focus emulation must be armed with { enabled: true }",
+);
+
 const messagesBeforeScreenshot = calls.tabsSendMessage.length;
 const screenshotCdp = await hostRequest(port, "executeCdp", {
   session_id: "session",

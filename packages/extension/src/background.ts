@@ -437,6 +437,19 @@ function debuggerTarget(tabId: number, sessionId?: string): { tabId: number; ses
 /// out-of-process iframes attach as flattened child sessions on this connection.
 async function attachDebuggerWithOopifAutoAttach(tabId: number): Promise<void> {
   await chrome.debugger.attach({ tabId }, "1.3");
+  // Chrome defers mouse-input compositor processing for non-foreground tabs, so
+  // `Input.dispatchMouseEvent` hangs (and is reported as a false-success no-op click)
+  // whenever the agent drives a tab that is not the user's active tab. Focus emulation
+  // makes the renderer treat the page as focused so input is dispatched regardless of
+  // foreground state. Parity with the raw-CDP backend
+  // (crates/obu-host/src/backends/cdp/attach.rs), which arms this at attach time.
+  try {
+    await chrome.debugger.sendCommand({ tabId }, "Emulation.setFocusEmulationEnabled", { enabled: true });
+  } catch (error) {
+    // Best-effort: a failure (e.g. unsupported on a very old Chrome) must not abort the
+    // attach. Mouse input on a foreground tab still works; the warn log keeps it visible.
+    appendDebugLog("warn", "debugger.setFocusEmulation.failed", { tabId, message: errorMessage(error) });
+  }
   try {
     await chrome.debugger.sendCommand({ tabId }, "Target.setAutoAttach", OOPIF_AUTO_ATTACH_PARAMS);
   } catch (error) {
