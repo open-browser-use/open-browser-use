@@ -17,6 +17,7 @@ const expectedTargets = [
 const expectedApps = ["obu-host", "obu-node-repl"];
 
 const pinnedVersion = await pinnedCargoDistVersion();
+const releaseTag = await workspaceReleaseTag();
 const version = run(cargoDist, ["--version"]).stdout.trim();
 assert.equal(version, `cargo-dist ${pinnedVersion}`);
 
@@ -24,7 +25,7 @@ const plan = JSON.parse(run(cargoDist, [
   "plan",
   "--output-format=json",
   "--tag",
-  "v0.1.9",
+  releaseTag,
   "--allow-dirty",
 ]).stdout);
 
@@ -55,6 +56,13 @@ async function pinnedCargoDistVersion() {
   const match = raw.match(/cargo-dist-version\s*=\s*"([^"]+)"/);
   if (!match) throw new Error("dist-workspace.toml is missing cargo-dist-version");
   return match[1];
+}
+
+async function workspaceReleaseTag() {
+  const raw = await readFile(path.join(root, "Cargo.toml"), "utf8");
+  const match = raw.match(/^\[workspace\.package\][\s\S]*?^version\s*=\s*"([^"]+)"/m);
+  if (!match) throw new Error("Cargo.toml is missing workspace.package version");
+  return `v${match[1]}`;
 }
 
 function run(command, args) {

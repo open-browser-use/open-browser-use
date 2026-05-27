@@ -1,6 +1,6 @@
 {
   "name": "@open-browser-use/sdk",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "description": "open-browser-use agent-facing SDK: Playwright-shaped API over the open-browser-use broker wire.",
   "license": "MIT",
   "type": "module",

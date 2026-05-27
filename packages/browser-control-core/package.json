@@ -1,6 +1,6 @@
 {
   "name": "@open-browser-use/browser-control-core",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "private": true,
   "description": "Pure browser-control protocol types, planners, and fixtures for open-browser-use.",
   "license": "MIT",
