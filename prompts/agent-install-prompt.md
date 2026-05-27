@@ -94,8 +94,6 @@ Notes:
 
 Stop when verify prints `Result: ready` or JSON `result: "ready"`.
 
-3. Stop when `verify` returns `result: ready`.
-
 Report the concise final state to the user. Do not run `doctor`,
 `bootstrap`, `verify --repair`, broad diagnostics, or extra MCP rewrites after
 the ready result.

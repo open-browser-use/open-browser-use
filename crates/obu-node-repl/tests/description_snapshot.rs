@@ -67,7 +67,7 @@ fn agent_install_prompt_fast_path_rules() {
     }
 
     let stop_rules = [
-        "3. Stop when `verify` returns `result: ready`.",
+        "Stop when verify prints `Result: ready`",
         "Report the concise final state to the user. Do not run `doctor`,",
         "`bootstrap`, `verify --repair`, broad diagnostics, or extra MCP rewrites",
     ];

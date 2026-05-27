@@ -1,6 +1,5 @@
 ---
 source: crates/obu-node-repl/tests/description_snapshot.rs
-assertion_line: 85
 expression: "format!(\"{}\\n---\\n{}\", fast_path.trim(), stop_excerpt)"
 ---
 OBU_INSTALL_DIR="${OBU_INSTALL_DIR:-$HOME/.obu}"
@@ -24,6 +23,6 @@ curl -fsSL https://github.com/open-browser-use/open-browser-use/releases/latest/
   --extension-id=<extension-id> \
   --json
 ---
-3. Stop when `verify` returns `result: ready`.
+Stop when verify prints `Result: ready` or JSON `result: "ready"`.
 Report the concise final state to the user. Do not run `doctor`,
 `bootstrap`, `verify --repair`, broad diagnostics, or extra MCP rewrites after
