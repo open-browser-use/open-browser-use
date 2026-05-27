@@ -999,6 +999,19 @@ impl TaskStore {
         Ok(())
     }
 
+    /// Read a task's persisted coarse state. Errors if the row does not exist.
+    pub fn task_state(&self, task_id: &str) -> Result<TaskState> {
+        let raw: String = self
+            .conn
+            .query_row("SELECT state FROM tasks WHERE id = ?1", [task_id], |row| {
+                row.get(0)
+            })
+            .optional()
+            .context("query task state")?
+            .ok_or_else(|| anyhow::anyhow!("task not found: {task_id}"))?;
+        raw.parse()
+    }
+
     /// Record a cancellation request for a task (idempotent).
     pub fn mark_cancellation(&self, task_id: &str) -> Result<()> {
         self.conn
@@ -1631,6 +1644,15 @@ mod tests {
             label: "task".into(),
             schema_version: TASK_STORE_SCHEMA_VERSION,
         }
+    }
+
+    #[test]
+    fn task_state_reads_back_persisted_state() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        assert_eq!(store.task_state(&task_id).unwrap(), TaskState::Created);
+        store.set_state(&task_id, TaskState::Running).unwrap();
+        assert_eq!(store.task_state(&task_id).unwrap(), TaskState::Running);
     }
 
     #[test]
