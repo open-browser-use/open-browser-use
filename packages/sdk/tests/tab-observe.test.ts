@@ -141,6 +141,31 @@ describe("Tab.observe", () => {
     ]);
   });
 
+  it("advises when the page is a browser error page (failed navigation)", async () => {
+    class ErrorPageTransport extends FakeTransport {
+      override async sendRequest<T>(method: string, params: Record<string, unknown>, timeout?: number): Promise<T> {
+        if (method === M.TAB_URL) return "chrome-error://chromewebdata/" as T;
+        if (method === M.TAB_TITLE) return "en.wikipedia.org" as T;
+        return await super.sendRequest<T>(method, params, timeout);
+      }
+    }
+    const transport = new ErrorPageTransport();
+    const tab = new Tab(
+      transport as unknown as Transport,
+      new Guards(),
+      "tab-err",
+      { commandable: true, owned: true, status: "active" },
+      { supportedMethods: [M.PLAYWRIGHT_LOCATOR_CLICK], unsupportedMethods: [M.DOM_CUA_GET_VISIBLE_DOM] },
+    );
+
+    const observation = await tab.observe({ timeout: 1000 });
+
+    // Without this, an agent sees a sparse but "succeeded" observation and cannot tell
+    // a real page from a chrome-error:// failure page (observed live for ERR_CONNECTION_RESET).
+    expect(observation.diagnostics.advisories.some((advisory) => /error page/i.test(advisory))).toBe(true);
+    expect(observation.tab.url).toBe("chrome-error://chromewebdata/");
+  });
+
   it("marks unsupported DOM-CUA as blocked when actionable observation asks for it", async () => {
     const transport = new FakeTransport();
     const tab = new Tab(

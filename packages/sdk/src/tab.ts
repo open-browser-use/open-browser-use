@@ -391,6 +391,16 @@ export class Tab {
       sectionErrors["tab.url"] = urlResult.error;
       advisories.push("tab URL could not be read; page-state continuity is weaker");
     }
+    // A browser error page (e.g. chrome-error://) means the navigation failed
+    // (DNS/connection reset/blocked) and the visible content is not the intended page.
+    // Surface it explicitly: otherwise the agent sees a sparse but "succeeded"
+    // observation and cannot distinguish a real page from a failed load.
+    const resolvedUrl = urlResult.ok ? urlResult.value : tab.url;
+    if (typeof resolvedUrl === "string" && isBrowserErrorPageUrl(resolvedUrl)) {
+      advisories.push(
+        `page is a browser error page (${resolvedUrl}); the previous navigation failed and the visible content is not the intended page`,
+      );
+    }
 
     const titleResult = await this.#observeSection("tab.title", async () => {
       await this.#ensureObserveReadAllowed(M.TAB_TITLE, {}, tab.url, opts.timeout);
@@ -1744,6 +1754,12 @@ let OBSERVATION_SEQUENCE = 0;
 function nextObservationSequence(): number {
   OBSERVATION_SEQUENCE = (OBSERVATION_SEQUENCE + 1) % Number.MAX_SAFE_INTEGER;
   return OBSERVATION_SEQUENCE;
+}
+
+// Chromium-family error pages (failed navigation) surface under these schemes. The
+// document is the browser's own error page, not the requested site.
+function isBrowserErrorPageUrl(url: string): boolean {
+  return url.startsWith("chrome-error://") || url.startsWith("edge-error://");
 }
 
 function initialObservationSections(
