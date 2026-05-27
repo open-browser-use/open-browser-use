@@ -105,7 +105,7 @@ export class BrowserSessionController {
     const session = this.options.sessionFor(sessionParams.session_id);
     this.openTurn(sessionParams, session);
     this.ensureSessionAcceptsAction(session, "createTab");
-    const tab = await this.options.createTab({ url, active: true });
+    const tab = await this.options.createTab({ url, active: false });
     const tabId = requireCreatedTabId(tab);
     session.activeTabId = tabId;
     delete session.controlState;

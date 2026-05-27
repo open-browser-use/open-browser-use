@@ -599,7 +599,7 @@ async function dispatchHostRequest(method: string, params: unknown): Promise<unk
     case "ping":
       return "pong";
     case "createTab":
-      return { tab: toTabDto(await createSessionTab(requireSessionParams(params), params)) };
+      return { tab: await createSessionTab(requireSessionParams(params), params) };
     case "getTabs":
       return await getSessionTabs(requireSessionParams(params));
     case "getCurrentTab":
@@ -656,9 +656,17 @@ async function dispatchHostRequest(method: string, params: unknown): Promise<unk
   }
 }
 
-async function createSessionTab(sessionParams: SessionParams, params: unknown): Promise<ChromeTab> {
+async function createSessionTab(sessionParams: SessionParams, params: unknown): Promise<TabDto> {
   const url = isRecord(params) && typeof params.url === "string" ? params.url : "about:blank";
-  return await browserSessionController.createSessionTab(sessionParams, url);
+  const tab = await browserSessionController.createSessionTab(sessionParams, url);
+  if (!Number.isInteger(tab.id)) throw new Error("created tab did not include an id");
+  const session = sessionRepository.sessionFor(sessionParams.session_id);
+  const row = session.tabs.get(tab.id!);
+  if (!row) throw new Error(`created tab ${tab.id} was not registered to the session`);
+  return toTabDto(tab, row, {
+    logicalActive: session.activeTabId === tab.id,
+    commandable: row.status === "active" && session.controlState !== "human_takeover",
+  });
 }
 
 async function getSessionTabs(sessionParams: SessionParams): Promise<SessionTabsResult> {

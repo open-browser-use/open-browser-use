@@ -12,6 +12,7 @@ import { BrowserSessionController } from "../dist/browser_session_controller.js"
   assert.equal(harness.session.activeTabId, 11);
   assert.deepEqual(harness.session.tabs.get(11), { tabId: 11, origin: "agent", status: "active" });
   assert.equal(harness.session.controlState, undefined);
+  assert.deepEqual(harness.calls.create, [{ url: "https://example.test/new", active: false }]);
   assert.deepEqual(harness.calls.group, [[11, "agent"]]);
   assert.deepEqual(harness.calls.overlay, [[11, undefined]]);
   assert.equal(harness.calls.persist, 1);
@@ -469,6 +470,7 @@ function createHarness(overrides = {}) {
   const tabsById = overrides.tabsById ?? new Map();
   const selectedTabs = overrides.selectedTabs ?? [];
   const calls = {
+    create: [],
     group: [],
     remove: [],
     forget: [],
@@ -485,6 +487,7 @@ function createHarness(overrides = {}) {
   const controller = new BrowserSessionController({
     sessionFor: () => session,
     createTab: async (createProperties) => {
+      calls.create.push(createProperties);
       const tab = tabForId(11, { url: createProperties.url, active: createProperties.active === true });
       tabsById.set(11, tab);
       return tab;

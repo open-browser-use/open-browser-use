@@ -391,8 +391,9 @@ impl BrowserBackend for WebExtensionBackend {
                 }),
             )
             .await?;
-        let normalized = normalize_tab_response(response)?;
+        let mut normalized = normalize_tab_response(response)?;
         record_webext_tab(self, ctx, &normalized, TabOrigin::Agent, TabStatus::Active)?;
+        mark_created_agent_tab_commandable(&mut normalized);
         Ok(normalized)
     }
 
@@ -2841,6 +2842,18 @@ fn parse_tab_id(raw: &str) -> Result<i64> {
 fn normalize_tab_response(response: Value) -> Result<Value> {
     let tab = response.get("tab").cloned().unwrap_or(response);
     normalize_tab(tab)
+}
+
+fn mark_created_agent_tab_commandable(tab: &mut Value) {
+    let Some(object) = tab.as_object_mut() else {
+        return;
+    };
+    object.insert("origin".into(), Value::String("agent".into()));
+    object.insert("status".into(), Value::String("active".into()));
+    object.insert("owned".into(), Value::Bool(true));
+    object.insert("claimRequired".into(), Value::Bool(false));
+    object.insert("commandable".into(), Value::Bool(true));
+    object.insert("logicalActive".into(), Value::Bool(true));
 }
 
 fn normalize_optional_tab_response(response: Value) -> Result<Option<Value>> {

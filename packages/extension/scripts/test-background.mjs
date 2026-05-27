@@ -486,8 +486,13 @@ const created = await hostRequest(port, "createTab", {
   url: "https://example.com/",
 });
 assert.equal(created.result.tab.tabId, 1);
+assert.equal(created.result.tab.owned, true);
+assert.equal(created.result.tab.claimRequired, false);
+assert.equal(created.result.tab.commandable, true);
+assert.equal(created.result.tab.logicalActive, true);
 assert.equal(calls.tabsCreate.length, 1);
 assert.equal(calls.tabsCreate[0].url, "https://example.com/");
+assert.equal(calls.tabsCreate[0].active, false);
 assert.equal(calls.tabsGroup[0].tabIds, 1);
 assert.deepEqual(calls.tabGroupsUpdate.at(-1).updateProperties, {
   title: "Open Browser Use",
@@ -1331,6 +1336,7 @@ const removeCreated = await hostRequest(port, "createTab", {
   url: "https://remove.example/",
 });
 const removedTabId = removeCreated.result.tab.tabId;
+tabs.get(removedTabId).active = true;
 await hostRequest(port, "moveMouse", {
   session_id: "remove-session",
   turn_id: "turn",

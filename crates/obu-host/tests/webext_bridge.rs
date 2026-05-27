@@ -34,6 +34,12 @@ async fn webext_backend_normalizes_extension_tab_dtos() {
     assert_eq!(created["id"], "42");
     assert_eq!(created["tab_id"], "42");
     assert_eq!(created["url"], "https://example.com");
+    assert_eq!(created["origin"], "agent");
+    assert_eq!(created["status"], "active");
+    assert_eq!(created["owned"], true);
+    assert_eq!(created["claimRequired"], false);
+    assert_eq!(created["commandable"], true);
+    assert_eq!(created["logicalActive"], true);
 
     let listed = backend.list_tabs_with_context(&ctx).await.unwrap();
     assert_eq!(listed[0]["id"], "42");
