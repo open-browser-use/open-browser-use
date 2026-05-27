@@ -533,6 +533,13 @@ impl Dispatcher {
                 }),
             );
         }
+        if let Some(result) = response
+            .result
+            .as_ref()
+            .and_then(|result| command_result_summary(method, result))
+        {
+            event.insert("result".to_string(), result);
+        }
         if let Err(error) = store
             .record_command_event(
                 session_id.to_string(),
@@ -1604,6 +1611,130 @@ fn duration_millis(duration: Duration) -> u64 {
 
 fn command_params_summary(params: &Value) -> Value {
     summarize_command_value(None, params)
+}
+
+fn command_result_summary(method: &str, result: &Value) -> Option<Value> {
+    match method {
+        methods::TAB_URL | methods::TAB_TITLE => Some(string_command_result_summary(result)),
+        methods::FINALIZE_TABS => Some(finalize_command_result_summary(result)),
+        methods::CREATE_TAB
+        | methods::GET_CURRENT_TAB
+        | methods::GET_SELECTED_TAB
+        | methods::CLAIM_USER_TAB
+        | methods::RESUME_CONTROL => tab_command_result_summary(result),
+        methods::GET_TABS | methods::GET_USER_TABS => tab_list_command_result_summary(result),
+        methods::TAB_EVALUATE
+        | methods::TAB_SNAPSHOT_TEXT
+        | methods::TAB_SCREENSHOT
+        | methods::TAB_CONTENT_EXPORT
+        | methods::TAB_CLIPBOARD_READ
+        | methods::TAB_CLIPBOARD_READ_TEXT
+        | methods::PLAYWRIGHT_SCREENSHOT
+        | methods::PLAYWRIGHT_ELEMENT_SCREENSHOT
+        | methods::PLAYWRIGHT_DOWNLOAD_PATH
+        | methods::CUA_DOWNLOAD_MEDIA
+        | methods::DOM_CUA_DOWNLOAD_MEDIA
+        | methods::PLAYWRIGHT_LOCATOR_DOWNLOAD_MEDIA => Some(redacted_command_result_summary(result)),
+        _ => None,
+    }
+}
+
+fn string_command_result_summary(result: &Value) -> Value {
+    let Some(text) = result.as_str() else {
+        return json!({
+            "type": command_value_type(result),
+        });
+    };
+    let length = text.chars().count();
+    if length > 512 {
+        json!({
+            "type": "string",
+            "truncated": true,
+            "length": length,
+            "value": text.chars().take(512).collect::<String>(),
+        })
+    } else {
+        json!({
+            "type": "string",
+            "value": text,
+        })
+    }
+}
+
+fn finalize_command_result_summary(result: &Value) -> Value {
+    let outcome = finalize_outcome(result);
+    json!({
+        "type": "finalizeTabs",
+        "status": result.get("status").and_then(Value::as_str).unwrap_or("ok"),
+        "closedTabIds": outcome.get("closedTabIds").cloned().unwrap_or_else(|| json!([])),
+        "releasedTabIds": outcome.get("releasedTabIds").cloned().unwrap_or_else(|| json!([])),
+        "keptTabs": outcome.get("keptTabs").cloned().unwrap_or_else(|| json!([])),
+        "deliverableTabs": outcome.get("deliverableTabs").cloned().unwrap_or_else(|| json!([])),
+    })
+}
+
+fn tab_command_result_summary(result: &Value) -> Option<Value> {
+    let Some(tab) = summarize_tab_like_result(result) else {
+        return Some(json!({ "type": command_value_type(result) }));
+    };
+    Some(json!({
+        "type": "tab",
+        "tab": tab,
+    }))
+}
+
+fn tab_list_command_result_summary(result: &Value) -> Option<Value> {
+    let items = result.as_array()?;
+    let tabs = items
+        .iter()
+        .take(20)
+        .filter_map(summarize_tab_like_result)
+        .collect::<Vec<_>>();
+    Some(json!({
+        "type": "tab_list",
+        "length": items.len(),
+        "truncated": items.len() > tabs.len(),
+        "tabs": tabs,
+    }))
+}
+
+fn summarize_tab_like_result(value: &Value) -> Option<Value> {
+    let object = value.as_object()?;
+    let mut tab = serde_json::Map::new();
+    for key in [
+        "id",
+        "tab_id",
+        "tabId",
+        "windowId",
+        "window_id",
+        "groupId",
+        "group_id",
+        "url",
+        "title",
+        "active",
+        "logicalActive",
+        "logical_active",
+        "origin",
+        "status",
+        "owned",
+        "claimRequired",
+        "claim_required",
+        "commandable",
+    ] {
+        if let Some(value) = object.get(key) {
+            tab.insert(key.to_string(), summarize_command_value(Some(key), value));
+        }
+    }
+    (!tab.is_empty()).then_some(Value::Object(tab))
+}
+
+fn redacted_command_result_summary(result: &Value) -> Value {
+    json!({
+        "type": "redacted",
+        "reason": "sensitive_or_large_result",
+        "valueType": command_value_type(result),
+        "jsonBytes": serde_json::to_vec(result).map(|bytes| bytes.len()).unwrap_or(0),
+    })
 }
 
 fn summarize_command_value(key: Option<&str>, value: &Value) -> Value {

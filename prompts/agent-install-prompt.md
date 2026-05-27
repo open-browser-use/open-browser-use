@@ -51,6 +51,8 @@ Run these commands in order. Replace placeholders with concrete handoff values.
 For multiple explicitly named agents, use a comma-separated `setup --agents`
 value, then run `verify` once per agent.
 
+Run the fast setup command.
+
 ```sh
 OBU_INSTALL_DIR="${OBU_INSTALL_DIR:-$HOME/.obu}"
 export OBU_INSTALL_DIR
@@ -70,7 +72,8 @@ curl -fsSL https://github.com/open-browser-use/open-browser-use/releases/latest/
   --agent=<agent-id> \
   --browser=<browser> \
   --channel=<extension-channel> \
-  --extension-id=<extension-id>
+  --extension-id=<extension-id> \
+  --json
 ```
 
 Notes:
@@ -78,8 +81,10 @@ Notes:
 - Always run the official installer first for this handoff.
 - The installer may print shell activation or broad bootstrap hints. Ignore
   broad hints such as `bootstrap --all`; keep this handoff targeted.
-- Keep using `"$OBU"` in this command sequence. Do not assume the current
-  shell's `PATH` changed.
+- The installer may add open-browser-use to shell profiles. Keep using the `"$OBU"` absolute path
+  in this command sequence.
+- Do not depend on `obu` being on `PATH`, even after the official
+  installer's own managed env/profile updates.
 - Do not run `doctor`, `bootstrap`, `verify --repair`, or broad setup before
   the first targeted `verify`.
 - Use `verify --json` only when you need full diagnostics or the user explicitly
@@ -88,6 +93,12 @@ Notes:
 ## Result Handling
 
 Stop when verify prints `Result: ready` or JSON `result: "ready"`.
+
+3. Stop when `verify` returns `result: ready`.
+
+Report the concise final state to the user. Do not run `doctor`,
+`bootstrap`, `verify --repair`, broad diagnostics, or extra MCP rewrites after
+the ready result.
 
 | Verify result | Action |
 | --- | --- |
@@ -160,6 +171,10 @@ When MCP tools are available inside the target agent:
 - Use the `js` MCP tool for browser automation.
 - `browser_status.backends` must contain at least one backend before browser
   automation can work.
+- For setup probes, prefer `await browser.turnEnded()` after the probe so the
+  session remains resumable without closing agent-created setup tabs.
+- Do not use `await browser.finishTurn({ keep: [] })` unless you intentionally
+  want to finalize and close/release the controlled tabs.
 
 ## Persistent Instruction
 

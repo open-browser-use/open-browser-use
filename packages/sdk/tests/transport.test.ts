@@ -47,6 +47,33 @@ class FakeConnection implements NativePipeConnection {
 }
 
 describe("Transport", () => {
+  it("tracks browser RPC promises with the active OBU exec when available", async () => {
+    const original = (globalThis as { obuRepl?: unknown }).obuRepl;
+    const tracked: Promise<unknown>[] = [];
+    (globalThis as { obuRepl?: unknown }).obuRepl = {
+      trackBackgroundOperation(operation: Promise<unknown>) {
+        tracked.push(operation);
+        return operation;
+      },
+    };
+    try {
+      const connection = new FakeConnection();
+      const transport = new Transport(connection);
+      let requestId: unknown;
+      connection.onWrite = (request) => {
+        requestId = request.id;
+      };
+
+      const promise = transport.sendRequest("tab_url", {}, 1000);
+
+      expect(tracked).toHaveLength(1);
+      connection.respond(requestId, { value: "https://example.test/" });
+      await expect(promise).resolves.toBe("https://example.test/");
+    } finally {
+      (globalThis as { obuRepl?: unknown }).obuRepl = original;
+    }
+  });
+
   it("registers pending before write so synchronous responses resolve", async () => {
     const connection = new FakeConnection();
     const transport = new Transport(connection);

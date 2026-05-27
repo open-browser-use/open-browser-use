@@ -1,5 +1,6 @@
 import {
   createBrowserSession,
+  isActionableTurnLifecycle,
   parsePersistedBrowserSessionState,
   serializeBrowserSessions,
   type BrowserSession,
@@ -97,7 +98,7 @@ export class BrowserSessionRepository {
       }))
       .filter((row) =>
         row.lifecycle.kind !== "active" ||
-        row.turn_lifecycle.kind !== "idle" ||
+        isActionableTurnLifecycle(row.turn_lifecycle) ||
         row.last_finalize !== undefined
       );
   }

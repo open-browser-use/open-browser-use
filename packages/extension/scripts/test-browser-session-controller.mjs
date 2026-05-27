@@ -20,6 +20,18 @@ import { BrowserSessionController } from "../dist/browser_session_controller.js"
 }
 
 {
+  const session = sessionWithTabs([[12, { tabId: 12, origin: "agent", status: "active" }]], {
+    activeTabId: 12,
+  });
+  const harness = createHarness({ session, tabsById: new Map([[12, tabForId(12)]]) });
+
+  await harness.controller.markTurnEnded(sessionParams());
+
+  assert.equal(session.turnLifecycle.kind, "ended");
+  assert.equal(harness.calls.persist, 1);
+}
+
+{
   const session = sessionWithTabs([
     [1, { tabId: 1, origin: "agent", status: "active" }],
     [2, { tabId: 2, origin: "user", status: "active" }],
@@ -205,7 +217,7 @@ import { BrowserSessionController } from "../dist/browser_session_controller.js"
   await harness.controller.yieldControl(sessionParams());
   assert.equal(session.controlState, "human_takeover");
   assert.equal(harness.calls.hide, 1);
-  assert.throws(
+  await assert.rejects(
     () => harness.controller.markTurnEnded(sessionParams()),
     /turnEnded rejected because browser control is yielded/,
   );

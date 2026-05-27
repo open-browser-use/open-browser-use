@@ -362,6 +362,112 @@ async fn mcp_stdio_lists_tools_and_executes_js() {
     assert!(status.success());
 }
 
+#[tokio::test]
+async fn mcp_stdio_drains_tracked_background_operations() {
+    let bin = env!("CARGO_BIN_EXE_obu-node-repl");
+    let runtime_dir = tempdir().unwrap();
+    let mut child = Command::new(bin)
+        .arg("mcp")
+        .arg("stdio")
+        .env("OBU_RUNTIME_DIR", runtime_dir.path())
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .stderr(std::process::Stdio::piped())
+        .kill_on_drop(true)
+        .spawn()
+        .unwrap();
+
+    let mut stdin = child.stdin.take().unwrap();
+    let stdout = child.stdout.take().unwrap();
+    let stderr = child.stderr.take().unwrap();
+    tokio::spawn(async move {
+        let mut lines = BufReader::new(stderr).lines();
+        while let Ok(Some(_line)) = lines.next_line().await {}
+    });
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 1,
+            "method": "initialize",
+            "params": {
+                "protocolVersion": "2025-11-25",
+                "capabilities": {},
+                "clientInfo": { "name": "obu-node-repl-test", "version": "0.0.0" }
+            }
+        }),
+    )
+    .await;
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "method": "notifications/initialized",
+            "params": {}
+        }),
+    )
+    .await;
+
+    let mut reader = BufReader::new(stdout).lines();
+    let init = read_json(&mut reader).await;
+    assert_eq!(init["id"], 1);
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 2,
+            "method": "tools/call",
+            "params": {
+                "name": "js",
+                "arguments": {
+                    "source": "globalThis.obuRepl.trackBackgroundOperation(new Promise((resolve) => setTimeout(resolve, 25))); 'done'"
+                }
+            }
+        }),
+    )
+    .await;
+    let drained = read_json(&mut reader).await;
+    assert_eq!(drained["id"], 2);
+    assert_eq!(
+        drained["result"]["structuredContent"]["result"],
+        "done"
+    );
+
+    send(
+        &mut stdin,
+        json!({
+            "jsonrpc": "2.0",
+            "id": 3,
+            "method": "tools/call",
+            "params": {
+                "name": "js",
+                "arguments": {
+                    "source": "globalThis.obuRepl.trackBackgroundOperation(Promise.reject(new Error('tracked boom'))); 'done'"
+                }
+            }
+        }),
+    )
+    .await;
+    let failed = read_json(&mut reader).await;
+    assert_eq!(failed["id"], 3);
+    assert_eq!(failed["result"]["isError"], true);
+    assert!(
+        failed["result"]["structuredContent"]["error"]
+            .as_str()
+            .unwrap()
+            .contains("tracked boom")
+    );
+
+    drop(stdin);
+    let status = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait())
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(status.success());
+}
+
 async fn assert_client_profile_round_trip(
     client_name: &str,
     capabilities: Value,

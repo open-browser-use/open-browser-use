@@ -43,6 +43,24 @@ session.attachedTabIds.delete(1);
 repository.pruneEmptySessions();
 assert.equal(repository.findSessionForTab(1), undefined);
 
+const endedOnly = repository.sessionFor("ended-only");
+endedOnly.turnLifecycle = { kind: "ended", sessionId: "ended-only", turnId: "turn-ok", finalization: "ok" };
+repository.pruneEmptySessions();
+assert.equal(repository.get("ended-only"), undefined);
+
+const endedWithTab = repository.sessionFor("ended-with-tab");
+endedWithTab.tabs.set(9, { tabId: 9, origin: "agent", status: "active" });
+endedWithTab.turnLifecycle = {
+  kind: "ended",
+  sessionId: "ended-with-tab",
+  turnId: "turn-ok",
+  finalization: "ok",
+};
+assert.deepEqual(
+  repository.lifecycleDiagnostics().filter((row) => row.session_id === "ended-with-tab"),
+  [],
+);
+
 const restored = new BrowserSessionRepository({
   persistState: async (state) => {
     persisted.push(state);

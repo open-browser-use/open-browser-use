@@ -1,27 +1,29 @@
 ---
 source: crates/obu-node-repl/tests/description_snapshot.rs
+assertion_line: 85
 expression: "format!(\"{}\\n---\\n{}\", fast_path.trim(), stop_excerpt)"
 ---
 OBU_INSTALL_DIR="${OBU_INSTALL_DIR:-$HOME/.obu}"
-   export OBU_INSTALL_DIR
-   OBU="$OBU_INSTALL_DIR/bin/obu"
-   curl -fsSL https://github.com/open-browser-use/open-browser-use/releases/latest/download/install.sh | sh
+export OBU_INSTALL_DIR
+OBU="$OBU_INSTALL_DIR/bin/obu"
 
-   "$OBU" setup --yes \
-     --browser=<browser> \
-     --channel=<extension-channel> \
-     --extension-id=<extension-id> \
-     --agents=<agent-id> \
-     --write-instructions \
-     --json
+curl -fsSL https://github.com/open-browser-use/open-browser-use/releases/latest/download/install.sh | sh
 
-   "$OBU" verify \
-     --agent=<agent-id> \
-     --browser=<browser> \
-     --channel=<extension-channel> \
-     --extension-id=<extension-id> \
-     --json
+"$OBU" setup --yes \
+  --browser=<browser> \
+  --channel=<extension-channel> \
+  --extension-id=<extension-id> \
+  --agents=<agent-id> \
+  --write-instructions \
+  --json
+
+"$OBU" verify \
+  --agent=<agent-id> \
+  --browser=<browser> \
+  --channel=<extension-channel> \
+  --extension-id=<extension-id> \
+  --json
 ---
 3. Stop when `verify` returns `result: ready`.
 Report the concise final state to the user. Do not run `doctor`,
-`bootstrap`, `verify --repair`, broad diagnostics, or extra MCP rewrites
+`bootstrap`, `verify --repair`, broad diagnostics, or extra MCP rewrites after

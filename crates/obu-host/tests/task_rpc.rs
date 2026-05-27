@@ -152,7 +152,12 @@ impl BrowserBackend for CommandEventBackend {
         method: &str,
         _params: Value,
     ) -> HostResult<Value> {
-        Ok(json!({ "method": method }))
+        Ok(match method {
+            methods::TAB_URL => json!("https://example.test/current"),
+            methods::TAB_TITLE => json!("Example Title"),
+            methods::TAB_EVALUATE => json!({ "large": "x".repeat(2_048) }),
+            _ => json!({ "method": method }),
+        })
     }
 
     async fn playwright_command_with_context(
@@ -361,8 +366,147 @@ async fn tab_command_records_durable_browser_command_event() {
     assert_eq!(payload["method"], methods::TAB_URL);
     assert_eq!(payload["status"], "ok");
     assert_eq!(payload["tabId"], "42");
+    assert_eq!(
+        payload["result"],
+        json!({ "type": "string", "value": "https://example.test/current" })
+    );
     assert!(payload["durationMs"].as_u64().is_some());
     assert_eq!(payload["params"]["tab_id"], "42");
+}
+
+#[tokio::test]
+async fn tab_title_command_records_safe_result_summary() {
+    let dispatcher =
+        Dispatcher::new_for_test_with_backend_and_temp_task_store(Arc::new(CommandEventBackend));
+    let response = dispatch_for_test(
+        &dispatcher,
+        methods::TAB_TITLE,
+        json!({ "session_id": "session-title", "turn_id": "turn-title", "tab_id": "42" }),
+    )
+    .await;
+    assert!(
+        response.get("error").is_none(),
+        "tab_title failed: {response:#}"
+    );
+
+    let tasks = dispatch_for_test(&dispatcher, methods::TASKS_LIST, json!({ "limit": 10 })).await;
+    let task_id = tasks["result"][0]["taskId"]
+        .as_str()
+        .expect("task id")
+        .to_string();
+    let export = dispatch_for_test(
+        &dispatcher,
+        methods::TASKS_EXPORT,
+        json!({ "taskId": task_id }),
+    )
+    .await;
+    let events = export["result"]["events"].as_array().expect("events array");
+    let command = events
+        .iter()
+        .find(|event| event["kind"] == "browser_command")
+        .expect("browser_command event");
+    let payload: Value =
+        serde_json::from_str(command["payload"].as_str().expect("payload is a string"))
+            .expect("payload parses as json");
+
+    assert_eq!(payload["method"], methods::TAB_TITLE);
+    assert_eq!(
+        payload["result"],
+        json!({ "type": "string", "value": "Example Title" })
+    );
+}
+
+#[tokio::test]
+async fn tab_evaluate_command_result_summary_is_bounded() {
+    let dispatcher =
+        Dispatcher::new_for_test_with_backend_and_temp_task_store(Arc::new(CommandEventBackend));
+    let response = dispatch_for_test(
+        &dispatcher,
+        methods::TAB_EVALUATE,
+        json!({
+            "session_id": "session-eval",
+            "turn_id": "turn-eval",
+            "tab_id": "42",
+            "expression": "document.body.innerText"
+        }),
+    )
+    .await;
+    assert!(
+        response.get("error").is_none(),
+        "tab_evaluate failed: {response:#}"
+    );
+
+    let tasks = dispatch_for_test(&dispatcher, methods::TASKS_LIST, json!({ "limit": 10 })).await;
+    let task_id = tasks["result"][0]["taskId"]
+        .as_str()
+        .expect("task id")
+        .to_string();
+    let export = dispatch_for_test(
+        &dispatcher,
+        methods::TASKS_EXPORT,
+        json!({ "taskId": task_id }),
+    )
+    .await;
+    let events = export["result"]["events"].as_array().expect("events array");
+    let command = events
+        .iter()
+        .find(|event| event["kind"] == "browser_command")
+        .expect("browser_command event");
+    let payload_text = command["payload"].as_str().expect("payload is a string");
+    assert!(
+        !payload_text.contains(&"x".repeat(512)),
+        "large evaluate result leaked into durable payload"
+    );
+    let payload: Value = serde_json::from_str(payload_text).expect("payload parses as json");
+    assert_eq!(payload["method"], methods::TAB_EVALUATE);
+    assert_eq!(payload["result"]["type"], "redacted");
+    assert_eq!(payload["result"]["reason"], "sensitive_or_large_result");
+}
+
+#[tokio::test]
+async fn finalize_command_records_safe_result_summary() {
+    let dispatcher = finalize_dispatcher("session-finalize-summary", "turn-finalize-summary");
+    let response = dispatch_for_test(
+        &dispatcher,
+        methods::FINALIZE_TABS,
+        json!({
+            "session_id": "session-finalize-summary",
+            "turn_id": "turn-finalize-summary",
+            "keep": []
+        }),
+    )
+    .await;
+    assert!(
+        response.get("error").is_none(),
+        "finalize failed: {response:#}"
+    );
+
+    let tasks = dispatch_for_test(&dispatcher, methods::TASKS_LIST, json!({ "limit": 10 })).await;
+    let task_id = tasks["result"][0]["taskId"]
+        .as_str()
+        .expect("task id")
+        .to_string();
+    let export = dispatch_for_test(
+        &dispatcher,
+        methods::TASKS_EXPORT,
+        json!({ "taskId": task_id }),
+    )
+    .await;
+    let events = export["result"]["events"].as_array().expect("events array");
+    let command = events
+        .iter()
+        .find(|event| event["kind"] == "browser_command")
+        .expect("browser_command event");
+    let payload: Value =
+        serde_json::from_str(command["payload"].as_str().expect("payload is a string"))
+            .expect("payload parses as json");
+
+    assert_eq!(payload["method"], methods::FINALIZE_TABS);
+    assert_eq!(payload["result"]["type"], "finalizeTabs");
+    assert_eq!(
+        payload["result"]["closedTabIds"],
+        json!([FINALIZE_CLOSED_TAB_ID.to_string()])
+    );
 }
 
 #[tokio::test]

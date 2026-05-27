@@ -85,13 +85,14 @@ export function serializeBrowserSessions(sessions: Map<string, BrowserSession>):
   for (const [sessionId, session] of [...sessions].sort(([a], [b]) => a.localeCompare(b))) {
     const tabs = durableSessionTabs(session).sort((a, b) => a.tabId - b.tabId);
     if (tabs.length === 0 && !hasDurableSessionDiagnostic(session)) continue;
+    const turnLifecycle = durableBrowserTurnLifecycle(session.turnLifecycle);
     rows.push({
       session_id: sessionId,
       label: session.label,
       activeTabId: session.activeTabId,
       controlState: session.controlState,
       lifecycle: session.lifecycle,
-      turnLifecycle: session.turnLifecycle,
+      turnLifecycle,
       lastFinalize: session.lastFinalize,
       groupId: session.groupId,
       deliverableGroupId: session.deliverableGroupId,
@@ -152,7 +153,19 @@ function durableSessionTabs(session: BrowserSession): PersistedSessionTab[] {
 }
 
 function hasDurableSessionDiagnostic(session: BrowserSession): boolean {
-  return session.lifecycle.kind !== "active" || session.turnLifecycle.kind !== "idle" || session.lastFinalize !== undefined;
+  return session.lifecycle.kind !== "active" || isActionableTurnLifecycle(session.turnLifecycle) || session.lastFinalize !== undefined;
+}
+
+export function isSuccessfulEndedTurnLifecycle(turnLifecycle: BrowserTurnLifecycle): boolean {
+  return turnLifecycle.kind === "ended" && turnLifecycle.finalization === "ok";
+}
+
+export function isActionableTurnLifecycle(turnLifecycle: BrowserTurnLifecycle): boolean {
+  return turnLifecycle.kind !== "idle" && !isSuccessfulEndedTurnLifecycle(turnLifecycle);
+}
+
+function durableBrowserTurnLifecycle(turnLifecycle: BrowserTurnLifecycle): BrowserTurnLifecycle {
+  return isSuccessfulEndedTurnLifecycle(turnLifecycle) ? { kind: "idle" } : turnLifecycle;
 }
 
 export function parseBrowserSessionLifecycle(value: unknown): BrowserSessionLifecycle | undefined {

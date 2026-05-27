@@ -2112,6 +2112,15 @@ const obuRepl = Object.freeze({
   get requestMeta() {
     return currentRequestMeta;
   },
+  trackBackgroundOperation(operation) {
+    let execState;
+    try {
+      execState = getCurrentExecState();
+    } catch (error) {
+      return makeRejectedThenable(error);
+    }
+    return trackExecBackgroundOperation(execState, Promise.resolve(operation));
+  },
   discoverBackends() {
     return currentBackends.map((backend) => ({ ...backend }));
   },

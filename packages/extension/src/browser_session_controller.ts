@@ -229,7 +229,7 @@ export class BrowserSessionController {
     await this.options.persistSessionState();
   }
 
-  markTurnEnded(sessionParams: SessionParams): void {
+  async markTurnEnded(sessionParams: SessionParams): Promise<void> {
     const session = this.options.sessionFor(sessionParams.session_id);
     this.ensureSessionAcceptsAction(session, "turnEnded");
     session.currentTurnId = sessionParams.turn_id;
@@ -241,6 +241,7 @@ export class BrowserSessionController {
         errorCode: session.lastFinalize.errorCode,
         diagnostics: session.lastFinalize.failures,
       };
+      await this.options.persistSessionState();
       throw new Error("turnEnded rejected because finalizeTabs failed");
     }
     const failures = session.lastFinalize?.kind === "finalize_partial" && session.lastFinalize.turnId === sessionParams.turn_id
@@ -250,6 +251,7 @@ export class BrowserSessionController {
     if (!failures || failures.length === 0) {
       session.lifecycle = activeSessionLifecycle(session.activeTabId);
     }
+    await this.options.persistSessionState();
   }
 
   async yieldControl(sessionParams: SessionParams): Promise<void> {

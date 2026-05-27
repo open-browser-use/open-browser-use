@@ -3,6 +3,7 @@ import type {
   SessionTab,
   TabOrigin,
 } from "../session_store.js";
+import { isActionableTurnLifecycle } from "../session_store.js";
 
 // Pure protocol primitives now live in the browser-control-core package.
 // Re-export them so the extension's existing importers keep resolving every symbol.
@@ -174,6 +175,6 @@ export function shouldPruneBrowserSession(session: BrowserSession): boolean {
     session.finalizedTabs.size === 0 &&
     session.attachedTabIds.size === 0 &&
     session.lifecycle.kind === "active" &&
-    session.turnLifecycle.kind === "idle" &&
+    !isActionableTurnLifecycle(session.turnLifecycle) &&
     session.lastFinalize === undefined;
 }

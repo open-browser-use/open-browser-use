@@ -58,6 +58,10 @@ type RpcResponse = {
   };
 };
 
+type ObuReplBackgroundTracker = {
+  trackBackgroundOperation?: (operation: Promise<unknown>) => PromiseLike<unknown>;
+};
+
 const DEFAULT_TIMEOUT_MS = 30_000;
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
 const parsedOvershoot = Number(env?.OBU_DEFENSIVE_TIMEOUT_MS_OVERSHOOT);
@@ -88,18 +92,18 @@ export class Transport {
     return this;
   }
 
-  async sendRequest<R = unknown>(
+  sendRequest<R = unknown>(
     method: string,
     params: Record<string, unknown> = {},
     timeoutMs: number = DEFAULT_TIMEOUT_MS,
     frameMeta?: { runtime?: { kernel_generation?: number } },
   ): Promise<R> {
     if (this.#closed) {
-      throw new ObuError(
+      return Promise.reject(new ObuError(
         ERR_TRANSPORT_CLOSED,
         "transport closed",
         productErrorData("transport_closed", { reason: "request was sent after transport closed" }),
-      );
+      ));
     }
 
     const id = this.#nextId++;
@@ -169,7 +173,7 @@ export class Transport {
       }
     }
 
-    return await response;
+    return trackObuReplBackgroundOperation(response);
   }
 
   close(): void {
@@ -292,6 +296,19 @@ export class Transport {
       this.#timedOutRequests.delete(oldest);
     }
   }
+}
+
+function trackObuReplBackgroundOperation<R>(operation: Promise<R>): Promise<R> {
+  const tracker = (globalThis as { obuRepl?: ObuReplBackgroundTracker }).obuRepl?.trackBackgroundOperation;
+  if (typeof tracker !== "function") return operation;
+  try {
+    const tracked = tracker(operation);
+    if (tracked && typeof tracked.then === "function") return tracked as Promise<R>;
+  } catch {
+    // Tracking is observability/lifecycle glue. Never make an otherwise valid
+    // browser RPC fail because the host runtime does not expose a tracker.
+  }
+  return operation;
 }
 
 function normalizeRpcError(error: NonNullable<RpcResponse["error"]>): { code: number; message: string; data?: unknown } {

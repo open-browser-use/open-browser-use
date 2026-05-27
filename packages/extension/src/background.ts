@@ -727,7 +727,7 @@ async function nameSession(sessionParams: SessionParams, params: unknown): Promi
 }
 
 async function markTurnEnded(sessionParams: SessionParams): Promise<void> {
-  browserSessionController.markTurnEnded(sessionParams);
+  await browserSessionController.markTurnEnded(sessionParams);
 }
 
 async function yieldControl(sessionParams: SessionParams): Promise<void> {
