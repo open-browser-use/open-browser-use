@@ -567,7 +567,7 @@ export function formatVerifyReport(report: VerifyReport): string {
       "Browser popup required.",
       ...formatProductErrorLine(report.productError),
       "Local setup is correct, but no active WebExtension descriptor exists yet.",
-      report.nextAction?.message ?? "Open the open-browser-use extension popup. Click Resume if enabled.",
+      report.nextAction?.message ?? "Open the open-browser-use pairing page. Click Resume if enabled.",
       ...(rerun ? ["If it already shows Connected, wait briefly and rerun:", `  ${rerun}`] : []),
     ].join("\n");
   }
@@ -1808,7 +1808,7 @@ async function probeRuntimeDescriptor(options: VerifyOptions, target: VerifyTarg
       details: {
         runtime_descriptor_setup_lifecycle: planRuntimeDescriptorSetupFailure("descriptor_missing"),
         resumeRequired: true,
-        resumeAction: "open the open-browser-use extension popup; click Resume if it is enabled, otherwise wait for Connected and rerun verify",
+        resumeAction: "open the open-browser-use pairing page; click Resume if it is enabled, otherwise wait for Connected and rerun verify",
       },
     };
   }
@@ -2608,8 +2608,8 @@ function openPopupAction(options: VerifyOptions, profile: string | null): Action
     result: "needs_browser_popup",
     kind: "open_popup",
     priority: 1,
-    message: "Open the open-browser-use extension popup. Click Resume if enabled; otherwise wait for Connected and rerun verify.",
-    url: `chrome-extension://${options.extensionId}/popup.html`,
+    message: "Open the open-browser-use pairing page. Click Resume if enabled; otherwise wait for Connected and rerun verify.",
+    url: `chrome-extension://${options.extensionId}/pairing.html`,
     browser: options.browser,
     profile: { path: profile },
     rerun: verifyCommand(options),

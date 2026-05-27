@@ -8,6 +8,11 @@ const dist = path.join(packageRoot, "dist");
 const vendorModule = path.join(dist, "vendor", "browser-control-core.mjs");
 
 await access(vendorModule);
+await access(path.join(dist, "pairing.html"));
+await access(path.join(dist, "pairing.css"));
+
+const pairingHtml = await readFile(path.join(dist, "pairing.html"), "utf8");
+assert.doesNotMatch(pairingHtml, /copy-agent-button|agent-handoff|handoff-surface|Agent handoff/i);
 
 const bareWorkspaceImports = [];
 for (const file of await listFiles(dist)) {

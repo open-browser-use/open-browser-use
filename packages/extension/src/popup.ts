@@ -94,6 +94,7 @@ let currentStatus: HostStatus | undefined;
 let currentDebug: DebugLogStatus = { enabled: false, entries: [] };
 let setupCopyResetTimer: ReturnType<typeof setTimeout> | undefined;
 let setupPromptExpanded = true;
+const isPairingPage = shell?.classList.contains("pairing-shell") ?? false;
 
 void start();
 
@@ -108,19 +109,19 @@ chrome.storage.onChanged.addListener((changes, areaName) => {
   if (isDebugLogStatus(debug)) renderDebug(debug);
 });
 
-stopButton!.addEventListener("click", () => {
-  void sendControlMessage("TAKE_BROWSER_CONTROL", stopButton!);
+stopButton?.addEventListener("click", () => {
+  void sendControlMessage("TAKE_BROWSER_CONTROL", stopButton);
 });
 
-resumeButton!.addEventListener("click", () => {
-  void sendControlMessage("RESUME_BROWSER_CONTROL", resumeButton!);
+resumeButton?.addEventListener("click", () => {
+  void sendControlMessage("RESUME_BROWSER_CONTROL", resumeButton);
 });
 
 settingsButton?.addEventListener("click", () => {
   void openSettings();
 });
 
-copyAgentButton!.addEventListener("click", () => {
+copyAgentButton?.addEventListener("click", () => {
   void copyAgentHandoff();
 });
 
@@ -129,27 +130,27 @@ promptToggleButton?.addEventListener("click", () => {
   applyPromptExpansion();
 });
 
-agentHandoff!.addEventListener("click", () => {
-  if (agentHandoff!.hidden) return;
+agentHandoff?.addEventListener("click", () => {
+  if (agentHandoff.hidden) return;
   void copyAgentHandoff();
 });
 
-agentHandoff!.addEventListener("keydown", (event) => {
-  if (agentHandoff!.hidden) return;
+agentHandoff?.addEventListener("keydown", (event) => {
+  if (agentHandoff.hidden) return;
   if (event.key !== "Enter" && event.key !== " ") return;
   event.preventDefault();
   void copyAgentHandoff();
 });
 
-debugToggleButton!.addEventListener("click", () => {
+debugToggleButton?.addEventListener("click", () => {
   void setDebugEnabled(!currentDebug.enabled);
 });
 
-copyDebugButton!.addEventListener("click", () => {
+copyDebugButton?.addEventListener("click", () => {
   void copyDebugLogs();
 });
 
-clearDebugButton!.addEventListener("click", () => {
+clearDebugButton?.addEventListener("click", () => {
   void clearDebugLogs();
 });
 
@@ -171,7 +172,7 @@ function renderStaticShell(): void {
   applyDocumentLocale();
   applyStaticMessages();
   versionText!.textContent = msg("versionLabel", [chrome.runtime.getManifest().version]);
-  copyAgentButton!.textContent = agentCopyButtonLabel();
+  if (copyAgentButton) copyAgentButton.textContent = agentCopyButtonLabel();
 }
 
 async function openSettings(): Promise<void> {
@@ -257,9 +258,10 @@ async function clearDebugLogs(): Promise<void> {
 }
 
 async function copyAgentHandoff(): Promise<void> {
+  if (!copyAgentButton || !agentHandoff) return;
   await copySetupText({
-    button: copyAgentButton!,
-    text: (agentHandoff!.textContent ?? "").trim(),
+    button: copyAgentButton,
+    text: (agentHandoff.textContent ?? "").trim(),
     unavailable: msg("copyAgentUnavailable"),
     success: msg("copyAgentSuccess"),
   });
@@ -325,8 +327,8 @@ type ActionButtonSemantics = {
 };
 
 function renderActionButtons(status: HostStatus): void {
-  applyActionButton(stopButton!, stopButtonSemantics(status));
-  applyActionButton(resumeButton!, resumeButtonSemantics(status));
+  if (stopButton) applyActionButton(stopButton, stopButtonSemantics(status));
+  if (resumeButton) applyActionButton(resumeButton, resumeButtonSemantics(status));
 }
 
 function applyActionButton(button: HTMLButtonElement, semantics: ActionButtonSemantics): void {
@@ -470,6 +472,7 @@ function resumeButtonSemantics(status: HostStatus): ActionButtonSemantics {
 }
 
 function renderSetup(status: HostStatus, advice: NativeHostAdvice, wasConnected: boolean): void {
+  if (!setupPanel || !setupLabel || !setupText || !agentHandoff) return;
   const text = advice.showSetup
     ? advice.setupText ?? ""
     : msg("agentSetupDefaultText");
@@ -484,7 +487,9 @@ function renderSetup(status: HostStatus, advice: NativeHostAdvice, wasConnected:
   setupLabel!.textContent = label;
   setupText!.textContent = text;
   agentHandoff!.textContent = handoff;
-  if (status.state === "connected" && !wasConnected) {
+  if (isPairingPage) {
+    setupPromptExpanded = true;
+  } else if (status.state === "connected" && !wasConnected) {
     setupPromptExpanded = false;
   } else if (status.state !== "connected" && wasConnected) {
     setupPromptExpanded = true;
@@ -494,14 +499,15 @@ function renderSetup(status: HostStatus, advice: NativeHostAdvice, wasConnected:
   applyPromptExpansion();
   if (changed) {
     clearSetupCopyResetTimer();
-    copyAgentButton!.textContent = agentCopyButtonLabel();
-    setupCopyText!.textContent = "";
+    if (copyAgentButton) copyAgentButton.textContent = agentCopyButtonLabel();
+    if (setupCopyText) setupCopyText.textContent = "";
     removeDataAttribute(setupPanel, "data-copy-state");
   }
 }
 
 function applyPromptExpansion(): void {
-  agentHandoff!.hidden = !setupPromptExpanded;
+  if (!agentHandoff) return;
+  agentHandoff.hidden = !setupPromptExpanded;
   setDataAttribute(setupPanel, "data-prompt-expanded", setupPromptExpanded ? "true" : "false");
   setDataAttribute(promptToggleButton, "aria-expanded", setupPromptExpanded ? "true" : "false");
 }
@@ -518,11 +524,12 @@ function removeDataAttribute(element: HTMLElement | null, name: string): void {
 
 function renderDebug(debug: DebugLogStatus, overrideText?: string): void {
   currentDebug = debug;
-  debugToggleButton!.textContent = debug.enabled
+  if (!debugToggleButton || !copyDebugButton || !clearDebugButton || !debugText) return;
+  debugToggleButton.textContent = debug.enabled
     ? msg("debugDisable")
     : msg("debugEnable");
-  copyDebugButton!.disabled = debug.entries.length === 0;
-  clearDebugButton!.disabled = debug.entries.length === 0;
+  copyDebugButton.disabled = debug.entries.length === 0;
+  clearDebugButton.disabled = debug.entries.length === 0;
   if (overrideText) {
     debugText!.textContent = overrideText;
     return;
@@ -720,6 +727,8 @@ function agentHandoffForChannel(channel: string, runtimeExtensionId: string | un
     `Extension id: ${extensionId}`,
     "Use the linked prompt as the source of truth, and use the exact browser, extension channel, and extension id above for setup, repair, and browser pairing.",
     `Fast path contract: always run the official installer first for this handoff; then run one-agent setup with setup --agents=<agent-id> --browser=chrome --channel=${resolvedChannel} --extension-id=${extensionId} --write-instructions --json; then run verify --agent=<agent-id> --browser=chrome --channel=${resolvedChannel} --extension-id=${extensionId} --json.`,
+    "After any browser popup reports Connected, or browser_status shows a matching connected backend, rerun the same verify command up to 3 times before taking another action.",
+    "Only retry browser connection or ask the user after those verify attempts still do not return ready.",
     "Configure the agent/client currently executing this prompt. Configure other agents only when the user explicitly names them.",
     "Do not run broad setup for unnamed agents or browsers. Stop when verify returns result: ready.",
   ].join("\n");

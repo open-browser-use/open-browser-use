@@ -19,6 +19,8 @@ await mkdir(dist, { recursive: true });
 
 await cp(join(pub, "popup.html"), join(dist, "popup.html"));
 await cp(join(pub, "popup.css"), join(dist, "popup.css"));
+await cp(join(pub, "pairing.html"), join(dist, "pairing.html"));
+await cp(join(pub, "pairing.css"), join(dist, "pairing.css"));
 await cp(join(pub, "options.html"), join(dist, "options.html"));
 await cp(join(pub, "options.css"), join(dist, "options.css"));
 await rm(join(dist, "icons"), { recursive: true, force: true });

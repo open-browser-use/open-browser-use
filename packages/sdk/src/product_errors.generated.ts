@@ -20,7 +20,7 @@ export const PRODUCT_ERROR_SCHEMA = [
     "jsonRpcCodes": [],
     "nextAction": {
       "kind": "open_popup",
-      "summary": "Open the open-browser-use extension popup, click Resume if enabled, then rerun verify.",
+      "summary": "Open the open-browser-use pairing page, click Resume if enabled, then rerun verify.",
       "command": "obu verify --agent=<agent-id> --browser=<browser> --channel=<extension-channel> --extension-id=<extension-id>"
     }
   },

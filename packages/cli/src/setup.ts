@@ -309,14 +309,14 @@ function runtimeActivationStep(browser: BrowserKind, activation: BrowserRuntimeA
     return {
       id: `runtime-activation-${browser}`,
       status: "manual_action_required",
-      message: `could not open the open-browser-use extension popup for ${browser}`,
+      message: `could not open the open-browser-use pairing page for ${browser}`,
       details,
     };
   }
   return {
     id: `runtime-activation-${browser}`,
     status: "manual_action_required",
-    message: `opened the open-browser-use extension popup for ${browser} and waited ${activation.timeoutMs}ms, but no active runtime descriptor appeared`,
+    message: `opened the open-browser-use pairing page for ${browser} and waited ${activation.timeoutMs}ms, but no active runtime descriptor appeared`,
     details,
   };
 }

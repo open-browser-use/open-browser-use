@@ -5,10 +5,32 @@ import os from "node:os";
 import path from "node:path";
 import test, { type TestContext } from "node:test";
 
-import { activateBrowserRuntime } from "./browser-runtime-activation.js";
+import { activateBrowserRuntime, openBrowserPopup } from "./browser-runtime-activation.js";
 import { browserProfileRoot } from "./browser-paths.js";
 
 const EXTENSION_ID = "abcdefghijklmnopabcdefghijklmnop";
+
+test("openBrowserPopup refuses to launch when OBU_DISABLE_BROWSER_LAUNCH is set", async (t) => {
+  const previous = process.env.OBU_DISABLE_BROWSER_LAUNCH;
+  process.env.OBU_DISABLE_BROWSER_LAUNCH = "1";
+  t.after(() => {
+    if (previous === undefined) {
+      delete process.env.OBU_DISABLE_BROWSER_LAUNCH;
+    } else {
+      process.env.OBU_DISABLE_BROWSER_LAUNCH = previous;
+    }
+  });
+
+  await assert.rejects(
+    openBrowserPopup({
+      browser: "chrome",
+      extensionId: EXTENSION_ID,
+      profilePath: "/tmp/whatever/Default",
+      url: `chrome-extension://${EXTENSION_ID}/pairing.html`,
+    }),
+    /OBU_DISABLE_BROWSER_LAUNCH/,
+  );
+});
 
 test("activateBrowserRuntime opens only enabled extension profiles up to the default limit", async (t) => {
   const homeDir = await mkdtemp(path.join(os.tmpdir(), "obu-activation-home-"));
@@ -29,6 +51,7 @@ test("activateBrowserRuntime opens only enabled extension profiles up to the def
     runtimeDir: path.join(homeDir, "runtime"),
     hasActiveDescriptor: async () => opened.length >= 2,
     openPopup: async (target) => {
+      assert.equal(target.url, `chrome-extension://${EXTENSION_ID}/pairing.html`);
       opened.push(path.basename(target.profilePath));
     },
     now: clock.now,
@@ -138,6 +161,37 @@ test("activateBrowserRuntime continues after open failures and counts only opene
   assert.deepEqual(opened, ["Profile 2"]);
   assert.equal(result.openedCount, 1);
   assert.match(result.errors[0] ?? "", /cannot open default/);
+});
+
+test("activateBrowserRuntime reports open_failed when every enabled profile fails to open", async (t) => {
+  const homeDir = await mkdtemp(path.join(os.tmpdir(), "obu-activation-home-"));
+  t.after(() => rm(homeDir, { recursive: true, force: true }));
+  withIsolatedXdgConfigHome(t, homeDir);
+  const profileRoot = browserProfileRoot("chrome", process.platform, homeDir);
+  await writeChromePreferences(path.join(profileRoot, "Default"), EXTENSION_ID, 1);
+  await writeChromePreferences(path.join(profileRoot, "Profile 2"), EXTENSION_ID, 1);
+  const clock = fakeClock();
+
+  const result = await activateBrowserRuntime({
+    browser: "chrome",
+    extensionId: EXTENSION_ID,
+    homeDir,
+    runtimeDir: path.join(homeDir, "runtime"),
+    timeoutMs: 1000,
+    intervalMs: 250,
+    hasActiveDescriptor: async () => false,
+    openPopup: async () => {
+      throw new Error("launch disabled by OBU_DISABLE_BROWSER_LAUNCH");
+    },
+    now: clock.now,
+    sleep: clock.sleep,
+  });
+
+  assert.equal(result.result, "open_failed");
+  assert.equal(result.openedCount, 0);
+  assert.ok(result.attemptedProfiles.length > 0);
+  assert.equal(result.errors.length, result.attemptedProfiles.length);
+  assert.match(result.errors[0] ?? "", /launch disabled by OBU_DISABLE_BROWSER_LAUNCH/);
 });
 
 test("activateBrowserRuntime stops after 5 seconds when no descriptor appears", async (t) => {

@@ -84,6 +84,8 @@ try {
     "options.html",
     "options.js",
     "overlay_coordinator.js",
+    "pairing.css",
+    "pairing.html",
     "popup.css",
     "popup.html",
     "popup.js",

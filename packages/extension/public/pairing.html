@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en" dir="ltr">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>open browser use pairing</title>
+    <link rel="stylesheet" href="popup.css" />
+    <link rel="stylesheet" href="pairing.css" />
+  </head>
+  <body>
+    <main id="shell" class="shell pairing-shell">
+      <header class="pairing-top">
+        <div class="brand-identity">
+          <span class="brand-mark-wrap" aria-hidden="true">
+            <img class="brand-mark" src="icons/icon-48.png" width="40" height="40" alt="" />
+          </span>
+          <a class="brand-link brand-wordmark" href="https://open-browser-use.xyz" target="_blank" rel="noopener noreferrer">open browser use</a>
+          <span id="version-text" class="pairing-version" data-i18n="versionFallback">Version</span>
+        </div>
+      </header>
+
+      <section class="pairing-stage" aria-labelledby="pairing-title">
+        <div class="pairing-copy">
+          <p class="label">Browser bridge</p>
+          <h1 id="pairing-title">open browser use</h1>
+        </div>
+
+        <section id="status-panel" class="status-panel pairing-status" aria-live="polite">
+          <div class="status-head">
+            <div>
+              <p class="label" data-i18n="nativeHostLabel">Native host</p>
+              <p id="status-text" class="value" data-i18n="checkingStatus">Checking...</p>
+              <p id="detail-text" class="detail"></p>
+            </div>
+            <span id="status-dot" class="dot" aria-hidden="true"></span>
+          </div>
+        </section>
+      </section>
+    </main>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>

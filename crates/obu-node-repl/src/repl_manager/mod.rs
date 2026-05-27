@@ -1097,7 +1097,7 @@ const VERIFY_HINT: &str = "obu verify --agent=<agent-id> --browser=<browser> --c
 const VERIFY_REPAIR_HINT: &str = "obu verify --repair --agent=<agent-id> --browser=<browser> --channel=<extension-channel> --extension-id=<extension-id>";
 const DOCTOR_BROWSER_REPAIR_HINT: &str = "obu doctor browser --repair";
 const OPEN_POPUP_HINT: &str =
-    "Open the open-browser-use extension popup, click Resume if enabled, then rerun verify.";
+    "Open the open-browser-use pairing page, click Resume if enabled, then rerun verify.";
 
 fn browser_status_product_error(
     sdk_bootstrap: &str,
@@ -1828,7 +1828,7 @@ mod tests {
         assert_eq!(error["next_action"]["kind"], "open_popup");
         assert_eq!(
             error["next_action"]["summary"],
-            "Open the open-browser-use extension popup, click Resume if enabled, then rerun verify."
+            "Open the open-browser-use pairing page, click Resume if enabled, then rerun verify."
         );
     }
 

@@ -166,7 +166,7 @@ function assertStep(report, id, status) {
 function run(command, args, env = {}, options = {}) {
   const result = spawnSync(command, args, {
     encoding: "utf8",
-    env: { ...process.env, ...env },
+    env: { ...process.env, ...env, OBU_DISABLE_BROWSER_LAUNCH: "1" },
     cwd: options.cwd ?? temp,
   });
   if (result.error) throw result.error;
@@ -180,7 +180,7 @@ function runAsync(command, args, env = {}, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
       encoding: "utf8",
-      env: { ...process.env, ...env },
+      env: { ...process.env, ...env, OBU_DISABLE_BROWSER_LAUNCH: "1" },
       cwd: options.cwd ?? temp,
       stdio: ["ignore", "pipe", "pipe"],
     });
