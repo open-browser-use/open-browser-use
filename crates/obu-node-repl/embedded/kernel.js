@@ -1855,12 +1855,33 @@ function trackExecBackgroundOperation(execState, operation) {
   };
 }
 
+const DRAIN_TIMEOUT = Symbol("drainTimeout");
+
+function execDrainBudgetMs() {
+  const raw = Number(globalThis.process?.env?.OBU_EXEC_DRAIN_BUDGET_MS);
+  return Number.isFinite(raw) && raw > 0 ? raw : 30_000;
+}
+
+// The drain budget is a per-exec total: one deadline spans every drain
+// iteration, so a snippet that keeps registering fresh tracked ops cannot
+// reset the clock and stretch total drain time unbounded.
 async function drainExecBackgroundTasks(execState) {
+  const budgetMs = execDrainBudgetMs();
+  const deadline = Date.now() + budgetMs;
   while (execState.pendingBackgroundTasks.size > 0) {
     const backgroundTasks = [...execState.pendingBackgroundTasks];
     execState.pendingBackgroundTasks.clear();
-    const backgroundResults = await Promise.all(backgroundTasks);
-    const firstUnhandledBackgroundError = backgroundResults.find(
+    const remainingMs = Math.max(0, deadline - Date.now());
+    let timer;
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(DRAIN_TIMEOUT), remainingMs);
+    });
+    const settled = await Promise.race([Promise.all(backgroundTasks), timeout]);
+    clearTimeout(timer);
+    if (settled === DRAIN_TIMEOUT) {
+      throw new Error(`background operation drain timed out after ${budgetMs}ms`);
+    }
+    const firstUnhandledBackgroundError = settled.find(
       (result) => !result.ok && !result.observation.observed,
     );
     if (firstUnhandledBackgroundError) {

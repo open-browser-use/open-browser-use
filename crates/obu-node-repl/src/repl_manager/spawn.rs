@@ -153,6 +153,13 @@ fn set_minimal_env(cmd: &mut Command, opts: &SpawnOptions) -> Result<()> {
     if opts.trust_all {
         cmd.env("OBU_TRUST_ALL_CODE", "1");
     }
+    // Forward the exec background-drain budget so operators (and tests) can tune
+    // how long a single exec waits on tracked background operations before the
+    // kernel surfaces a drain-timeout error. `env_clear` above would otherwise
+    // strip it, leaving the kernel-side override inert.
+    if let Some(value) = std::env::var_os("OBU_EXEC_DRAIN_BUDGET_MS") {
+        cmd.env("OBU_EXEC_DRAIN_BUDGET_MS", value);
+    }
     Ok(())
 }
 
