@@ -433,20 +433,60 @@ impl Dispatcher {
     async fn route_request(&self, req: Request) -> Response {
         let method = req.method.clone();
         let ctx = request_context(&req);
-        let tab_id = params_tab_id(&req.params);
-        let params = command_params_summary(&req.params);
         let started = Instant::now();
+        // Class-A: the durable command-event summary (`params_tab_id` +
+        // recursive `command_params_summary`) is a deep traversal, so compute it
+        // ONLY when the command is actually recordable. The cheap predicate gates
+        // the costly work; task RPCs / storeless / sessionless requests pay
+        // nothing. It must be computed from `&req.params` BEFORE `route_request_inner`
+        // consumes `req`.
+        let pending = self.should_record_command_event(&method, &ctx).then(|| {
+            (
+                params_tab_id(&req.params),
+                command_params_summary(&req.params),
+            )
+        });
         let response = self.route_request_inner(req, ctx.clone()).await;
-        self.record_browser_command_event(
-            &ctx,
-            &method,
-            tab_id,
-            params,
-            started.elapsed(),
-            &response,
-        )
-        .await;
+        // Measure the latency BEFORE spawning so `durationMs` reflects only the
+        // command's own work, not the (asynchronous) durable-write scheduling.
+        let elapsed = started.elapsed();
+        // Best-effort observability: build the durable command event synchronously
+        // (cheap, no I/O), then fire-and-forget the actual SQLite write so the
+        // response returns immediately and never pays the actor hop + disk write
+        // on the agent's per-action latency path.
+        if let Some((tab_id, params)) = pending
+            && let Some((event, session_id, turn_id, generation)) =
+                self.build_browser_command_event(&ctx, &method, tab_id, params, elapsed, &response)
+            && let Some(store) = self.inner.task_store.clone()
+        {
+            // Fire-and-forget: best-effort, no back-pressure on the response path;
+            // acceptable because the task-store actor's mpsc serializes the writes.
+            tokio::spawn(async move {
+                if let Err(error) = store
+                    .record_command_event(session_id, turn_id, generation, event)
+                    .await
+                {
+                    tracing::warn!(%error, method = %method, "failed to record browser_command event; command response still succeeded");
+                }
+            });
+        }
         response
+    }
+
+    /// Cheap predicate: should this command produce a durable `browser_command`
+    /// event? It performs ONLY constant-time checks (no param-summary traversal),
+    /// so [`Self::route_request`] can gate the costly `command_params_summary`
+    /// behind it. It is also the SINGLE source of truth for the skip decision,
+    /// reused by [`Self::build_browser_command_event`] so the gate and the
+    /// builder can never diverge.
+    ///
+    /// Returns `true` only when: the method is NOT a task RPC, AND a task store
+    /// exists, AND both `session_id` and `turn_id` are present and non-empty.
+    fn should_record_command_event(&self, method: &str, ctx: &BackendRequestContext) -> bool {
+        !is_task_method(method)
+            && self.inner.task_store.is_some()
+            && ctx.session_id.as_deref().is_some_and(|id| !id.is_empty())
+            && ctx.turn_id.as_deref().is_some_and(|id| !id.is_empty())
     }
 
     async fn route_request_inner(&self, req: Request, ctx: BackendRequestContext) -> Response {
@@ -484,7 +524,20 @@ impl Dispatcher {
         self.route_supported_request(req, ctx).await
     }
 
-    async fn record_browser_command_event(
+    /// Build the durable `browser_command` event plus its routing, or `None`
+    /// when this command should NOT be recorded.
+    ///
+    /// Returns `(event, session_id, turn_id, trusted_kernel_generation)` — all
+    /// owned so the caller can move them into a `'static` spawned write. This is
+    /// pure (no I/O): the actual durable write is fire-and-forget in
+    /// [`Self::route_request`], keeping the actor hop + SQLite INSERT off the
+    /// agent's per-action latency path.
+    ///
+    /// Skip (return `None`) when [`Self::should_record_command_event`] is false
+    /// (task RPC, no task store, or empty session/turn ids) — the same gate
+    /// `route_request` uses, so the two can never disagree. The guard runs BEFORE
+    /// the event is built so skipped commands do no wasted work.
+    fn build_browser_command_event(
         &self,
         ctx: &BackendRequestContext,
         method: &str,
@@ -492,18 +545,17 @@ impl Dispatcher {
         params: Value,
         duration: Duration,
         response: &Response,
-    ) {
-        if is_task_method(method) {
-            return;
+    ) -> Option<(Value, String, String, Option<i64>)> {
+        if !self.should_record_command_event(method, ctx) {
+            return None;
         }
-        let Some(store) = self.inner.task_store.as_ref() else {
-            return;
-        };
+        // The predicate already guaranteed both ids are present and non-empty;
+        // this `let-else` re-extracts them as owned values (and never panics).
         let (Some(session_id), Some(turn_id)) = (
             ctx.session_id.as_deref().filter(|id| !id.is_empty()),
             ctx.turn_id.as_deref().filter(|id| !id.is_empty()),
         ) else {
-            return;
+            return None;
         };
         let mut event = serde_json::Map::new();
         event.insert("method".to_string(), json!(method));
@@ -552,17 +604,12 @@ impl Dispatcher {
         {
             event.insert("result".to_string(), result);
         }
-        if let Err(error) = store
-            .record_command_event(
-                session_id.to_string(),
-                turn_id.to_string(),
-                ctx.trusted_kernel_generation,
-                Value::Object(event),
-            )
-            .await
-        {
-            tracing::warn!(%error, method, "failed to record browser_command event; command response still succeeded");
-        }
+        Some((
+            Value::Object(event),
+            session_id.to_string(),
+            turn_id.to_string(),
+            ctx.trusted_kernel_generation,
+        ))
     }
 
     async fn route_supported_request(&self, req: Request, ctx: BackendRequestContext) -> Response {

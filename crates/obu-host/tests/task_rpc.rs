@@ -348,17 +348,7 @@ async fn tab_command_records_durable_browser_command_event() {
         .as_str()
         .expect("task id")
         .to_string();
-    let export = dispatch_for_test(
-        &dispatcher,
-        methods::TASKS_EXPORT,
-        json!({ "taskId": task_id }),
-    )
-    .await;
-    let events = export["result"]["events"].as_array().expect("events array");
-    let command = events
-        .iter()
-        .find(|event| event["kind"] == "browser_command")
-        .expect("browser_command event");
+    let command = await_browser_command_event(&dispatcher, &task_id).await;
     let payload: Value =
         serde_json::from_str(command["payload"].as_str().expect("payload is a string"))
             .expect("payload parses as json");
@@ -394,17 +384,7 @@ async fn tab_title_command_records_safe_result_summary() {
         .as_str()
         .expect("task id")
         .to_string();
-    let export = dispatch_for_test(
-        &dispatcher,
-        methods::TASKS_EXPORT,
-        json!({ "taskId": task_id }),
-    )
-    .await;
-    let events = export["result"]["events"].as_array().expect("events array");
-    let command = events
-        .iter()
-        .find(|event| event["kind"] == "browser_command")
-        .expect("browser_command event");
+    let command = await_browser_command_event(&dispatcher, &task_id).await;
     let payload: Value =
         serde_json::from_str(command["payload"].as_str().expect("payload is a string"))
             .expect("payload parses as json");
@@ -441,17 +421,7 @@ async fn tab_evaluate_command_result_summary_is_bounded() {
         .as_str()
         .expect("task id")
         .to_string();
-    let export = dispatch_for_test(
-        &dispatcher,
-        methods::TASKS_EXPORT,
-        json!({ "taskId": task_id }),
-    )
-    .await;
-    let events = export["result"]["events"].as_array().expect("events array");
-    let command = events
-        .iter()
-        .find(|event| event["kind"] == "browser_command")
-        .expect("browser_command event");
+    let command = await_browser_command_event(&dispatcher, &task_id).await;
     let payload_text = command["payload"].as_str().expect("payload is a string");
     assert!(
         !payload_text.contains(&"x".repeat(512)),
@@ -486,17 +456,7 @@ async fn finalize_command_records_safe_result_summary() {
         .as_str()
         .expect("task id")
         .to_string();
-    let export = dispatch_for_test(
-        &dispatcher,
-        methods::TASKS_EXPORT,
-        json!({ "taskId": task_id }),
-    )
-    .await;
-    let events = export["result"]["events"].as_array().expect("events array");
-    let command = events
-        .iter()
-        .find(|event| event["kind"] == "browser_command")
-        .expect("browser_command event");
+    let command = await_browser_command_event(&dispatcher, &task_id).await;
     let payload: Value =
         serde_json::from_str(command["payload"].as_str().expect("payload is a string"))
             .expect("payload parses as json");
@@ -535,17 +495,7 @@ async fn playwright_fill_command_redacts_typed_value() {
         .as_str()
         .expect("task id")
         .to_string();
-    let export = dispatch_for_test(
-        &dispatcher,
-        methods::TASKS_EXPORT,
-        json!({ "taskId": task_id }),
-    )
-    .await;
-    let events = export["result"]["events"].as_array().expect("events array");
-    let command = events
-        .iter()
-        .find(|event| event["kind"] == "browser_command")
-        .expect("browser_command event");
+    let command = await_browser_command_event(&dispatcher, &task_id).await;
     let payload_text = command["payload"].as_str().expect("payload is a string");
     assert!(
         !payload_text.contains("secret-password"),
@@ -579,17 +529,7 @@ async fn failed_command_records_durable_error_event() {
         .as_str()
         .expect("task id")
         .to_string();
-    let export = dispatch_for_test(
-        &dispatcher,
-        methods::TASKS_EXPORT,
-        json!({ "taskId": task_id }),
-    )
-    .await;
-    let events = export["result"]["events"].as_array().expect("events array");
-    let command = events
-        .iter()
-        .find(|event| event["kind"] == "browser_command")
-        .expect("browser_command event");
+    let command = await_browser_command_event(&dispatcher, &task_id).await;
     let payload: Value =
         serde_json::from_str(command["payload"].as_str().expect("payload is a string"))
             .expect("payload parses as json");
@@ -620,22 +560,54 @@ async fn finalize_twice_same_turn_keeps_one_segment() {
     }
 
     let tasks = dispatch_for_test(&dispatcher, methods::TASKS_LIST, json!({ "limit": 10 })).await;
-    // Idempotent segment: still exactly one. Events accumulate (one per finalize).
+    // Idempotent segment: still exactly one.
     assert_eq!(tasks["result"][0]["segmentCount"], 1);
-    assert_eq!(tasks["result"][0]["eventCursor"], 4);
     assert_eq!(tasks["result"][0]["lastSegment"]["turnId"], "turn-1");
 
     let task_id = tasks["result"][0]["taskId"]
         .as_str()
         .expect("task id")
         .to_string();
-    let export = dispatch_for_test(
-        &dispatcher,
-        methods::TASKS_EXPORT,
-        json!({ "taskId": task_id }),
-    )
-    .await;
+
+    // The two `browser_command` events are written fire-and-forget off the RPC
+    // latency path, so poll until BOTH have landed before asserting on counts
+    // and the event cursor. The two `tabs_finalized` events are written
+    // synchronously by finalize, so they are already present; we still assert
+    // their count on the same settled snapshot.
+    let export = {
+        let mut last = json!(null);
+        let mut settled = false;
+        for _ in 0..50 {
+            let export = dispatch_for_test(
+                &dispatcher,
+                methods::TASKS_EXPORT,
+                json!({ "taskId": task_id }),
+            )
+            .await;
+            let browser_command_count = export["result"]["events"]
+                .as_array()
+                .map(|events| {
+                    events
+                        .iter()
+                        .filter(|event| event["kind"] == "browser_command")
+                        .count()
+                })
+                .unwrap_or(0);
+            last = export;
+            if browser_command_count >= 2 {
+                settled = true;
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        }
+        assert!(
+            settled,
+            "both browser_command events did not land within 1s: {last:#}"
+        );
+        last
+    };
     let events = export["result"]["events"].as_array().expect("events array");
+    // Events accumulate (one per finalize, plus one browser_command per finalize).
     assert_eq!(
         events
             .iter()
@@ -650,6 +622,10 @@ async fn finalize_twice_same_turn_keeps_one_segment() {
             .count(),
         2
     );
+
+    // The cursor reaches 4 only after both async browser_command writes settle.
+    let tasks = dispatch_for_test(&dispatcher, methods::TASKS_LIST, json!({ "limit": 10 })).await;
+    assert_eq!(tasks["result"][0]["eventCursor"], 4);
 }
 
 /// Two distinct sessions racing to resume the SAME task: the first wins the
@@ -822,6 +798,31 @@ async fn create_task_via_finalize(
         .as_str()
         .expect("auto-created task id")
         .to_string()
+}
+
+/// Poll `tasks.export` until a `browser_command` event lands, then return it.
+///
+/// The durable command-event write is fire-and-forget (spawned off the RPC
+/// latency path), so the event may not be visible the instant the command
+/// response returns. Polling tolerates BOTH the historical synchronous write
+/// (resolves on the first iteration) and the spawned write (resolves within a
+/// few iterations), so this harness is timing-agnostic.
+async fn await_browser_command_event(dispatcher: &Dispatcher, task_id: &str) -> Value {
+    for _ in 0..50 {
+        let export = dispatch_for_test(
+            dispatcher,
+            methods::TASKS_EXPORT,
+            json!({ "taskId": task_id }),
+        )
+        .await;
+        if let Some(events) = export["result"]["events"].as_array() {
+            if let Some(cmd) = events.iter().find(|e| e["kind"] == "browser_command") {
+                return cmd.clone();
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    panic!("no browser_command event recorded within 1s");
 }
 
 async fn dispatch_for_test(dispatcher: &Dispatcher, method: &str, params: Value) -> Value {
