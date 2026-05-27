@@ -106,6 +106,14 @@ enum TaskStoreCommand {
         generation: Option<i64>,
         reply: oneshot::Sender<Result<(), String>>,
     },
+    /// Record one routed browser command against the current turn.
+    RecordCommandEvent {
+        session_id: String,
+        turn_id: String,
+        generation: Option<i64>,
+        event: Value,
+        reply: oneshot::Sender<Result<(), String>>,
+    },
 }
 
 impl TaskStoreHandle {
@@ -249,6 +257,22 @@ impl TaskStoreHandle {
                                 &session_id,
                                 &turn_id,
                                 generation,
+                            );
+                            let _ = reply.send(result);
+                        }
+                        TaskStoreCommand::RecordCommandEvent {
+                            session_id,
+                            turn_id,
+                            generation,
+                            event,
+                            reply,
+                        } => {
+                            let result = record_command_event(
+                                &store,
+                                &session_id,
+                                &turn_id,
+                                generation,
+                                event,
                             );
                             let _ = reply.send(result);
                         }
@@ -396,6 +420,33 @@ impl TaskStoreHandle {
                 session_id,
                 turn_id,
                 generation,
+                reply,
+            })
+            .map_err(|_| anyhow!("task store actor closed"))?;
+        rx.await
+            .map_err(|_| anyhow!("task store actor closed"))?
+            .map_err(anyhow::Error::msg)
+    }
+
+    /// Record a routed browser command for the current turn's segment.
+    ///
+    /// Same best-effort call shape as finalize/turn-ended evidence: the actor
+    /// resolves (or auto-creates) the current task and segment, then appends a
+    /// typed `browser_command` event.
+    pub async fn record_command_event(
+        &self,
+        session_id: String,
+        turn_id: String,
+        generation: Option<i64>,
+        event: Value,
+    ) -> Result<()> {
+        let (reply, rx) = oneshot::channel();
+        self.tx
+            .send(TaskStoreCommand::RecordCommandEvent {
+                session_id,
+                turn_id,
+                generation,
+                event,
                 reply,
             })
             .map_err(|_| anyhow!("task store actor closed"))?;
@@ -565,6 +616,44 @@ fn record_turn_ended_evidence(
     });
     store
         .append_typed_event(&task_id, "turn_ended", payload)
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Ensure the current turn's segment and append a `browser_command` typed event.
+fn record_command_event(
+    store: &TaskStore,
+    session_id: &str,
+    turn_id: &str,
+    generation: Option<i64>,
+    event: Value,
+) -> Result<(), String> {
+    let (task_id, segment) = ensure_current_turn_segment(store, session_id, turn_id, generation)?;
+    let mut payload = match event {
+        Value::Object(map) => map,
+        other => {
+            let mut map = serde_json::Map::new();
+            map.insert("payload".to_string(), other);
+            map
+        }
+    };
+    payload.insert(
+        "kind".to_string(),
+        Value::String("browser_command".to_string()),
+    );
+    payload.insert("taskId".to_string(), Value::String(task_id.clone()));
+    payload.insert(
+        "segmentId".to_string(),
+        Value::String(segment.segment_id.clone()),
+    );
+    payload.insert(
+        "sessionId".to_string(),
+        Value::String(session_id.to_string()),
+    );
+    payload.insert("turnId".to_string(), Value::String(turn_id.to_string()));
+    payload.insert("at".to_string(), Value::Number(now_millis().into()));
+    store
+        .append_typed_event(&task_id, "browser_command", Value::Object(payload))
         .map_err(|e| e.to_string())?;
     Ok(())
 }

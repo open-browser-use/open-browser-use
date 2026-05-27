@@ -431,10 +431,28 @@ impl Dispatcher {
     }
 
     async fn route_request(&self, req: Request) -> Response {
+        let method = req.method.clone();
+        let ctx = request_context(&req);
+        let tab_id = params_tab_id(&req.params);
+        let params = command_params_summary(&req.params);
+        let started = Instant::now();
+        let response = self.route_request_inner(req, ctx.clone()).await;
+        self.record_browser_command_event(
+            &ctx,
+            &method,
+            tab_id,
+            params,
+            started.elapsed(),
+            &response,
+        )
+        .await;
+        response
+    }
+
+    async fn route_request_inner(&self, req: Request, ctx: BackendRequestContext) -> Response {
         if let Err(error) = reject_user_runtime_metadata(&req.method, &req.params) {
             return Response::err(req.id, error);
         }
-        let ctx = request_context(&req);
         // Finding F1: task RPCs are served by the dispatcher's own task store, not
         // by the browser backend, so they are EXEMPT from the backend capability
         // gate. They are NOT early-returned here: they fall through to the normal
@@ -464,6 +482,68 @@ impl Dispatcher {
             return self.route_supported_request(req, ctx).await;
         }
         self.route_supported_request(req, ctx).await
+    }
+
+    async fn record_browser_command_event(
+        &self,
+        ctx: &BackendRequestContext,
+        method: &str,
+        tab_id: Option<String>,
+        params: Value,
+        duration: Duration,
+        response: &Response,
+    ) {
+        if is_task_method(method) {
+            return;
+        }
+        let Some(store) = self.inner.task_store.as_ref() else {
+            return;
+        };
+        let (Some(session_id), Some(turn_id)) = (
+            ctx.session_id.as_deref().filter(|id| !id.is_empty()),
+            ctx.turn_id.as_deref().filter(|id| !id.is_empty()),
+        ) else {
+            return;
+        };
+        let mut event = serde_json::Map::new();
+        event.insert("method".to_string(), json!(method));
+        event.insert(
+            "status".to_string(),
+            json!(if response.error.is_some() {
+                "error"
+            } else {
+                "ok"
+            }),
+        );
+        event.insert("durationMs".to_string(), json!(duration_millis(duration)));
+        if let Some(tab_id) = tab_id {
+            event.insert("tabId".to_string(), json!(tab_id));
+        }
+        if let Some(client_timeout_ms) = ctx.client_timeout_ms {
+            event.insert("clientTimeoutMs".to_string(), json!(client_timeout_ms));
+        }
+        event.insert("params".to_string(), params);
+        if let Some(error) = response.error.as_ref() {
+            event.insert(
+                "error".to_string(),
+                json!({
+                    "code": &error.code,
+                    "message": &error.message,
+                    "data": &error.data,
+                }),
+            );
+        }
+        if let Err(error) = store
+            .record_command_event(
+                session_id.to_string(),
+                turn_id.to_string(),
+                ctx.trusted_kernel_generation,
+                Value::Object(event),
+            )
+            .await
+        {
+            tracing::warn!(%error, method, "failed to record browser_command event; command response still succeeded");
+        }
     }
 
     async fn route_supported_request(&self, req: Request, ctx: BackendRequestContext) -> Response {
@@ -1516,6 +1596,113 @@ fn encode_response(response: &Response) -> Result<Bytes> {
 
 fn params_str(value: &Value, key: &str) -> Option<String> {
     value.get(key).and_then(Value::as_str).map(String::from)
+}
+
+fn duration_millis(duration: Duration) -> u64 {
+    duration.as_millis().min(u128::from(u64::MAX)) as u64
+}
+
+fn command_params_summary(params: &Value) -> Value {
+    summarize_command_value(None, params)
+}
+
+fn summarize_command_value(key: Option<&str>, value: &Value) -> Value {
+    if key.is_some_and(is_sensitive_command_param) {
+        return redact_command_value(value);
+    }
+    match value {
+        Value::String(text) => {
+            let length = text.chars().count();
+            if length > 512 {
+                json!({ "truncated": true, "length": length })
+            } else {
+                Value::String(text.clone())
+            }
+        }
+        Value::Array(items) => {
+            let summarized = items
+                .iter()
+                .take(20)
+                .map(|item| summarize_command_value(None, item))
+                .collect::<Vec<_>>();
+            if items.len() > summarized.len() {
+                json!({
+                    "truncated": true,
+                    "length": items.len(),
+                    "items": summarized,
+                })
+            } else {
+                Value::Array(summarized)
+            }
+        }
+        Value::Object(object) => {
+            let mut summarized = serde_json::Map::new();
+            for (child_key, child_value) in object {
+                summarized.insert(
+                    child_key.clone(),
+                    summarize_command_value(Some(child_key), child_value),
+                );
+            }
+            Value::Object(summarized)
+        }
+        other => other.clone(),
+    }
+}
+
+fn redact_command_value(value: &Value) -> Value {
+    match value {
+        Value::String(text) => json!({
+            "redacted": true,
+            "length": text.chars().count(),
+        }),
+        Value::Array(items) => json!({
+            "redacted": true,
+            "type": "array",
+            "length": items.len(),
+        }),
+        Value::Object(object) => json!({
+            "redacted": true,
+            "type": "object",
+            "keys": object.len(),
+        }),
+        Value::Null => Value::Null,
+        other => json!({
+            "redacted": true,
+            "type": command_value_type(other),
+        }),
+    }
+}
+
+fn is_sensitive_command_param(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    matches!(
+        key.as_str(),
+        "authorization"
+            | "body"
+            | "content"
+            | "cookie"
+            | "data"
+            | "expression"
+            | "html"
+            | "password"
+            | "script"
+            | "text"
+            | "token"
+            | "value"
+    ) || key.contains("password")
+        || key.contains("secret")
+        || key.contains("token")
+}
+
+fn command_value_type(value: &Value) -> &'static str {
+    match value {
+        Value::Null => "null",
+        Value::Bool(_) => "boolean",
+        Value::Number(_) => "number",
+        Value::String(_) => "string",
+        Value::Array(_) => "array",
+        Value::Object(_) => "object",
+    }
 }
 
 fn params_urls(value: &Value) -> std::result::Result<Vec<String>, ErrorObject> {
