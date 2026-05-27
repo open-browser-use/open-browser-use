@@ -1825,7 +1825,6 @@ fn redacted_command_result_summary(result: &Value) -> Value {
         "type": "redacted",
         "reason": "sensitive_or_large_result",
         "valueType": command_value_type(result),
-        "jsonBytes": serde_json::to_vec(result).map(|bytes| bytes.len()).unwrap_or(0),
     })
 }
 
@@ -2536,6 +2535,18 @@ mod tests {
         assert_eq!(bad["outcome"], json!("error"));
         assert_eq!(bad["netError"], json!("net::ERR_CONNECTION_RESET"));
         assert_eq!(bad["retryable"], json!(true));
+    }
+
+    #[test]
+    fn redacted_summary_does_not_serialize_full_result() {
+        // The summary must not embed a byte count derived from serializing the whole
+        // (possibly multi-MB) result.
+        let summary = redacted_command_result_summary(&json!({ "data": "x".repeat(4096) }));
+        assert_eq!(summary["type"], "redacted");
+        assert!(
+            summary.get("jsonBytes").is_none(),
+            "must not serialize full result to count bytes"
+        );
     }
 
     #[test]
