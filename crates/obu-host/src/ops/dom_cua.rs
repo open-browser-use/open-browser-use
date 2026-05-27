@@ -627,6 +627,16 @@ fn append_text(node: &Value, out: &mut String, max_len: usize) {
     if out.len() >= max_len || is_hidden_subtree(node) {
         return;
     }
+    // Skip non-content elements: their text is source/non-rendered content
+    // (CSS, JS, <noscript> fallbacks, inert <template> bodies) that must never
+    // leak into an element's accessible label — e.g. a styled <button> that
+    // inlines a <style> would otherwise surface the stylesheet in snapshotText().
+    if matches!(
+        node_tag(node).as_str(),
+        "style" | "script" | "noscript" | "template"
+    ) {
+        return;
+    }
     if node
         .get("nodeName")
         .and_then(Value::as_str)
@@ -674,6 +684,32 @@ mod tests {
     use crate::backends::BackendRequestContext;
 
     use super::*;
+
+    #[test]
+    fn aggregate_text_excludes_non_content_element_subtrees() {
+        // A styled button (web-component pattern) that inlines a <style> and a
+        // <script>, plus <noscript>/<template> fallbacks. Their text is source
+        // code / non-rendered content and must never leak into the label.
+        let node = json!({
+            "nodeName": "BUTTON",
+            "children": [
+                { "nodeName": "STYLE", "children": [
+                    { "nodeName": "#text", "nodeValue": ".cart-btn{color:red;background:url(x)}" }
+                ]},
+                { "nodeName": "#text", "nodeValue": "Add to cart" },
+                { "nodeName": "SCRIPT", "children": [
+                    { "nodeName": "#text", "nodeValue": "track('click')" }
+                ]},
+                { "nodeName": "NOSCRIPT", "children": [
+                    { "nodeName": "#text", "nodeValue": "enable javascript" }
+                ]},
+                { "nodeName": "TEMPLATE", "children": [
+                    { "nodeName": "#text", "nodeValue": "hidden template text" }
+                ]}
+            ]
+        });
+        assert_eq!(aggregate_text(&node, 240), "Add to cart");
+    }
 
     #[test]
     fn rect_from_box_model_uses_content_bounds() {
