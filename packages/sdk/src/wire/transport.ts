@@ -46,6 +46,8 @@ export type TransportRequestLifecycle =
 
 export type TransportDiagnostics = {
   request_lifecycle: TransportRequestLifecycle[];
+  /** Number of successful transparent reconnects after a transport close. */
+  reconnects: number;
 };
 
 type RpcResponse = {
@@ -62,29 +64,52 @@ type ObuReplBackgroundTracker = {
   trackBackgroundOperation?: (operation: Promise<unknown>) => PromiseLike<unknown>;
 };
 
+/** Re-discovers the live backend and opens a fresh connection (socket path changes on host restart). */
+export type TransportReconnect = () => Promise<NativePipeConnection>;
+
 const DEFAULT_TIMEOUT_MS = 30_000;
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
 const parsedOvershoot = Number(env?.OBU_DEFENSIVE_TIMEOUT_MS_OVERSHOOT);
 const DEFENSIVE_OVERSHOOT_MS = Number.isFinite(parsedOvershoot) && parsedOvershoot >= 0
   ? parsedOvershoot
   : 5_000;
+const DEFAULT_RECONNECT_MAX_ATTEMPTS = 5;
+const DEFAULT_RECONNECT_BACKOFF_MS = 200;
 const TEXT_ENCODER = new TextEncoder();
 const TEXT_DECODER = new TextDecoder();
 const MAX_REQUEST_LIFECYCLE_DIAGNOSTICS = 64;
 
 export class Transport {
   #closed = false;
+  #disposed = false;
   #decoder = new FrameDecoder();
   #encoder = new FrameEncoder();
   #nextId = 1;
   #pending = new Map<number, Pending>();
   #timedOutRequests = new Map<number, TransportRequestLifecycle>();
   #sessionIdOverride: string | undefined;
+  #connection: NativePipeConnection;
+  #reconnect: TransportReconnect | undefined;
+  #reconnects = 0;
+  #maxReconnectAttempts: number;
+  #reconnectBackoffMs: number;
 
-  constructor(private readonly connection: NativePipeConnection) {
-    this.connection.on("data", (chunk) => this.#onData(chunk));
-    this.connection.on("close", () => this.#onClose("transport closed"));
-    this.connection.on("error", (error) => this.#onClose(String(error ?? "transport error")));
+  // Bound once so the same listeners can be detached from a dead connection and
+  // attached to a fresh one across a reconnect.
+  #onDataBound = (chunk?: unknown) => this.#onData(chunk);
+  #onCloseBound = () => this.#onClose("transport closed");
+  #onErrorBound = (error?: unknown) => this.#onClose(String(error ?? "transport error"));
+
+  constructor(connection: NativePipeConnection, reconnect?: TransportReconnect) {
+    this.#reconnect = reconnect;
+    const attempts = Number(env?.OBU_RECONNECT_MAX_ATTEMPTS);
+    this.#maxReconnectAttempts =
+      Number.isFinite(attempts) && attempts >= 1 ? attempts : DEFAULT_RECONNECT_MAX_ATTEMPTS;
+    const backoff = Number(env?.OBU_RECONNECT_BACKOFF_MS);
+    this.#reconnectBackoffMs =
+      Number.isFinite(backoff) && backoff >= 0 ? backoff : DEFAULT_RECONNECT_BACKOFF_MS;
+    this.#connection = connection;
+    this.#attachListeners(connection);
   }
 
   setSessionIdOverride(sessionId: string | undefined): this {
@@ -99,13 +124,80 @@ export class Transport {
     frameMeta?: { runtime?: { kernel_generation?: number } },
   ): Promise<R> {
     if (this.#closed) {
-      return Promise.reject(new ObuError(
+      // The transport closed (host died / MV3 service-worker recycle). A NEW request
+      // was never written to the dead socket, so it is safe to transparently reconnect
+      // and send it on a fresh connection — no double-execution. In-flight requests at
+      // close-time are NOT retried here (they already rejected in #onClose).
+      if (this.#reconnect && !this.#disposed) {
+        return trackObuReplBackgroundOperation(
+          this.#reconnectAndSend<R>(method, params, timeoutMs, frameMeta),
+        );
+      }
+      return Promise.reject(
+        new ObuError(
+          ERR_TRANSPORT_CLOSED,
+          "transport closed",
+          productErrorData("transport_closed", { reason: "request was sent after transport closed" }),
+        ),
+      );
+    }
+    return this.#send<R>(method, params, timeoutMs, frameMeta);
+  }
+
+  async #reconnectAndSend<R>(
+    method: string,
+    params: Record<string, unknown>,
+    timeoutMs: number,
+    frameMeta?: { runtime?: { kernel_generation?: number } },
+  ): Promise<R> {
+    await this.#tryReconnect();
+    return this.#send<R>(method, params, timeoutMs, frameMeta);
+  }
+
+  async #tryReconnect(): Promise<void> {
+    if (this.#disposed || !this.#reconnect) {
+      throw new ObuError(
         ERR_TRANSPORT_CLOSED,
         "transport closed",
-        productErrorData("transport_closed", { reason: "request was sent after transport closed" }),
-      ));
+        productErrorData("transport_closed", { reason: "transport disposed; not reconnecting" }),
+      );
     }
+    let lastError: unknown;
+    for (let attempt = 0; attempt < this.#maxReconnectAttempts; attempt++) {
+      // Bounded linear backoff rides out the brief window where a relaunched host
+      // has not yet republished its runtime descriptor.
+      if (attempt > 0 && this.#reconnectBackoffMs > 0) {
+        await delay(this.#reconnectBackoffMs * attempt);
+      }
+      try {
+        const connection = await this.#reconnect();
+        this.#detachListeners();
+        this.#decoder = new FrameDecoder();
+        this.#attachListeners(connection);
+        this.#closed = false;
+        this.#reconnects++;
+        reportReconnect(this.#reconnects);
+        return;
+      } catch (error) {
+        lastError = error;
+      }
+    }
+    throw new ObuError(
+      ERR_TRANSPORT_CLOSED,
+      "transport closed; reconnect failed",
+      productErrorData("transport_closed", {
+        reason: `reconnect failed after ${this.#maxReconnectAttempts} attempts`,
+        cause: lastError instanceof Error ? lastError.message : String(lastError ?? "unknown"),
+      }),
+    );
+  }
 
+  #send<R>(
+    method: string,
+    params: Record<string, unknown>,
+    timeoutMs: number,
+    frameMeta?: { runtime?: { kernel_generation?: number } },
+  ): Promise<R> {
     const id = this.#nextId++;
     // The trusted runtime metadata (Finding F2) travels as a TOP-LEVEL `runtime`
     // field of the JSON-RPC frame — a sibling of `params`, never merged into it.
@@ -163,7 +255,7 @@ export class Transport {
     const bytes = TEXT_ENCODER.encode(JSON.stringify(payload));
     try {
       // Pending is registered before write; an in-process transport may answer synchronously.
-      this.connection.write(this.#encoder.encode(bytes));
+      this.#connection.write(this.#encoder.encode(bytes));
     } catch (error) {
       const pending = this.#pending.get(id);
       if (pending) {
@@ -177,15 +269,31 @@ export class Transport {
   }
 
   close(): void {
-    if (this.#closed) return;
+    if (this.#disposed) return;
+    // Explicit client close disables auto-reconnect: a disposed transport stays closed.
+    this.#disposed = true;
     this.#onClose("client closed");
-    this.connection.end();
+    this.#connection.end();
   }
 
   diagnostics(): TransportDiagnostics {
     return {
       request_lifecycle: [...this.#timedOutRequests.values()],
+      reconnects: this.#reconnects,
     };
+  }
+
+  #attachListeners(connection: NativePipeConnection): void {
+    this.#connection = connection;
+    connection.on("data", this.#onDataBound);
+    connection.on("close", this.#onCloseBound);
+    connection.on("error", this.#onErrorBound);
+  }
+
+  #detachListeners(): void {
+    this.#connection.off("data", this.#onDataBound);
+    this.#connection.off("close", this.#onCloseBound);
+    this.#connection.off("error", this.#onErrorBound);
   }
 
   #onData(chunk: unknown): void {
@@ -197,7 +305,7 @@ export class Transport {
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error ?? "frame decoder error");
       this.#onClose(`transport frame error: ${message}`, ERR_PROTOCOL);
-      this.connection.end();
+      this.#connection.end();
       return;
     }
     for (const frame of frames) {
@@ -295,6 +403,20 @@ export class Transport {
       if (typeof oldest !== "number") break;
       this.#timedOutRequests.delete(oldest);
     }
+  }
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function reportReconnect(count: number): void {
+  try {
+    (globalThis as { display?: (value: string) => void }).display?.(
+      `[obu] transport reconnected (#${count}) after a host restart; reissue any operation that was in flight`,
+    );
+  } catch {
+    // Reconnect observability must never break the transport.
   }
 }
 

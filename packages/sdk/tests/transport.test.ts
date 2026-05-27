@@ -268,4 +268,58 @@ describe("Transport", () => {
       data,
     });
   });
+
+  it("reconnects on the next send after the transport closed", async () => {
+    const first = new FakeConnection();
+    const second = new FakeConnection();
+    let made = 0;
+    const transport = new Transport(first, async () => {
+      made++;
+      return second;
+    });
+    first.onWrite = (request) => first.respond(request.id, { value: "one" });
+    await expect(transport.sendRequest("tab_url", {}, 100)).resolves.toBe("one");
+
+    // Host died: the live transport closes.
+    first.emit("close");
+
+    // The next NEW request transparently reconnects to a fresh connection.
+    second.onWrite = (request) => second.respond(request.id, { value: "two" });
+    await expect(transport.sendRequest("tab_url", {}, 100)).resolves.toBe("two");
+    expect(made).toBe(1);
+    expect(transport.diagnostics().reconnects).toBe(1);
+  });
+
+  it("does not auto-retry an in-flight request when the transport closes", async () => {
+    const connection = new FakeConnection();
+    const transport = new Transport(connection, async () => new FakeConnection());
+    const promise = transport.sendRequest("tab_goto", {}, 1000); // sent, awaiting response
+    connection.emit("close");
+    // Already-sent mutations must NOT be silently retried (no double-execution).
+    await expect(promise).rejects.toMatchObject({ code: ERR_TRANSPORT_CLOSED });
+  });
+
+  it("rejects with transport_closed when reconnect keeps failing", async () => {
+    const saved = {
+      attempts: process.env.OBU_RECONNECT_MAX_ATTEMPTS,
+      backoff: process.env.OBU_RECONNECT_BACKOFF_MS,
+    };
+    process.env.OBU_RECONNECT_MAX_ATTEMPTS = "2";
+    process.env.OBU_RECONNECT_BACKOFF_MS = "0";
+    try {
+      const connection = new FakeConnection();
+      const transport = new Transport(connection, async () => {
+        throw new Error("no live socket yet");
+      });
+      connection.emit("close");
+      await expect(transport.sendRequest("tab_url", {}, 100)).rejects.toMatchObject({
+        code: ERR_TRANSPORT_CLOSED,
+      });
+    } finally {
+      if (saved.attempts === undefined) delete process.env.OBU_RECONNECT_MAX_ATTEMPTS;
+      else process.env.OBU_RECONNECT_MAX_ATTEMPTS = saved.attempts;
+      if (saved.backoff === undefined) delete process.env.OBU_RECONNECT_BACKOFF_MS;
+      else process.env.OBU_RECONNECT_BACKOFF_MS = saved.backoff;
+    }
+  });
 });
