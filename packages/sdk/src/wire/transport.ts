@@ -151,7 +151,10 @@ export class Transport {
     frameMeta?: { runtime?: { kernel_generation?: number } },
   ): Promise<R> {
     await this.#tryReconnect();
-    return this.#send<R>(method, params, timeoutMs, frameMeta);
+    // Use the UNTRACKED raw send here: the reconnect promise is already wrapped
+    // once by `sendRequest` (the outermost returned promise), so wrapping again
+    // would register a second background operation for one logical request.
+    return this.#sendRaw<R>(method, params, timeoutMs, frameMeta);
   }
 
   async #tryReconnect(): Promise<void> {
@@ -192,7 +195,20 @@ export class Transport {
     );
   }
 
+  // Thin tracked wrapper for the normal (non-reconnect) path: it registers the
+  // background operation exactly once. The reconnect path wraps at the
+  // `sendRequest` level instead and calls `#sendRaw` directly, so the tracking
+  // promise is never registered twice for one logical request.
   #send<R>(
+    method: string,
+    params: Record<string, unknown>,
+    timeoutMs: number,
+    frameMeta?: { runtime?: { kernel_generation?: number } },
+  ): Promise<R> {
+    return trackObuReplBackgroundOperation(this.#sendRaw<R>(method, params, timeoutMs, frameMeta));
+  }
+
+  #sendRaw<R>(
     method: string,
     params: Record<string, unknown>,
     timeoutMs: number,
@@ -265,7 +281,9 @@ export class Transport {
       }
     }
 
-    return trackObuReplBackgroundOperation(response);
+    // Untracked: callers (`#send` for the normal path, `sendRequest` for the
+    // reconnect path) own the single tracking wrap.
+    return response;
   }
 
   close(): void {

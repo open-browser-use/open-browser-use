@@ -74,6 +74,33 @@ describe("Transport", () => {
     }
   });
 
+  it("reconnect path registers exactly one background operation", async () => {
+    const original = (globalThis as { obuRepl?: unknown }).obuRepl;
+    const tracked: Promise<unknown>[] = [];
+    (globalThis as { obuRepl?: unknown }).obuRepl = {
+      trackBackgroundOperation(operation: Promise<unknown>) {
+        tracked.push(operation);
+        return operation;
+      },
+    };
+    try {
+      const first = new FakeConnection();
+      const second = new FakeConnection();
+      const transport = new Transport(first, async () => second);
+      // Host died before the next send: the live transport closes, so the next
+      // NEW request takes the transparent reconnect path.
+      first.emit("close");
+      second.onWrite = (request) => second.respond(request.id, { value: "https://x.test/" });
+      const pending = transport.sendRequest("tab_url", {}, 1000);
+      await expect(pending).resolves.toBe("https://x.test/");
+      // The logical request must register the background operation exactly once,
+      // not twice (outer reconnect wrap + inner #send wrap).
+      expect(tracked).toHaveLength(1);
+    } finally {
+      (globalThis as { obuRepl?: unknown }).obuRepl = original;
+    }
+  });
+
   it("registers pending before write so synchronous responses resolve", async () => {
     const connection = new FakeConnection();
     const transport = new Transport(connection);
