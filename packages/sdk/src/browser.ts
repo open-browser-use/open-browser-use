@@ -629,7 +629,10 @@ function arrayField(row: Record<string, unknown>, key: string): unknown[] {
 }
 
 function tabIdListField(row: Record<string, unknown>, camelKey: string, snakeKey: string): string[] {
-  return arrayFieldMerged(row, camelKey, snakeKey).map((value) => requiredTabId(value, camelKey));
+  const ids = [...arrayField(row, camelKey), ...arrayField(row, snakeKey)].map((value) =>
+    requiredTabId(value, camelKey),
+  );
+  return [...new Set(ids)];
 }
 
 function tabListField(row: Record<string, unknown>, camelKey: string, snakeKey?: string): BrowserFinalizeTab[] {
@@ -642,21 +645,6 @@ function arrayFieldFromEither(row: Record<string, unknown>, camelKey: string, sn
   const camelValue = row[camelKey];
   if (Array.isArray(camelValue)) return camelValue;
   return snakeKey ? arrayField(row, snakeKey) : [];
-}
-
-function arrayFieldMerged(row: Record<string, unknown>, camelKey: string, snakeKey: string): unknown[] {
-  const values = [...arrayField(row, camelKey), ...arrayField(row, snakeKey)];
-  const seen = new Set<string>();
-  const merged: unknown[] = [];
-  for (const value of values) {
-    const key = typeof value === "object" && value !== null
-      ? JSON.stringify(value)
-      : `${typeof value}:${String(value)}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    merged.push(value);
-  }
-  return merged;
 }
 
 function field(row: Record<string, unknown>, camelKey: string, snakeKey?: string): unknown {

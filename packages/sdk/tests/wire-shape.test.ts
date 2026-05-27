@@ -979,6 +979,36 @@ describe("SDK wire-shape contracts", () => {
     }
   });
 
+  it("finalizeTabs dedupes a tab id arriving as both number and string across wire keys", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    transport.responses.set(M.FINALIZE_TABS, {
+      status: "ok",
+      actions: [],
+      closedTabIds: [7],
+      closed_tab_ids: ["7"],
+      releasedTabIds: [],
+      keptTabs: [],
+      deliverableTabs: [],
+      finalTabs: { handoff: [], deliverable: [], activeTabId: null },
+      failures: [],
+      diagnostics: { reconciledFromChrome: true, reconciliationSource: "chrome.tabs" },
+    });
+    const browser = new Browser(
+      asTransport(transport),
+      { type: "webextension", name: "chrome", capabilities: {} },
+      { type: "webextension", name: "chrome", socketPath: "/tmp/webext", metadata: {} },
+      new Guards(),
+    );
+
+    try {
+      const result = await browser.finalizeTabs({ keep: [] });
+      expect(result.closedTabIds).toEqual(["7"]);
+    } finally {
+      restoreMeta();
+    }
+  });
+
   it("Browser.finalizeTabs exposes fatal reconciliation results without success aliases", async () => {
     const restoreMeta = setRequestMeta();
     const transport = new FakeTransport();
