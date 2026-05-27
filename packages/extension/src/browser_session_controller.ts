@@ -287,12 +287,7 @@ export class BrowserSessionController {
     await this.options.activateOverlay(tabId, sessionParams, row.lastCursor);
     await this.options.persistSessionState();
     this.options.appendDebugLog("info", "control.resume_session", { sessionId: sessionParams.session_id, tabId });
-    const tab = this.options.toTabDto(await this.options.getTab(tabId), row, {
-      owned: true,
-      claimRequired: false,
-      commandable: true,
-      logicalActive: true,
-    });
+    const tab = this.options.toTabDto(await this.options.getTab(tabId), row, ownedActiveTabState(session.controlState, true));
     return withRepairRequired({ tab }, resolution);
   }
 

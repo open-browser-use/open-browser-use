@@ -59,6 +59,7 @@ import {
   isClaimableUserTabInfo,
   isRestrictedBrowserUrl,
   isTabOwnedByAnotherSession,
+  ownedActiveTabState,
 } from "./lifecycle/tab_ownership_machine.js";
 
 const HOST_NAME = "dev.obu.host";
@@ -676,10 +677,7 @@ async function createSessionTab(sessionParams: SessionParams, params: unknown): 
   const session = sessionRepository.sessionFor(sessionParams.session_id);
   const row = session.tabs.get(tab.id!);
   if (!row) throw new Error(`created tab ${tab.id} was not registered to the session`);
-  return toTabDto(tab, row, {
-    logicalActive: session.activeTabId === tab.id,
-    commandable: row.status === "active" && session.controlState !== "human_takeover",
-  });
+  return toTabDto(tab, row, ownedActiveTabState(session.controlState, session.activeTabId === tab.id));
 }
 
 async function getSessionTabs(sessionParams: SessionParams): Promise<SessionTabsResult> {
