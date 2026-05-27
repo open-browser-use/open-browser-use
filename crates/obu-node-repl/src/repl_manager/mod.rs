@@ -18,6 +18,7 @@ pub use spawn::{SpawnOptions, SpawnedKernel};
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex as StdMutex, OnceLock};
 use std::time::Duration;
 
@@ -233,6 +234,10 @@ pub struct JsRuntimeManager {
     backend_state: StdMutex<BackendInventory>,
     broker_policy: BrokerPolicy,
     generation: Mutex<Option<KernelGeneration>>,
+    /// Set by the native-pipe broker when a brokered connection drops, and
+    /// consumed by the exec path to re-discover the live backend descriptor
+    /// before the next exec so cached SDK handles reconnect to the new socket.
+    backend_inventory_dirty: Arc<AtomicBool>,
 }
 
 impl JsRuntimeManager {
@@ -257,6 +262,7 @@ impl JsRuntimeManager {
             sink: Arc::new(Mutex::new(None)),
             broker_policy: BrokerPolicy::from_env()?,
             generation: Mutex::new(None),
+            backend_inventory_dirty: Arc::new(AtomicBool::new(false)),
         })
     }
 
@@ -347,6 +353,7 @@ impl JsRuntimeManager {
             self.broker_policy.allowed_paths.clone(),
             self.broker_policy.capability_token.clone(),
             inventory.auth_tokens,
+            self.backend_inventory_dirty.clone(),
         ));
         let pending_exec_results = Arc::new(Mutex::new(HashMap::new()));
         let handshake_token = Arc::new(Mutex::new(None));
@@ -435,6 +442,11 @@ impl JsRuntimeManager {
             .lifecycle
             .try_lock()
             .map_err(|_| anyhow!("kernel is busy"))?;
+        // If the broker saw a disconnect, re-discover the live backend BEFORE any
+        // (re)boot so a fresh kernel spawns with — and a live kernel is re-synced
+        // to — the current socket/token. This is what lets cached SDK handles
+        // transparently reconnect after a host restart.
+        self.refresh_backend_inventory_if_disconnected().await?;
         // KernelState::Failed and KernelState::Idle both trigger a re-boot here.
         if *self.state.lock().await != KernelState::Ready {
             self.boot_locked().await?;
@@ -809,6 +821,16 @@ impl JsRuntimeManager {
         *self.state.lock().await
     }
 
+    #[cfg(test)]
+    fn mark_backend_inventory_dirty_for_tests(&self) {
+        self.backend_inventory_dirty.store(true, Ordering::Release);
+    }
+
+    #[cfg(test)]
+    fn backend_inventory_dirty_for_tests(&self) -> bool {
+        self.backend_inventory_dirty.load(Ordering::Acquire)
+    }
+
     async fn kill_kernel(&self) {
         if let Some(generation) = self.generation.lock().await.take() {
             generation.cancel.cancel();
@@ -844,6 +866,25 @@ impl JsRuntimeManager {
             .await
             .context("refresh browser backend inventory task failed")?;
         *self.backend_state.lock().expect("backend inventory lock") = inventory;
+        Ok(())
+    }
+
+    /// When the native-pipe broker has observed a disconnect (host restart or MV3
+    /// service-worker recycle), re-scan runtime descriptors and republish the live
+    /// inventory + capability tokens to the kernel. Cheap on the hot path: the
+    /// (probe-backed) re-discovery runs only after an actual disconnect, so the
+    /// next exec's cached SDK handles reconnect to the new socket instead of
+    /// failing with `ERR_TRANSPORT_CLOSED`.
+    async fn refresh_backend_inventory_if_disconnected(&self) -> Result<()> {
+        // Peek, don't consume: the broker clears the flag only when a connection
+        // is successfully re-established, so every exec keeps re-discovering until
+        // the restarted host is reachable (handles slow host relaunch).
+        if !self.backend_inventory_dirty.load(Ordering::Acquire) {
+            return Ok(());
+        }
+        self.refresh_backend_inventory().await?;
+        let inventory = self.backend_inventory();
+        self.sync_backend_inventory_to_kernel(&inventory).await?;
         Ok(())
     }
 }
@@ -1904,6 +1945,85 @@ mod tests {
         let err = manager.boot().await;
         assert!(err.is_err(), "boot should fail with unspawnable kernel");
         assert_eq!(manager.coarse_state_for_tests().await, KernelState::Failed);
+    }
+
+    #[allow(unsafe_code)]
+    #[tokio::test]
+    #[serial_test::serial]
+    async fn exec_refreshes_live_backend_inventory_after_disconnect() {
+        // RAII guard restores each mutated env var on drop (set_var is unsafe in
+        // Rust 1.80+; #[serial_test::serial] serialises against other env tests).
+        struct EnvGuard(&'static str, Option<std::ffi::OsString>);
+        impl Drop for EnvGuard {
+            fn drop(&mut self) {
+                match &self.1 {
+                    Some(v) => unsafe { std::env::set_var(self.0, v) },
+                    None => unsafe { std::env::remove_var(self.0) },
+                }
+            }
+        }
+        fn set_env(key: &'static str, value: &str) -> EnvGuard {
+            let prev = std::env::var_os(key);
+            unsafe { std::env::set_var(key, value) };
+            EnvGuard(key, prev)
+        }
+
+        let runtime_dir = tempfile::tempdir().unwrap();
+        // Force boot to fail so the test needs no real Node runtime. The
+        // disconnect-triggered refresh runs *before* the (re)boot attempt, so its
+        // effect on the live inventory is still observable when boot then fails.
+        let _node = set_env("OBU_NODE_BINARY", "/definitely/does/not/exist/node");
+        let _runtime = set_env("OBU_RUNTIME_DIR", runtime_dir.path().to_str().unwrap());
+        // The host restarted on a new socket; live discovery should pick this up.
+        let _backends = set_env(
+            "OBU_BACKENDS",
+            "webextension:chrome:/tmp/obu-fresh-after-restart.sock",
+        );
+
+        let mut options = ManagerOptions::for_tests();
+        options.dynamic_backend_discovery = true;
+        options.backends = vec![DiscoveredBackend {
+            kind: "webextension".to_string(),
+            name: "chrome".to_string(),
+            socket_path: "/tmp/obu-stale-before-restart.sock".to_string(),
+            metadata: None,
+        }];
+
+        let manager = JsRuntimeManager::new(options).await.unwrap();
+
+        // The manager starts from the stale spawn-time inventory.
+        assert_eq!(
+            manager.backend_inventory().backends[0].socket_path,
+            "/tmp/obu-stale-before-restart.sock"
+        );
+
+        // The broker observed a native-pipe disconnect (host restart).
+        manager.mark_backend_inventory_dirty_for_tests();
+
+        // Boot fails, but the disconnect-triggered live refresh runs first.
+        let _ = manager.exec("1", Some(1000)).await;
+
+        let backends = manager.backend_inventory().backends;
+        assert!(
+            backends
+                .iter()
+                .any(|backend| backend.socket_path == "/tmp/obu-fresh-after-restart.sock"),
+            "exec after a disconnect must refresh the live inventory; got {backends:?}"
+        );
+        assert!(
+            !backends
+                .iter()
+                .any(|backend| backend.socket_path == "/tmp/obu-stale-before-restart.sock"),
+            "the stale backend must be replaced after the refresh; got {backends:?}"
+        );
+        // The manager does NOT consume the flag — it stays set until a brokered
+        // connection is successfully (re-)established, so every exec keeps
+        // re-discovering until the restarted host is reachable again. Here boot
+        // failed and nothing reconnected, so it must remain dirty.
+        assert!(
+            manager.backend_inventory_dirty_for_tests(),
+            "the dirty flag must persist until a connection is re-established"
+        );
     }
 
     #[tokio::test]

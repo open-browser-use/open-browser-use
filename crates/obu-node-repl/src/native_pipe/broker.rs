@@ -2,6 +2,7 @@
 
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
@@ -24,6 +25,10 @@ pub struct NativePipeBroker {
     allowed_paths: Option<Vec<PathBuf>>,
     capability_token: Option<String>,
     capability_tokens_by_path: RwLock<HashMap<PathBuf, String>>,
+    /// Flagged when a brokered connection drops (host restart / MV3 SW recycle).
+    /// The REPL manager consumes this before the next exec to re-discover the
+    /// live backend descriptor so cached SDK handles can reconnect.
+    inventory_dirty: Arc<AtomicBool>,
 }
 
 impl NativePipeBroker {
@@ -49,16 +54,19 @@ impl NativePipeBroker {
             allowed_paths,
             capability_token,
             HashMap::new(),
+            Arc::new(AtomicBool::new(false)),
         )
     }
 
-    /// Create a broker with path-specific capability tokens.
+    /// Create a broker with path-specific capability tokens and a shared
+    /// inventory-dirty flag the REPL manager polls after a disconnect.
     pub fn with_token_map(
         outbox: mpsc::Sender<KernelIn>,
         connect_timeout: Duration,
         allowed_paths: Option<Vec<PathBuf>>,
         capability_token: Option<String>,
         capability_tokens_by_path: HashMap<PathBuf, String>,
+        inventory_dirty: Arc<AtomicBool>,
     ) -> Self {
         Self {
             connections: Mutex::new(HashMap::new()),
@@ -68,6 +76,7 @@ impl NativePipeBroker {
             allowed_paths,
             capability_token,
             capability_tokens_by_path: RwLock::new(capability_tokens_by_path),
+            inventory_dirty,
         }
     }
 
@@ -158,6 +167,10 @@ impl NativePipeBroker {
             broker.read_loop(reader_connection_id, connection).await;
         });
 
+        // A live, authenticated connection means the host is reachable again:
+        // clear the dirty flag a prior disconnect set so exec stops re-discovering.
+        self.inventory_dirty.store(false, Ordering::Release);
+
         Ok(Some(serde_json::json!({ "connection_id": connection_id })))
     }
 
@@ -233,6 +246,10 @@ impl NativePipeBroker {
                 }
             }
         }
+        // The connection dropped (host restart / MV3 service-worker recycle):
+        // flag the inventory dirty so the next exec re-discovers the live backend
+        // descriptor and cached SDK handles can reconnect to the new socket.
+        self.inventory_dirty.store(true, Ordering::Release);
         self.connections.lock().await.remove(&connection_id);
     }
 
