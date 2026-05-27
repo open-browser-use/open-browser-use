@@ -290,6 +290,29 @@ describe("Transport", () => {
     expect(transport.diagnostics().reconnects).toBe(1);
   });
 
+  it("reconnect advisory is a neutral observation, not a reissue instruction", async () => {
+    const messages: string[] = [];
+    (globalThis as { display?: (v: string) => void }).display = (v) => messages.push(v);
+    try {
+      const first = new FakeConnection();
+      const second = new FakeConnection();
+      const transport = new Transport(first, async () => second);
+      first.onWrite = (request) => first.respond(request.id, { value: "one" });
+      await expect(transport.sendRequest("tab_url", {}, 100)).resolves.toBe("one");
+
+      // Host died: the live transport closes, then the next send transparently reconnects.
+      first.emit("close");
+      second.onWrite = (request) => second.respond(request.id, { value: "two" });
+      await expect(transport.sendRequest("tab_url", {}, 100)).resolves.toBe("two");
+
+      const note = messages.find((m) => m.includes("reconnected"));
+      expect(note).toBeDefined();
+      expect(note).not.toMatch(/reissue/i);
+    } finally {
+      delete (globalThis as { display?: unknown }).display;
+    }
+  });
+
   it("does not auto-retry an in-flight request when the transport closes", async () => {
     const connection = new FakeConnection();
     const transport = new Transport(connection, async () => new FakeConnection());

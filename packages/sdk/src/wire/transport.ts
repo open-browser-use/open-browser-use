@@ -413,7 +413,7 @@ function delay(ms: number): Promise<void> {
 function reportReconnect(count: number): void {
   try {
     (globalThis as { display?: (value: string) => void }).display?.(
-      `[obu] transport reconnected (#${count}) after a host restart; reissue any operation that was in flight`,
+      `[obu] transport reconnected (#${count}) after a host restart`,
     );
   } catch {
     // Reconnect observability must never break the transport.
