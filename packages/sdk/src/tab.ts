@@ -135,6 +135,9 @@ export type TabSnapshotTextResult = {
 
 export type TabObserveMode = "compact" | "actionable" | "visual";
 
+/** Runtime list of valid observe modes, used to normalize unknown input. */
+export const OBSERVE_MODES: readonly TabObserveMode[] = ["compact", "actionable", "visual"];
+
 export type ObservationSectionStatus = {
   status: "present" | "omitted" | "blocked" | "failed";
   reason?: string;
@@ -371,12 +374,23 @@ export class Tab {
 
   async observe(opts: TabObserveOptions = {}): Promise<TabObservation> {
     const stateTrace = createObserveStateTrace();
-    const mode = opts.mode ?? "compact";
+    // Normalize the mode instead of silently echoing an unknown value back (e.g. an agent
+    // guessing `mode:"full"`): fail soft to compact and surface an advisory so the agent is
+    // not misled into thinking a richer mode was applied.
+    const requestedMode = opts.mode ?? "compact";
+    const mode: TabObserveMode = OBSERVE_MODES.includes(requestedMode as TabObserveMode)
+      ? (requestedMode as TabObserveMode)
+      : "compact";
     const createdAt = Date.now();
     const observationId = `${this.id}:${createdAt}:${nextObservationSequence()}`;
     stateTrace.transition("preflight");
     const ttlMs = positiveInt(opts.observationTtlMs, 30_000);
     const advisories: string[] = [];
+    if (opts.mode !== undefined && mode !== opts.mode) {
+      advisories.push(
+        `unknown observe mode "${opts.mode}"; using "compact". Valid modes: ${OBSERVE_MODES.join(", ")}.`,
+      );
+    }
     const sectionErrors: Record<string, string> = {};
     const sections = initialObservationSections(mode, opts);
     stateTrace.transition("reading_backend");

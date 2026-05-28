@@ -409,6 +409,19 @@ describe("Tab.observe ownership coherence", () => {
     expect(after.diagnostics.advisories.some((a) => /re-acquire/i.test(a))).toBe(true);
   });
 
+  it("normalizes an unknown observe mode to compact with an advisory", async () => {
+    const transport = new FakeTransport();
+    const tab = new Tab(
+      transport as unknown as Transport,
+      new Guards(),
+      "tab-1",
+      { commandable: true, owned: true, status: "active" },
+    );
+    const o = await tab.observe({ mode: "full" as never });
+    expect(o.mode).toBe("compact");
+    expect(o.diagnostics.advisories.some((a) => /unknown observe mode/i.test(a))).toBe(true);
+  });
+
   it("self-heals ownership after a successful re-attach refreshes the handle epoch", async () => {
     class AttachTransport extends FakeTransport {
       override async sendRequest<T>(method: string, params: Record<string, unknown>, timeout?: number): Promise<T> {
