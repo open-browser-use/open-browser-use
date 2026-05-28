@@ -128,6 +128,8 @@ When an action fails, match the signal and act; do not blindly retry:
 | `error.data.resolution === "occluded"` | another element covers the target | scroll/dismiss the overlay, target a different element, or pass `force: true` to bypass the hit-test |
 | `error.data.resolution === "outside_viewport"` | target is off-screen | scroll it into view, then retry |
 | `error.data.resolution === "no_clickable_box"` | target has no visible box | pick a different element |
+| `error.data.resolution === "not_visible"` | element exists but isn't actionable yet (the `state` field says which: `visible`/`stable`/`enabled`/`editable`) — e.g. animating in, just mounted, hidden, or disabled | if it should still appear/settle, `await tab.waitForContentSettle()` (or re-observe) then retry; for transient UI (autocomplete/dropdown/dialog) open and act in the **same** cell; if genuinely hidden/disabled, target a different element |
+| `error.data.resolution === "detached"` | the matched node was removed/replaced (e.g. a re-render) | re-acquire the locator and re-read the page before retrying — don't reuse a stale node |
 | `ObuError.code === -1203` (`error.data.code === "dialog_requires_decision"`) | a native `confirm`/`prompt` was dismissed and the op failed | resolve the dialog's intent another way, then retry |
 | timeout, then `reconcile_state === "timed_out_pending_reconcile"` | the extension request may still land late | re-observe page/tab state (snapshot or a cheap locator read) before retrying, so a late success is not duplicated |
 
