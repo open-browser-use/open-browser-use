@@ -8,6 +8,7 @@ pub mod diagnostics;
 pub mod display_router;
 pub mod mcp_server;
 pub mod native_pipe;
+pub mod reaper;
 pub mod repl_manager;
 pub mod result_budget;
 pub mod sdk_discovery;

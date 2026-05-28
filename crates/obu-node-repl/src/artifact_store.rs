@@ -16,6 +16,8 @@ use uuid::Uuid;
 const ARTIFACT_TTL: Duration = Duration::from_secs(60 * 60);
 /// Largest artifact the MCP store will persist from one result payload.
 pub const MAX_ARTIFACT_BYTES: usize = 8 * 1024 * 1024;
+/// Markerless sibling dirs younger than this are left alone by the startup reaper.
+const REAP_GRACE_SECS: u64 = 600;
 
 /// Compact artifact reference returned in structured tool output.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -70,7 +72,17 @@ impl ArtifactStore {
                 artifact_root.display()
             )
         })?;
-        Self::new_with_root(artifact_root.join(sanitize_path_component(session_id)))
+        let sanitized = sanitize_path_component(session_id);
+        let session_root = artifact_root.join(&sanitized);
+        let store = Self::new_with_root(session_root.clone())?;
+        // Best-effort: record our liveness marker, then reap orphaned sibling dirs/kernels.
+        let _ = crate::reaper::write_owner_marker(&session_root, &crate::reaper::current_marker());
+        let now = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+        let _ = crate::reaper::reap_runtime(&artifact_root, &sanitized, now, REAP_GRACE_SECS);
+        Ok(store)
     }
 
     fn new_with_root(root: PathBuf) -> Result<Self> {
@@ -388,5 +400,39 @@ mod tests {
             0o755
         );
         assert!(std::fs::read_dir(&target).unwrap().next().is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn new_under_runtime_reaps_sibling_with_dead_owner() {
+        use crate::reaper::{OwnerMarker, write_owner_marker};
+        let dir = tempfile::tempdir().unwrap();
+        let runtime_root = dir.path().join("runtime");
+        let artifact_root = runtime_root.join("mcp-artifacts");
+        std::fs::create_dir_all(&artifact_root).unwrap();
+        // a sibling dir owned by a dead pid
+        let stale = artifact_root.join("obu-stale");
+        std::fs::create_dir_all(&stale).unwrap();
+        write_owner_marker(
+            &stale,
+            &OwnerMarker {
+                pid: 999_999,
+                ppid: 1,
+                started_at: 0,
+            },
+        )
+        .unwrap();
+
+        // constructing a new store sweeps siblings and records the fresh session marker
+        let _store = ArtifactStore::new_under_runtime(&runtime_root, "obu-fresh").unwrap();
+
+        assert!(
+            !stale.exists(),
+            "dead-owner sibling should be reaped on startup"
+        );
+        assert!(
+            artifact_root.join("obu-fresh").join(".owner").exists(),
+            "fresh session writes its marker"
+        );
     }
 }

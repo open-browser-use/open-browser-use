@@ -1646,22 +1646,13 @@ fn current_uid() -> Result<u32> {
 
 #[cfg(unix)]
 fn descriptor_process_alive(value: &Value) -> bool {
-    use rustix::process::{Pid, test_kill_process};
-
     let Some(pid) = value.get("pid").and_then(Value::as_u64) else {
         return false;
     };
     if pid == 0 || pid > i32::MAX as u64 {
         return false;
     }
-    let Some(pid) = Pid::from_raw(pid as i32) else {
-        return false;
-    };
-    match test_kill_process(pid) {
-        Ok(()) => true,
-        Err(rustix::io::Errno::PERM) => true,
-        Err(_) => false,
-    }
+    crate::reaper::process_alive(pid as i32)
 }
 
 #[cfg(not(unix))]
