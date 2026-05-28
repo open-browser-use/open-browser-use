@@ -383,3 +383,61 @@ describe("Tab.observe", () => {
     ]);
   });
 });
+
+describe("Tab.observe ownership coherence", () => {
+  it("reports lost, non-commandable ownership after the runtime epoch advances", async () => {
+    const transport = new FakeTransport();
+    const ctx = { lifecycleEpoch: { value: 0, updatedAt: 0 } };
+    const tab = new Tab(
+      transport as unknown as Transport,
+      new Guards(),
+      "tab-1",
+      { commandable: true, owned: true, status: "active" },
+      ctx,
+    );
+
+    const before = await tab.observe();
+    expect(before.ownership.state).toBe("claimed_by_agent");
+    expect(before.ownership.commandable).toBe(true);
+
+    // A host restart bumps the runtime epoch (what markTabRuntimeContextStale does).
+    ctx.lifecycleEpoch = { value: 1, staleReason: "host_restart", updatedAt: 1 };
+
+    const after = await tab.observe();
+    expect(after.ownership.state).toBe("lost");
+    expect(after.ownership.commandable).toBe(false);
+    expect(after.diagnostics.advisories.some((a) => /re-acquire/i.test(a))).toBe(true);
+  });
+
+  it("self-heals ownership after a successful re-attach refreshes the handle epoch", async () => {
+    class AttachTransport extends FakeTransport {
+      override async sendRequest<T>(method: string, params: Record<string, unknown>, timeout?: number): Promise<T> {
+        if (method === M.ATTACH) {
+          this.calls.push({ method, params, timeout });
+          return undefined as T;
+        }
+        return super.sendRequest<T>(method, params, timeout);
+      }
+    }
+    const transport = new AttachTransport();
+    const ctx = { lifecycleEpoch: { value: 0, updatedAt: 0 } };
+    const tab = new Tab(
+      transport as unknown as Transport,
+      new Guards(),
+      "tab-1",
+      { commandable: true, owned: true, status: "active" },
+      ctx,
+    );
+
+    ctx.lifecycleEpoch = { value: 1, staleReason: "host_restart", updatedAt: 1 };
+    expect((await tab.observe()).ownership.state).toBe("lost");
+
+    // Benign reconnect: the backend still owns the tab, so attach() succeeds and the
+    // handle is revalidated at the current epoch.
+    await tab.attach();
+
+    const healed = await tab.observe();
+    expect(healed.ownership.state).toBe("claimed_by_agent");
+    expect(healed.ownership.commandable).toBe(true);
+  });
+});

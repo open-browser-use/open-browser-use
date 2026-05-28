@@ -334,6 +334,11 @@ export class Tab {
   // observation id rather than replay a persisted id from a prior process.
   #localObservations = new Map<string, ObservationLifecycle>();
   #pointerState: AgentPointerState | undefined;
+  // Runtime epoch at which this handle's metadata was last validated. Ownership is
+  // reported "lost" once the current epoch advances past it (host restart / control
+  // handoff bumps the epoch via markTabRuntimeContextStale). Refreshed on successful
+  // re-validation (attach) so a benign reconnect self-heals.
+  #metadataEpoch = 0;
 
   constructor(
     private readonly transport: Transport,
@@ -343,6 +348,7 @@ export class Tab {
     private readonly runtimeContext: TabRuntimeContext = {},
   ) {
     this.metadata = metadata;
+    this.#metadataEpoch = this.#runtimeEpoch();
     this.#pointerState = this.runtimeContext.pointerStore?.get(this.id);
     const ensureCommandable = (method: string) => this.#ensureCommandable(method);
     this.act = new TabAct((action) => this.step(action));
@@ -571,6 +577,12 @@ export class Tab {
       };
     }
     const actionFamilies = this.#actionFamilies();
+    const ownership = this.#ownershipObservation();
+    if (ownership.state === "lost") {
+      advisories.push(
+        "this tab handle's ownership is unverified after a browser-control lifecycle change; re-acquire it via browser.tabs.current()/selected() or browser.resumeControl() (or re-attach) before observation-bound actions",
+      );
+    }
     const status = observationStatus(mode, sections, actionFamilies);
     stateTrace.transition(status);
     this.#observationStore().set(observationId, lifecycle);
@@ -582,7 +594,7 @@ export class Tab {
       lifecycle,
       sections,
       tab,
-      ownership: this.#ownershipObservation(),
+      ownership,
       actionFamilies,
       ...(pointer !== undefined ? { pointer } : {}),
       ...(text !== undefined ? { text } : {}),
@@ -673,6 +685,9 @@ export class Tab {
   async attach(opts: { timeout?: number } = {}): Promise<void> {
     this.#ensureCommandable(M.ATTACH);
     await this.transport.sendRequest(M.ATTACH, withSessionMeta({ tab_id: this.id }), opts.timeout);
+    // Successful (re-)attach revalidates the handle against the current runtime lifecycle,
+    // so any prior "lost" ownership from an epoch bump self-heals.
+    this.#metadataEpoch = this.#runtimeEpoch();
   }
 
   async detach(opts: { timeout?: number } = {}): Promise<void> {
@@ -975,6 +990,20 @@ export class Tab {
   }
 
   #ownershipObservation(): TabObservation["ownership"] {
+    // If the handle's metadata predates the current runtime lifecycle (host restart or
+    // control handoff bumped the epoch), the cached commandable/owned flags are no longer
+    // authoritative. Report ownership as lost rather than optimistically echoing the stale
+    // cache. This is advisory: the open action space (evaluate/attach) is not gated by it,
+    // and a successful re-attach refreshes #metadataEpoch and clears the lost state.
+    if (this.#metadataEpoch !== this.#runtimeEpoch()) {
+      return {
+        state: "lost",
+        commandable: false,
+        ...(this.metadata.owned !== undefined ? { owned: this.metadata.owned } : {}),
+        ...(this.metadata.claimRequired !== undefined ? { claimRequired: this.metadata.claimRequired } : {}),
+        ...(this.metadata.status !== undefined ? { status: this.metadata.status } : {}),
+      };
+    }
     const commandable = this.metadata.commandable !== false;
     const claimRequired = this.metadata.claimRequired === true;
     const owned = this.metadata.owned;
