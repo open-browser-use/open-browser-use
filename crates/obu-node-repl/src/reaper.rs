@@ -21,7 +21,7 @@ pub struct OwnerMarker {
     pub pid: u32,
     /// Parent process id at creation (the `obu mcp stdio` spawner).
     pub ppid: u32,
-    /// Unix seconds when the marker was written. Reserved for future pid-reuse hardening.
+    /// Unix seconds when the marker was written (informational/forensic; not used for liveness).
     pub started_at: u64,
 }
 
@@ -70,6 +70,59 @@ pub fn process_alive(_pid: i32) -> bool {
     true
 }
 
+/// Executable basename of `pid` (the resolved binary, not argv0), if readable.
+#[cfg(target_os = "linux")]
+fn process_exe_name(pid: i32) -> Option<String> {
+    std::fs::read_link(format!("/proc/{pid}/exe"))
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()))
+}
+
+/// Executable basename of `pid` via `ps` (this crate denies `unsafe_code`, so no `proc_pidpath`
+/// FFI). `ps -o comm=` prints the executable path; we take its basename either way.
+#[cfg(target_os = "macos")]
+fn process_exe_name(pid: i32) -> Option<String> {
+    let out = std::process::Command::new("ps")
+        .args(["-p", &pid.to_string(), "-o", "comm="])
+        .output()
+        .ok()?;
+    if !out.status.success() {
+        return None;
+    }
+    let raw = String::from_utf8_lossy(&out.stdout);
+    let path = raw.trim();
+    if path.is_empty() {
+        return None;
+    }
+    std::path::Path::new(path)
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+}
+
+#[cfg(all(unix, not(any(target_os = "linux", target_os = "macos"))))]
+fn process_exe_name(_pid: i32) -> Option<String> {
+    None
+}
+
+/// True when `pid`'s executable basename matches this process's own — i.e. the live pid is one
+/// of our kernels, not an unrelated process that recycled a dead kernel's pid. Fail-safe:
+/// returns false when identity can't be confirmed, so the reaper never signals an unknown pid.
+#[cfg(unix)]
+fn process_is_kernel(pid: i32) -> bool {
+    let own = std::env::current_exe()
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+    match (process_exe_name(pid), own) {
+        (Some(a), Some(b)) => a == b,
+        _ => false,
+    }
+}
+
+#[cfg(not(unix))]
+fn process_is_kernel(_pid: i32) -> bool {
+    false
+}
+
 /// Build the marker for the current process. `started_at` is unix seconds.
 pub fn current_marker() -> OwnerMarker {
     #[cfg(unix)]
@@ -107,7 +160,7 @@ pub fn read_owner_marker(session_dir: &Path) -> Result<Option<OwnerMarker>> {
     }
 }
 
-/// Pure decision. `alive(pid)` is injected for testability.
+/// Pure decision. `alive(pid)`/`is_kernel(pid)` are injected for testability.
 /// `dir_mtime`/`now` are unix seconds; `grace` is the markerless grace window (seconds).
 pub fn classify(
     marker: Option<&OwnerMarker>,
@@ -115,6 +168,7 @@ pub fn classify(
     now: u64,
     grace: u64,
     alive: impl Fn(i32) -> bool,
+    is_kernel: impl Fn(i32) -> bool,
 ) -> Disposition {
     match marker {
         Some(m) => {
@@ -122,9 +176,14 @@ pub fn classify(
             if !alive(owner) {
                 return Disposition::ReapDir;
             }
-            // Owner alive: orphaned iff its recorded parent is gone.
+            // Owner alive with a dead recorded parent looks orphaned — but only signal it when the
+            // live pid is confirmed to be one of our kernels. Otherwise the pid was recycled by an
+            // unrelated process, so reclaim the stale dir without ever killing that process.
             if m.ppid != 0 && !alive(m.ppid as i32) {
-                return Disposition::KillAndReap(owner);
+                if is_kernel(owner) {
+                    return Disposition::KillAndReap(owner);
+                }
+                return Disposition::ReapDir;
             }
             Disposition::Keep
         }
@@ -156,6 +215,25 @@ pub fn reap_runtime(
     current_session_id: &str,
     now: u64,
     grace: u64,
+) -> Result<ReapReport> {
+    reap_runtime_with(
+        artifact_root,
+        current_session_id,
+        now,
+        grace,
+        process_is_kernel,
+    )
+}
+
+/// Inner sweep with an injected `is_kernel` predicate, so tests can exercise the kill path
+/// against an ordinary spawned process instead of copying and executing a renamed binary
+/// (executing a copied platform binary can wedge macOS code-signing validation).
+fn reap_runtime_with(
+    artifact_root: &Path,
+    current_session_id: &str,
+    now: u64,
+    grace: u64,
+    is_kernel: impl Fn(i32) -> bool + Copy,
 ) -> Result<ReapReport> {
     let mut report = ReapReport::default();
     let entries = match std::fs::read_dir(artifact_root) {
@@ -189,7 +267,7 @@ pub fn reap_runtime(
             .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
             .map(|d| d.as_secs())
             .unwrap_or(0);
-        match classify(marker.as_ref(), mtime, now, grace, process_alive) {
+        match classify(marker.as_ref(), mtime, now, grace, process_alive, is_kernel) {
             Disposition::Keep => report.kept += 1,
             Disposition::ReapDir => {
                 if std::fs::remove_dir_all(&path).is_ok() {
@@ -197,6 +275,7 @@ pub fn reap_runtime(
                 }
             }
             Disposition::KillAndReap(pid) => {
+                tracing::warn!(pid, dir = %path.display(), "reaper killing orphaned sibling kernel");
                 kill_pid(pid);
                 report.kernels_killed += 1;
                 if std::fs::remove_dir_all(&path).is_ok() {
@@ -271,11 +350,12 @@ mod tests {
                 now,
                 now,
                 grace,
-                |_| false
+                |_| false,
+                |_| true
             ),
             Disposition::ReapDir
         );
-        // alive owner + dead parent -> kill + reap
+        // alive owner + dead parent + is our kernel -> kill + reap
         assert_eq!(
             classify(
                 Some(&OwnerMarker {
@@ -286,7 +366,8 @@ mod tests {
                 now,
                 now,
                 grace,
-                |p| p == 10
+                |p| p == 10,
+                |_| true
             ),
             Disposition::KillAndReap(10)
         );
@@ -301,37 +382,63 @@ mod tests {
                 now,
                 now,
                 grace,
+                |_| true,
                 |_| true
             ),
             Disposition::Keep
         );
         // markerless + old -> reap
         assert_eq!(
-            classify(None, now - grace - 1, now, grace, |_| true),
+            classify(None, now - grace - 1, now, grace, |_| true, |_| true),
             Disposition::ReapDir
         );
         // markerless + young -> keep
         assert_eq!(
-            classify(None, now - 1, now, grace, |_| true),
+            classify(None, now - 1, now, grace, |_| true, |_| true),
             Disposition::Keep
         );
     }
 
     #[test]
-    fn reap_runtime_reaps_dead_and_kills_orphans_keeps_current() {
+    fn alive_owner_with_dead_parent_but_recycled_pid_reaps_dir_without_killing() {
+        let now = 1_000_000u64;
+        let grace = 600u64;
+        // Owner pid is alive and its recorded parent is dead, but the live pid is NOT one of
+        // our kernels (its pid was recycled by an unrelated process). Reclaim the stale dir;
+        // never signal the unrelated process.
+        assert_eq!(
+            classify(
+                Some(&OwnerMarker {
+                    pid: 10,
+                    ppid: 20,
+                    started_at: 0
+                }),
+                now,
+                now,
+                grace,
+                |p| p == 10, // owner alive, recorded parent (20) dead
+                |_| false    // not our kernel
+            ),
+            Disposition::ReapDir
+        );
+    }
+
+    #[test]
+    fn reap_runtime_kills_confirmed_kernels_and_spares_recycled_pids() {
         use std::process::Command;
         let root = tempfile::tempdir().unwrap();
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
             .unwrap()
             .as_secs();
+        let sleep_bin = which::which("sleep").expect("`sleep` on PATH");
 
         // current session dir (must be kept)
         let cur = root.path().join("obu-current");
         std::fs::create_dir_all(&cur).unwrap();
         write_owner_marker(&cur, &current_marker()).unwrap();
 
-        // dead-owner dir -> reaped
+        // dead-owner dir (no live process) -> dir reaped
         let dead = root.path().join("obu-dead");
         std::fs::create_dir_all(&dead).unwrap();
         write_owner_marker(
@@ -344,33 +451,68 @@ mod tests {
         )
         .unwrap();
 
-        // orphaned kernel: real sleep child, recorded parent dead -> killed + reaped
-        let mut child = Command::new("sleep").arg("60").spawn().unwrap();
-        let child_pid = child.id();
-        let orphan = root.path().join("obu-orphan");
-        std::fs::create_dir_all(&orphan).unwrap();
+        // recycled pid: a real live process, recorded parent dead, NOT confirmed as our kernel.
+        // Its stale dir is reclaimed but the process must NOT be signalled.
+        let mut innocent = Command::new(&sleep_bin).arg("60").spawn().unwrap();
+        let innocent_pid = innocent.id();
+        let innocent_dir = root.path().join("obu-innocent");
+        std::fs::create_dir_all(&innocent_dir).unwrap();
         write_owner_marker(
-            &orphan,
+            &innocent_dir,
             &OwnerMarker {
-                pid: child_pid,
+                pid: innocent_pid,
                 ppid: 999_999,
                 started_at: 0,
             },
         )
         .unwrap();
 
-        let report = reap_runtime(root.path(), "obu-current", now, 600).unwrap();
+        // confirmed orphaned kernel: a real live process, recorded parent dead, that the injected
+        // predicate confirms is one of our kernels -> killed + dir reaped. Identity is injected
+        // rather than realised by copying/executing a renamed binary, which can wedge macOS
+        // code-signing validation.
+        let mut orphan_kernel = Command::new(&sleep_bin).arg("60").spawn().unwrap();
+        let kernel_pid = orphan_kernel.id();
+        let kernel_dir = root.path().join("obu-orphan-kernel");
+        std::fs::create_dir_all(&kernel_dir).unwrap();
+        write_owner_marker(
+            &kernel_dir,
+            &OwnerMarker {
+                pid: kernel_pid,
+                ppid: 999_999,
+                started_at: 0,
+            },
+        )
+        .unwrap();
+
+        let confirm_pid = kernel_pid as i32;
+        let report = reap_runtime_with(root.path(), "obu-current", now, 600, move |pid| {
+            pid == confirm_pid
+        })
+        .unwrap();
 
         assert!(cur.exists(), "current session must be kept");
-        assert!(!dead.exists(), "dead-owner dir must be reaped");
-        assert!(!orphan.exists(), "orphan dir must be reaped");
-        assert!(report.dirs_reaped >= 2, "report: {report:?}");
-        assert_eq!(report.kernels_killed, 1, "report: {report:?}");
+        assert!(!dead.exists(), "dead-owner dir reaped");
+        assert!(!innocent_dir.exists(), "recycled-pid dir reaped");
+        assert!(!kernel_dir.exists(), "orphan-kernel dir reaped");
+        assert_eq!(
+            report.kernels_killed, 1,
+            "only the confirmed kernel is killed: {report:?}"
+        );
 
         std::thread::sleep(std::time::Duration::from_millis(300));
         assert!(
-            child.try_wait().unwrap().is_some(),
-            "orphan kernel should have been killed"
+            innocent.try_wait().unwrap().is_none(),
+            "recycled-pid process must NOT be killed"
         );
+        assert!(
+            orphan_kernel.try_wait().unwrap().is_some(),
+            "confirmed orphan kernel must be killed"
+        );
+
+        let _ = innocent.kill();
+        let _ = innocent.wait();
+        let _ = orphan_kernel.kill();
+        let _ = orphan_kernel.wait();
     }
 }
