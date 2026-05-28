@@ -844,6 +844,39 @@ export class Tab {
     await this.transport.sendRequest(M.PLAYWRIGHT_WAIT_FOR_TIMEOUT, withSessionMeta({ tab_id: this.id, timeout_ms: ms }), ms + 1000);
   }
 
+  // Wait until the page's content stops changing — an agent-callable readiness control
+  // for SPA/app-shell pages where `goto` resolves at `load` before JS renders content.
+  // Polls a cheap DOM fingerprint (visible-text length + element count) over the open
+  // `evaluate` surface and resolves as soon as it holds steady for `quietMs`, or returns
+  // `{ settled: false, reason: "timeout" }` at `timeout` (never throws on a busy page).
+  async waitForContentSettle(
+    opts: { quietMs?: number; timeout?: number; pollMs?: number } = {},
+  ): Promise<{ settled: boolean; reason: "quiet" | "timeout"; samples: number }> {
+    const quietMs = positiveInt(opts.quietMs, 400);
+    const timeout = positiveInt(opts.timeout, 4000);
+    const pollMs = positiveInt(opts.pollMs, 200);
+    const deadline = Date.now() + timeout;
+    let prev: string | undefined;
+    let stableSince: number | undefined;
+    let samples = 0;
+    for (;;) {
+      const fingerprint = (await this.evaluate<string>(
+        "(() => { const b = document.body; const text = b ? b.innerText.length : 0; return text + ':' + document.getElementsByTagName('*').length; })()",
+      )) as string;
+      samples += 1;
+      const now = Date.now();
+      if (fingerprint === prev) {
+        stableSince ??= now;
+        if (now - stableSince >= quietMs) return { settled: true, reason: "quiet", samples };
+      } else {
+        prev = fingerprint;
+        stableSince = undefined;
+      }
+      if (Date.now() >= deadline) return { settled: false, reason: "timeout", samples };
+      await new Promise((resolve) => setTimeout(resolve, pollMs));
+    }
+  }
+
   async close(opts: { timeout?: number } = {}): Promise<void> {
     await this.#ensureTabCommandAllowed(M.TAB_CLOSE, {}, opts.timeout);
     await this.transport.sendRequest(M.TAB_CLOSE, withSessionMeta({ tab_id: this.id }), opts.timeout);

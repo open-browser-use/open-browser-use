@@ -58,14 +58,31 @@ browser-visible discovery — if it returns a user tab reference, claim/resume i
 before acting. One session can hold several named `Tab` handles; move data between
 them explicitly.
 
+## Observing the page
+
+Observation is open — you choose what to read and how deeply; the environment does not
+pre-digest the page. Orient with one broad read (a fresh `tab.domSnapshot()`, or
+`tab.screenshotForModel(...)` when layout matters more than the DOM — not both), then
+narrow to the relevant container or a few candidates. Don't re-dump a full snapshot
+every cell, and don't loop per-element reads (`getAttribute`/`innerText`) as a search —
+parse one `domSnapshot()` instead. `tab.snapshotText()` is a capped convenience summary
+(~20 items/category), not the full page: on dense, result-grid, or SPA pages prefer
+`domSnapshot()` (or raise `snapshotText({ maxItems })`) so content past the cap isn't lost.
+
+`tab.goto(...)` resolves at `load`, which on SPA/app-shell pages can precede content
+render. If a read is empty or sparse on a page you expect to have content, settle then
+re-read (`await tab.waitForContentSettle()` waits for the DOM to stop changing, bounded)
+before concluding it's empty — it's usually still hydrating.
+
 ## Acting on the page
 
 Pick the verb directly instead of round-tripping through `help()`:
 
 | Intent | Call |
 |---|---|
-| read the page as text | `tab.snapshotText()` or `tab.dom_cua.text()` |
-| structured DOM tree | `tab.domSnapshot()` |
+| read the page (full fidelity) | `tab.domSnapshot()` — the complete DOM; parse what you need |
+| quick summary (lossy, capped) | `tab.snapshotText()` — caps each category (~20 items): a peek, not the page |
+| compact interactable node list | `tab.dom_cua.text()` (ids stay valid for `dom_cua` actions) |
 | find an element (preferred) | `tab.getByRole(...)` / `getByLabel(...)` / `getByText(...)` |
 | click / type / fill / press | `locator.click()` / `.type()` / `.fill()` / `.press()` |
 | select / check | `locator.selectOption(...)` / `.check()` / `.setChecked(...)` |

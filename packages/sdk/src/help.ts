@@ -30,16 +30,17 @@ Browser:
 Tab:
   .goto(url) / .back() / .forward() / .reload() / .waitForURL() / .waitForLoadState() / .waitForNavigation()
   .waitForTimeout()
+  .waitForContentSettle({quietMs?, timeout?, pollMs?}) -> wait until the DOM stops changing (SPA hydration), then re-read
   .waitForEvent("filechooser"|"download") -> FileChooser | Download
   .locator(sel) -> Locator
   .frameLocator(sel) -> FrameLocator
   .content.export({format?}) -> bytes
   .screenshot({type?, quality?, clip?, fullPage?}) -> Image with toBase64(); use display(await tab.screenshot())
   .screenshotForModel({clip?, artifactMode?}) -> compact screenshot summary or inline bytes
-  .domSnapshot() -> model-safe Playwright DOM/ARIA snapshot string
+  .domSnapshot() -> full-fidelity DOM/ARIA snapshot string (the complete page; parse what you need)
   .playwright.elementInfo({x,y}) / .playwright.elementScreenshot({x,y}) -> point-level inspection
   .evaluate(expressionOrFn, {maxJsonBytes?}) -> capped JSON-safe page result
-  .snapshotText({maxItems?, maxTextLength?}) -> compact page text summary
+  .snapshotText({maxItems?, maxTextLength?}) -> capped text summary (~20 items/category; prefer domSnapshot on dense/SPA pages)
   .cua.click() / .dblclick() / .scroll() / .type() / .keypress() / .drag() / .dragPath() / .move() / .download_media() / .get_visible_screenshot()
   .clipboard.readText() / .writeText() / .read() / .write()
   .dom_cua.get_visible_dom({format:"text"}) / .dom_cua.text() -> LLM-readable visible DOM-CUA
