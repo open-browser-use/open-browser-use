@@ -94,6 +94,7 @@ export class Transport {
   #reconnects = 0;
   #maxReconnectAttempts: number;
   #reconnectBackoffMs: number;
+  #onReconnect: ((count: number) => void) | undefined;
 
   // Bound once so the same listeners can be detached from a dead connection and
   // attached to a fresh one across a reconnect.
@@ -115,6 +116,16 @@ export class Transport {
 
   setSessionIdOverride(sessionId: string | undefined): this {
     this.#sessionIdOverride = sessionId;
+    return this;
+  }
+
+  /**
+   * Register a hook fired after each transparent reconnect (host restart / MV3 recycle).
+   * A reconnect means a fresh host process with a fresh registry, so callers use this to
+   * mark cached browser-control state stale. The hook must never throw — it is wrapped.
+   */
+  onReconnect(cb: (count: number) => void): this {
+    this.#onReconnect = cb;
     return this;
   }
 
@@ -204,6 +215,11 @@ export class Transport {
         this.#closed = false;
         this.#reconnects++;
         reportReconnect(this.#reconnects);
+        try {
+          this.#onReconnect?.(this.#reconnects);
+        } catch {
+          // Reconnect side effects must never break the transport.
+        }
         return;
       } catch (error) {
         lastError = error;

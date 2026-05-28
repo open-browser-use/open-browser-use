@@ -251,6 +251,11 @@ export class Browser {
       observationStore: new Map(),
       lifecycleEpoch: { value: 0, updatedAt: Date.now() },
     };
+    // A transparent reconnect means the host process restarted (fresh registry), so any
+    // cached tab ownership / observations are stale. Bump the lifecycle epoch so observe()
+    // reports ownership "lost" and step() rejects stale observations — the same signal the
+    // SDK already raises for yield/resume/finalize.
+    this.transport.onReconnect?.(() => markTabRuntimeContextStale(this.tabRuntimeContext, "host_restart"));
     this.guards = guards;
     this.tabs = new BrowserTabs(transport, guards, this.tabRuntimeContext);
     this.tasks = new BrowserTasks(transport, (opts) => this.resumeControlResult(opts));

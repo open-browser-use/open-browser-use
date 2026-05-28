@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { ObuError, ERR_DIALOG_REQUIRES_DECISION, ERR_PROTOCOL, ERR_TIMEOUT, ERR_TRANSPORT_CLOSED } from "../src/errors.js";
 import { FrameDecoder, FrameEncoder, MAX_FRAME_LEN } from "../src/wire/frames.js";
 import { Transport } from "../src/wire/transport.js";
+import { markTabRuntimeContextStale, type TabRuntimeContext } from "../src/tab.js";
 import type { NativePipeConnection, NativePipeConnectionEvent } from "../src/wire/pipe.js";
 
 class FakeConnection implements NativePipeConnection {
@@ -315,6 +316,53 @@ describe("Transport", () => {
     await expect(transport.sendRequest("tab_url", {}, 100)).resolves.toBe("two");
     expect(made).toBe(1);
     expect(transport.diagnostics().reconnects).toBe(1);
+  });
+
+  it("invokes the onReconnect hook after a transparent reconnect", async () => {
+    const first = new FakeConnection();
+    const second = new FakeConnection();
+    const transport = new Transport(first, async () => second);
+    const counts: number[] = [];
+    transport.onReconnect((n) => counts.push(n));
+
+    first.onWrite = (request) => first.respond(request.id, { value: "one" });
+    await expect(transport.sendRequest("tab_url", {}, 100)).resolves.toBe("one");
+    expect(counts).toEqual([]); // no reconnect yet
+
+    first.emit("close");
+    second.onWrite = (request) => second.respond(request.id, { value: "two" });
+    await expect(transport.sendRequest("tab_url", {}, 100)).resolves.toBe("two");
+
+    expect(counts).toEqual([1]);
+  });
+
+  it("reconnect via the Browser wiring bumps the lifecycle epoch and invalidates fresh observations", async () => {
+    const first = new FakeConnection();
+    const second = new FakeConnection();
+    const transport = new Transport(first, async () => second);
+    // Mirror browser.ts registration against a real TabRuntimeContext.
+    const ctx: TabRuntimeContext = {
+      lifecycleEpoch: { value: 0, updatedAt: 0 },
+      observationStore: new Map(),
+    };
+    ctx.observationStore!.set("obs-1", {
+      state: "fresh",
+      tabId: "tab-1",
+      runtimeEpoch: 0,
+      createdAt: 0,
+      expiresAt: Number.MAX_SAFE_INTEGER,
+    });
+    transport.onReconnect(() => markTabRuntimeContextStale(ctx, "host_restart"));
+
+    first.onWrite = (request) => first.respond(request.id, { value: "one" });
+    await expect(transport.sendRequest("tab_url", {}, 100)).resolves.toBe("one");
+    first.emit("close");
+    second.onWrite = (request) => second.respond(request.id, { value: "two" });
+    await expect(transport.sendRequest("tab_url", {}, 100)).resolves.toBe("two");
+
+    expect(ctx.lifecycleEpoch?.value).toBe(1);
+    expect(ctx.lifecycleEpoch?.staleReason).toBe("host_restart");
+    expect(ctx.observationStore!.get("obs-1")?.state).toBe("invalid");
   });
 
   it("reconnect advisory is a neutral observation, not a reissue instruction", async () => {
