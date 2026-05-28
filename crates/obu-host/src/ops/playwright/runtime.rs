@@ -1157,9 +1157,13 @@ where
     throw new Error("Element is not attached");
   }
   const state = injected.elementState(element, arg.state);
-  if (state.received === "error:notconnected") throw new Error("Element is not connected");
+  // waitFor's awaited condition is the SUBJECT, not an action obstacle: phrase
+  // these so `classify_actionability_failure` ignores them. Otherwise the grace
+  // fast-fail would cut an explicit waitFor short at ~3s instead of honoring its
+  // own timeout (the not-met state is exactly what the caller is polling for).
+  if (state.received === "error:notconnected") throw new Error("waitFor: element not connected");
   if (state.matches) return true;
-  throw new Error("Element is not " + arg.state);
+  throw new Error("waitFor: state not met (" + arg.state + ")");
 }"#,
         json!({ "state": state }),
     )
@@ -1402,6 +1406,47 @@ mod tests {
                 .pop_front()
                 .unwrap_or(Value::Null);
             Ok(json!({ "result": { "value": value } }))
+        }
+    }
+
+    /// Backend whose runtime eval always reports a page-side exception with a
+    /// fixed message, so `runtime_result_value` yields `CdpFailure(message)`.
+    /// Exercises the op → `with_retry` → classifier path with a real injected
+    /// throw shape (used to prove waitFor vs. action ops branch differently).
+    struct FakeThrowingBackend {
+        message: String,
+        calls: AtomicUsize,
+    }
+
+    impl FakeThrowingBackend {
+        fn new(message: &str) -> Self {
+            Self {
+                message: message.to_string(),
+                calls: AtomicUsize::new(0),
+            }
+        }
+    }
+
+    #[async_trait]
+    impl PlaywrightRuntimeBackend for FakeThrowingBackend {
+        async fn ensure_playwright_runtime(
+            &self,
+            _ctx: &BackendRequestContext,
+            _tab_id: &str,
+        ) -> Result<()> {
+            Ok(())
+        }
+
+        async fn evaluate_playwright_runtime(
+            &self,
+            _ctx: &BackendRequestContext,
+            _tab_id: &str,
+            _expression: String,
+        ) -> Result<Value> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
+            Ok(json!({
+                "exceptionDetails": { "exception": { "value": self.message } }
+            }))
         }
     }
 
@@ -1767,6 +1812,69 @@ mod tests {
                 assert!(message.contains("No element matched selector"));
             }
             other => panic!("expected Timeout, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn wait_for_selector_state_retries_to_timeout_not_grace() {
+        // An always-not-matching waitFor({state:"visible"}) must poll to its own
+        // timeout and end in Timeout — the not-met state is the AWAITED subject,
+        // so the action grace fast-fail must NOT cut it short with a typed Rpc.
+        let backend = FakeThrowingBackend::new("waitFor: state not met (visible)");
+
+        let outcome = wait_for_selector_state(
+            &backend,
+            &BackendRequestContext::default(),
+            json!({
+                "tab_id": "tab-1",
+                "selector": "#late",
+                "state": "visible",
+                "timeout_ms": 6_000,
+            }),
+        )
+        .await;
+
+        match outcome.unwrap_err() {
+            HostError::Timeout(message) => {
+                assert!(message.contains("waitFor: state not met"));
+            }
+            other => panic!("expected Timeout, got {other:?}"),
+        }
+        // Polled past the grace window (would have been a single fast-fail there).
+        assert!(
+            backend.calls.load(Ordering::SeqCst)
+                > (ACTIONABILITY_GRACE_MS / RETRY_DELAY_MS) as usize,
+            "waitFor should keep polling beyond the grace window"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn action_op_fast_fails_on_not_visible_via_grace() {
+        // Counterpart to the waitFor test: an ACTION op (fill) against a target
+        // that stays not-visible must fast-fail as a typed Rpc, confirming the
+        // action injected blocks remain classified after the waitFor rewording.
+        let backend = FakeThrowingBackend::new("Element is not visible");
+
+        let outcome = fill_selector(
+            &backend,
+            &BackendRequestContext::default(),
+            json!({
+                "tab_id": "tab-1",
+                "selector": "#field",
+                "value": "hi",
+                "timeout_ms": 90_000,
+            }),
+        )
+        .await;
+
+        match outcome.unwrap_err() {
+            HostError::Rpc {
+                data: Some(data), ..
+            } => {
+                assert_eq!(data["resolution"], "not_visible");
+                assert_eq!(data["state"], "visible");
+            }
+            other => panic!("expected typed not_visible rpc error, got {other:?}"),
         }
     }
 
