@@ -116,3 +116,41 @@ assert.deepEqual(restoredTabs, [
 ]);
 assert.equal(resolveCalls, 1);
 assert.equal(persisted.at(-1).sessions[0].tabs.some((row) => row.tabId === 7), false);
+
+// Stuck-turn reaper: a persisted actively-executing turn (open/yielded) cannot survive the
+// service-worker generation that rehydrates it (its driving native-pipe connection is gone),
+// so it is reconciled to idle on restore. Finalize/failed states carry their own recovery
+// semantics and are preserved.
+const reaped = new BrowserSessionRepository({
+  persistState: async () => {},
+  groupIdForTab: () => undefined,
+});
+await reaped.restoreFromStorageValue({
+  version: 1,
+  sessions: [
+    {
+      session_id: "stuck-open",
+      tabs: [{ tabId: 21, origin: "agent", status: "active" }],
+      turnLifecycle: { kind: "open", sessionId: "stuck-open", turnId: "exec-stuck" },
+    },
+    {
+      session_id: "stuck-finalizing",
+      tabs: [{ tabId: 23, origin: "agent", status: "active" }],
+      turnLifecycle: { kind: "finalizing", sessionId: "stuck-finalizing", turnId: "t-fin" },
+    },
+    {
+      session_id: "legit-failed",
+      tabs: [{ tabId: 22, origin: "agent", status: "active" }],
+      turnLifecycle: { kind: "failed", sessionId: "legit-failed", turnId: "t-fail", errorCode: "boom", diagnostics: [] },
+    },
+  ],
+}, {
+  getTab: async (tabId) => ({ id: tabId, windowId: 1, active: true }),
+  restoreDurableTab: async () => {},
+  repairSessionActiveTab: async () => ({ nextActiveTabId: undefined, removedTabIds: [], cleanup: [], diagnostics: [], activeTabChanged: false, changed: false }),
+});
+assert.equal(reaped.sessionFor("stuck-open").tabs.has(21), true, "stuck-open session was restored");
+assert.deepEqual(reaped.sessionFor("stuck-open").turnLifecycle, { kind: "idle" }, "open turn reconciled to idle on restore");
+assert.equal(reaped.sessionFor("legit-failed").turnLifecycle.kind, "failed", "failed turn preserved on restore");
+// finalizing is intentionally NOT reaped here (it carries session-level recovery semantics).
+assert.equal(reaped.sessionFor("stuck-finalizing").turnLifecycle.kind, "finalizing", "finalizing turn preserved on restore");

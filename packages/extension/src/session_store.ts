@@ -168,6 +168,17 @@ function durableBrowserTurnLifecycle(turnLifecycle: BrowserTurnLifecycle): Brows
   return isSuccessfulEndedTurnLifecycle(turnLifecycle) ? { kind: "idle" } : turnLifecycle;
 }
 
+// A persisted turn that was actively executing (open/yielded) cannot survive the
+// service-worker generation that rehydrates it: its driving native-pipe connection died with
+// the prior generation, so the turn can never make progress. Reconcile it to idle on restore so
+// it stops appearing as an actionable stuck turn. finalizing/failed/ended states carry their own
+// session-level recovery semantics and are preserved untouched.
+export function reconcileRestoredTurnLifecycle(turnLifecycle: BrowserTurnLifecycle): BrowserTurnLifecycle {
+  return turnLifecycle.kind === "open" || turnLifecycle.kind === "yielded"
+    ? { kind: "idle" }
+    : turnLifecycle;
+}
+
 export function parseBrowserSessionLifecycle(value: unknown): BrowserSessionLifecycle | undefined {
   if (!isRecord(value) || typeof value.kind !== "string") return undefined;
   switch (value.kind) {

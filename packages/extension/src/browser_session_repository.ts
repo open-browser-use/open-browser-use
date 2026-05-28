@@ -2,6 +2,7 @@ import {
   createBrowserSession,
   isActionableTurnLifecycle,
   parsePersistedBrowserSessionState,
+  reconcileRestoredTurnLifecycle,
   serializeBrowserSessions,
   type BrowserSession,
   type PersistedBrowserSession,
@@ -166,6 +167,6 @@ function applyPersistedSessionMetadata(session: BrowserSession, row: PersistedBr
   if (row.controlState === "human_takeover") session.controlState = "human_takeover";
   if (Number.isInteger(row.activeTabId)) session.activeTabId = row.activeTabId;
   if (row.lifecycle) session.lifecycle = row.lifecycle;
-  if (row.turnLifecycle) session.turnLifecycle = row.turnLifecycle;
+  if (row.turnLifecycle) session.turnLifecycle = reconcileRestoredTurnLifecycle(row.turnLifecycle);
   if (row.lastFinalize) session.lastFinalize = row.lastFinalize;
 }
