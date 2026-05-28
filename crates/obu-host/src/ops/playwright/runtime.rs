@@ -19,6 +19,11 @@ use crate::ops::dom_cua;
 
 const DEFAULT_TIMEOUT_MS: u64 = 30_000;
 const RETRY_DELAY_MS: u64 = 100;
+/// Grace window for a found-but-not-actionable / just-detached target. Within it
+/// `with_retry` keeps retrying (animating-in / just-mounted UI may settle); past
+/// it the failure fast-fails as a typed resolution instead of burning the full
+/// (now 90s) op timeout. See `classify_actionability_failure`.
+const ACTIONABILITY_GRACE_MS: u64 = 3_000;
 
 pub(crate) const MEDIA_DOWNLOAD_FUNCTION: &str = r#"(element) => {
   element.scrollIntoView({ block: "center", inline: "nearest" });
@@ -1252,16 +1257,63 @@ fn exception_message(details: &Value) -> String {
         .to_string()
 }
 
+/// Map an actionability throw from the injected runtime to a typed resolution.
+///
+/// The injected code throws plain `Error`s (`"Element is not connected"` /
+/// `"Element is not <state>"`) that surface as `HostError::CdpFailure`, which
+/// `is_fatal` does NOT classify — so a permanently doomed action would otherwise
+/// retry for the whole op budget. Classifying centrally here (rather than editing
+/// the duplicated injected sites) mirrors the existing `CdpFailure` message-match
+/// precedent in `is_fatal`. Returns `None` for anything that is not a known
+/// element actionability/detached throw (frame checks, type errors, selector
+/// misses, geometry resolutions) so those keep their current retry semantics.
+fn classify_actionability_failure(error: &HostError) -> Option<ActionPointResolution> {
+    let HostError::CdpFailure(message) = error else {
+        return None;
+    };
+    // Detached first: a not-connected element is reported with this exact phrase
+    // by every injected site, and is distinct from a state failure.
+    if message.contains("Element is not connected") {
+        return Some(ActionPointResolution::Detached);
+    }
+    // Match the SPECIFIC known state phrases only. Not `"Frame is not ..."`
+    // (frame-chain checks) and not `"Element is not an <input>..."` (a type error).
+    for state in ["visible", "stable", "enabled", "editable"] {
+        if message.contains(&format!("Element is not {state}")) {
+            return Some(ActionPointResolution::NotVisible {
+                state: state.to_string(),
+            });
+        }
+    }
+    None
+}
+
 async fn with_retry<F, Fut>(timeout_ms: u64, mut op: F) -> Result<Value>
 where
     F: FnMut() -> Fut,
     Fut: std::future::Future<Output = Result<Value>>,
 {
-    let deadline = Instant::now() + Duration::from_millis(timeout_ms);
+    let start = Instant::now();
+    let deadline = start + Duration::from_millis(timeout_ms);
+    // Doomed actionability fast-fails after the grace window (capped by the op
+    // timeout so a tiny `timeout_ms` never extends the wait).
+    let grace_deadline = start + Duration::from_millis(timeout_ms.min(ACTIONABILITY_GRACE_MS));
     loop {
         match op().await {
             Ok(value) => return Ok(value),
             Err(error) if is_fatal(&error) => return Err(error),
+            // Found-but-not-actionable / just-detached: retry within the grace
+            // window (animating-in / just-mounted UI may settle), then fast-fail
+            // with a typed resolution instead of stalling to the full deadline.
+            Err(error) if classify_actionability_failure(&error).is_some() => {
+                if Instant::now() >= grace_deadline {
+                    // `is_some()` guard above guarantees this returns `Some`.
+                    let resolution = classify_actionability_failure(&error)
+                        .expect("actionability failure stays classified");
+                    return Err(resolution.into_host_error());
+                }
+                tokio::time::sleep(Duration::from_millis(RETRY_DELAY_MS)).await;
+            }
             Err(error) if Instant::now() >= deadline => {
                 return Err(HostError::Timeout(format!(
                     "playwright op timed out after {timeout_ms}ms: {error}"
@@ -1570,6 +1622,152 @@ mod tests {
 
         assert!(error.to_string().contains("strict mode violation"));
         assert_eq!(attempts.load(Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn classify_actionability_failure_maps_known_phrases() {
+        let detached = classify_actionability_failure(&HostError::CdpFailure(
+            "Element is not connected".into(),
+        ));
+        assert_eq!(detached, Some(ActionPointResolution::Detached));
+
+        for state in ["visible", "stable", "enabled", "editable"] {
+            let classified = classify_actionability_failure(&HostError::CdpFailure(format!(
+                "Element is not {state}"
+            )));
+            assert_eq!(
+                classified,
+                Some(ActionPointResolution::NotVisible {
+                    state: state.to_string()
+                })
+            );
+        }
+    }
+
+    #[test]
+    fn classify_actionability_failure_ignores_unrelated_messages() {
+        // Frame-chain checks, type errors, selector misses, and non-CdpFailure
+        // variants must not be misread as element actionability failures.
+        for message in [
+            "Frame is not visible",
+            "Frame is not connected",
+            "No element matched selector",
+            "Element is not an <input>, <textarea> or [contenteditable] element",
+        ] {
+            assert_eq!(
+                classify_actionability_failure(&HostError::CdpFailure(message.into())),
+                None,
+                "message should not classify: {message}"
+            );
+        }
+        assert_eq!(
+            classify_actionability_failure(&HostError::Protocol("Element is not visible".into())),
+            None
+        );
+    }
+
+    /// Run `op` (returns an error string `attempt_idx → result`) under `with_retry`
+    /// with virtual time paused so `tokio::time::sleep` auto-advances. Returns the
+    /// `with_retry` outcome plus the number of `op` invocations.
+    async fn run_retry_counting<F>(timeout_ms: u64, op: F) -> (Result<Value>, usize)
+    where
+        F: Fn(usize) -> Result<Value> + Send + 'static,
+    {
+        let attempts = Arc::new(AtomicUsize::new(0));
+        let attempts_for_op = attempts.clone();
+        let op = Arc::new(op);
+        let outcome = with_retry(timeout_ms, move || {
+            let attempts = attempts_for_op.clone();
+            let op = op.clone();
+            async move {
+                let attempt = attempts.fetch_add(1, Ordering::SeqCst);
+                op(attempt)
+            }
+        })
+        .await;
+        (outcome, attempts.load(Ordering::SeqCst))
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn with_retry_lets_target_settle_within_grace() {
+        // Not-visible a couple of times, then Ok: the grace window must allow the
+        // late-mounting target to resolve rather than fast-failing on first check.
+        let (outcome, attempts) = run_retry_counting(90_000, |attempt| {
+            if attempt < 2 {
+                Err(HostError::CdpFailure("Element is not visible".into()))
+            } else {
+                Ok(json!("settled"))
+            }
+        })
+        .await;
+
+        assert_eq!(outcome.unwrap(), json!("settled"));
+        assert_eq!(attempts, 3);
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn with_retry_fast_fails_doomed_actionability_with_typed_resolution() {
+        // Always not-visible with a large timeout: must fast-fail as a typed Rpc
+        // shortly after the grace window, NOT after the full 90s op budget.
+        let start = Instant::now();
+        let (outcome, attempts) = run_retry_counting(90_000, |_| {
+            Err(HostError::CdpFailure("Element is not visible".into()))
+        })
+        .await;
+        let elapsed = start.elapsed();
+
+        match outcome.unwrap_err() {
+            HostError::Rpc {
+                data: Some(data), ..
+            } => {
+                assert_eq!(data["resolution"], "not_visible");
+                assert_eq!(data["state"], "visible");
+            }
+            other => panic!("expected typed not_visible rpc error, got {other:?}"),
+        }
+        // Resolved at the grace boundary (~3s), far short of the 90s timeout, and
+        // with only a grace-window's worth of retries (not thousands).
+        assert!(
+            elapsed < Duration::from_millis(ACTIONABILITY_GRACE_MS + RETRY_DELAY_MS * 2),
+            "fast-fail took {elapsed:?}, expected ~grace window"
+        );
+        let max_grace_attempts = (ACTIONABILITY_GRACE_MS / RETRY_DELAY_MS) as usize + 2;
+        assert!(
+            attempts <= max_grace_attempts,
+            "expected <= {max_grace_attempts} attempts, got {attempts}"
+        );
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn with_retry_detached_fast_fails_with_typed_resolution() {
+        let (outcome, _) = run_retry_counting(90_000, |_| {
+            Err(HostError::CdpFailure("Element is not connected".into()))
+        })
+        .await;
+
+        match outcome.unwrap_err() {
+            HostError::Rpc {
+                data: Some(data), ..
+            } => assert_eq!(data["resolution"], "detached"),
+            other => panic!("expected typed detached rpc error, got {other:?}"),
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn with_retry_non_actionability_failure_still_times_out() {
+        // A non-actionability CdpFailure (selector miss) keeps the existing
+        // retry-to-the-budget-then-Timeout behavior; grace must not capture it.
+        let (outcome, _) = run_retry_counting(50, |_| {
+            Err(HostError::CdpFailure("No element matched selector".into()))
+        })
+        .await;
+
+        match outcome.unwrap_err() {
+            HostError::Timeout(message) => {
+                assert!(message.contains("No element matched selector"));
+            }
+            other => panic!("expected Timeout, got {other:?}"),
+        }
     }
 
     #[tokio::test]

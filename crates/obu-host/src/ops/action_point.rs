@@ -15,6 +15,8 @@ pub(crate) const RESOLUTION_OUTSIDE_VIEWPORT: &str = "outside_viewport";
 pub(crate) const RESOLUTION_NO_CLICKABLE_BOX: &str = "no_clickable_box";
 pub(crate) const RESOLUTION_TRANSFORMED_FRAME_UNSUPPORTED: &str = "transformed_frame_unsupported";
 pub(crate) const RESOLUTION_CROSS_ORIGIN_UNREACHABLE: &str = "cross_origin_unreachable";
+pub(crate) const RESOLUTION_NOT_VISIBLE: &str = "not_visible";
+pub(crate) const RESOLUTION_DETACHED: &str = "detached";
 
 /// Outcome of resolving a target to a dispatch point. Closed set by design.
 #[derive(Debug, Clone, PartialEq)]
@@ -31,6 +33,11 @@ pub(crate) enum ActionPointResolution {
     TransformedFrameUnsupported,
     /// A cross-origin/OOPIF target could not be reached on this path.
     CrossOriginUnreachable { reason: String },
+    /// The target was found but stayed non-actionable through the grace window;
+    /// `state` names which actionability check failed (visible/stable/enabled/editable).
+    NotVisible { state: String },
+    /// The target detached from the DOM before the action could dispatch.
+    Detached,
 }
 
 impl ActionPointResolution {
@@ -71,6 +78,14 @@ impl ActionPointResolution {
             Self::CrossOriginUnreachable { reason } => (
                 format!("cross-origin target is unreachable: {reason}"),
                 json!({ "resolution": RESOLUTION_CROSS_ORIGIN_UNREACHABLE, "reason": reason }),
+            ),
+            Self::NotVisible { state } => (
+                format!("target is not actionable: not {state}"),
+                json!({ "resolution": RESOLUTION_NOT_VISIBLE, "state": state }),
+            ),
+            Self::Detached => (
+                "target detached from the DOM".to_string(),
+                json!({ "resolution": RESOLUTION_DETACHED }),
             ),
         };
         HostError::Rpc {
@@ -142,5 +157,22 @@ mod tests {
     #[test]
     fn into_point_errors_for_non_resolved() {
         assert!(ActionPointResolution::NoClickableBox.into_point().is_err());
+    }
+
+    #[test]
+    fn not_visible_carries_resolution_and_state() {
+        let error = ActionPointResolution::NotVisible {
+            state: "visible".into(),
+        }
+        .into_host_error();
+        let data = rpc_data(error);
+        assert_eq!(data["resolution"], RESOLUTION_NOT_VISIBLE);
+        assert_eq!(data["state"], "visible");
+    }
+
+    #[test]
+    fn detached_carries_resolution() {
+        let data = rpc_data(ActionPointResolution::Detached.into_host_error());
+        assert_eq!(data["resolution"], RESOLUTION_DETACHED);
     }
 }
