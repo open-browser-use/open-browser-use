@@ -65,9 +65,20 @@ pre-digest the page. Orient with one broad read (a fresh `tab.domSnapshot()`, or
 `tab.screenshotForModel(...)` when layout matters more than the DOM — not both), then
 narrow to the relevant container or a few candidates. Don't re-dump a full snapshot
 every cell, and don't loop per-element reads (`getAttribute`/`innerText`) as a search —
-parse one `domSnapshot()` instead. `tab.snapshotText()` is a capped convenience summary
-(~20 items/category), not the full page: on dense, result-grid, or SPA pages prefer
-`domSnapshot()` (or raise `snapshotText({ maxItems })`) so content past the cap isn't lost.
+parse one `domSnapshot()` instead. `tab.snapshotText()` is a capped affordance summary
+(~20 items/category) of clickable/typable chrome — NOT page content (it carries no prose):
+on dense, result-grid, or SPA pages prefer `domSnapshot()` for the full page, or run your
+own `tab.evaluate(...)` query for a scoped slice. It self-describes its compaction —
+`result.meta.truncated` plus per-category `meta.categories.{links,headings,...}.{shown,total}`
+— so branch on `meta.truncated` to decide whether to go to `domSnapshot()`/`evaluate()`
+rather than trusting the capped list as complete.
+
+`tab.observe()` is the lifecycle/ownership/action-family envelope around a read — reach for
+it when you need ownership/commandable/section-status signals, not for raw content (it
+embeds the same capped `text` summary). If `observe().ownership.state === "lost"` the tab
+handle predates a browser-control lifecycle change (host restart / handoff): re-acquire it
+(`browser.tabs.current()` / `resumeControl()`, or just `await tab.attach()`) before
+observation-bound actions — your open-action-space reads (`evaluate`, locators) still work.
 
 `tab.goto(...)` resolves at `load`, which on SPA/app-shell pages can precede content
 render. If a read is empty or sparse on a page you expect to have content, settle then
@@ -81,7 +92,7 @@ Pick the verb directly instead of round-tripping through `help()`:
 | Intent | Call |
 |---|---|
 | read the page (full fidelity) | `tab.domSnapshot()` — the complete DOM; parse what you need |
-| quick summary (lossy, capped) | `tab.snapshotText()` — caps each category (~20 items): a peek, not the page |
+| affordance summary (capped) | `tab.snapshotText()` — clickable/typable chrome, ~20/category, no prose; check `result.meta.truncated` |
 | compact interactable node list | `tab.dom_cua.text()` (ids stay valid for `dom_cua` actions) |
 | find an element (preferred) | `tab.getByRole(...)` / `getByLabel(...)` / `getByText(...)` |
 | click / type / fill / press | `locator.click()` / `.type()` / `.fill()` / `.press()` |
