@@ -236,7 +236,6 @@ const internalBindingSalt = (() => {
   return sanitized || "session";
 })();
 let activeExecId = null;
-let fatalExitScheduled = false;
 
 try {
   process.chdir(kernelBootstrap.workingDir);
@@ -1556,25 +1555,6 @@ function serializeErrorDetail(error) {
   return serializeResultValue(detail);
 }
 
-function sendFatalExecResultSync(kind, error) {
-  if (!activeExecId) {
-    return;
-  }
-  const payload = {
-    type: "exec_result",
-    id: activeExecId,
-    ok: false,
-    output: "",
-    error: `obu-node-repl kernel ${kind}: ${formatErrorMessage(error)}; kernel reset. Catch or handle async errors (including Promise rejections and EventEmitter 'error' events) to avoid kernel termination.`,
-    error_detail: serializeErrorDetail(error),
-  };
-  try {
-    fs.writeSync(process.stdout.fd, `${JSON.stringify(payload)}\n`);
-  } catch {
-    // Best effort only; the host will still surface stdout EOF diagnostics.
-  }
-}
-
 function getAsyncExecState() {
   const execState = execContextStorage.getStore();
   if (
@@ -1600,29 +1580,6 @@ function getCurrentExecState() {
 
 function isActiveExecState(execState) {
   return execState.id === activeExecId;
-}
-
-function scheduleFatalExit(kind, error) {
-  if (fatalExitScheduled) {
-    process.exitCode = 1;
-    return;
-  }
-  fatalExitScheduled = true;
-  sendFatalExecResultSync(kind, error);
-
-  try {
-    fs.writeSync(
-      process.stderr.fd,
-      `obu-node-repl kernel ${kind}: ${formatErrorMessage(error)}\n`,
-    );
-  } catch {
-    // ignore
-  }
-
-  // The host will observe stdout EOF, reset kernel state, and restart on demand.
-  setImmediate(() => {
-    process.exit(1);
-  });
 }
 
 function formatLog(args) {
@@ -2481,12 +2438,35 @@ function setBackendInventory(message) {
 let queue = Promise.resolve();
 let pendingInputSegments = [];
 
+let survivedBackgroundErrorCount = 0;
+
+// A long-lived agent kernel holds the browser session (globalThis.browser/tab) across many cells, so a
+// detached/background error must NOT tear it down and lose that session: e.g. a promise that rejected
+// after its exec finalized, or a throw in a detached callback (`setTimeout(() => foo.bar())`). These run
+// in the user's cell/callback context; the kernel's stdin queue keeps draining and a half-open native
+// pipe is recovered separately by the broker, so the kernel core survives. Per-exec UNOBSERVED errors
+// are still surfaced at the exec level by drainExecBackgroundTasks; this last-resort handler only covers
+// what escapes a finished exec. Log it (the host captures kernel stderr into dev logs) and keep serving.
+function reportSurvivedBackgroundError(kind, reason) {
+  survivedBackgroundErrorCount += 1;
+  try {
+    fs.writeSync(
+      process.stderr.fd,
+      `obu-node-repl kernel survived ${kind} #${survivedBackgroundErrorCount}` +
+        (activeExecId ? ` (active exec ${activeExecId})` : " (no active exec)") +
+        `; session preserved. Catch async errors to avoid losing results: ${formatErrorMessage(reason)}\n`,
+    );
+  } catch {
+    // ignore
+  }
+}
+
 process.on("uncaughtException", (error) => {
-  scheduleFatalExit("uncaught exception", error);
+  reportSurvivedBackgroundError("uncaught exception", error);
 });
 
 process.on("unhandledRejection", (reason) => {
-  scheduleFatalExit("unhandled rejection", reason);
+  reportSurvivedBackgroundError("unhandled rejection", reason);
 });
 
 function handleInputLine(line) {

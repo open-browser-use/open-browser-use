@@ -63,3 +63,77 @@ async fn javascript_errors_are_reported_without_resetting_kernel_state() {
     let result = manager.exec("base + 2", None).await.unwrap();
     assert_eq!(result.result, json!(42));
 }
+
+#[tokio::test]
+async fn detached_promise_rejection_does_not_kill_kernel() {
+    let manager = JsRuntimeManager::new(ManagerOptions::for_tests())
+        .await
+        .unwrap();
+    manager.boot().await.unwrap();
+
+    // Kernel-resident state we expect to survive a stray background rejection.
+    manager
+        .exec("globalThis.__survivor = 123; 'ok'", None)
+        .await
+        .unwrap();
+
+    // A cell that itself succeeds but leaves a detached, un-awaited promise that
+    // rejects AFTER the exec has finalized (the orphaned-background-op pattern).
+    let cell = manager
+        .exec(
+            "setTimeout(() => { Promise.reject(new Error('detached boom')); }, 50); 'cell-ok'",
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(cell.result, json!("cell-ok"));
+
+    // Let the timer and its unhandled rejection fire.
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    // The kernel must have SURVIVED with state intact, not exited and restarted fresh.
+    let result = manager
+        .exec("globalThis.__survivor ?? 'LOST'", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        result.result,
+        json!(123),
+        "a detached promise rejection killed the kernel and lost session state"
+    );
+}
+
+#[tokio::test]
+async fn detached_callback_throw_does_not_kill_kernel() {
+    let manager = JsRuntimeManager::new(ManagerOptions::for_tests())
+        .await
+        .unwrap();
+    manager.boot().await.unwrap();
+
+    manager
+        .exec("globalThis.__survivor2 = 'alive'; 'ok'", None)
+        .await
+        .unwrap();
+
+    // A synchronous throw in a detached timer callback -> uncaughtException.
+    let cell = manager
+        .exec(
+            "setTimeout(() => { throw new Error('detached throw'); }, 50); 'cell-ok'",
+            None,
+        )
+        .await
+        .unwrap();
+    assert_eq!(cell.result, json!("cell-ok"));
+
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+
+    let result = manager
+        .exec("globalThis.__survivor2 ?? 'LOST'", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        result.result,
+        json!("alive"),
+        "a thrown detached callback killed the kernel and lost session state"
+    );
+}
