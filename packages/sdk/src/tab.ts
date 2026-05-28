@@ -27,7 +27,7 @@ import type { StateTrace, StateTraceEntry, ObserveRequestState, ActionRuntimeSta
 import type { Transport } from "./wire/transport.js";
 import * as M from "./wire/methods.js";
 
-const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_TIMEOUT_MS = 90_000;
 const DEFAULT_NAVIGATION_POLL_MS = 50;
 
 export type LoadState = "domcontentloaded" | "load";

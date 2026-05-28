@@ -5,7 +5,7 @@ import type { LoadState } from "./tab.js";
 import type { Transport } from "./wire/transport.js";
 import * as M from "./wire/methods.js";
 
-const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_TIMEOUT_MS = 90_000;
 
 export type TabCuaPoint = {
   x: number;

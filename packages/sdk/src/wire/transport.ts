@@ -67,7 +67,7 @@ type ObuReplBackgroundTracker = {
 /** Re-discovers the live backend and opens a fresh connection (socket path changes on host restart). */
 export type TransportReconnect = () => Promise<NativePipeConnection>;
 
-const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_TIMEOUT_MS = 90_000;
 const env = (globalThis as { process?: { env?: Record<string, string | undefined> } }).process?.env;
 const parsedOvershoot = Number(env?.OBU_DEFENSIVE_TIMEOUT_MS_OVERSHOOT);
 const DEFENSIVE_OVERSHOOT_MS = Number.isFinite(parsedOvershoot) && parsedOvershoot >= 0

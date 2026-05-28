@@ -7,7 +7,7 @@ import type { BoundingBox } from "./types.js";
 import type { Transport } from "./wire/transport.js";
 import * as M from "./wire/methods.js";
 
-const DEFAULT_TIMEOUT_MS = 30_000;
+const DEFAULT_TIMEOUT_MS = 90_000;
 type TextMatcher = string | RegExp;
 type LocatorNavigationWaitOptions = boolean | {
   waitUntil?: LoadState;

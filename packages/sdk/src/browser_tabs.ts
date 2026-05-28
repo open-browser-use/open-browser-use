@@ -6,7 +6,7 @@ import { UserTabRef } from "./browser_user.js";
 import type { Transport } from "./wire/transport.js";
 import * as M from "./wire/methods.js";
 
-const DEFAULT_CONTENT_URL_TIMEOUT_MS = 30_000;
+const DEFAULT_CONTENT_URL_TIMEOUT_MS = 90_000;
 const CONTENT_BATCH_TIMEOUT_BUFFER_MS = 1_000;
 
 export type CreateTabOptions = {

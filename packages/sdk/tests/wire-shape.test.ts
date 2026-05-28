@@ -1451,18 +1451,18 @@ describe("SDK wire-shape contracts", () => {
       },
       {
         method: M.PLAYWRIGHT_LOCATOR_IS_VISIBLE,
-        params: { command: M.PLAYWRIGHT_LOCATOR_IS_VISIBLE, tab_id: "tab-1", selector, timeout_ms: 30_000, ...meta },
-        timeout: 30_000,
+        params: { command: M.PLAYWRIGHT_LOCATOR_IS_VISIBLE, tab_id: "tab-1", selector, timeout_ms: 90_000, ...meta },
+        timeout: 90_000,
       },
       {
         method: M.PLAYWRIGHT_LOCATOR_COUNT,
-        params: { command: M.PLAYWRIGHT_LOCATOR_COUNT, tab_id: "tab-1", selector, timeout_ms: 30_000, ...meta },
-        timeout: 30_000,
+        params: { command: M.PLAYWRIGHT_LOCATOR_COUNT, tab_id: "tab-1", selector, timeout_ms: 90_000, ...meta },
+        timeout: 90_000,
       },
       {
         method: M.PLAYWRIGHT_LOCATOR_GET_ATTRIBUTE,
-        params: { command: M.PLAYWRIGHT_LOCATOR_GET_ATTRIBUTE, tab_id: "tab-1", selector, timeout_ms: 30_000, name: "role", ...meta },
-        timeout: 30_000,
+        params: { command: M.PLAYWRIGHT_LOCATOR_GET_ATTRIBUTE, tab_id: "tab-1", selector, timeout_ms: 90_000, name: "role", ...meta },
+        timeout: 90_000,
       },
       {
         method: M.PLAYWRIGHT_LOCATOR_SELECT_OPTION,
@@ -1470,11 +1470,11 @@ describe("SDK wire-shape contracts", () => {
           command: M.PLAYWRIGHT_LOCATOR_SELECT_OPTION,
           tab_id: "tab-1",
           selector,
-          timeout_ms: 30_000,
+          timeout_ms: 90_000,
           selections: [{ value: "a" }, { label: "B" }],
           ...meta,
         },
-        timeout: 30_000,
+        timeout: 90_000,
       },
       {
         method: M.PLAYWRIGHT_LOCATOR_SET_CHECKED,
@@ -1490,8 +1490,8 @@ describe("SDK wire-shape contracts", () => {
       },
       {
         method: M.PLAYWRIGHT_LOCATOR_BOUNDING_BOX,
-        params: { command: M.PLAYWRIGHT_LOCATOR_BOUNDING_BOX, tab_id: "tab-1", selector, timeout_ms: 30_000, ...meta },
-        timeout: 30_000,
+        params: { command: M.PLAYWRIGHT_LOCATOR_BOUNDING_BOX, tab_id: "tab-1", selector, timeout_ms: 90_000, ...meta },
+        timeout: 90_000,
       },
       {
         method: M.PLAYWRIGHT_SCREENSHOT,
@@ -1590,8 +1590,8 @@ describe("SDK wire-shape contracts", () => {
     expect(transport.calls).toEqual([
       {
         method: M.PLAYWRIGHT_LOCATOR_COUNT,
-        params: { command: M.PLAYWRIGHT_LOCATOR_COUNT, tab_id: "tab-a", selector: ".item", timeout_ms: 30_000, ...meta },
-        timeout: 30_000,
+        params: { command: M.PLAYWRIGHT_LOCATOR_COUNT, tab_id: "tab-a", selector: ".item", timeout_ms: 90_000, ...meta },
+        timeout: 90_000,
       },
       {
         method: M.PLAYWRIGHT_LOCATOR_READ_ALL,
