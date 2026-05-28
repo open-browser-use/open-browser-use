@@ -137,3 +137,45 @@ async fn detached_callback_throw_does_not_kill_kernel() {
         "a thrown detached callback killed the kernel and lost session state"
     );
 }
+
+#[tokio::test]
+async fn trailing_thenable_result_is_awaited() {
+    let manager = JsRuntimeManager::new(ManagerOptions::for_tests())
+        .await
+        .unwrap();
+    manager.boot().await.unwrap();
+
+    // A cell whose final expression is a Promise (e.g. an un-awaited async IIFE) should yield the
+    // RESOLVED value, not a serialized empty Promise ({}). This reduces the agent's bookkeeping
+    // burden (no need to remember `await (async()=>{})()`) and avoids detached orphan work.
+    let result = manager
+        .exec("(async () => { return 40 + 2; })()", None)
+        .await
+        .unwrap();
+    assert_eq!(
+        result.result,
+        json!(42),
+        "trailing thenable was not awaited; agent got an empty Promise"
+    );
+}
+
+#[tokio::test]
+async fn trailing_rejected_promise_is_reported_as_exec_error() {
+    let manager = JsRuntimeManager::new(ManagerOptions::for_tests())
+        .await
+        .unwrap();
+    manager.boot().await.unwrap();
+
+    // A trailing rejected Promise should fail THIS exec with the real message, not silently return
+    // {} (and not leak as a detached rejection).
+    let result = manager
+        .exec("Promise.reject(new Error('boom-trailing'))", None)
+        .await
+        .unwrap();
+    assert_eq!(result.error.as_deref(), Some("boom-trailing"));
+    assert_eq!(result.result, json!(null));
+
+    // Kernel still healthy afterwards.
+    let ok = manager.exec("1 + 1", None).await.unwrap();
+    assert_eq!(ok.result, json!(2));
+}

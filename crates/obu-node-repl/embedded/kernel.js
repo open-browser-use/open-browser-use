@@ -2295,6 +2295,17 @@ async function handleExec(message) {
         moduleLinked = true;
 
         await module.evaluate();
+        // If the cell's final expression is a thenable (an un-awaited async IIFE, or a bare
+        // `tab.foo()` whose result the agent forgot to await), await it here so the agent gets the
+        // RESOLVED value instead of a serialized empty Promise ({}), and so its async work settles
+        // in-context rather than orphaning past finalize. A rejection surfaces as this exec's error
+        // (caught below) instead of a silent {} plus a late background rejection.
+        if (
+          context.__obuLastResult != null &&
+          typeof context.__obuLastResult.then === "function"
+        ) {
+          context.__obuLastResult = await context.__obuLastResult;
+        }
         await drainExecBackgroundTasks(execState);
         output = renderOutputEvents(execState.outputEvents);
       });
