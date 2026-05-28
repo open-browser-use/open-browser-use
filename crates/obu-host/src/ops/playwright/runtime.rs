@@ -17,7 +17,7 @@ use crate::ops::action_point::{
 use crate::ops::cua as cua_ops;
 use crate::ops::dom_cua;
 
-const DEFAULT_TIMEOUT_MS: u64 = 30_000;
+const DEFAULT_TIMEOUT_MS: u64 = 90_000;
 const RETRY_DELAY_MS: u64 = 100;
 /// Grace window for a found-but-not-actionable / just-detached target. Within it
 /// `with_retry` keeps retrying (animating-in / just-mounted UI may settle); past
