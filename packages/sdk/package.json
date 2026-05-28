@@ -27,6 +27,7 @@
     "@open-browser-use/browser-control-core": "workspace:*",
     "@types/node": "22.10.5",
     "@vitest/coverage-v8": "3.0.4",
+    "happy-dom": "^20.9.0",
     "tsup": "8.3.5",
     "tsx": "4.19.2",
     "typescript": "5.7.3",

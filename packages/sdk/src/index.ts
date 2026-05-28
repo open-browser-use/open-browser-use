@@ -124,6 +124,7 @@ export type {
   TabSnapshotTextOptions,
   TabSnapshotTextResult,
 } from "./tab.js";
+export type { SnapshotTextMeta, SnapshotCategoryMeta } from "./snapshot-text.js";
 export { TabClipboard } from "./tab-clipboard.js";
 export { TabContent } from "./tab-content.js";
 export type { ContentExportOptions } from "./tab-content.js";

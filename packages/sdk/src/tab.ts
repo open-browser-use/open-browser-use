@@ -4,6 +4,7 @@ import { FrameLocator } from "./frame-locator.js";
 import { Guards } from "./guards.js";
 import { Image } from "./image.js";
 import { Locator } from "./locator.js";
+import { snapshotTextExpression, type SnapshotTextMeta } from "./snapshot-text.js";
 import { TabClipboard } from "./tab-clipboard.js";
 import {
   TabAct,
@@ -127,6 +128,9 @@ export type TabSnapshotTextResult = {
   buttons: string[];
   links: Array<{ text: string; href: string }>;
   forms: Array<{ label: string; type: string; name: string; placeholder: string }>;
+  // Self-describing compaction. Optional because mocked/legacy snapshot results (and the
+  // FakeTransports in tests) may omit it; consumers must read `meta?.truncated`.
+  meta?: SnapshotTextMeta;
 };
 
 export type TabObserveMode = "compact" | "actionable" | "visual";
@@ -2158,53 +2162,6 @@ function boundedEvaluateExpression(
     }
     return { kind: "truncated", type: value === null ? "null" : typeof value, bytes, reason };
   }
-})()
-`;
-}
-
-function snapshotTextExpression(maxItems: number, maxTextLength: number): string {
-  return `
-(() => {
-  const OBU_OVERLAY_SELECTOR = "#obu-agent-overlay-root,[data-obu-overlay-root]";
-  const text = (value) => String(value || "").replace(/\\s+/g, " ").trim().slice(0, ${maxTextLength});
-  const isObuOverlay = (el) => Boolean(el?.matches?.(OBU_OVERLAY_SELECTOR) || el?.closest?.(OBU_OVERLAY_SELECTOR));
-  const take = (selector) => Array.from(document.querySelectorAll(selector)).filter((el) => !isObuOverlay(el)).slice(0, ${maxItems});
-  const labelFor = (input) => {
-    if (input.labels && input.labels.length) return text(input.labels[0].textContent);
-    if (input.getAttribute("aria-label")) return text(input.getAttribute("aria-label"));
-    return text(input.getAttribute("name") || input.getAttribute("placeholder") || "");
-  };
-  const active = document.activeElement && !isObuOverlay(document.activeElement)
-    ? {
-        tag: text(document.activeElement.tagName.toLowerCase()),
-        id: text(document.activeElement.id),
-        name: text(document.activeElement.getAttribute("name")),
-        type: text(document.activeElement.getAttribute("type")),
-        placeholder: text(document.activeElement.getAttribute("placeholder")),
-        ariaLabel: text(document.activeElement.getAttribute("aria-label")),
-      }
-    : null;
-  return {
-    url: location.href,
-    title: document.title,
-    viewport: {
-      width: window.innerWidth,
-      height: window.innerHeight,
-      scrollX: window.scrollX,
-      scrollY: window.scrollY,
-      devicePixelRatio: window.devicePixelRatio || 1,
-    },
-    focus: active,
-    headings: take("h1,h2,h3").map((el) => ({ level: Number(el.tagName.slice(1)), text: text(el.textContent) })),
-    buttons: take("button,[role=button],input[type=button],input[type=submit]").map((el) => text(el.textContent || el.value || el.getAttribute("aria-label"))).filter(Boolean),
-    links: take("a[href]").map((el) => ({ text: text(el.textContent || el.getAttribute("aria-label")), href: text(el.href) })),
-    forms: take("input,textarea,select").map((el) => ({
-      label: labelFor(el),
-      type: text(el.getAttribute("type") || el.tagName.toLowerCase()),
-      name: text(el.getAttribute("name")),
-      placeholder: text(el.getAttribute("placeholder")),
-    })),
-  };
 })()
 `;
 }
