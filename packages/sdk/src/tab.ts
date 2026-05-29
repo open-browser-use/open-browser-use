@@ -1904,7 +1904,7 @@ function observationStatus(
 }
 
 function observationPageStateHash(value: Record<string, unknown>): string {
-  const stable = JSON.stringify(sortRecord(value));
+  const stable = JSON.stringify(value);
   let hash = 0x811c9dc5;
   for (let index = 0; index < stable.length; index += 1) {
     hash ^= stable.charCodeAt(index);
@@ -1993,17 +1993,6 @@ export function markTabRuntimeContextStale(
       });
     }
   }
-}
-
-function sortRecord(value: unknown): unknown {
-  if (Array.isArray(value)) return value.map(sortRecord);
-  if (!isRecord(value)) return value;
-  const sorted: Record<string, unknown> = {};
-  for (const key of Object.keys(value).sort()) {
-    const item = value[key];
-    if (item !== undefined) sorted[key] = sortRecord(item);
-  }
-  return sorted;
 }
 
 function errorMessage(error: unknown): string {
