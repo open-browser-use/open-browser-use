@@ -39,4 +39,22 @@ describe("redactTraceValue", () => {
     ]);
     expect(out.map((v) => v.value)).toEqual(["[redacted]", "NYC"]);
   });
+
+  it("redacts payment and identity field names by default (audit §4.4)", () => {
+    for (const field of [
+      "cardNumber", "card_number", "creditCard",
+      "cvc", "CVC", "securityCode", "security_code",
+      "pin", "PIN", "accountNumber", "routingNumber",
+    ]) {
+      expect(redactTraceValue({ kind: "text", field, value: "4111111111111111" }).value).toBe("[redacted]");
+    }
+  });
+
+  it("does not over-redact ordinary form fields", () => {
+    // "discard" contains "card", "spinning" contains "pin": these must NOT match
+    // (guards against a too-broad pattern using bare `card`/`pin`).
+    for (const field of ["city", "firstName", "email", "query", "spinning", "discard"]) {
+      expect(redactTraceValue({ kind: "text", field, value: "ok" }).value).toBe("ok");
+    }
+  });
 });

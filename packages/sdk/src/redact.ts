@@ -8,7 +8,7 @@ export type RedactedTraceValue = {
 };
 
 const SECRET_FIELD_PATTERN =
-  /(password|passwd|token|otp|one[-_]?time|secret|api[-_]?key|authorization|cvv|ssn)/i;
+  /(password|passwd|token|otp|one[-_]?time|secret|api[-_]?key|authorization|cvv|cvc|ssn|card[-_]?number|credit[-_]?card|security[-_]?code|account[-_]?number|routing[-_]?number|\bpin\b)/i;
 
 export function isSecret(v: RedactedTraceValue): boolean {
   if (v.kind === "secret" || v.secret === true) return true;
