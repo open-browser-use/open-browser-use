@@ -6,13 +6,12 @@ use rmcp::model::{Content, RawResource};
 use serde_json::{Map, Value, json};
 
 use crate::artifact_store::{ArtifactStore, ArtifactSummary, MAX_ARTIFACT_BYTES};
-use crate::repl_manager::{JsExecResult, TruncationInfo};
+use crate::repl_manager::{JsExecResult, MAX_DISPLAY_COUNT, TruncationInfo};
 
 const MAX_STDOUT_BYTES: usize = 64 * 1024;
 const MAX_STDERR_BYTES: usize = 16 * 1024;
 const MAX_RESULT_JSON_BYTES: usize = 128 * 1024;
 const MAX_DISPLAY_JSON_BYTES: usize = 64 * 1024;
-const MAX_DISPLAY_COUNT: usize = 50;
 const ARTIFACT_INLINE_THRESHOLD_BYTES: usize = 32 * 1024;
 
 /// Budgeted MCP result ready to serialize into a tool response.
@@ -58,6 +57,8 @@ pub fn prepare_js_result(
 
     let original_display_count = result.displays.len();
     let mut displays = Vec::new();
+    // Backstop only: the live accumulator is already bounded at push time
+    // (ExecRegistry::push_display); take() guards against an unbounded input.
     for mut display in result.displays.into_iter().take(MAX_DISPLAY_COUNT) {
         display.value = rewrite_artifacts(
             display.value,
@@ -420,6 +421,7 @@ mod tests {
                     "data": "iVBORw0KGgo="
                 }),
             }],
+            displays_total: 1,
             response_meta: None,
             error: None,
             error_detail: None,
@@ -453,6 +455,7 @@ mod tests {
                 kind: "json".to_string(),
                 value: json!({ "payload": "x".repeat(MAX_DISPLAY_JSON_BYTES + 1) }),
             }],
+            displays_total: 1,
             response_meta: None,
             error: None,
             error_detail: None,
@@ -484,6 +487,7 @@ mod tests {
             duration_ms: 7,
             truncated: TruncationInfo::default(),
             displays: Vec::new(),
+            displays_total: 0,
             response_meta: None,
             error: None,
             error_detail: None,
