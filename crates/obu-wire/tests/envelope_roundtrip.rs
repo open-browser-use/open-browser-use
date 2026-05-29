@@ -116,7 +116,8 @@ fn bench_rpc_message_decode_ab() {
     }
     let value_path = t.elapsed();
 
-    // Path B: the production RpcMessage::deserialize (RawValue once implemented).
+    // Path B: the production RpcMessage::deserialize (Value-based; the RawValue
+    // single-pass rewrite was measured here and was not worthwhile — see commit).
     let t = Instant::now();
     for _ in 0..ITERS {
         let msg: RpcMessage = serde_json::from_slice(&frame).unwrap();
