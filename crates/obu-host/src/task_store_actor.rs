@@ -459,8 +459,21 @@ impl TaskStoreHandle {
         }) {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(_)) => {
-                self.dropped_best_effort_writes
+                let prev = self
+                    .dropped_best_effort_writes
                     .fetch_add(1, Ordering::Relaxed);
+                // audit §4.9: the shed is otherwise dark. Warn on the first drop
+                // and on power-of-two boundaries (rate-limited so a saturated
+                // command loop cannot spam the log) so an operator/verifier can
+                // detect a degraded episode. The dropped row is best-effort
+                // observability only — resume/segment state is must-send.
+                if prev == 0 || (prev + 1).is_power_of_two() {
+                    tracing::warn!(
+                        dropped_best_effort_writes = prev + 1,
+                        write = "record_finalize_evidence",
+                        "task store actor queue full; shedding a best-effort observability write (audit §4.9)"
+                    );
+                }
                 return Ok(());
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
@@ -497,8 +510,21 @@ impl TaskStoreHandle {
         }) {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(_)) => {
-                self.dropped_best_effort_writes
+                let prev = self
+                    .dropped_best_effort_writes
                     .fetch_add(1, Ordering::Relaxed);
+                // audit §4.9: the shed is otherwise dark. Warn on the first drop
+                // and on power-of-two boundaries (rate-limited so a saturated
+                // command loop cannot spam the log) so an operator/verifier can
+                // detect a degraded episode. The dropped row is best-effort
+                // observability only — resume/segment state is must-send.
+                if prev == 0 || (prev + 1).is_power_of_two() {
+                    tracing::warn!(
+                        dropped_best_effort_writes = prev + 1,
+                        write = "record_turn_ended_evidence",
+                        "task store actor queue full; shedding a best-effort observability write (audit §4.9)"
+                    );
+                }
                 return Ok(());
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
@@ -537,8 +563,21 @@ impl TaskStoreHandle {
         }) {
             Ok(()) => {}
             Err(mpsc::error::TrySendError::Full(_)) => {
-                self.dropped_best_effort_writes
+                let prev = self
+                    .dropped_best_effort_writes
                     .fetch_add(1, Ordering::Relaxed);
+                // audit §4.9: the shed is otherwise dark. Warn on the first drop
+                // and on power-of-two boundaries (rate-limited so a saturated
+                // command loop cannot spam the log) so an operator/verifier can
+                // detect a degraded episode. The dropped row is best-effort
+                // observability only — resume/segment state is must-send.
+                if prev == 0 || (prev + 1).is_power_of_two() {
+                    tracing::warn!(
+                        dropped_best_effort_writes = prev + 1,
+                        write = "record_command_event",
+                        "task store actor queue full; shedding a best-effort observability write (audit §4.9)"
+                    );
+                }
                 return Ok(());
             }
             Err(mpsc::error::TrySendError::Closed(_)) => {
