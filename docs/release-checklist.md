@@ -188,6 +188,22 @@ uploading GitHub Release assets, verify `manifest.json`, `manifest.tsv`,
 `install.sh`, every artifact tarball, and every `.sha256` file are present in
 the same asset set.
 
+For the fast path, promote a successful `P4 Packaging CI` run with the release
+publish workflow instead of downloading and re-uploading artifacts locally:
+
+```bash
+gh workflow run release-publish.yml \
+  -f version=<version> \
+  -f run_id=<successful-p4-packaging-ci-run-id> \
+  -f target_sha=<merge-commit-sha> \
+  -f publish=true
+```
+
+The workflow downloads the five target curl artifacts and extension artifact
+from the selected run, merges target manifests into the final release manifest,
+validates checksums and sizes, uploads the draft release, verifies the asset set,
+and publishes it when `publish=true`.
+
 Also attach the standalone unpacked extension `open-browser-use-extension.zip`
 (plus its `.sha256`) to the GitHub Release, alongside the tarballs and
 `install.sh`. The `p4-packaging` CI job builds it (via

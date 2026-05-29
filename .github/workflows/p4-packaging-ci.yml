@@ -24,8 +24,19 @@ jobs:
           node-version: "22.22.0"
           cache: pnpm
 
+      - name: Cache Node runtime archives
+        uses: actions/cache@v4
+        with:
+          path: .cache/node-runtime/archives
+          key: node-runtime-current-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('scripts/node-runtime-manifest.json') }}
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
+
+      - name: Cache Rust build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: current
 
       - name: Rust format
         run: cargo fmt --all -- --check
@@ -80,11 +91,20 @@ jobs:
       - name: MCP client compatibility smoke
         run: pnpm smoke:mcp-client-compat
 
+      - name: Cache cargo-dist
+        uses: actions/cache@v4
+        with:
+          path: .cache/cargo-dist-home
+          key: cargo-dist-${{ runner.os }}-${{ hashFiles('dist-workspace.toml') }}
+
       - name: Install cargo-dist
         env:
           CARGO_DIST_NO_MODIFY_PATH: "1"
           CARGO_HOME: ${{ github.workspace }}/.cache/cargo-dist-home
-        run: curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.31.0/cargo-dist-installer.sh | sh
+        run: |
+          if [ ! -x "$CARGO_HOME/bin/cargo-dist" ]; then
+            curl --proto '=https' --tlsv1.2 -LsSf https://github.com/axodotdev/cargo-dist/releases/download/v0.31.0/cargo-dist-installer.sh | sh
+          fi
 
       - name: cargo-dist plan smoke
         env:
@@ -202,10 +222,21 @@ jobs:
           node-version: "22.22.0"
           cache: pnpm
 
+      - name: Cache Node runtime archives
+        uses: actions/cache@v4
+        with:
+          path: .cache/node-runtime/archives
+          key: node-runtime-${{ matrix.target }}-${{ hashFiles('scripts/node-runtime-manifest.json') }}
+
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
         with:
           targets: ${{ matrix.rust_target }}
+
+      - name: Cache Rust build outputs
+        uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.rust_target }}
 
       - name: Install system packages
         if: matrix.apt_packages != ''

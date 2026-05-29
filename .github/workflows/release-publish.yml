@@ -1,0 +1,155 @@
+name: Publish Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version without the v prefix, for example 0.1.10"
+        required: true
+        type: string
+      run_id:
+        description: "Successful P4 Packaging CI run id to promote"
+        required: true
+        type: string
+      target_sha:
+        description: "Merge commit SHA to tag and publish"
+        required: true
+        type: string
+      publish:
+        description: "Publish the release after uploading assets"
+        required: true
+        default: false
+        type: boolean
+
+permissions:
+  contents: write
+  actions: read
+
+jobs:
+  publish-release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-24.04
+    env:
+      GH_TOKEN: ${{ github.token }}
+      RELEASE_VERSION: ${{ inputs.version }}
+      RELEASE_RUN_ID: ${{ inputs.run_id }}
+      RELEASE_TARGET_SHA: ${{ inputs.target_sha }}
+    steps:
+      - name: Checkout target commit
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ inputs.target_sha }}
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: "22.22.0"
+
+      - name: Normalize release version
+        run: |
+          VERSION="${RELEASE_VERSION#v}"
+          if ! [[ "$VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+([-.][0-9A-Za-z.-]+)?$ ]]; then
+            echo "Invalid release version: $RELEASE_VERSION" >&2
+            exit 1
+          fi
+          echo "RELEASE_VERSION=$VERSION" >> "$GITHUB_ENV"
+
+      - name: Validate source workflow run
+        run: |
+          RUN_JSON="$(gh run view "$RELEASE_RUN_ID" --json conclusion,headSha,status,workflowName)"
+          RUN_JSON="$RUN_JSON" node --input-type=module <<'NODE'
+          const run = JSON.parse(process.env.RUN_JSON);
+          const expectedSha = process.env.RELEASE_TARGET_SHA;
+          if (run.workflowName !== "P4 Packaging CI") {
+            throw new Error(`run ${process.env.RELEASE_RUN_ID} is ${run.workflowName}, expected P4 Packaging CI`);
+          }
+          if (run.status !== "completed" || run.conclusion !== "success") {
+            throw new Error(`run ${process.env.RELEASE_RUN_ID} is ${run.status}/${run.conclusion}, expected completed/success`);
+          }
+          if (run.headSha !== expectedSha) {
+            throw new Error(`run ${process.env.RELEASE_RUN_ID} headSha ${run.headSha} does not match target ${expectedSha}`);
+          }
+          NODE
+
+      - name: Download release artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist/release-artifacts
+          for artifact in \
+            open-browser-use-darwin-arm64-curl \
+            open-browser-use-darwin-x64-curl \
+            open-browser-use-linux-arm64-gnu-curl \
+            open-browser-use-linux-x64-gnu-curl \
+            open-browser-use-linux-x64-musl-curl \
+            open-browser-use-extension
+          do
+            mkdir -p "dist/release-artifacts/$artifact"
+            gh run download "$RELEASE_RUN_ID" -n "$artifact" --dir "dist/release-artifacts/$artifact"
+          done
+
+      - name: Prepare release asset set
+        run: |
+          node scripts/prepare-release-assets.mjs \
+            --artifacts-dir dist/release-artifacts \
+            --out dist/release \
+            --version "$RELEASE_VERSION"
+
+      - name: Create draft release
+        run: |
+          set -euo pipefail
+          TAG="v${RELEASE_VERSION#v}"
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo "Release $TAG already exists" >&2
+            exit 1
+          fi
+          gh api "repos/${GITHUB_REPOSITORY}/releases/generate-notes" \
+            -f tag_name="$TAG" \
+            -f target_commitish="$RELEASE_TARGET_SHA" \
+            --jq .body > dist/release-notes.md
+          gh release create "$TAG" \
+            --target "$RELEASE_TARGET_SHA" \
+            --title "open-browser-use $TAG" \
+            --draft \
+            --notes-file dist/release-notes.md \
+            dist/release/*
+
+      - name: Verify uploaded release
+        run: |
+          set -euo pipefail
+          TAG="v${RELEASE_VERSION#v}"
+          RELEASE_JSON="$(gh release view "$TAG" --json assets,isDraft,isPrerelease,targetCommitish)"
+          RELEASE_JSON="$RELEASE_JSON" node --input-type=module <<'NODE'
+          const release = JSON.parse(process.env.RELEASE_JSON);
+          const names = release.assets.map((asset) => asset.name).sort();
+          const expected = [
+            "install.sh",
+            "manifest.json",
+            "manifest.tsv",
+            "open-browser-use-extension.zip",
+            "open-browser-use-extension.zip.sha256",
+            ...[
+              "darwin-arm64",
+              "darwin-x64",
+              "linux-arm64-gnu",
+              "linux-x64-gnu",
+              "linux-x64-musl",
+            ].flatMap((target) => [
+              `open-browser-use-${process.env.RELEASE_VERSION}-${target}.tar.gz`,
+              `open-browser-use-${process.env.RELEASE_VERSION}-${target}.tar.gz.sha256`,
+            ]),
+          ].sort();
+          if (release.targetCommitish !== process.env.RELEASE_TARGET_SHA) {
+            throw new Error(`release target ${release.targetCommitish} does not match ${process.env.RELEASE_TARGET_SHA}`);
+          }
+          if (!release.isDraft) throw new Error("release should remain draft until the publish step");
+          if (release.isPrerelease) throw new Error("release should not be marked prerelease");
+          if (JSON.stringify(names) !== JSON.stringify(expected)) {
+            throw new Error(`uploaded asset mismatch:\nexpected ${expected.join("\n")}\nactual ${names.join("\n")}`);
+          }
+          NODE
+
+      - name: Publish release
+        if: ${{ inputs.publish }}
+        run: |
+          TAG="v${RELEASE_VERSION#v}"
+          gh release edit "$TAG" --draft=false --latest

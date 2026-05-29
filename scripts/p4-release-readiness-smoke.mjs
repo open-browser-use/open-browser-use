@@ -53,6 +53,8 @@ for (const script of [
   "smoke:webext-dirty-form-live",
   "make:extension-store-artifact",
   "make:extension-artifact",
+  "prepare:release-assets",
+  "test:release-assets",
 ]) {
   assert.equal(typeof rootPackage.scripts?.[script], "string", `missing package script ${script}`);
 }
@@ -93,6 +95,11 @@ assertNoWindows([distWorkspace]);
 const makeCurlArtifact = await text("scripts/make-curl-artifact.mjs");
 assert.match(makeCurlArtifact, /releaseArtifactPrefix\s*=\s*"open-browser-use"/);
 assert.match(makeCurlArtifact, /manifest\.tsv/);
+const prepareReleaseAssets = await text("scripts/prepare-release-assets.mjs");
+assert.match(prepareReleaseAssets, /open-browser-use-extension\.zip/);
+assert.match(prepareReleaseAssets, /checksum mismatch/);
+assert.match(prepareReleaseAssets, /supportedTargets/);
+await assertExists("scripts/prepare-release-assets.test.mjs");
 assert.match(await text("scripts/assemble-payload.mjs"), /migrationHooks/);
 assert.match(await text("scripts/assemble-payload.mjs"), /nativeHostManifest/);
 assert.match(await text("scripts/install.sh"), /install-migrations\.d/);
@@ -119,10 +126,24 @@ assert.match(workflow, /smoke:mcp-client-compat/);
 assert.match(workflow, /install-refresh-safety-smoke\.mjs/);
 assert.match(workflow, /setup-local-spine-smoke\.mjs/);
 assert.match(workflow, /actions\/upload-artifact@v4/);
+assert.match(workflow, /Swatinem\/rust-cache@v2/);
+assert.match(workflow, /actions\/cache@v4/);
+assert.match(workflow, /\.cache\/node-runtime\/archives/);
+assert.match(workflow, /\.cache\/cargo-dist-home/);
 assert.match(workflow, /open-browser-use-\$\{\{ matrix\.target \}\}-curl/);
 assert.match(workflow, /make-extension-artifact\.mjs/);
 assert.match(workflow, /name: open-browser-use-extension\b/);
 assertNoWindows([workflow]);
+const releaseWorkflow = await text(".github/workflows/release-publish.yml");
+assert.match(releaseWorkflow, /workflow_dispatch/);
+assert.match(releaseWorkflow, /permissions:\s*\n\s+contents: write\s*\n\s+actions: read/);
+assert.match(releaseWorkflow, /gh run download/);
+assert.match(releaseWorkflow, /prepare-release-assets\.mjs/);
+assert.match(releaseWorkflow, /gh release create/);
+assert.match(releaseWorkflow, /gh release edit/);
+for (const target of p4Targets) assert.match(releaseWorkflow, new RegExp(`open-browser-use-${escapeRegExp(target)}-curl`));
+assert.match(releaseWorkflow, /open-browser-use-extension/);
+assertNoWindows([releaseWorkflow]);
 
 const setupWebext = await text("scripts/setup-webext-e2e.mjs");
 assert.match(setupWebext, /"--agents=codex-cli"/);
