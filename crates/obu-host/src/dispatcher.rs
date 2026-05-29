@@ -490,6 +490,20 @@ impl Dispatcher {
     }
 
     async fn route_request_inner(&self, req: Request, ctx: BackendRequestContext) -> Response {
+        // §4.6: capture the teardown class of this method up front (before `req`
+        // is consumed by routing) so a successful close/finalize can evict its
+        // process-global lock-map entry afterward.
+        let method_is_tab_close = req.method == methods::TAB_CLOSE;
+        let method_is_finalize = req.method == methods::FINALIZE_TABS;
+        // Capture the session id for finalize eviction up front too: `ctx` is
+        // consumed by `route_supported_request` before the trailing eviction
+        // runs, so we cannot borrow `ctx.session_id` afterward. Only cloned on a
+        // finalize, so the common path pays nothing.
+        let finalize_session_id = if method_is_finalize {
+            ctx.session_id.clone()
+        } else {
+            None
+        };
         if let Err(error) = reject_user_runtime_metadata(&req.method, &req.params) {
             return Response::err(req.id, error);
         }
@@ -517,11 +531,32 @@ impl Dispatcher {
             None => None,
         };
         if let Some(tab_id) = tab_mutation_key(&req.method, &req.params) {
-            let lock = self.tab_operation_lock(&tab_id).await;
-            let _guard = lock.lock().await;
+            // §4.6: only mint/serialize a per-tab lock for a tab the backend
+            // actually knows. A mutating request naming a closed/unknown tab id
+            // used to permanently mint a map entry before any validation; gating
+            // on existence stops that leak. Unknown tabs fall through and let the
+            // backend return its own not-attached error.
+            if self.inner.backend.knows_tab(&tab_id) {
+                let lock = self.tab_operation_lock(&tab_id).await;
+                let _guard = lock.lock().await;
+                let response = self.route_supported_request(req, ctx).await;
+                // §4.6: a successful close is tab teardown — drop the lock entry.
+                if method_is_tab_close && response.error.is_none() {
+                    self.evict_tab_lock(&tab_id).await;
+                }
+                return response;
+            }
             return self.route_supported_request(req, ctx).await;
         }
-        self.route_supported_request(req, ctx).await
+        let response = self.route_supported_request(req, ctx).await;
+        // §4.6: a successful finalizeTabs is session teardown — drop the
+        // session lock entry so a finished session does not leak forever.
+        if response.error.is_none()
+            && let Some(session_id) = finalize_session_id.as_deref()
+        {
+            self.evict_session_lock(session_id).await;
+        }
+        response
     }
 
     /// Build the durable `browser_command` event plus its routing, or `None`
@@ -1317,6 +1352,43 @@ impl Dispatcher {
             .entry(session_id.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
+    }
+
+    /// Drop the per-tab operation-lock entry for `tab_id` on tab teardown
+    /// (audit §4.6).
+    ///
+    /// Lifecycle-tied eviction: called after a successful `tab_close` so a closed
+    /// tab's lock no longer occupies the process-global map. Removing the map
+    /// entry only drops the dispatcher's strong ref to the `Arc<Mutex<()>>`; any
+    /// task still holding the lock keeps its own clone alive, so mutual exclusion
+    /// is never broken (unlike a strong-count GC, which could evict a key a live
+    /// holder still guards). A re-opened tab simply mints a fresh entry on its
+    /// next mutating request.
+    async fn evict_tab_lock(&self, tab_id: &str) {
+        self.inner.tab_operation_locks.lock().await.remove(tab_id);
+    }
+
+    /// Drop the per-session operation-lock entry for `session_id` on session
+    /// teardown (audit §4.6). Called after a successful `finalizeTabs`. Same
+    /// liveness-safe semantics as [`Self::evict_tab_lock`].
+    async fn evict_session_lock(&self, session_id: &str) {
+        self.inner
+            .session_operation_locks
+            .lock()
+            .await
+            .remove(session_id);
+    }
+
+    /// Number of live per-tab lock entries (test-only diagnostic, audit §4.6).
+    #[doc(hidden)]
+    pub async fn tab_lock_count(&self) -> usize {
+        self.inner.tab_operation_locks.lock().await.len()
+    }
+
+    /// Number of live per-session lock entries (test-only diagnostic, audit §4.6).
+    #[doc(hidden)]
+    pub async fn session_lock_count(&self) -> usize {
+        self.inner.session_operation_locks.lock().await.len()
     }
 
     async fn enforce_policy(
@@ -2159,6 +2231,11 @@ fn requires_mutation_context(method: &str) -> bool {
         )
 }
 
+// NOTE (audit §4.6): the process-global operation-lock maps are evicted on
+// lifecycle teardown in `route_request_inner`, keyed off `methods::TAB_CLOSE`
+// and `methods::FINALIZE_TABS`. Any NEW teardown method added here (e.g. a
+// bulk tab-close) MUST also wire a matching `evict_tab_lock` / `evict_session_lock`
+// call in `route_request_inner`, or its lock entries will leak.
 fn is_session_mutating_method(method: &str) -> bool {
     method == methods::CREATE_TAB
         || method == methods::FINALIZE_TABS
@@ -2801,5 +2878,28 @@ mod tests {
             trusted_kernel_generation: None,
         };
         assert!(require_mutation_context(methods::RESUME_CONTROL, &ctx).is_ok());
+    }
+
+    #[tokio::test]
+    async fn tab_lock_is_evicted_and_reevicting_absent_key_is_noop() {
+        let dispatcher = Dispatcher::new_for_test();
+        // A normal mutating use mints a tab-lock entry.
+        let _ = dispatcher.tab_operation_lock("tab-A").await;
+        assert_eq!(dispatcher.tab_lock_count().await, 1);
+        // Lifecycle teardown drops it.
+        dispatcher.evict_tab_lock("tab-A").await;
+        assert_eq!(dispatcher.tab_lock_count().await, 0);
+        // Evicting an absent key is a harmless no-op.
+        dispatcher.evict_tab_lock("tab-A").await;
+        assert_eq!(dispatcher.tab_lock_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn session_lock_is_evicted_on_finalize() {
+        let dispatcher = Dispatcher::new_for_test();
+        let _ = dispatcher.session_operation_lock("sess-1").await;
+        assert_eq!(dispatcher.session_lock_count().await, 1);
+        dispatcher.evict_session_lock("sess-1").await;
+        assert_eq!(dispatcher.session_lock_count().await, 0);
     }
 }

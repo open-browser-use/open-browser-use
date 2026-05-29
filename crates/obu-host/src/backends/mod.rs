@@ -173,6 +173,20 @@ pub trait BrowserBackend: Send + Sync {
         method_supported(self.kind(), method)
     }
 
+    /// Whether the backend currently knows a tab with id `tab_id` (audit §4.6).
+    ///
+    /// Used by the dispatcher to avoid minting a per-tab operation lock for a
+    /// closed/unknown tab id. The default returns `true` (mint as before), so a
+    /// backend that cannot cheaply answer keeps the pre-existing behaviour.
+    /// No backend overrides this yet, so the minting-gate is currently DORMANT —
+    /// the lock maps are bounded by the eviction-on-teardown path in
+    /// `route_request_inner`, not by this gate. A backend that holds a
+    /// `ServiceRegistry` (CDP / WebExtension) can override this to also reject
+    /// minting for a closed/unknown tab id and close that leak source too.
+    fn knows_tab(&self, _tab_id: &str) -> bool {
+        true
+    }
+
     /// Return whether this backend owns request deadline tracking for a method.
     ///
     /// Backends that send non-cancellable browser effects across another
