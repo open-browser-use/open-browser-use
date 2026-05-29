@@ -99,6 +99,14 @@ impl OopifSessionMap {
         stale.len()
     }
 
+    /// Drop every tracked OOPIF session. Used when the whole CDP connection is
+    /// replaced (transport reconnect): all flatten session ids are connection-
+    /// scoped, so the map must be reset before `Target.attachedToTarget` events
+    /// rebuild it on the fresh connection.
+    pub(crate) fn clear(&mut self) {
+        self.by_session.clear();
+    }
+
     /// The OOPIF session owning the frame whose devtools `frameId` is `frame_id`.
     /// For auto-attached OOPIFs the child target's `target_id` equals that frameId.
     ///
@@ -212,5 +220,18 @@ mod tests {
         assert_eq!(map.session_count(), 1);
         // The other tab's session is untouched.
         assert_eq!(map.session_for_frame("TB1").as_deref(), Some("B1"));
+    }
+
+    #[test]
+    fn clear_drops_every_session() {
+        let mut map = OopifSessionMap::default();
+        map.apply_event(&attached("PAGE-A", "A1", "TA1", "iframe"));
+        map.apply_event(&attached("PAGE-B", "B1", "TB1", "iframe"));
+        assert_eq!(map.session_count(), 2);
+        map.clear();
+        assert_eq!(map.session_count(), 0);
+        // A subsequent attach still works after a clear.
+        map.apply_event(&attached("PAGE-A", "A1", "TA1", "iframe"));
+        assert_eq!(map.session_count(), 1);
     }
 }
