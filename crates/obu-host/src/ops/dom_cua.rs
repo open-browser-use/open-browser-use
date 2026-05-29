@@ -515,6 +515,10 @@ pub(crate) fn snapshot_entry_with(
     }))
 }
 
+// Retained `pub(crate)` wrapper: the perf path now calls `snapshot_entry_with`
+// directly (attrs/tag computed once), so this thin wrapper is exercised only by
+// the in-module tests; keep it as the stable convenience surface.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn snapshot_entry(node: &Value, backend_node_id: i64, rect: Rect) -> Option<Value> {
     snapshot_entry_with(
         node,

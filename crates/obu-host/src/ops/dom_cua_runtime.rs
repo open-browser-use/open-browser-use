@@ -377,16 +377,23 @@ async fn collect_visible_dom_nodes<B: DomCuaRuntimeBackend + Sync>(
 ) -> Result<()> {
     let mut stack = vec![node];
     while let Some(node) = stack.pop() {
-        if dom_cua::is_hidden_subtree(node) {
+        // Compute tag/attrs once and gate on the pure in-memory predicates BEFORE
+        // awaiting the box-model RTT, so plain divs/spans/text nodes cost zero RTT
+        // (output-identical: those nodes never produced a snapshot entry anyway).
+        let tag = dom_cua::node_tag(node);
+        let attrs = dom_cua::attributes_object(node);
+        if dom_cua::is_hidden_subtree_with(node, &tag, &attrs) {
             continue;
         }
-        if let Some(backend_node_id) = node.get("backendNodeId").and_then(Value::as_i64)
+        if dom_cua::is_interesting_node_with(&tag, &attrs)
+            && let Some(backend_node_id) = node.get("backendNodeId").and_then(Value::as_i64)
             && let Some(rect) =
                 box_model_rect(backend, ctx, tab_id, session, backend_node_id).await?
             && rect.width > 0.0
             && rect.height > 0.0
             && rect.intersects(viewport)
-            && let Some(mut entry) = dom_cua::snapshot_entry(node, backend_node_id, rect)
+            && let Some(mut entry) =
+                dom_cua::snapshot_entry_with(node, backend_node_id, rect, &tag, &attrs)
         {
             // Tag OOPIF nodes with their owning session so geometry routes there in
             // Task 4; top-level nodes stay untagged (session_for_node -> None).
@@ -675,6 +682,116 @@ fn required_str<'a>(params: &'a Value, key: &str) -> Result<&'a str> {
 
 fn optional_str<'a>(params: &'a Value, key: &str) -> Option<&'a str> {
     params.get(key).and_then(Value::as_str)
+}
+
+#[cfg(test)]
+mod hoist_tests {
+    use std::sync::Arc;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    use async_trait::async_trait;
+    use serde_json::{Value, json};
+
+    use crate::backends::BackendRequestContext;
+    use crate::error::Result;
+
+    use super::*;
+
+    #[derive(Default)]
+    struct CountingBackend {
+        box_model_calls: Arc<AtomicUsize>,
+    }
+
+    #[async_trait]
+    impl DomCuaRuntimeBackend for CountingBackend {
+        async fn execute_dom_cdp(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            method: &str,
+            _p: Value,
+        ) -> Result<Value> {
+            if method == "DOM.getBoxModel" {
+                self.box_model_calls.fetch_add(1, Ordering::SeqCst);
+                // 10x10 box at origin, inside the 100x100 viewport.
+                return Ok(json!({ "model": { "content": [0, 0, 10, 0, 10, 10, 0, 10] } }));
+            }
+            Ok(json!({}))
+        }
+        async fn dispatch_coordinate_cua(
+            &self,
+            _c: &BackendRequestContext,
+            _m: &str,
+            _p: Value,
+        ) -> Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn remember_visible_dom_nodes(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+            _n: &[Value],
+        ) {
+        }
+        async fn validate_visible_dom_node(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+            _n: &str,
+        ) -> Result<()> {
+            Ok(())
+        }
+        async fn forget_visible_dom_snapshot(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+        ) {
+        }
+    }
+
+    fn ctx() -> BackendRequestContext {
+        BackendRequestContext {
+            session_id: Some("s".into()),
+            turn_id: Some("t".into()),
+            client_timeout_ms: None,
+            trusted_kernel_generation: None,
+        }
+    }
+
+    #[tokio::test]
+    async fn box_model_rtt_skipped_for_uninteresting_nodes() {
+        let backend = CountingBackend::default();
+        let calls = backend.box_model_calls.clone();
+        let viewport = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 100.0,
+            height: 100.0,
+        };
+        // Root <div> (uninteresting) wrapping one <button> (interesting) + one <span> (uninteresting).
+        let root = json!({
+            "nodeName": "DIV", "backendNodeId": 1,
+            "children": [
+                { "nodeName": "BUTTON", "backendNodeId": 2, "attributes": ["aria-label", "Go"] },
+                { "nodeName": "SPAN", "backendNodeId": 3, "children": [{ "nodeName": "#text", "nodeValue": "x" }] }
+            ]
+        });
+        let mut nodes = Vec::new();
+        collect_visible_dom_nodes(&backend, &ctx(), "tab", None, &root, viewport, &mut nodes)
+            .await
+            .unwrap();
+        // Exactly the one interesting node emitted, and exactly one box-model RTT.
+        assert_eq!(nodes.len(), 1, "only the <button> is emitted");
+        assert_eq!(nodes[0]["node_id"], "2");
+        assert_eq!(
+            calls.load(Ordering::SeqCst),
+            1,
+            "box-model fetched only for the interesting node"
+        );
+    }
 }
 
 #[cfg(test)]
