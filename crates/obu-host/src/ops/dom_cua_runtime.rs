@@ -1036,6 +1036,124 @@ mod hoist_tests {
         // Backward-compatible: nodes still present and addressable.
         assert_eq!(response["nodes"].as_array().unwrap().len(), 1);
     }
+
+    // Both interesting nodes are in-viewport (shown == total); `long_text` makes
+    // node 2 carry a >240-char text child so its entry sets text_truncated. This
+    // exercises the SECOND arm of `truncated = shown < total || text_clipped` and
+    // the absence of `hint` on the clean path — the design-sensitive §1.4 contract.
+    struct MetaClipBackend {
+        long_text: bool,
+    }
+    #[async_trait]
+    impl DomCuaRuntimeBackend for MetaClipBackend {
+        async fn execute_dom_cdp(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            method: &str,
+            p: Value,
+        ) -> Result<Value> {
+            match method {
+                "Page.getLayoutMetrics" => Ok(json!({
+                    "cssVisualViewport": { "pageX": 0, "pageY": 0, "clientWidth": 100, "clientHeight": 100 }
+                })),
+                "DOM.getDocument" => {
+                    let children = if self.long_text {
+                        json!([{ "nodeName": "#text", "nodeValue": "z".repeat(500) }])
+                    } else {
+                        json!([{ "nodeName": "#text", "nodeValue": "ok" }])
+                    };
+                    Ok(json!({
+                        "root": {
+                            "nodeName": "DIV", "backendNodeId": 1,
+                            "children": [
+                                { "nodeName": "BUTTON", "backendNodeId": 2, "attributes": ["aria-label", "a"], "children": children },
+                                { "nodeName": "BUTTON", "backendNodeId": 3, "attributes": ["aria-label", "b"] }
+                            ]
+                        }
+                    }))
+                }
+                // Both nodes in-viewport (x=0 and x=20 inside the 100x100 viewport).
+                "DOM.getBoxModel" => {
+                    let id = p.get("backendNodeId").and_then(Value::as_i64).unwrap_or(0);
+                    let x = if id == 2 { 0.0 } else { 20.0 };
+                    Ok(json!({ "model": { "content": [x, 0, x + 10.0, 0, x + 10.0, 10, x, 10] } }))
+                }
+                _ => Ok(json!({})),
+            }
+        }
+        async fn dispatch_coordinate_cua(
+            &self,
+            _c: &BackendRequestContext,
+            _m: &str,
+            _p: Value,
+        ) -> Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn remember_visible_dom_nodes(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+            _n: &[Value],
+        ) {
+        }
+        async fn validate_visible_dom_node(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+            _n: &str,
+        ) -> Result<()> {
+            Ok(())
+        }
+        async fn forget_visible_dom_snapshot(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+        ) {
+        }
+    }
+
+    #[tokio::test]
+    async fn visible_dom_meta_truncated_via_text_clip_when_nothing_dropped() {
+        let backend = MetaClipBackend { long_text: true };
+        let params = json!({ "tab_id": "tab", "observation_id": "obs" });
+        let response = visible_dom(&backend, &ctx(), params).await.unwrap();
+        // Nothing dropped by the viewport filter, but a clipped label still flips
+        // truncated true (the `|| text_clipped` arm) and surfaces the hint.
+        assert_eq!(response["meta"]["shown"], json!(2));
+        assert_eq!(response["meta"]["total"], json!(2));
+        assert_eq!(response["meta"]["truncated"], json!(true));
+        assert!(
+            response["meta"]["hint"]
+                .as_str()
+                .unwrap()
+                .contains("evaluate")
+        );
+        let nodes = response["nodes"].as_array().unwrap();
+        assert!(nodes.iter().any(|n| n["text_truncated"] == json!(true)));
+    }
+
+    #[tokio::test]
+    async fn visible_dom_meta_clean_when_nothing_dropped_or_clipped() {
+        let backend = MetaClipBackend { long_text: false };
+        let params = json!({ "tab_id": "tab", "observation_id": "obs" });
+        let response = visible_dom(&backend, &ctx(), params).await.unwrap();
+        assert_eq!(response["meta"]["shown"], json!(2));
+        assert_eq!(response["meta"]["total"], json!(2));
+        assert_eq!(response["meta"]["truncated"], json!(false));
+        // No silent caps and no noise: `hint` is omitted entirely when honest.
+        assert!(response["meta"].get("hint").is_none());
+        assert!(
+            response["nodes"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|n| n["text_truncated"] == json!(false))
+        );
+    }
 }
 
 #[cfg(test)]

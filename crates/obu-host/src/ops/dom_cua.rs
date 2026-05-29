@@ -476,6 +476,7 @@ pub(crate) fn is_interesting_node_with(tag: &str, attrs: &Value) -> bool {
         || attrs.get("contenteditable").is_some()
 }
 
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn is_interesting_node(node: &Value) -> bool {
     is_interesting_node_with(&node_tag(node), &attributes_object(node))
 }
