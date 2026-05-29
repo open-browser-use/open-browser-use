@@ -114,6 +114,8 @@ assert.equal(coordinator.hasPendingActivity(), true);
 
 // audit §4.2: activate() during hide()'s await must NOT be clobbered by the resumed hide().
 {
+  // reset leftover failNextHide from the prior block so the activeTabIds()===[20] assertion is itself discriminating (audit §4.2 review follow-up)
+  failNextHide = false;
   const triggers2 = [];
   const coordinator3 = new OverlayCoordinator((trigger) => triggers2.push(trigger));
   // While the OBU_CURSOR_HIDE round-trip is in flight, simulate a concurrent
