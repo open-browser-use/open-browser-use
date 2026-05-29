@@ -1883,6 +1883,124 @@ describe("SDK wire-shape contracts", () => {
     }
   });
 
+  it("Browser.finishTurn ends the turn on a not_attempted-only partial but holds it when any failure failed (audit 4.10 follow-up)", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    const browser = new Browser(
+      asTransport(transport),
+      { type: "webextension", name: "chrome", metadata: {}, capabilities: {} },
+      { type: "webextension", name: "chrome", socketPath: "/tmp/webext", metadata: {} },
+      new Guards(),
+    );
+
+    try {
+      // A partial caused SOLELY by `not_attempted` (e.g. an unowned/stale `keep`
+      // tabId per §4.10) must end the turn even with default opts (no
+      // endTurnOnPartial), because nothing was actually attempted. The status
+      // stays "partial" (honesty preserved) but the turn auto-ends.
+      transport.responses.set(M.FINALIZE_TABS, {
+        status: "partial",
+        actions: [],
+        closedTabIds: [],
+        releasedTabIds: [],
+        keptTabs: [],
+        deliverableTabs: [],
+        finalTabs: { handoff: [], deliverable: [], activeTabId: null },
+        failures: [
+          {
+            tabId: "tab-stale",
+            desiredStatus: "deliverable",
+            outcome: "not_attempted",
+            errorCode: "tab_not_owned",
+            errorMessage: "tab not owned by this turn",
+          },
+        ],
+        diagnostics: { reconciledFromChrome: true, reconciliationSource: "chrome.tabs" },
+      });
+      await expect(browser.finishTurn({ timeout: 210, turnTimeout: 211 })).resolves.toMatchObject({
+        status: "partial",
+        turnEnded: true,
+      });
+      expect(transport.calls).toEqual([
+        { method: M.FINALIZE_TABS, params: { keep: [], ...meta }, timeout: 210 },
+        { method: M.TURN_ENDED, params: { ...meta }, timeout: 211 },
+      ]);
+
+      // A mixed partial (one not_attempted + one genuine failed) must STILL hold
+      // the turn by default — any real `failed` outcome means something was
+      // attempted and may be half-done.
+      transport.calls = [];
+      transport.responses.set(M.FINALIZE_TABS, {
+        status: "partial",
+        actions: [],
+        closedTabIds: [],
+        releasedTabIds: [],
+        keptTabs: [],
+        deliverableTabs: [],
+        finalTabs: { handoff: [], deliverable: [], activeTabId: null },
+        failures: [
+          {
+            tabId: "tab-stale",
+            desiredStatus: "deliverable",
+            outcome: "not_attempted",
+            errorCode: "tab_not_owned",
+            errorMessage: "tab not owned by this turn",
+          },
+          {
+            tabId: "tab-1",
+            desiredStatus: "close",
+            outcome: "failed",
+            errorCode: "close_failed",
+            errorMessage: "close failed",
+          },
+        ],
+        diagnostics: { reconciledFromChrome: true, reconciliationSource: "chrome.tabs" },
+      });
+      await expect(browser.finishTurn({ timeout: 210, turnTimeout: 211 })).resolves.toMatchObject({
+        status: "partial",
+        turnEnded: false,
+      });
+      expect(transport.calls).toEqual([
+        { method: M.FINALIZE_TABS, params: { keep: [], ...meta }, timeout: 210 },
+      ]);
+
+      // The not_attempted-only partial still ends even when endTurnOnPartial is
+      // left at its default (false): the not_attempted gate takes precedence.
+      transport.calls = [];
+      transport.responses.set(M.FINALIZE_TABS, {
+        status: "partial",
+        actions: [],
+        closedTabIds: [],
+        releasedTabIds: [],
+        keptTabs: [],
+        deliverableTabs: [],
+        finalTabs: { handoff: [], deliverable: [], activeTabId: null },
+        failures: [
+          {
+            tabId: "tab-stale-2",
+            desiredStatus: "close",
+            outcome: "not_attempted",
+            errorCode: "tab_not_owned",
+            errorMessage: "tab not owned by this turn",
+          },
+        ],
+        diagnostics: { reconciledFromChrome: true, reconciliationSource: "chrome.tabs" },
+      });
+      await expect(
+        browser.finishTurn({ timeout: 210, turnTimeout: 211, endTurnOnPartial: false }),
+      ).resolves.toMatchObject({
+        status: "partial",
+        turnEnded: true,
+      });
+      expect(transport.calls).toEqual([
+        { method: M.FINALIZE_TABS, params: { keep: [], ...meta }, timeout: 210 },
+        { method: M.TURN_ENDED, params: { ...meta }, timeout: 211 },
+      ]);
+    } finally {
+      restoreMeta();
+    }
+  });
+
   it("display forwards arbitrary values or fails clearly when runtime global is missing", () => {
     const value = { kind: "json", nested: ["image-shaped", { mime: "image/png" }] };
     const image = new Image("iVBORw0KGgo=", "image/png");

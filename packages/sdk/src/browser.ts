@@ -550,7 +550,19 @@ function normalizeFinalizeTabsResult(row: BrowserFinalizeTabsWireResult): Browse
 
 function shouldEndTurnAfterFinalize(result: BrowserFinalizeTabsResult, opts: BrowserFinishTurnOptions): boolean {
   if (result.status === "fatal") return false;
-  if (result.status === "partial") return opts.endTurnOnPartial === true;
+  if (result.status === "partial") {
+    // audit §4.10 (review follow-up): a partial caused SOLELY by `not_attempted`
+    // outcomes — e.g. an unowned/stale `keep` tabId, where nothing was actually
+    // attempted and nothing is left half-done — must not strand the turn. End it
+    // as if ok. Only a genuine `failed` partial respects `endTurnOnPartial`.
+    if (
+      result.failures.length > 0 &&
+      result.failures.every((failure) => failure.outcome === "not_attempted")
+    ) {
+      return true;
+    }
+    return opts.endTurnOnPartial === true;
+  }
   return result.failures.length === 0;
 }
 
