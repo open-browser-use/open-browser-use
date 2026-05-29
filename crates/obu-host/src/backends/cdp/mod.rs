@@ -24,6 +24,7 @@ pub mod execute;
 pub mod injected_script;
 pub(crate) mod oopif;
 pub mod playwright;
+pub(crate) mod reconnect;
 pub mod targets;
 pub mod transport;
 
@@ -105,6 +106,34 @@ impl CdpBackend {
                             tracing::debug!(child, ?error, "re-arm setAutoAttach failed (child may have detached)");
                         }
                     }
+                }
+            });
+        }
+        {
+            // Re-establish sessions whenever the transport reconnects. The
+            // transport recovers the socket and bumps its reconnect generation;
+            // here we re-attach known tabs by target_id and re-arm auto-attach
+            // (which makes the OOPIF consumer above rebuild child sessions).
+            let registry = registry.clone();
+            let reestablish_transport = transport.clone();
+            let oopif_sessions = oopif_sessions.clone();
+            let mut reconnects = transport.subscribe_reconnects();
+            tokio::spawn(async move {
+                // `changed()` skips the initial generation (0); only real
+                // reconnects fire it. Parks until the transport is dropped at
+                // shutdown (the watch sender lives on the process-lived backend).
+                while reconnects.changed().await.is_ok() {
+                    let generation = *reconnects.borrow_and_update();
+                    tracing::info!(
+                        generation,
+                        "CDP transport reconnected; re-establishing sessions"
+                    );
+                    reconnect::reestablish_sessions(
+                        &reestablish_transport,
+                        &registry,
+                        &oopif_sessions,
+                    )
+                    .await;
                 }
             });
         }
