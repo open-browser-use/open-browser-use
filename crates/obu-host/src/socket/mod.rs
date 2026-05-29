@@ -10,6 +10,9 @@ use crate::error::Result;
 #[cfg(unix)]
 pub mod unix;
 
+#[cfg(unix)]
+pub mod accept_policy;
+
 /// A connected peer accepted by a local listener.
 pub struct Peer<S: AsyncRead + AsyncWrite + Send + Unpin + 'static> {
     /// Bidirectional stream for the connected peer.

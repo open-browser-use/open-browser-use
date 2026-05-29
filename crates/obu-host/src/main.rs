@@ -1,5 +1,6 @@
 use std::path::PathBuf;
 use std::sync::Arc;
+use std::time::Duration;
 
 use clap::Parser;
 use uuid::Uuid;
@@ -12,8 +13,16 @@ use obu_host::{
     peer_auth::{PeerAuthGate, PeerAuthMode, unix::UnixPeerAuthGate},
     peer_lifecycle::PeerLifecycleDiagnostics,
     policy::ConfiguredHostPolicy,
-    socket::{self, Listener, unix::UnixSockListener},
+    socket::{
+        self, Listener,
+        accept_policy::{AcceptErrorAction, classify_accept_error},
+        unix::UnixSockListener,
+    },
 };
+
+/// Backoff before re-accepting after fd-exhaustion (`EMFILE`/`ENFILE`), giving
+/// in-flight work a moment to release descriptors instead of spinning.
+const ACCEPT_BACKOFF: Duration = Duration::from_millis(50);
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
@@ -65,7 +74,26 @@ async fn main() -> anyhow::Result<()> {
 
     tracing::info!(?peer_auth_mode, "obu-host accepting peers");
     loop {
-        let mut peer = listener.accept().await?;
+        let mut peer = match listener.accept().await {
+            Ok(peer) => peer,
+            // A single transient accept() error used to `?`-propagate and kill the
+            // entire broker (audit §4.5). Classify and keep the loop alive instead.
+            Err(error) => match classify_accept_error(&error) {
+                AcceptErrorAction::RetryImmediate => {
+                    tracing::warn!(%error, "accept() failed (recoverable); continuing");
+                    continue;
+                }
+                AcceptErrorAction::RetryBackoff => {
+                    tracing::warn!(%error, "accept() hit fd exhaustion; backing off then continuing");
+                    tokio::time::sleep(ACCEPT_BACKOFF).await;
+                    continue;
+                }
+                AcceptErrorAction::Fatal => {
+                    tracing::error!(%error, "accept() failed fatally; shutting the listener down");
+                    return Err(error.into());
+                }
+            },
+        };
         match peer_auth.authorize(&mut peer).await {
             Ok(()) => {
                 tracing::info!(cred = ?peer.cred, "peer authorized");
