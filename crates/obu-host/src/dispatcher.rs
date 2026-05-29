@@ -2912,4 +2912,186 @@ mod tests {
         dispatcher.evict_session_lock("sess-1").await;
         assert_eq!(dispatcher.session_lock_count().await, 0);
     }
+
+    /// A backend whose `tab_close` and `finalizeTabs` can be configured to SUCCEED
+    /// (`Ok`) or FAIL (`Err`), used to drive the §4.6 route-level eviction gating
+    /// in [`Dispatcher::route_request_inner`] for real. It reports
+    /// `kind() == WebExtension` so the default `supports_method` accepts both
+    /// `tab_close` and `finalizeTabs`, and inherits the default `knows_tab() ==
+    /// true` so a `tab_close` actually mints a per-tab lock before the gate runs.
+    struct EvictionGatingBackend {
+        close_succeeds: bool,
+        finalize_succeeds: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl BrowserBackend for EvictionGatingBackend {
+        fn kind(&self) -> crate::backends::BackendKind {
+            crate::backends::BackendKind::WebExtension
+        }
+
+        fn id(&self) -> &str {
+            "eviction-gating"
+        }
+
+        async fn tab_command_with_context(
+            &self,
+            _ctx: &BackendRequestContext,
+            method: &str,
+            _params: Value,
+        ) -> Result<Value> {
+            // Only `tab_close` is exercised here; succeed/fail per config so the
+            // route-level gate sees `response.error.is_none()` either true or false.
+            if method == methods::TAB_CLOSE && !self.close_succeeds {
+                return Err(HostError::TabNotAttached("tab gone".into()));
+            }
+            Ok(Value::Null)
+        }
+
+        async fn finalize_tabs_with_context(
+            &self,
+            _ctx: &BackendRequestContext,
+            _params: Value,
+        ) -> Result<Value> {
+            if self.finalize_succeeds {
+                Ok(Value::Null)
+            } else {
+                Err(HostError::TabNotAttached("finalize failed".into()))
+            }
+        }
+    }
+
+    fn mutating_ctx() -> BackendRequestContext {
+        BackendRequestContext {
+            session_id: Some("sess-1".into()),
+            turn_id: Some("turn-1".into()),
+            client_timeout_ms: None,
+            trusted_kernel_generation: None,
+        }
+    }
+
+    fn tab_close_request(tab_id: &str) -> Request {
+        Request::new(
+            1,
+            methods::TAB_CLOSE,
+            json!({ "session_id": "sess-1", "turn_id": "turn-1", "tab_id": tab_id }),
+        )
+    }
+
+    fn finalize_request() -> Request {
+        Request::new(
+            1,
+            methods::FINALIZE_TABS,
+            json!({ "session_id": "sess-1", "turn_id": "turn-1" }),
+        )
+    }
+
+    /// Route-level gate (audit §4.6 review follow-up): a SUCCESSFUL `tab_close`
+    /// routed through `route_request_inner` must evict the per-tab lock entry it
+    /// minted. With `knows_tab() == true` the close mints then (on success)
+    /// evicts, so the count returns to 0 for the only tab.
+    #[tokio::test]
+    async fn route_level_successful_tab_close_evicts_tab_lock() {
+        let dispatcher = Dispatcher::new(
+            env!("CARGO_PKG_VERSION").into(),
+            Arc::new(EvictionGatingBackend {
+                close_succeeds: true,
+                finalize_succeeds: true,
+            }),
+        );
+        let response = dispatcher
+            .route_request_inner(tab_close_request("tab-A"), mutating_ctx())
+            .await;
+        assert!(
+            response.error.is_none(),
+            "configured tab_close should succeed: {:?}",
+            response.error
+        );
+        // The lock minted for tab-A was evicted on the successful close.
+        assert_eq!(
+            dispatcher.tab_lock_count().await,
+            0,
+            "successful tab_close must evict its tab lock at the route level"
+        );
+    }
+
+    /// Route-level gate (audit §4.6 review follow-up): a FAILED `tab_close` must
+    /// NOT evict the minted lock entry — the gate keys off
+    /// `response.error.is_none()`, so a failure leaves the entry in place. This is
+    /// the regression bound: a change that evicted on a failed close would drop
+    /// the count to 0 and make this assertion fail.
+    #[tokio::test]
+    async fn route_level_failed_tab_close_does_not_evict_tab_lock() {
+        let dispatcher = Dispatcher::new(
+            env!("CARGO_PKG_VERSION").into(),
+            Arc::new(EvictionGatingBackend {
+                close_succeeds: false,
+                finalize_succeeds: true,
+            }),
+        );
+        let response = dispatcher
+            .route_request_inner(tab_close_request("tab-A"), mutating_ctx())
+            .await;
+        assert!(
+            response.error.is_some(),
+            "configured tab_close should fail so the gate sees error.is_some()"
+        );
+        assert_eq!(
+            dispatcher.tab_lock_count().await,
+            1,
+            "a failed tab_close must NOT evict the tab lock"
+        );
+    }
+
+    /// Route-level gate (audit §4.6 review follow-up): a SUCCESSFUL `finalizeTabs`
+    /// routed through `route_request_inner` must evict the per-session lock entry
+    /// it minted.
+    #[tokio::test]
+    async fn route_level_successful_finalize_evicts_session_lock() {
+        let dispatcher = Dispatcher::new(
+            env!("CARGO_PKG_VERSION").into(),
+            Arc::new(EvictionGatingBackend {
+                close_succeeds: true,
+                finalize_succeeds: true,
+            }),
+        );
+        let response = dispatcher
+            .route_request_inner(finalize_request(), mutating_ctx())
+            .await;
+        assert!(
+            response.error.is_none(),
+            "configured finalizeTabs should succeed: {:?}",
+            response.error
+        );
+        assert_eq!(
+            dispatcher.session_lock_count().await,
+            0,
+            "successful finalizeTabs must evict its session lock at the route level"
+        );
+    }
+
+    /// Route-level gate (audit §4.6 review follow-up): a FAILED `finalizeTabs`
+    /// must NOT evict the minted session lock entry.
+    #[tokio::test]
+    async fn route_level_failed_finalize_does_not_evict_session_lock() {
+        let dispatcher = Dispatcher::new(
+            env!("CARGO_PKG_VERSION").into(),
+            Arc::new(EvictionGatingBackend {
+                close_succeeds: true,
+                finalize_succeeds: false,
+            }),
+        );
+        let response = dispatcher
+            .route_request_inner(finalize_request(), mutating_ctx())
+            .await;
+        assert!(
+            response.error.is_some(),
+            "configured finalizeTabs should fail so the gate sees error.is_some()"
+        );
+        assert_eq!(
+            dispatcher.session_lock_count().await,
+            1,
+            "a failed finalizeTabs must NOT evict the session lock"
+        );
+    }
 }
