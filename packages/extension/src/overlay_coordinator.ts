@@ -132,6 +132,12 @@ export class OverlayCoordinator {
     return [...this.overlayStates.keys()];
   }
 
+  /** Test-only read accessor: the sessionId of an `active` takeover, else undefined. */
+  activeTakeoverSessionId(tabId: number): string | undefined {
+    const state = this.overlayStates.get(tabId);
+    return state?.kind === "active" ? state.takeover.sessionId : undefined;
+  }
+
   async syncForeground(): Promise<void> {
     for (const [tabId, state] of [...this.overlayStates]) {
       if (state.kind === "release_abandoned") {
@@ -276,7 +282,14 @@ export class OverlayCoordinator {
     if (plan.kind === "send_hide") this.overlayStates.set(tabId, plan.next);
     const sent = await this.sendContentMessage(tabId, { type: "OBU_CURSOR_HIDE" }, { prepare: false });
     if (plan.kind === "noop") return;
-    const next = planOverlayReleaseResult(plan.next, sent);
+    // Re-read AFTER the await (audit §4.2): the single-threaded MV3 worker may have
+    // run activate() during the round-trip, installing a fresh `active` takeover.
+    // Only apply the release transition if the entry is STILL the release_pending /
+    // release_failed state this hide() installed (same release-state object reference); never
+    // overwrite or delete an entry that a concurrent activate() turned `active`.
+    const current = this.overlayStates.get(tabId);
+    if (!current || current !== plan.next) return;
+    const next = planOverlayReleaseResult(current, sent);
     if (next) {
       this.overlayStates.set(tabId, next);
       return;
