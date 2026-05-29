@@ -387,6 +387,12 @@ impl Dispatcher {
             let _permit = permit;
             let id = request.id.clone();
             let method = request.method.clone();
+            // §3.11: `method` is moved into the `route` async block below
+            // (`format!("{method} ...")` in the timeout arm), so the rarely-taken
+            // cancel arm cannot reuse it. Keep one eager clone here purely to
+            // survive that move; the larger redundant-allocation win is the
+            // move-not-clone of the command-event ids in
+            // `build_browser_command_event`.
             let cancel_method = method.clone();
             let timeout_ms = request_context(&request).client_timeout_ms;
             let backend_owns_deadline =
@@ -585,13 +591,17 @@ impl Dispatcher {
             return None;
         }
         // The predicate already guaranteed both ids are present and non-empty;
-        // this `let-else` re-extracts them as owned values (and never panics).
+        // this `let-else` re-extracts them as owned `&str` (and never panics).
         let (Some(session_id), Some(turn_id)) = (
             ctx.session_id.as_deref().filter(|id| !id.is_empty()),
             ctx.turn_id.as_deref().filter(|id| !id.is_empty()),
         ) else {
             return None;
         };
+        // §3.11: own the ids once here so the return can move them into the
+        // spawned write rather than cloning the same strings a third time.
+        let session_id = session_id.to_owned();
+        let turn_id = turn_id.to_owned();
         let mut event = serde_json::Map::new();
         event.insert("method".to_string(), json!(method));
         event.insert(
@@ -652,8 +662,8 @@ impl Dispatcher {
         }
         Some((
             Value::Object(event),
-            session_id.to_string(),
-            turn_id.to_string(),
+            session_id,
+            turn_id,
             ctx.trusted_kernel_generation,
         ))
     }
