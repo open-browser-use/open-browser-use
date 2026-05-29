@@ -20,3 +20,31 @@ describe("parseFinalizeKeep (audit §4.8)", () => {
     expect(keep.get(3)).toBe("handoff");
   });
 });
+
+describe("planFinalizeTabs unknownKeepTabIds (audit §4.10)", () => {
+  const tabs = new Map<number, SessionTab>([
+    [1, { tabId: 1, origin: "agent", status: "active" }],
+    [2, { tabId: 2, origin: "user", status: "active" }],
+  ]);
+
+  it("reports keep tabIds that match no owned tab", () => {
+    const keep = parseFinalizeKeep({
+      keep: [{ tabId: 2, status: "handoff" }, { tabId: 99, status: "deliverable" }],
+    });
+    const plan = planFinalizeTabs(tabs, keep);
+    expect(plan.unknownKeepTabIds).toEqual([99]);
+    expect(plan.steps.find((s) => s.tabId === 2)?.desiredStatus).toBe("handoff");
+  });
+
+  it("is empty when every keep entry matches an owned tab", () => {
+    const keep = parseFinalizeKeep({ keep: [{ tabId: 1, status: "handoff" }] });
+    expect(planFinalizeTabs(tabs, keep).unknownKeepTabIds).toEqual([]);
+  });
+
+  it("reports every keep tabId as unknown when the session owns no tabs", () => {
+    const keep = parseFinalizeKeep({ keep: [{ tabId: 5, status: "handoff" }] });
+    const plan = planFinalizeTabs(new Map(), keep);
+    expect(plan.unknownKeepTabIds).toEqual([5]);
+    expect(plan.steps).toEqual([]);
+  });
+});

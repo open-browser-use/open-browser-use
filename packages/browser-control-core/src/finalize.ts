@@ -46,6 +46,8 @@ export type FinalizeTabPlanStep = {
 
 export type FinalizeTabsPlan = {
   steps: FinalizeTabPlanStep[];
+  /** Keep tabIds that matched no tab owned by the session (audit §4.10). */
+  unknownKeepTabIds: number[];
 };
 
 export function parseFinalizeKeep(params: unknown): Map<number, FinalizeKeepStatus> {
@@ -77,7 +79,9 @@ export function planFinalizeTabs(
   keep: ReadonlyMap<number, FinalizeKeepStatus>,
 ): FinalizeTabsPlan {
   const steps: FinalizeTabPlanStep[] = [];
+  const ownedTabIds = new Set<number>();
   for (const [tabId, row] of tabs) {
+    ownedTabIds.add(tabId);
     const desiredStatus = keep.get(tabId) ?? defaultDesiredStatus(row.origin);
     steps.push({
       tabId,
@@ -87,7 +91,8 @@ export function planFinalizeTabs(
       effect: effectForDesiredStatus(desiredStatus),
     });
   }
-  return { steps };
+  const unknownKeepTabIds = [...keep.keys()].filter((tabId) => !ownedTabIds.has(tabId));
+  return { steps, unknownKeepTabIds };
 }
 
 export function finalizeAction(
