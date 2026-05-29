@@ -27,6 +27,9 @@ pub mod playwright;
 pub mod targets;
 pub mod transport;
 
+#[cfg(test)]
+pub(crate) mod test_support;
+
 /// Browser backend backed by the Chrome DevTools Protocol.
 pub struct CdpBackend {
     transport: Arc<transport::CdpTransport>,
