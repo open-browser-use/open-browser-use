@@ -13,6 +13,8 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 
 use anyhow::{Result, anyhow};
@@ -27,6 +29,14 @@ use crate::task_store::{
     TaskStore, TaskSummary, now_millis, plan_task_resume,
 };
 
+/// Bounded capacity of the actor command channel (audit §4.9).
+///
+/// Comfortably absorbs interactive bursts while capping the queue + cloned
+/// payloads a tight command loop can pile up before the single SQLite writer
+/// drains them. Best-effort observability writes shed (and count) past this;
+/// must-send writes (resume/export/list) apply back-pressure instead.
+const ACTOR_CHANNEL_CAPACITY: usize = 1024;
+
 /// Cloneable async handle to the task-store actor.
 ///
 /// Each handle holds the sender end of the actor's command channel; cloning a
@@ -34,7 +44,9 @@ use crate::task_store::{
 /// is dropped the channel closes and the actor thread exits after draining.
 #[derive(Clone)]
 pub struct TaskStoreHandle {
-    tx: mpsc::UnboundedSender<TaskStoreCommand>,
+    tx: mpsc::Sender<TaskStoreCommand>,
+    /// Count of best-effort writes shed because the bounded queue was full.
+    dropped_best_effort_writes: Arc<AtomicU64>,
 }
 
 /// A unit of work for the task-store actor thread.
@@ -134,7 +146,7 @@ impl TaskStoreHandle {
     /// reply path; subsequent calls on the handle then resolve to a "task store
     /// actor closed" error rather than blocking.
     pub fn open(dir: PathBuf) -> Result<Self> {
-        let (tx, mut rx) = mpsc::unbounded_channel::<TaskStoreCommand>();
+        let (tx, mut rx) = mpsc::channel::<TaskStoreCommand>(ACTOR_CHANNEL_CAPACITY);
         thread::Builder::new()
             .name("obu-task-store".into())
             .spawn(move || {
@@ -303,7 +315,17 @@ impl TaskStoreHandle {
                     }
                 }
             })?;
-        Ok(Self { tx })
+        Ok(Self {
+            tx,
+            dropped_best_effort_writes: Arc::new(AtomicU64::new(0)),
+        })
+    }
+
+    /// Number of best-effort observability writes shed because the bounded queue
+    /// was full (audit §4.9). Monotonic over the handle's lifetime; useful for
+    /// diagnostics and exercised by the load-shedding unit test.
+    pub fn dropped_best_effort_writes(&self) -> u64 {
+        self.dropped_best_effort_writes.load(Ordering::Relaxed)
     }
 
     /// List tasks matching `filter` via the actor thread.
@@ -314,8 +336,14 @@ impl TaskStoreHandle {
     /// every handle was dropped) instead of hanging.
     pub async fn list_tasks(&self, filter: TaskListFilter) -> Result<Vec<TaskSummary>> {
         let (reply, rx) = oneshot::channel();
+        // must-send: the blocking, back-pressured `send().await` is intentional —
+        // do NOT convert these (list/export/resume_*) to `try_send`. Shedding a
+        // write whose result the caller awaits would silently lose durable
+        // resume/episode state. Only the best-effort observability writes shed
+        // (see `ACTOR_CHANNEL_CAPACITY`).
         self.tx
             .send(TaskStoreCommand::ListTasks { filter, reply })
+            .await
             .map_err(|_| anyhow!("task store actor closed"))?;
         rx.await
             .map_err(|_| anyhow!("task store actor closed"))?
@@ -327,6 +355,7 @@ impl TaskStoreHandle {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(TaskStoreCommand::Export { task_id, reply })
+            .await
             .map_err(|_| anyhow!("task store actor closed"))?;
         rx.await
             .map_err(|_| anyhow!("task store actor closed"))?
@@ -359,6 +388,7 @@ impl TaskStoreHandle {
                 ttl_ms,
                 reply,
             })
+            .await
             .map_err(|_| anyhow!("task store actor closed"))?;
         rx.await
             .map_err(|_| anyhow!("task store actor closed"))?
@@ -375,6 +405,7 @@ impl TaskStoreHandle {
                 generation,
                 reply,
             })
+            .await
             .map_err(|_| anyhow!("task store actor closed"))?;
         rx.await
             .map_err(|_| anyhow!("task store actor closed"))?
@@ -391,6 +422,7 @@ impl TaskStoreHandle {
                 payload,
                 reply,
             })
+            .await
             .map_err(|_| anyhow!("task store actor closed"))?;
         rx.await
             .map_err(|_| anyhow!("task store actor closed"))?
@@ -413,15 +445,28 @@ impl TaskStoreHandle {
         outcome: Value,
     ) -> Result<()> {
         let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(TaskStoreCommand::RecordFinalizeEvidence {
-                session_id,
-                turn_id,
-                generation,
-                outcome,
-                reply,
-            })
-            .map_err(|_| anyhow!("task store actor closed"))?;
+        // Best-effort observability write: shed (and count) instead of blocking
+        // when the bounded queue is full, so a tight command loop can never grow
+        // the actor queue without bound (audit §4.9). A full queue resolves
+        // Ok(()) — the dispatcher's caller already log-and-continues on Err, and a
+        // shed finalize-evidence record must not stall or fail the user's action.
+        match self.tx.try_send(TaskStoreCommand::RecordFinalizeEvidence {
+            session_id,
+            turn_id,
+            generation,
+            outcome,
+            reply,
+        }) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.dropped_best_effort_writes
+                    .fetch_add(1, Ordering::Relaxed);
+                return Ok(());
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                return Err(anyhow!("task store actor closed"));
+            }
+        }
         rx.await
             .map_err(|_| anyhow!("task store actor closed"))?
             .map_err(anyhow::Error::msg)
@@ -439,14 +484,27 @@ impl TaskStoreHandle {
         generation: Option<i64>,
     ) -> Result<()> {
         let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(TaskStoreCommand::RecordTurnEndedEvidence {
-                session_id,
-                turn_id,
-                generation,
-                reply,
-            })
-            .map_err(|_| anyhow!("task store actor closed"))?;
+        // Best-effort observability write: shed (and count) instead of blocking
+        // when the bounded queue is full, so a tight command loop can never grow
+        // the actor queue without bound (audit §4.9). A full queue resolves
+        // Ok(()) — the dispatcher's caller already log-and-continues on Err, and a
+        // shed turn-ended-evidence record must not stall or fail the user's action.
+        match self.tx.try_send(TaskStoreCommand::RecordTurnEndedEvidence {
+            session_id,
+            turn_id,
+            generation,
+            reply,
+        }) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.dropped_best_effort_writes
+                    .fetch_add(1, Ordering::Relaxed);
+                return Ok(());
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                return Err(anyhow!("task store actor closed"));
+            }
+        }
         rx.await
             .map_err(|_| anyhow!("task store actor closed"))?
             .map_err(anyhow::Error::msg)
@@ -465,15 +523,28 @@ impl TaskStoreHandle {
         event: Value,
     ) -> Result<()> {
         let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(TaskStoreCommand::RecordCommandEvent {
-                session_id,
-                turn_id,
-                generation,
-                event,
-                reply,
-            })
-            .map_err(|_| anyhow!("task store actor closed"))?;
+        // Best-effort observability write: shed (and count) instead of blocking
+        // when the bounded queue is full, so a tight command loop can never grow
+        // the actor queue without bound (audit §4.9). A full queue resolves
+        // Ok(()) — the dispatcher's caller already log-and-continues on Err, and a
+        // shed command-event must not stall or fail the user's action.
+        match self.tx.try_send(TaskStoreCommand::RecordCommandEvent {
+            session_id,
+            turn_id,
+            generation,
+            event,
+            reply,
+        }) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                self.dropped_best_effort_writes
+                    .fetch_add(1, Ordering::Relaxed);
+                return Ok(());
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                return Err(anyhow!("task store actor closed"));
+            }
+        }
         rx.await
             .map_err(|_| anyhow!("task store actor closed"))?
             .map_err(anyhow::Error::msg)
@@ -805,5 +876,52 @@ mod tests {
         let handle = TaskStoreHandle::open(dir.path().to_path_buf()).unwrap();
         let result = handle.list_tasks(Default::default()).await;
         assert!(result.is_err());
+    }
+
+    /// A best-effort write past the bounded queue capacity is dropped (counted),
+    /// never grows the queue, and resolves `Ok(())` so the caller's
+    /// log-and-continue path is unaffected (audit §4.9).
+    #[tokio::test]
+    async fn record_command_event_sheds_load_when_queue_is_full() {
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(
+            dir.path(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+        let handle = TaskStoreHandle::open(dir.path().to_path_buf()).unwrap();
+        // Flood far past the bounded capacity with best-effort writes. Each call is
+        // spawned (not awaited inline) so the sends outpace the single SQLite writer
+        // — exactly how the dispatcher fires these (`tokio::spawn` +
+        // `record_command_event`, see `Dispatcher::route_request`). Awaiting each
+        // call inline would instead serialize on its oneshot reply, holding queue
+        // depth at one and never exercising the shed path. With the flood, some
+        // `try_send`s see a full queue and are counted as drops — yet every call
+        // still resolves `Ok(())`, leaving the caller's log-and-continue unaffected.
+        let mut writes = Vec::with_capacity(10_000);
+        for _ in 0..10_000 {
+            let handle = handle.clone();
+            writes.push(tokio::spawn(async move {
+                handle
+                    .record_command_event(
+                        "s1".into(),
+                        "t1".into(),
+                        None,
+                        serde_json::json!({"method": "noop"}),
+                    )
+                    .await
+                    .expect("best-effort write must resolve Ok even when shed");
+            }));
+        }
+        for write in writes {
+            write
+                .await
+                .expect("spawned best-effort write must not panic");
+        }
+        assert!(
+            handle.dropped_best_effort_writes() > 0,
+            "a 10k-deep flood past the bounded queue must shed at least one write"
+        );
     }
 }
