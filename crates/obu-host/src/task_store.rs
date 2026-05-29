@@ -1294,12 +1294,37 @@ impl TaskStore {
         Ok(summaries)
     }
 
+    /// Flip every still-`pending` resume attempt whose `expires_at` is in the
+    /// past to `status='expired'` (audit §2.1).
+    ///
+    /// Lazy sweep, run before the pending-slot check and before token redemption
+    /// so an abandoned/expired attempt neither blocks the single pending slot nor
+    /// stays redeemable past its TTL. Idempotent and cheap (a single UPDATE keyed
+    /// by the `idx_task_resume_attempts_pending` partial index). Only `'pending'`
+    /// rows are swept: an `'attached'` row is a completed redemption and is left
+    /// alone.
+    fn sweep_expired_resume_attempts(&self, now: i64) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE task_resume_attempts
+                 SET status = 'expired'
+                 WHERE status = 'pending' AND expires_at <= ?1",
+                [now],
+            )
+            .context("sweep expired resume attempts")?;
+        Ok(())
+    }
+
     /// Return the single `status='pending'` resume attempt for `task_id`, if any.
     ///
     /// The partial unique index `idx_task_resume_attempts_pending` guarantees at
     /// most one pending row per task, so this is a `query_row` returning `None`
     /// when there is no outstanding attempt.
     fn pending_resume_attempt(&self, task_id: &str) -> Result<Option<PendingResumeAttempt>> {
+        // §2.1: expire stale pending attempts first so an abandoned/expired one
+        // never permanently occupies the single pending slot (the documented
+        // liveness purpose of the TTL).
+        self.sweep_expired_resume_attempts(now_millis())?;
         self.conn
             .query_row(
                 "SELECT attempt_id, session_id, turn_id, expires_at
@@ -1455,12 +1480,20 @@ impl TaskStore {
     /// [`TaskStore::complete_resume_attached`] idempotent: a second attach with
     /// the same token still finds the row.
     fn attempt_by_token_for_attach(&self, token: &str) -> Result<Option<AttachableAttempt>> {
+        // §2.1: expire stale pending attempts first, then enforce the TTL in the
+        // redemption lookup itself. A 'pending' row past its `expires_at` is now
+        // swept to 'expired' (so it no longer matches), while an already-'attached'
+        // row stays redeemable to keep `complete_resume_attached` idempotent.
+        let now = now_millis();
+        self.sweep_expired_resume_attempts(now)?;
         self.conn
             .query_row(
                 "SELECT attempt_id, task_id, session_id, turn_id
                  FROM task_resume_attempts
-                 WHERE token_hash = ?1 AND status IN ('pending', 'attached')",
-                [token_hash(token)],
+                 WHERE token_hash = ?1
+                   AND (status = 'attached'
+                        OR (status = 'pending' AND expires_at > ?2))",
+                rusqlite::params![token_hash(token), now],
                 |row| {
                     Ok(AttachableAttempt {
                         attempt_id: row.get(0)?,
@@ -2388,6 +2421,81 @@ mod tests {
                 .unwrap()
                 .segment_id,
             attached.segment.segment_id
+        );
+    }
+
+    #[test]
+    fn expired_resume_token_is_not_redeemable() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        // ttl_ms = -1 => expires_at = now - 1, i.e. already expired at insert.
+        let begin = store
+            .begin_resume_attempt(&task_id, "s1", "t1", 7, -1)
+            .unwrap();
+        let token = begin.resume_token.expect("fresh attempt mints a token");
+        // Redemption must reject an expired token rather than reattach.
+        assert!(
+            store.complete_resume_attached(&token, 7).is_err(),
+            "expired resume token must not redeem"
+        );
+    }
+
+    #[test]
+    fn expired_pending_attempt_frees_the_single_pending_slot() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        // First attempt is born already expired and occupies the one pending slot.
+        store
+            .begin_resume_attempt(&task_id, "s1", "t1", 7, -1)
+            .unwrap();
+        // A new attempt for a DIFFERENT (session,turn) must succeed: the expired
+        // pending row is swept to 'expired', no longer conflicting.
+        let second = store
+            .begin_resume_attempt(&task_id, "s2", "t2", 7, 60_000)
+            .unwrap();
+        assert!(
+            second.created,
+            "expired pending attempt must not permanently block a fresh attempt"
+        );
+    }
+
+    #[test]
+    fn unexpired_resume_token_still_redeems() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        let begin = store
+            .begin_resume_attempt(&task_id, "s1", "t1", 7, 60_000)
+            .unwrap();
+        let token = begin.resume_token.expect("fresh attempt mints a token");
+        // A live token within TTL must still attach (no over-rejection).
+        assert!(store.complete_resume_attached(&token, 7).is_ok());
+    }
+
+    #[test]
+    fn attached_resume_token_redeems_after_ttl_elapses() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        let begin = store
+            .begin_resume_attempt(&task_id, "s1", "t1", 7, 60_000)
+            .unwrap();
+        let token = begin.resume_token.expect("fresh attempt mints a token");
+        // First redemption while live: the row transitions pending -> attached.
+        assert!(store.complete_resume_attached(&token, 7).is_ok());
+        // Age the now-'attached' row well past its TTL (white-box: drive the
+        // store's own connection so no production backdate surface is added).
+        store
+            .conn
+            .execute(
+                "UPDATE task_resume_attempts SET expires_at = ?1 WHERE token_hash = ?2",
+                rusqlite::params![now_millis() - 1, token_hash(&token)],
+            )
+            .unwrap();
+        // Idempotent re-attach must STILL redeem: an 'attached' row is matched
+        // unconditionally and the sweep only touches 'pending' rows. This pins the
+        // exact invariant the §2.1 WHERE clause protects.
+        assert!(
+            store.complete_resume_attached(&token, 7).is_ok(),
+            "an already-attached row must stay redeemable past its TTL (idempotency)"
         );
     }
 }
