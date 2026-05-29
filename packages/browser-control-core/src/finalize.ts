@@ -49,8 +49,16 @@ export type FinalizeTabsPlan = {
 };
 
 export function parseFinalizeKeep(params: unknown): Map<number, FinalizeKeepStatus> {
-  const rows = isRecord(params) && Array.isArray(params.keep) ? params.keep : [];
   const keep = new Map<number, FinalizeKeepStatus>();
+  if (!isRecord(params)) return keep;
+  // Distinguish absent (legitimate "keep nothing") from present-but-malformed.
+  // A non-array `keep` previously coerced to `[]`, silently triggering the
+  // destructive default finalize (agent tabs closed, user tabs released).
+  const rawKeep = params.keep;
+  if (rawKeep !== undefined && !Array.isArray(rawKeep)) {
+    throw new Error("finalizeTabs.keep must be an array");
+  }
+  const rows = Array.isArray(rawKeep) ? rawKeep : [];
   for (const row of rows) {
     if (!isRecord(row)) throw new Error("finalizeTabs.keep entries must be objects");
     const tabId = requireTabId(row);
