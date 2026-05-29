@@ -901,14 +901,14 @@ async fn spawn_outbox_pump(
         }) else {
             break;
         };
-        let value = match serde_json::to_value(&message) {
-            Ok(value) => value,
+        let line = match stdio_codec::encode_line(&message) {
+            Ok(line) => line,
             Err(error) => {
                 tracing::warn!(%error, "failed to serialize native-pipe kernel frame");
                 continue;
             }
         };
-        if stdin.lock().await.send(&value).await.is_err() {
+        if stdin.lock().await.send_line(&line).await.is_err() {
             break;
         }
     }
