@@ -2688,4 +2688,90 @@ mod tests {
         assert_eq!(store.cap_task_events(&task_id, 0).unwrap(), 3);
         assert_eq!(store.event_cursor(&task_id).unwrap(), 0);
     }
+
+    /// Helper: read the live `PRAGMA auto_vacuum` mode off a store's connection
+    /// (0 = NONE, 1 = FULL, 2 = INCREMENTAL).
+    fn auto_vacuum_mode(store: &TaskStore) -> i64 {
+        store
+            .conn
+            .query_row("PRAGMA auto_vacuum", [], |row| row.get::<_, i64>(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn incremental_vacuum_succeeds_after_a_prune() {
+        // §2.2: after retention deletes free up pages, `incremental_vacuum`
+        // reclaims them. Drive a real prune, then vacuum, and assert Ok.
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        store
+            .append_segment(&task_id, Segment::new("s1", "t1"))
+            .unwrap();
+        store.append_event(&task_id, "marker", "{}").unwrap();
+        store.set_state(&task_id, TaskState::Completed).unwrap();
+        // Backdate well past the retention window so the prune actually deletes.
+        store
+            .set_task_created_at_for_test(&task_id, now_millis() - 1_000_000)
+            .unwrap();
+        assert_eq!(store.prune_terminal_tasks(60_000).unwrap(), 1);
+
+        // The vacuum is a no-op unless auto_vacuum=INCREMENTAL is in effect,
+        // which `open` guarantees; either way it must succeed.
+        store.incremental_vacuum().unwrap();
+    }
+
+    #[test]
+    fn fresh_store_uses_incremental_auto_vacuum() {
+        // §2.2: a freshly created db must come up in INCREMENTAL (mode 2),
+        // set BEFORE setup_schema creates any table.
+        let (store, _dir) = open_temp_store();
+        assert_eq!(
+            auto_vacuum_mode(&store),
+            2,
+            "fresh store must be auto_vacuum=INCREMENTAL"
+        );
+    }
+
+    #[test]
+    fn open_migrates_preexisting_none_mode_db_to_incremental() {
+        // §2.2 migration branch (`if auto_vacuum != 2 { VACUUM }`): a db that
+        // already exists with auto_vacuum=NONE AND at least one table cannot
+        // honour a later mode change without a full VACUUM. `open` must detect
+        // mode != 2 and run that VACUUM, converting the db to INCREMENTAL.
+        let dir = owner_only_tempdir();
+        let db_path = dir.path().join("tasks.db");
+
+        // Pre-seed the EXACT file `open` will use (`<dir>/tasks.db`) with
+        // auto_vacuum=NONE and a populated table, then close it so SQLite has
+        // committed mode 0 to a non-empty db. A later mode flip alone is then a
+        // no-op — only the migration VACUUM can convert it.
+        {
+            let seed = Connection::open(&db_path).unwrap();
+            seed.pragma_update(None, "auto_vacuum", "NONE").unwrap();
+            seed.execute_batch("CREATE TABLE _premigration_marker (x)")
+                .unwrap();
+            // Confirm the pre-seed really committed NONE (mode 0): this is what
+            // makes the test load-bearing — without `open`'s VACUUM the db would
+            // stay here.
+            let seeded_mode: i64 = seed
+                .query_row("PRAGMA auto_vacuum", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(seeded_mode, 0, "pre-seed must commit auto_vacuum=NONE");
+        } // drop closes the connection, flushing mode 0 to disk.
+
+        // Open through the real entry point against the same dir.
+        let store = TaskStore::open(dir.path()).unwrap();
+
+        // The migration VACUUM must have converted the pre-existing db.
+        assert_eq!(
+            auto_vacuum_mode(&store),
+            2,
+            "open must migrate a pre-existing NONE-mode db to INCREMENTAL"
+        );
+
+        // And the store is fully functional afterwards: the migration VACUUM
+        // did not corrupt the schema setup_schema created on top.
+        let task_id = store.create_task(default_new_task()).unwrap();
+        assert_eq!(store.task_state(&task_id).unwrap(), TaskState::Created);
+    }
 }
