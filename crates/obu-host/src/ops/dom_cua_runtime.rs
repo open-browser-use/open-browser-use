@@ -375,11 +375,18 @@ async fn collect_visible_dom_nodes<B: DomCuaRuntimeBackend + Sync>(
     viewport: Rect,
     nodes: &mut Vec<Value>,
 ) -> Result<()> {
+    // Pass 1 (pure, no RTT): walk the pierced tree, collecting interesting
+    // candidates in walk/pop order. `attrs`/`tag` are computed once per node and
+    // carried so the predicates and `snapshot_entry_with` never recompute them.
+    struct Candidate<'a> {
+        node: &'a Value,
+        backend_node_id: i64,
+        tag: String,
+        attrs: Value,
+    }
+    let mut candidates: Vec<Candidate<'_>> = Vec::new();
     let mut stack = vec![node];
     while let Some(node) = stack.pop() {
-        // Compute tag/attrs once and gate on the pure in-memory predicates BEFORE
-        // awaiting the box-model RTT, so plain divs/spans/text nodes cost zero RTT
-        // (output-identical: those nodes never produced a snapshot entry anyway).
         let tag = dom_cua::node_tag(node);
         let attrs = dom_cua::attributes_object(node);
         if dom_cua::is_hidden_subtree_with(node, &tag, &attrs) {
@@ -387,23 +394,13 @@ async fn collect_visible_dom_nodes<B: DomCuaRuntimeBackend + Sync>(
         }
         if dom_cua::is_interesting_node_with(&tag, &attrs)
             && let Some(backend_node_id) = node.get("backendNodeId").and_then(Value::as_i64)
-            && let Some(rect) =
-                box_model_rect(backend, ctx, tab_id, session, backend_node_id).await?
-            && rect.width > 0.0
-            && rect.height > 0.0
-            && rect.intersects(viewport)
-            && let Some(mut entry) =
-                dom_cua::snapshot_entry_with(node, backend_node_id, rect, &tag, &attrs)
         {
-            // Tag OOPIF nodes with their owning session so geometry routes there in
-            // Task 4; top-level nodes stay untagged (session_for_node -> None).
-            // NOTE: assumes backendNodeId is unique across the top-level + OOPIF
-            // sessions of a tab (Chromium assigns them in the browser process); the
-            // site-isolated probe (tests/oopif_e2e.rs) validates this end-to-end.
-            if let (Some(sid), Some(object)) = (session, entry.as_object_mut()) {
-                object.insert("session_id".into(), json!(sid));
-            }
-            nodes.push(entry);
+            candidates.push(Candidate {
+                node,
+                backend_node_id,
+                tag,
+                attrs,
+            });
         }
         for key in ["children", "shadowRoots", "pseudoElements"] {
             if let Some(children) = node.get(key).and_then(Value::as_array) {
@@ -414,6 +411,42 @@ async fn collect_visible_dom_nodes<B: DomCuaRuntimeBackend + Sync>(
         }
         if let Some(content_document) = node.get("contentDocument") {
             stack.push(content_document);
+        }
+    }
+
+    // Pass 2: fetch all box models concurrently (CDP multiplexes by id; the
+    // `session` is fixed for this call so all fetches route to one session).
+    let rects = futures_util::future::join_all(
+        candidates
+            .iter()
+            .map(|c| box_model_rect(backend, ctx, tab_id, session, c.backend_node_id)),
+    )
+    .await;
+
+    // Pass 3: emit survivors in walk order (output byte-identical to the
+    // sequential walk).
+    for (candidate, rect) in candidates.iter().zip(rects) {
+        if let Some(rect) = rect?
+            && rect.width > 0.0
+            && rect.height > 0.0
+            && rect.intersects(viewport)
+            && let Some(mut entry) = dom_cua::snapshot_entry_with(
+                candidate.node,
+                candidate.backend_node_id,
+                rect,
+                &candidate.tag,
+                &candidate.attrs,
+            )
+        {
+            // Tag OOPIF nodes with their owning session so geometry routes there;
+            // top-level nodes stay untagged (session_for_node -> None).
+            // NOTE: assumes backendNodeId is unique across the top-level + OOPIF
+            // sessions of a tab (Chromium assigns them in the browser process); the
+            // site-isolated probe (tests/oopif_e2e.rs) validates this end-to-end.
+            if let (Some(sid), Some(object)) = (session, entry.as_object_mut()) {
+                object.insert("session_id".into(), json!(sid));
+            }
+            nodes.push(entry);
         }
     }
     Ok(())
@@ -791,6 +824,101 @@ mod hoist_tests {
             1,
             "box-model fetched only for the interesting node"
         );
+    }
+
+    struct ConcurrentBoxModel {
+        barrier: Arc<tokio::sync::Barrier>,
+    }
+    #[async_trait]
+    impl DomCuaRuntimeBackend for ConcurrentBoxModel {
+        async fn execute_dom_cdp(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            method: &str,
+            p: Value,
+        ) -> Result<Value> {
+            if method == "DOM.getBoxModel" {
+                // Each interesting node's fetch must be in-flight simultaneously:
+                // a sequential implementation never reaches the 3rd before the 1st
+                // returns, so this barrier (n=3) only releases under concurrency.
+                self.barrier.wait().await;
+                let id = p.get("backendNodeId").and_then(Value::as_i64).unwrap_or(0) as f64;
+                // Distinct in-viewport boxes so all three pass and order is checkable.
+                return Ok(
+                    json!({ "model": { "content": [id, id, id + 5.0, id, id + 5.0, id + 5.0, id, id + 5.0] } }),
+                );
+            }
+            Ok(json!({}))
+        }
+        async fn dispatch_coordinate_cua(
+            &self,
+            _c: &BackendRequestContext,
+            _m: &str,
+            _p: Value,
+        ) -> Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn remember_visible_dom_nodes(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+            _n: &[Value],
+        ) {
+        }
+        async fn validate_visible_dom_node(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+            _n: &str,
+        ) -> Result<()> {
+            Ok(())
+        }
+        async fn forget_visible_dom_snapshot(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+        ) {
+        }
+    }
+
+    #[tokio::test]
+    async fn candidates_fetched_concurrently_and_emitted_in_walk_order() {
+        let backend = ConcurrentBoxModel {
+            barrier: Arc::new(tokio::sync::Barrier::new(3)),
+        };
+        let viewport = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 1000.0,
+            height: 1000.0,
+        };
+        // Three interesting buttons; walk/pop order is 2,3,4 (children pushed reversed).
+        let root = json!({
+            "nodeName": "DIV", "backendNodeId": 1,
+            "children": [
+                { "nodeName": "BUTTON", "backendNodeId": 2, "attributes": ["aria-label", "a"] },
+                { "nodeName": "BUTTON", "backendNodeId": 3, "attributes": ["aria-label", "b"] },
+                { "nodeName": "BUTTON", "backendNodeId": 4, "attributes": ["aria-label", "c"] }
+            ]
+        });
+        let mut nodes = Vec::new();
+        // Times out (barrier never trips) if fetches are sequential.
+        tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            collect_visible_dom_nodes(&backend, &ctx(), "tab", None, &root, viewport, &mut nodes),
+        )
+        .await
+        .expect("must not deadlock — fetches run concurrently")
+        .unwrap();
+        let ids: Vec<&str> = nodes
+            .iter()
+            .map(|n| n["node_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, vec!["2", "3", "4"], "emitted in walk order");
     }
 }
 
