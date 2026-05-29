@@ -3,7 +3,7 @@
 use anyhow::{Context, Result};
 use base64::Engine;
 use rmcp::model::{Content, RawResource};
-use serde_json::{Map, Value, json};
+use serde_json::{Value, json};
 
 use crate::artifact_store::{ArtifactStore, ArtifactSummary, MAX_ARTIFACT_BYTES};
 use crate::repl_manager::{JsExecResult, MAX_DISPLAY_COUNT, TruncationInfo};
@@ -42,8 +42,9 @@ pub fn prepare_js_result(
     truncated.stdout = stdout_truncated;
     truncated.stderr = stderr_truncated;
 
-    let mut final_result = rewrite_artifacts(
-        result.result,
+    let mut final_result = result.result;
+    rewrite_artifacts(
+        &mut final_result,
         artifacts,
         &mut links,
         false,
@@ -60,8 +61,8 @@ pub fn prepare_js_result(
     // Backstop only: the live accumulator is already bounded at push time
     // (ExecRegistry::push_display); take() guards against an unbounded input.
     for mut display in result.displays.into_iter().take(MAX_DISPLAY_COUNT) {
-        display.value = rewrite_artifacts(
-            display.value,
+        rewrite_artifacts(
+            &mut display.value,
             artifacts,
             &mut links,
             display.kind == "image",
@@ -160,43 +161,41 @@ fn result_text_summary(
 }
 
 fn rewrite_artifacts(
-    value: Value,
+    value: &mut Value,
     artifacts: &ArtifactStore,
     links: &mut Vec<Content>,
     force_artifact: bool,
     truncated: &mut bool,
-) -> Result<Value> {
-    if let Some(summary) = spill_if_artifact(&value, artifacts, force_artifact)? {
-        return match summary {
+) -> Result<()> {
+    if let Some(rewrite) = spill_if_artifact(value, artifacts, force_artifact)? {
+        match rewrite {
             ArtifactRewrite::Resource(summary) => {
                 links.push(content_link(&summary));
-                serde_json::to_value(summary).context("serialize artifact summary")
+                *value = serde_json::to_value(summary).context("serialize artifact summary")?;
             }
-            ArtifactRewrite::Truncated(value) => {
+            ArtifactRewrite::Truncated(replacement) => {
                 *truncated = true;
-                Ok(value)
+                *value = replacement;
             }
-        };
+        }
+        return Ok(());
     }
 
     match value {
-        Value::Array(items) => items
-            .into_iter()
-            .map(|item| rewrite_artifacts(item, artifacts, links, false, truncated))
-            .collect::<Result<Vec<_>>>()
-            .map(Value::Array),
-        Value::Object(map) => {
-            let mut out = Map::new();
-            for (key, child) in map {
-                out.insert(
-                    key,
-                    rewrite_artifacts(child, artifacts, links, false, truncated)?,
-                );
+        Value::Array(items) => {
+            for item in items.iter_mut() {
+                rewrite_artifacts(item, artifacts, links, false, truncated)?;
             }
-            Ok(Value::Object(out))
         }
-        other => Ok(other),
+        Value::Object(map) => {
+            for child in map.values_mut() {
+                rewrite_artifacts(child, artifacts, links, false, truncated)?;
+            }
+        }
+        // Scalars/leaves carry no artifacts — left in place.
+        _ => {}
     }
+    Ok(())
 }
 
 fn spill_if_artifact(
@@ -620,5 +619,25 @@ mod tests {
             prepared.structured["displays"][0]["value"]["kind"],
             "truncated"
         );
+    }
+
+    #[test]
+    fn rewrite_artifacts_leaves_artifact_free_tree_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifacts = ArtifactStore::new_at(dir.path(), "budget-test").unwrap();
+        let mut links = Vec::new();
+        let mut truncated = false;
+        let original = json!({
+            "a": [1, 2, { "b": "text", "c": [true, null] }],
+            "d": "no artifacts here",
+        });
+        let mut value = original.clone();
+
+        rewrite_artifacts(&mut value, &artifacts, &mut links, false, &mut truncated).unwrap();
+
+        assert_eq!(value, original);
+        assert!(!truncated);
+        assert!(links.is_empty());
+        assert!(artifacts.list_resources().is_empty());
     }
 }
