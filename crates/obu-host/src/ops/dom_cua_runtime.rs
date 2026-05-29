@@ -139,7 +139,9 @@ async fn visible_dom<B: DomCuaRuntimeBackend + Sync>(
         .get("root")
         .ok_or_else(|| HostError::Protocol("DOM.getDocument missing root".into()))?;
     let mut nodes = Vec::new();
-    collect_visible_dom_nodes(backend, ctx, tab_id, None, root, viewport, &mut nodes).await?;
+    let mut total: usize = 0;
+    total +=
+        collect_visible_dom_nodes(backend, ctx, tab_id, None, root, viewport, &mut nodes).await?;
     // Each OOPIF session is enumerated against the SAME top-level `viewport`. An
     // OOPIF session's box-model is FRAME-LOCAL (branch 4c, confirmed by the
     // site-isolated probe); the reported `bounds` here are therefore frame-local
@@ -162,7 +164,7 @@ async fn visible_dom<B: DomCuaRuntimeBackend + Sync>(
             continue;
         };
         if let Some(root) = document.get("root") {
-            collect_visible_dom_nodes(
+            total += collect_visible_dom_nodes(
                 backend,
                 ctx,
                 tab_id,
@@ -192,6 +194,34 @@ async fn visible_dom<B: DomCuaRuntimeBackend + Sync>(
         }
         _ => json!({ "nodes": nodes }),
     };
+    // Honest accounting (mirrors SnapshotTextMeta): `total` = candidates
+    // considered (interesting & non-hidden, with a backendNodeId) summed across
+    // the top-level + every OOPIF session; `shown` = emitted (also had a positive
+    // box-model rect intersecting the viewport); `truncated` iff some candidate
+    // was dropped OR an emitted entry's label was clipped. The `hint` points at
+    // the open primitives so the agent never treats the list as exhaustive.
+    let shown = nodes.len();
+    let text_clipped = nodes.iter().any(|node| {
+        node.get("text_truncated")
+            .and_then(Value::as_bool)
+            .unwrap_or(false)
+    });
+    let truncated = shown < total || text_clipped;
+    if let Some(object) = response.as_object_mut() {
+        let mut meta = serde_json::Map::new();
+        meta.insert("shown".into(), json!(shown));
+        meta.insert("total".into(), json!(total));
+        meta.insert("truncated".into(), json!(truncated));
+        if truncated {
+            meta.insert(
+                "hint".into(),
+                json!(
+                    "Some interesting elements are off-screen/zero-area or their labels were clipped at 240 chars. Scroll the page, or read full-fidelity content with tab.evaluate(...) or tab.domSnapshot()."
+                ),
+            );
+        }
+        object.insert("meta".into(), Value::Object(meta));
+    }
     if let Some(observation_id) = observation_id
         && let Some(object) = response.as_object_mut()
     {
@@ -374,7 +404,7 @@ async fn collect_visible_dom_nodes<B: DomCuaRuntimeBackend + Sync>(
     node: &Value,
     viewport: Rect,
     nodes: &mut Vec<Value>,
-) -> Result<()> {
+) -> Result<usize> {
     // Pass 1 (pure, no RTT): walk the pierced tree, collecting interesting
     // candidates in walk/pop order. `attrs`/`tag` are computed once per node and
     // carried so the predicates and `snapshot_entry_with` never recompute them.
@@ -449,7 +479,10 @@ async fn collect_visible_dom_nodes<B: DomCuaRuntimeBackend + Sync>(
             nodes.push(entry);
         }
     }
-    Ok(())
+    // The count of interesting & non-hidden candidates considered for this
+    // session's subtree (had a backendNodeId), regardless of whether their
+    // box-model rect intersected the viewport — this is the honest `total`.
+    Ok(candidates.len())
 }
 
 async fn node_action_point<B: DomCuaRuntimeBackend + Sync>(
@@ -919,6 +952,94 @@ mod hoist_tests {
             .map(|n| n["node_id"].as_str().unwrap())
             .collect();
         assert_eq!(ids, vec!["2", "3", "4"], "emitted in walk order");
+    }
+
+    // Returns a document with two interesting <button>s; box-model for id 2 is in
+    // the 100x100 viewport, id 3 is off-screen (x=5000) so it is a considered
+    // candidate dropped by the viewport filter => shown=1, total=2.
+    struct MetaBackend;
+    #[async_trait]
+    impl DomCuaRuntimeBackend for MetaBackend {
+        async fn execute_dom_cdp(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            method: &str,
+            p: Value,
+        ) -> Result<Value> {
+            match method {
+                "Page.getLayoutMetrics" => Ok(json!({
+                    "cssVisualViewport": { "pageX": 0, "pageY": 0, "clientWidth": 100, "clientHeight": 100 }
+                })),
+                "DOM.getDocument" => Ok(json!({
+                    "root": {
+                        "nodeName": "DIV", "backendNodeId": 1,
+                        "children": [
+                            { "nodeName": "BUTTON", "backendNodeId": 2, "attributes": ["aria-label", "in"] },
+                            { "nodeName": "BUTTON", "backendNodeId": 3, "attributes": ["aria-label", "off"] }
+                        ]
+                    }
+                })),
+                "DOM.getBoxModel" => {
+                    let id = p.get("backendNodeId").and_then(Value::as_i64).unwrap_or(0);
+                    let x = if id == 2 { 0.0 } else { 5000.0 };
+                    Ok(json!({ "model": { "content": [x, 0, x + 10.0, 0, x + 10.0, 10, x, 10] } }))
+                }
+                _ => Ok(json!({})),
+            }
+        }
+        async fn dispatch_coordinate_cua(
+            &self,
+            _c: &BackendRequestContext,
+            _m: &str,
+            _p: Value,
+        ) -> Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn remember_visible_dom_nodes(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+            _n: &[Value],
+        ) {
+        }
+        async fn validate_visible_dom_node(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+            _n: &str,
+        ) -> Result<()> {
+            Ok(())
+        }
+        async fn forget_visible_dom_snapshot(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+        ) {
+        }
+    }
+
+    #[tokio::test]
+    async fn visible_dom_meta_counts_candidates_shown_and_total() {
+        // One in-viewport <button> (emitted) + one off-viewport <button> (a
+        // candidate that is dropped by the viewport filter) => shown=1, total=2.
+        let backend = MetaBackend;
+        let params = json!({ "tab_id": "tab", "observation_id": "obs" });
+        let response = visible_dom(&backend, &ctx(), params).await.unwrap();
+        assert_eq!(response["meta"]["shown"], json!(1));
+        assert_eq!(response["meta"]["total"], json!(2));
+        assert_eq!(response["meta"]["truncated"], json!(true));
+        assert!(
+            response["meta"]["hint"]
+                .as_str()
+                .unwrap()
+                .contains("evaluate")
+        );
+        // Backward-compatible: nodes still present and addressable.
+        assert_eq!(response["nodes"].as_array().unwrap().len(), 1);
     }
 }
 

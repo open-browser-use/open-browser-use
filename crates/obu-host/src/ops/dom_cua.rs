@@ -490,7 +490,7 @@ pub(crate) fn snapshot_entry_with(
     if !is_interesting_node_with(tag, attrs) || is_hidden_subtree_with(node, tag, attrs) {
         return None;
     }
-    let text = aggregate_text(node, 240);
+    let (text, text_truncated) = aggregate_text_with_flag(node, 240);
     let name = attrs
         .get("aria-label")
         .or_else(|| attrs.get("alt"))
@@ -505,6 +505,7 @@ pub(crate) fn snapshot_entry_with(
         "role": attrs.get("role").and_then(Value::as_str).unwrap_or_default(),
         "name": name,
         "text": text,
+        "text_truncated": text_truncated,
         "bounds": {
             "x": rect.x,
             "y": rect.y,
@@ -623,6 +624,10 @@ pub(crate) fn aggregate_text_with_flag(node: &Value, max_len: usize) -> (String,
     (normalized.chars().take(max_len).collect(), truncated)
 }
 
+// `snapshot_entry_with` now calls `aggregate_text_with_flag` directly (it needs
+// the clip flag for `text_truncated`), so this string-only wrapper is exercised
+// only by the in-module tests; keep it as the stable convenience surface.
+#[cfg_attr(not(test), allow(dead_code))]
 pub(crate) fn aggregate_text(node: &Value, max_len: usize) -> String {
     aggregate_text_with_flag(node, max_len).0
 }
@@ -1184,5 +1189,28 @@ mod tests {
         assert!(truncated);
         // The legacy wrapper still returns just the clipped string.
         assert_eq!(aggregate_text(&long, 240), text);
+    }
+
+    #[test]
+    fn snapshot_entry_reports_text_truncation() {
+        let rect = Rect {
+            x: 0.0,
+            y: 0.0,
+            width: 5.0,
+            height: 5.0,
+        };
+        let long = "y".repeat(500);
+        let node = json!({
+            "nodeName": "BUTTON", "backendNodeId": 9,
+            "children": [{ "nodeName": "#text", "nodeValue": long }]
+        });
+        let entry = snapshot_entry(&node, 9, rect).expect("entry");
+        assert_eq!(entry["text_truncated"], json!(true));
+        let short =
+            json!({ "nodeName": "BUTTON", "backendNodeId": 9, "attributes": ["aria-label", "Go"] });
+        assert_eq!(
+            snapshot_entry(&short, 9, rect).expect("entry")["text_truncated"],
+            json!(false)
+        );
     }
 }
