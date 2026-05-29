@@ -3,6 +3,7 @@
 use std::path::Path;
 use std::time::Duration;
 
+use bytes::{Bytes, BytesMut};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{
     UnixStream,
@@ -16,7 +17,7 @@ const MAX_AUTH_RESPONSE_BYTES: usize = 1024 * 1024;
 
 /// Split UnixStream wrapper with cancellable reads.
 pub struct NativePipeConnection {
-    reader: Mutex<OwnedReadHalf>,
+    reader: Mutex<(OwnedReadHalf, BytesMut)>,
     writer: Mutex<OwnedWriteHalf>,
     cancel: CancellationToken,
 }
@@ -34,25 +35,38 @@ impl NativePipeConnection {
             })??;
         let (reader, writer) = stream.into_split();
         Ok(Self {
-            reader: Mutex::new(reader),
+            reader: Mutex::new((reader, BytesMut::with_capacity(READ_CHUNK_BYTES))),
             writer: Mutex::new(writer),
             cancel: CancellationToken::new(),
         })
     }
 
+    #[cfg(test)]
+    fn from_stream(stream: UnixStream) -> Self {
+        let (reader, writer) = stream.into_split();
+        Self {
+            reader: Mutex::new((reader, BytesMut::with_capacity(READ_CHUNK_BYTES))),
+            writer: Mutex::new(writer),
+            cancel: CancellationToken::new(),
+        }
+    }
+
     /// Read one chunk, returning `Ok(None)` on EOF or cancellation.
-    pub async fn read_chunk_or_cancel(&self) -> std::io::Result<Option<Vec<u8>>> {
-        let mut buf = vec![0u8; READ_CHUNK_BYTES];
-        let mut reader = self.reader.lock().await;
+    pub async fn read_chunk_or_cancel(&self) -> std::io::Result<Option<Bytes>> {
+        let mut guard = self.reader.lock().await;
+        let (reader, buf) = &mut *guard;
+        // Ensure ≥READ_CHUNK_BYTES of spare capacity; `read_buf` writes only into
+        // the uninitialized tail (no pre-zeroing) and the allocation is reused
+        // across reads via reclaim of the previously-frozen front.
+        buf.reserve(READ_CHUNK_BYTES);
         tokio::select! {
             _ = self.cancel.cancelled() => Ok(None),
-            result = reader.read(&mut buf) => {
+            result = reader.read_buf(buf) => {
                 let n = result?;
                 if n == 0 {
                     return Ok(None);
                 }
-                buf.truncate(n);
-                Ok(Some(buf))
+                Ok(Some(buf.split_to(n).freeze()))
             }
         }
     }
@@ -65,7 +79,8 @@ impl NativePipeConnection {
 
     /// Read one 4-byte little-endian length-prefixed frame body.
     pub async fn read_exact_framed(&self, timeout: Duration) -> std::io::Result<Vec<u8>> {
-        let mut reader = self.reader.lock().await;
+        let mut guard = self.reader.lock().await;
+        let (reader, _buf) = &mut *guard;
         let mut len_buf = [0u8; 4];
         tokio::time::timeout(timeout, reader.read_exact(&mut len_buf))
             .await
@@ -93,5 +108,50 @@ impl NativePipeConnection {
         self.cancel.cancel();
         let mut writer = self.writer.lock().await;
         writer.shutdown().await
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::net::UnixStream;
+
+    #[tokio::test]
+    async fn read_chunk_returns_exact_bytes_then_eof() {
+        let (a, b) = UnixStream::pair().unwrap();
+        let conn = NativePipeConnection::from_stream(a);
+        let (_rb, mut wb) = b.into_split();
+        wb.write_all(b"hello").await.unwrap();
+        drop(wb); // close after the write so the next read sees EOF
+        assert_eq!(
+            conn.read_chunk_or_cancel().await.unwrap().as_deref(),
+            Some(&b"hello"[..])
+        );
+        assert!(conn.read_chunk_or_cancel().await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn read_chunk_reuses_buffer_across_reads_without_corruption() {
+        let (a, b) = UnixStream::pair().unwrap();
+        let conn = NativePipeConnection::from_stream(a);
+        let (_rb, mut wb) = b.into_split();
+        wb.write_all(b"first").await.unwrap();
+        assert_eq!(
+            conn.read_chunk_or_cancel().await.unwrap().as_deref(),
+            Some(&b"first"[..])
+        );
+        wb.write_all(b"second").await.unwrap();
+        assert_eq!(
+            conn.read_chunk_or_cancel().await.unwrap().as_deref(),
+            Some(&b"second"[..])
+        );
+    }
+
+    #[tokio::test]
+    async fn read_chunk_returns_none_on_cancel() {
+        let (a, _b) = UnixStream::pair().unwrap(); // keep _b alive so it is not EOF
+        let conn = NativePipeConnection::from_stream(a);
+        conn.cancel.cancel();
+        assert!(conn.read_chunk_or_cancel().await.unwrap().is_none());
     }
 }
