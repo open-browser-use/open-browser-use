@@ -420,12 +420,10 @@ pub(crate) fn attributes_object(node: &Value) -> Value {
     Value::Object(object)
 }
 
-pub(crate) fn is_hidden_subtree(node: &Value) -> bool {
+pub(crate) fn is_hidden_subtree_with(node: &Value, tag: &str, attrs: &Value) -> bool {
     if is_obu_overlay_node(node) {
         return true;
     }
-    let tag = node_tag(node);
-    let attrs = attributes_object(node);
     if attrs.get("hidden").is_some() {
         return true;
     }
@@ -454,11 +452,13 @@ pub(crate) fn is_hidden_subtree(node: &Value) -> bool {
         })
 }
 
-pub(crate) fn is_interesting_node(node: &Value) -> bool {
-    let tag = node_tag(node);
-    let attrs = attributes_object(node);
+pub(crate) fn is_hidden_subtree(node: &Value) -> bool {
+    is_hidden_subtree_with(node, &node_tag(node), &attributes_object(node))
+}
+
+pub(crate) fn is_interesting_node_with(tag: &str, attrs: &Value) -> bool {
     matches!(
-        tag.as_str(),
+        tag,
         "a" | "button"
             | "input"
             | "select"
@@ -476,12 +476,20 @@ pub(crate) fn is_interesting_node(node: &Value) -> bool {
         || attrs.get("contenteditable").is_some()
 }
 
-pub(crate) fn snapshot_entry(node: &Value, backend_node_id: i64, rect: Rect) -> Option<Value> {
-    if !is_interesting_node(node) || is_hidden_subtree(node) {
+pub(crate) fn is_interesting_node(node: &Value) -> bool {
+    is_interesting_node_with(&node_tag(node), &attributes_object(node))
+}
+
+pub(crate) fn snapshot_entry_with(
+    node: &Value,
+    backend_node_id: i64,
+    rect: Rect,
+    tag: &str,
+    attrs: &Value,
+) -> Option<Value> {
+    if !is_interesting_node_with(tag, attrs) || is_hidden_subtree_with(node, tag, attrs) {
         return None;
     }
-    let attrs = attributes_object(node);
-    let tag = node_tag(node);
     let text = aggregate_text(node, 240);
     let name = attrs
         .get("aria-label")
@@ -503,8 +511,18 @@ pub(crate) fn snapshot_entry(node: &Value, backend_node_id: i64, rect: Rect) -> 
             "width": rect.width,
             "height": rect.height,
         },
-        "attributes": attrs,
+        "attributes": attrs.clone(),
     }))
+}
+
+pub(crate) fn snapshot_entry(node: &Value, backend_node_id: i64, rect: Rect) -> Option<Value> {
+    snapshot_entry_with(
+        node,
+        backend_node_id,
+        rect,
+        &node_tag(node),
+        &attributes_object(node),
+    )
 }
 
 pub(crate) fn render_visible_dom_text(nodes: &[Value]) -> String {
@@ -590,10 +608,19 @@ pub(crate) fn render_visible_dom_compact_text(nodes: &[Value]) -> String {
     lines.join("\n")
 }
 
-pub(crate) fn aggregate_text(node: &Value, max_len: usize) -> String {
+/// Aggregate visible text up to `max_len` chars, reporting whether the source
+/// text exceeded the cap (mirrors snapshotText's `__clipped` heuristic in
+/// packages/sdk/src/snapshot-text.ts — flag iff pre-clip length > max_len).
+pub(crate) fn aggregate_text_with_flag(node: &Value, max_len: usize) -> (String, bool) {
     let mut out = String::new();
     append_text(node, &mut out, max_len);
-    normalize_ws(&out).chars().take(max_len).collect::<String>()
+    let normalized = normalize_ws(&out);
+    let truncated = normalized.chars().count() > max_len;
+    (normalized.chars().take(max_len).collect(), truncated)
+}
+
+pub(crate) fn aggregate_text(node: &Value, max_len: usize) -> String {
+    aggregate_text_with_flag(node, max_len).0
 }
 
 pub(crate) fn is_obu_overlay_node(node: &Value) -> bool {
@@ -664,7 +691,7 @@ fn append_text(node: &Value, out: &mut String, max_len: usize) {
     }
 }
 
-fn node_tag(node: &Value) -> String {
+pub(crate) fn node_tag(node: &Value) -> String {
     node.get("nodeName")
         .and_then(Value::as_str)
         .unwrap_or_default()
@@ -1106,5 +1133,52 @@ mod tests {
         assert!(!is_obu_overlay_node(&json!({
             "attributes": ["id", "app"]
         })));
+    }
+
+    #[test]
+    fn with_variants_match_their_node_computing_wrappers() {
+        let node = json!({
+            "nodeName": "BUTTON",
+            "backendNodeId": 5,
+            "attributes": ["aria-label", "Save now", "role", "button"],
+            "children": [{ "nodeName": "#text", "nodeValue": "Save now" }]
+        });
+        let tag = node_tag(&node);
+        let attrs = attributes_object(&node);
+        assert_eq!(
+            is_hidden_subtree_with(&node, &tag, &attrs),
+            is_hidden_subtree(&node)
+        );
+        assert_eq!(
+            is_interesting_node_with(&tag, &attrs),
+            is_interesting_node(&node)
+        );
+        let rect = Rect {
+            x: 1.0,
+            y: 2.0,
+            width: 3.0,
+            height: 4.0,
+        };
+        assert_eq!(
+            snapshot_entry_with(&node, 5, rect, &tag, &attrs),
+            snapshot_entry(&node, 5, rect)
+        );
+    }
+
+    #[test]
+    fn aggregate_text_with_flag_reports_clipping() {
+        let short =
+            json!({ "nodeName": "DIV", "children": [{ "nodeName": "#text", "nodeValue": "hi" }] });
+        assert_eq!(
+            aggregate_text_with_flag(&short, 240),
+            ("hi".to_string(), false)
+        );
+        let long_value = "x".repeat(500);
+        let long = json!({ "nodeName": "DIV", "children": [{ "nodeName": "#text", "nodeValue": long_value }] });
+        let (text, truncated) = aggregate_text_with_flag(&long, 240);
+        assert_eq!(text.chars().count(), 240);
+        assert!(truncated);
+        // The legacy wrapper still returns just the clipped string.
+        assert_eq!(aggregate_text(&long, 240), text);
     }
 }
