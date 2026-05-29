@@ -55,6 +55,24 @@ describe("TabRead.extractTable", () => {
     await read.extractTable({ selector: "table.results" });
     expect(receivedExpression).toContain("table.results");
   });
+
+  it("throws an actionable error when the table JSON is truncated", async () => {
+    const evaluate = vi.fn(async () => ({
+      kind: "truncated" as const,
+      type: "object",
+      bytes: 70000,
+      reason: "maxJsonBytes",
+    }));
+    const observe = vi.fn(async () => ({
+      observationId: "obs-1",
+      status: "succeeded",
+      sections: {},
+    } as any));
+    const read = new TabRead({ observe, evaluate });
+    await expect(read.extractTable({ selector: "table.huge" })).rejects.toThrow(
+      /exceeded the evaluate JSON budget/,
+    );
+  });
 });
 
 describe("buildExtractTableExpression", () => {

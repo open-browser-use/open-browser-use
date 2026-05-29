@@ -1,8 +1,21 @@
 import type { TabObservation, TabObserveOptions } from "./tab.js";
 
+/** Page-side truncation sentinel returned by `evaluate()` when JSON exceeds the budget. */
+export type EvaluateTruncationSummary = {
+  kind: "truncated";
+  type?: string;
+  length?: number;
+  key_count?: number;
+  keys?: string[];
+  bytes?: number;
+  reason?: string;
+};
+
 export type TabReadDeps = {
   observe: (opts?: TabObserveOptions) => Promise<TabObservation>;
-  evaluate: (expression: string) => Promise<{ rows: string[][] }>;
+  evaluate: (
+    expression: string,
+  ) => Promise<{ rows: string[][] } | EvaluateTruncationSummary>;
 };
 
 export type ExtractTableInput = {
@@ -41,6 +54,13 @@ export function buildExtractTableExpression(selector: string): string {
 })()`;
 }
 
+// Local copy (not shared with tab.ts's guard) to keep tab-read.ts importing only
+// *types* from tab.ts — a value import would create a tab.ts <-> tab-read.ts cycle.
+function isTruncatedEvaluateSummary(value: unknown): value is EvaluateTruncationSummary {
+  return typeof value === "object" && value !== null
+    && (value as { kind?: unknown }).kind === "truncated";
+}
+
 export class TabRead {
   lastObservationId?: string;
 
@@ -52,7 +72,13 @@ export class TabRead {
     // Read-only extraction path: evaluate real DOM-walking JS against the live
     // page; never dispatch a mutating primitive action and never invalidate the
     // observation.
-    const { rows } = await this.deps.evaluate(buildExtractTableExpression(input.selector));
-    return { observationId: observation.observationId, rows };
+    const result = await this.deps.evaluate(buildExtractTableExpression(input.selector));
+    if (isTruncatedEvaluateSummary(result)) {
+      throw new Error(
+        "tab.extractTable result exceeded the evaluate JSON budget; scope the selector to a "
+          + "smaller table, or read it directly with tab.evaluate() using a larger maxJsonBytes",
+      );
+    }
+    return { observationId: observation.observationId, rows: result.rows };
   }
 }
