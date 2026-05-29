@@ -509,9 +509,33 @@ async fn node_action_point<B: DomCuaRuntimeBackend + Sync>(
         json!({ "backendNodeId": backend_node_id }),
     )
     .await;
-    let viewport = viewport_rect(backend, ctx, tab_id).await?;
-    if let Some(point) =
-        content_quad_action_point(backend, ctx, tab_id, session, backend_node_id, viewport).await?
+    // The viewport (Page.getLayoutMetrics) and the element quads
+    // (DOM.getContentQuads) are independent post-scroll reads — only the pure
+    // point math needs both. Overlap them to save ~1 RTT of latency. No caching:
+    // both are read AFTER scrollIntoViewIfNeeded so the pageX/pageY scroll origin
+    // is current (the refuted observation-keyed cache would land the wrong pixel).
+    let (viewport, quads) = futures_util::future::join(
+        viewport_rect(backend, ctx, tab_id),
+        dom_cdp_routed(
+            backend,
+            ctx,
+            tab_id,
+            session,
+            "DOM.getContentQuads",
+            json!({ "backendNodeId": backend_node_id }),
+        ),
+    )
+    .await;
+    let viewport = viewport?;
+    // Branch 4c (empirical, site-isolated probe): an OOPIF session's quads are
+    // FRAME-LOCAL, not root-composed. `action_point_from_content_quads` subtracts
+    // the top-level visual-viewport origin to get the frame-local point at scale
+    // 1; `finalize_node_action_point` then ADDS the frame chain's root offset
+    // (`oopif_root_offset`) to land the top-level dispatch. A `getContentQuads`
+    // transport error (or no usable quad) falls through to the box-model path,
+    // matching the prior helper's behavior.
+    if let Ok(quads) = quads
+        && let Some(point) = dom_cua::action_point_from_content_quads(&quads, viewport)
     {
         return finalize_node_action_point(backend, ctx, tab_id, session, backend_node_id, point)
             .await;
@@ -635,35 +659,6 @@ async fn dom_cdp_routed<B: DomCuaRuntimeBackend + Sync>(
         }
         None => backend.execute_dom_cdp(ctx, tab_id, method, params).await,
     }
-}
-
-// Branch 4c (empirical, site-isolated probe): an OOPIF session's quads/box-model
-// are FRAME-LOCAL, not root-composed. This helper returns the frame-local point
-// at scale 1 (the `action_point_from_*` math subtracts the top-level
-// visual-viewport origin); `finalize_node_action_point` then ADDS the frame
-// chain's root offset (`oopif_root_offset`) to land the top-level dispatch.
-async fn content_quad_action_point<B: DomCuaRuntimeBackend + Sync>(
-    backend: &B,
-    ctx: &BackendRequestContext,
-    tab_id: &str,
-    session: Option<&str>,
-    backend_node_id: i64,
-    viewport: Rect,
-) -> Result<Option<(f64, f64)>> {
-    let result = match dom_cdp_routed(
-        backend,
-        ctx,
-        tab_id,
-        session,
-        "DOM.getContentQuads",
-        json!({ "backendNodeId": backend_node_id }),
-    )
-    .await
-    {
-        Ok(result) => result,
-        Err(_) => return Ok(None),
-    };
-    Ok(dom_cua::action_point_from_content_quads(&result, viewport))
 }
 
 async fn box_model_action_point<B: DomCuaRuntimeBackend + Sync>(
@@ -1155,6 +1150,94 @@ mod hit_verify_tests {
         let point = node_action_point(&backend, &ctx(), "42", None, "7")
             .await
             .unwrap();
+        assert_eq!(point, (20.0, 20.0));
+    }
+
+    // Both post-scroll reads (Page.getLayoutMetrics ∥ DOM.getContentQuads) must be
+    // in-flight simultaneously: a sequential implementation awaits the viewport
+    // read before issuing the quads read, so the barrier (n=2) never trips and the
+    // call deadlocks. Under the concurrent join both arrive and the barrier
+    // releases — and the resolved point is unchanged.
+    struct ConcurrentReadsBackend {
+        barrier: std::sync::Arc<tokio::sync::Barrier>,
+    }
+
+    #[async_trait]
+    impl DomCuaRuntimeBackend for ConcurrentReadsBackend {
+        async fn execute_dom_cdp(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            method: &str,
+            _p: Value,
+        ) -> Result<Value> {
+            match method {
+                "DOM.scrollIntoViewIfNeeded" => Ok(Value::Null),
+                "Page.getLayoutMetrics" => {
+                    self.barrier.wait().await;
+                    Ok(
+                        json!({ "cssVisualViewport": { "pageX": 0, "pageY": 0, "clientWidth": 100, "clientHeight": 100 } }),
+                    )
+                }
+                "DOM.getContentQuads" => {
+                    self.barrier.wait().await;
+                    Ok(json!({ "quads": [[10, 10, 30, 10, 30, 30, 10, 30]] }))
+                }
+                "DOM.getNodeForLocation" => Ok(json!({ "backendNodeId": 8 })),
+                "DOM.describeNode" => Ok(
+                    json!({ "node": { "backendNodeId": 7, "children": [ { "backendNodeId": 8, "children": [] } ] } }),
+                ),
+                other => panic!("unexpected method {other}"),
+            }
+        }
+        async fn dispatch_coordinate_cua(
+            &self,
+            _c: &BackendRequestContext,
+            _m: &str,
+            _p: Value,
+        ) -> Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn remember_visible_dom_nodes(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+            _n: &[Value],
+        ) {
+        }
+        async fn validate_visible_dom_node(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+            _n: &str,
+        ) -> Result<()> {
+            Ok(())
+        }
+        async fn forget_visible_dom_snapshot(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+        ) {
+        }
+    }
+
+    #[tokio::test]
+    async fn post_scroll_reads_overlap_concurrently() {
+        let backend = ConcurrentReadsBackend {
+            barrier: std::sync::Arc::new(tokio::sync::Barrier::new(2)),
+        };
+        // Times out (barrier never trips) if the two reads are sequential.
+        let point = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            node_action_point(&backend, &ctx(), "42", None, "7"),
+        )
+        .await
+        .expect("must not deadlock — getLayoutMetrics and getContentQuads run concurrently")
+        .unwrap();
+        // Resolved point is unchanged by the concurrency refactor.
         assert_eq!(point, (20.0, 20.0));
     }
 }
