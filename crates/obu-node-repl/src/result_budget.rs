@@ -55,7 +55,7 @@ pub fn prepare_js_result(
         truncated.result = true;
     }
 
-    let original_display_count = result.displays.len();
+    let displays_total = result.displays_total;
     let mut displays = Vec::new();
     // Backstop only: the live accumulator is already bounded at push time
     // (ExecRegistry::push_display); take() guards against an unbounded input.
@@ -74,7 +74,8 @@ pub fn prepare_js_result(
         }
         displays.push(display);
     }
-    if original_display_count > displays.len() {
+    let displays_shown = displays.len();
+    if displays_total > displays_shown as u64 {
         truncated.displays = true;
     }
 
@@ -82,7 +83,13 @@ pub fn prepare_js_result(
         .iter()
         .filter_map(resource_link_summary)
         .collect::<Vec<_>>();
-    let text_summary = result_text_summary(result.duration_ms, &truncated, artifacts_json.len());
+    let text_summary = result_text_summary(
+        result.duration_ms,
+        &truncated,
+        artifacts_json.len(),
+        displays_shown,
+        displays_total,
+    );
     let response_meta = result.response_meta.clone();
     let error = result.error.clone();
     let error_detail = result.error_detail.clone();
@@ -93,6 +100,8 @@ pub fn prepare_js_result(
         "duration_ms": result.duration_ms,
         "truncated": truncated,
         "displays": displays,
+        "displays_total": displays_total,
+        "displays_shown": displays_shown,
         "artifacts": artifacts_json,
         "response_meta": response_meta,
         "error": error,
@@ -112,19 +121,31 @@ fn result_text_summary(
     duration_ms: u64,
     truncated: &TruncationInfo,
     artifact_count: usize,
+    displays_shown: usize,
+    displays_total: u64,
 ) -> String {
     let mut parts = vec![format!(
         "JavaScript execution completed in {duration_ms}ms."
     )];
-    let truncated_fields = [
-        ("stdout", truncated.stdout),
-        ("stderr", truncated.stderr),
-        ("result", truncated.result),
-        ("displays", truncated.displays),
-    ]
-    .into_iter()
-    .filter_map(|(name, was_truncated)| was_truncated.then_some(name))
-    .collect::<Vec<_>>();
+    let mut truncated_fields: Vec<String> = Vec::new();
+    if truncated.stdout {
+        truncated_fields.push("stdout".to_string());
+    }
+    if truncated.stderr {
+        truncated_fields.push("stderr".to_string());
+    }
+    if truncated.result {
+        truncated_fields.push("result".to_string());
+    }
+    if truncated.displays {
+        if displays_total > displays_shown as u64 {
+            truncated_fields.push(format!(
+                "displays ({displays_shown} of {displays_total} shown; head)"
+            ));
+        } else {
+            truncated_fields.push("displays".to_string());
+        }
+    }
     if !truncated_fields.is_empty() {
         parts.push(format!("Truncated: {}.", truncated_fields.join(", ")));
     }
@@ -500,5 +521,104 @@ mod tests {
         assert_eq!(prepared.structured["result"]["type"], "artifact");
         assert_eq!(prepared.content_links.len(), 0);
         assert!(artifacts.list_resources().is_empty());
+    }
+
+    #[test]
+    fn prepare_js_result_surfaces_display_count_when_capped() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifacts = ArtifactStore::new_at(dir.path(), "budget-test").unwrap();
+        let displays = (0..MAX_DISPLAY_COUNT)
+            .map(|i| DisplayEntry {
+                at_ms: i as u64,
+                kind: "text".to_string(),
+                value: json!(i),
+            })
+            .collect();
+        let raw = JsExecResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            result: json!({ "ok": true }),
+            duration_ms: 3,
+            truncated: TruncationInfo::default(),
+            displays,
+            displays_total: 4321,
+            response_meta: None,
+            error: None,
+            error_detail: None,
+        };
+
+        let prepared = prepare_js_result(raw, &artifacts).unwrap();
+
+        assert_eq!(prepared.structured["displays_total"], 4321);
+        assert_eq!(prepared.structured["displays_shown"], MAX_DISPLAY_COUNT);
+        assert_eq!(prepared.structured["truncated"]["displays"], true);
+        assert!(prepared.text_summary.contains("50 of 4321 shown; head"));
+    }
+
+    #[test]
+    fn prepare_js_result_reports_full_display_count_when_not_capped() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifacts = ArtifactStore::new_at(dir.path(), "budget-test").unwrap();
+        let raw = JsExecResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            result: json!({ "ok": true }),
+            duration_ms: 3,
+            truncated: TruncationInfo::default(),
+            displays: vec![DisplayEntry {
+                at_ms: 1,
+                kind: "text".to_string(),
+                value: json!("hi"),
+            }],
+            displays_total: 1,
+            response_meta: None,
+            error: None,
+            error_detail: None,
+        };
+
+        let prepared = prepare_js_result(raw, &artifacts).unwrap();
+
+        assert_eq!(prepared.structured["displays_total"], 1);
+        assert_eq!(prepared.structured["displays_shown"], 1);
+        assert_eq!(prepared.structured["truncated"]["displays"], false);
+        assert!(!prepared.text_summary.contains("shown; head"));
+    }
+
+    #[test]
+    fn prepare_js_result_count_cap_and_value_summarize_are_both_honest() {
+        let dir = tempfile::tempdir().unwrap();
+        let artifacts = ArtifactStore::new_at(dir.path(), "budget-test").unwrap();
+        let mut displays: Vec<DisplayEntry> = (0..MAX_DISPLAY_COUNT)
+            .map(|i| DisplayEntry {
+                at_ms: i as u64,
+                kind: "text".to_string(),
+                value: json!(i),
+            })
+            .collect();
+        // One kept frame is itself oversized -> value-summarized inline.
+        displays[0].value = json!({ "payload": "x".repeat(MAX_DISPLAY_JSON_BYTES + 1) });
+        let raw = JsExecResult {
+            stdout: String::new(),
+            stderr: String::new(),
+            result: json!({ "ok": true }),
+            duration_ms: 3,
+            truncated: TruncationInfo::default(),
+            displays,
+            displays_total: 60,
+            response_meta: None,
+            error: None,
+            error_detail: None,
+        };
+
+        let prepared = prepare_js_result(raw, &artifacts).unwrap();
+
+        // Cardinality token wins in the summary...
+        assert!(prepared.text_summary.contains("50 of 60 shown; head"));
+        assert_eq!(prepared.structured["truncated"]["displays"], true);
+        // ...and the oversized kept frame still carries its inline truncation marker.
+        assert_eq!(
+            prepared.structured["displays"][0]["value"]["kind"],
+            "truncated"
+        );
     }
 }

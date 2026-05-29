@@ -188,7 +188,11 @@ a short status summary — read `structuredContent` for the actual data. Key fie
 - `result` — JSON-serializable value of the last expression, or `null`.
 - `duration_ms` — kernel-measured execution time.
 - `truncated` — per-field budget flags (`stdout`/`stderr`/`result`/`displays`).
-- `displays` — values emitted by `display(value)`.
+- `displays` — frames emitted by `display(value)`, capped at the first 50 (head).
+- `displays_total` / `displays_shown` — total frames emitted vs. how many are in
+  `displays`. When `displays_total > displays_shown` the first 50 were kept,
+  `truncated.displays` is set, and the status summary reads e.g.
+  `Truncated: displays (50 of 4321 shown; head).`
 - `artifacts` — MCP resource summaries for large payloads spilled out of the result.
 - `response_meta` — metadata set with `nodeRepl.setResponseMeta(value)`.
 - `error` — user-code error message when the cell fails, otherwise `null`. JavaScript
