@@ -557,6 +557,22 @@ impl TaskStore {
             .context("set journal_mode=WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .context("enable foreign_keys")?;
+        // §2.2: enable incremental auto-vacuum so deleted pages join a free-list
+        // that `incremental_vacuum` can reclaim. SQLite only honours an
+        // auto_vacuum mode change made BEFORE any table is created (a fresh db),
+        // OR after a full `VACUUM`. We set it before `setup_schema` (correct for a
+        // fresh db) and read it back; if a pre-existing db is still on mode 0
+        // (`NONE`), a one-time `VACUUM` converts its free-list so future
+        // `incremental_vacuum` calls reclaim space.
+        conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")
+            .context("set auto_vacuum=INCREMENTAL")?;
+        let auto_vacuum: i64 = conn
+            .query_row("PRAGMA auto_vacuum", [], |row| row.get(0))
+            .context("read auto_vacuum mode")?;
+        if auto_vacuum != 2 {
+            conn.execute_batch("VACUUM")
+                .context("convert existing db to incremental auto_vacuum")?;
+        }
 
         Self::setup_schema(&mut conn)?;
 
@@ -1035,6 +1051,81 @@ impl TaskStore {
             .optional()
             .context("check task exists")?;
         Ok(exists.is_some())
+    }
+
+    /// Delete terminal tasks older than `window_ms` (audit §2.2).
+    ///
+    /// Removes every task in a *canonical terminal* state — `completed` /
+    /// `cancelled` / `failed`, the three FROZEN `TaskState::as_str` literals that
+    /// `allowed_transitions` maps to an empty slice (`task_lifecycle.rs`) — whose
+    /// `created_at` is more than `window_ms` in the past. All child rows
+    /// (segments, checkpoints, events, resources, bindings, resume attempts,
+    /// execution owners) are removed automatically by the existing
+    /// `ON DELETE CASCADE` foreign keys. Non-terminal tasks are never touched —
+    /// in particular `blocked` is recoverable (it re-enters via `resuming`), so it
+    /// is deliberately excluded. Returns the number of `tasks` rows deleted.
+    /// Callers pass a non-negative `window_ms`.
+    pub fn prune_terminal_tasks(&self, window_ms: i64) -> Result<usize> {
+        let cutoff = now_millis() - window_ms;
+        let deleted = self
+            .conn
+            .execute(
+                "DELETE FROM tasks
+                 WHERE state IN ('completed', 'cancelled', 'failed')
+                   AND created_at < ?1",
+                [cutoff],
+            )
+            .context("prune terminal tasks")?;
+        Ok(deleted)
+    }
+
+    /// Cap a single task's durable event log to its `cap` most recent cursors
+    /// (audit §2.2).
+    ///
+    /// Deletes the lowest-cursor `task_events` rows so at most `cap` remain,
+    /// preserving the newest events and the monotonic `MAX(cursor)` that
+    /// `append_event` reads to assign the next cursor. Returns the number of rows
+    /// removed. A `cap` of 0 clears the log.
+    pub fn cap_task_events(&self, task_id: &str, cap: i64) -> Result<usize> {
+        let removed = self
+            .conn
+            .execute(
+                "DELETE FROM task_events
+                 WHERE task_id = ?1
+                   AND cursor <= (
+                       SELECT MAX(cursor) FROM task_events WHERE task_id = ?1
+                   ) - ?2",
+                rusqlite::params![task_id, cap],
+            )
+            .context("cap task events")?;
+        Ok(removed)
+    }
+
+    /// Reclaim free-list pages produced by retention deletes (audit §2.2).
+    ///
+    /// A thin wrapper over `PRAGMA incremental_vacuum` (a no-op unless
+    /// `auto_vacuum=INCREMENTAL` is in effect, which `open` ensures). Cheap to
+    /// call after a retention pass.
+    pub fn incremental_vacuum(&self) -> Result<()> {
+        self.conn
+            .execute_batch("PRAGMA incremental_vacuum")
+            .context("incremental vacuum")?;
+        Ok(())
+    }
+
+    /// Backdate a task's `created_at` for retention tests (no production caller).
+    ///
+    /// `#[doc(hidden)]` and intended only for unit tests that need a task to fall
+    /// outside the retention window without sleeping.
+    #[doc(hidden)]
+    pub fn set_task_created_at_for_test(&self, task_id: &str, created_at: i64) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE tasks SET created_at = ?2 WHERE id = ?1",
+                rusqlite::params![task_id, created_at],
+            )
+            .context("backdate task created_at")?;
+        Ok(())
     }
 
     /// Resolve the task currently bound to `session_id`, if any.
@@ -2497,5 +2588,104 @@ mod tests {
             store.complete_resume_attached(&token, 7).is_ok(),
             "an already-attached row must stay redeemable past its TTL (idempotency)"
         );
+    }
+
+    #[test]
+    fn prune_terminal_tasks_deletes_old_terminal_and_cascades() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        store
+            .append_segment(&task_id, Segment::new("s1", "t1"))
+            .unwrap();
+        store.append_event(&task_id, "marker", "{}").unwrap();
+        store.set_state(&task_id, TaskState::Completed).unwrap();
+        // Backdate the row well before the retention window.
+        store
+            .set_task_created_at_for_test(&task_id, now_millis() - 1_000_000)
+            .unwrap();
+
+        // Retain only the last 60s of terminal tasks => this one is pruned.
+        let pruned = store.prune_terminal_tasks(60_000).unwrap();
+        assert_eq!(pruned, 1);
+        assert!(!store.task_exists(&task_id).unwrap());
+        // FK ON DELETE CASCADE removed the children too.
+        assert_eq!(store.segments(&task_id).unwrap().len(), 0);
+        assert_eq!(store.event_cursor(&task_id).unwrap(), 0);
+    }
+
+    #[test]
+    fn prune_terminal_tasks_keeps_live_and_recent_tasks() {
+        let (store, _dir) = open_temp_store();
+        // A live (non-terminal) task, old enough to be in-window — must NOT be pruned.
+        let live = store.create_task(default_new_task()).unwrap();
+        store.set_state(&live, TaskState::Running).unwrap();
+        store
+            .set_task_created_at_for_test(&live, now_millis() - 1_000_000)
+            .unwrap();
+        // A terminal task created just now — within the window, must NOT be pruned.
+        let recent = store.create_task(default_new_task()).unwrap();
+        store.set_state(&recent, TaskState::Cancelled).unwrap();
+
+        let pruned = store.prune_terminal_tasks(60_000).unwrap();
+        assert_eq!(pruned, 0);
+        assert!(store.task_exists(&live).unwrap());
+        assert!(store.task_exists(&recent).unwrap());
+    }
+
+    #[test]
+    fn cap_task_events_trims_to_the_most_recent_n() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        for _ in 0..5 {
+            store.append_event(&task_id, "marker", "{}").unwrap();
+        }
+        // Keep only the 2 highest cursors.
+        let removed = store.cap_task_events(&task_id, 2).unwrap();
+        assert_eq!(removed, 3);
+        // event_cursor reports MAX(cursor); the newest event survived.
+        assert_eq!(store.event_cursor(&task_id).unwrap(), 5);
+    }
+
+    #[test]
+    fn prune_terminal_tasks_keeps_blocked_recoverable_tasks() {
+        let (store, _dir) = open_temp_store();
+        // Blocked is NOT terminal (Blocked -> {Resuming, WaitingForHuman,
+        // Cancelling, Failed}); it is recoverable live work and must survive
+        // retention even when old.
+        let blocked = store.create_task(default_new_task()).unwrap();
+        store.set_state(&blocked, TaskState::Blocked).unwrap();
+        store
+            .set_task_created_at_for_test(&blocked, now_millis() - 1_000_000)
+            .unwrap();
+        assert_eq!(store.prune_terminal_tasks(60_000).unwrap(), 0);
+        assert!(store.task_exists(&blocked).unwrap());
+    }
+
+    #[test]
+    fn prune_terminal_tasks_deletes_old_failed_tasks() {
+        let (store, _dir) = open_temp_store();
+        // Failed is terminal (allowed_transitions -> empty slice) and must prune.
+        let failed = store.create_task(default_new_task()).unwrap();
+        store.set_state(&failed, TaskState::Failed).unwrap();
+        store
+            .set_task_created_at_for_test(&failed, now_millis() - 1_000_000)
+            .unwrap();
+        assert_eq!(store.prune_terminal_tasks(60_000).unwrap(), 1);
+        assert!(!store.task_exists(&failed).unwrap());
+    }
+
+    #[test]
+    fn cap_task_events_edge_cases() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        for _ in 0..3 {
+            store.append_event(&task_id, "marker", "{}").unwrap();
+        }
+        // cap >= count is a no-op.
+        assert_eq!(store.cap_task_events(&task_id, 10).unwrap(), 0);
+        assert_eq!(store.event_cursor(&task_id).unwrap(), 3);
+        // cap == 0 clears the log.
+        assert_eq!(store.cap_task_events(&task_id, 0).unwrap(), 3);
+        assert_eq!(store.event_cursor(&task_id).unwrap(), 0);
     }
 }
