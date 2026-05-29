@@ -113,7 +113,8 @@ export class FinalizeTabsController {
     const actions: FinalizeTabAction[] = [];
     const failures: FinalizeTabFailure[] = [];
 
-    for (const step of planFinalizeTabs([...session.tabs], keep).steps) {
+    const plan = planFinalizeTabs([...session.tabs], keep);
+    for (const step of plan.steps) {
       const { tabId, row, desiredStatus } = step;
       try {
         if (step.effect === "close_agent_tab") {
@@ -184,6 +185,28 @@ export class FinalizeTabsController {
           });
         }
       }
+    }
+
+    // audit §4.10: a keep entry whose tabId is not owned by the session yields no
+    // step (planFinalizeTabs only iterates owned tabs). Surface each unmatched
+    // tabId as a per-tab `not_attempted` failure so the agent learns the keep
+    // request was not honored, instead of silently reporting `ok`. We use a
+    // failure (not an action) because an unowned tabId has no truthful origin.
+    for (const tabId of plan.unknownKeepTabIds) {
+      const desiredStatus = keep.get(tabId);
+      const failure = finalizeFailure(
+        tabId,
+        desiredStatus,
+        "not_attempted",
+        new Error(`tab ${tabId} is not owned by the session`),
+        "tab_not_owned",
+      );
+      failures.push(failure);
+      this.options.appendDebugLog("warn", "tabs.finalize.unknown_keep_tab", {
+        sessionId: sessionParams.session_id,
+        tabId,
+        desiredStatus,
+      });
     }
 
     let finalTabs: FinalizeTabsFinalTabs;

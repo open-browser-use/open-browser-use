@@ -171,6 +171,65 @@ import { FinalizeTabsController } from "../dist/finalize_tabs_controller.js";
   assert.equal(harness.calls.sync >= 2, true);
 }
 
+{
+  // audit §4.10: a keep entry for a tabId the session does not own must be
+  // surfaced as a per-tab `not_attempted` failure, not silently dropped.
+  const harness = createHarness({
+    session: sessionWithTabs([[10, { tabId: 10, origin: "agent", status: "active" }]]),
+  });
+
+  const result = await harness.controller.finalizeTabs(sessionParams(), {
+    keep: [
+      { tabId: 10, status: "handoff" },
+      { tabId: 404, status: "deliverable" },
+    ],
+  });
+
+  // The owned tab is kept; the unknown keep tabId becomes a not_attempted failure.
+  assert.equal(result.status, "partial");
+  assert.equal(harness.session.tabs.get(10).status, "handoff");
+  const unknown = result.failures.filter((failure) => failure.outcome === "not_attempted");
+  assert.equal(unknown.length, 1);
+  assert.equal(unknown[0].tabId, 404);
+  assert.equal(unknown[0].desiredStatus, "deliverable");
+  assert.equal(unknown[0].errorCode, "tab_not_owned");
+  assert.match(unknown[0].errorMessage, /not owned by the session/);
+  // The discrepancy flips the lifecycle to finalize_partial (honest "not all kept").
+  assert.equal(harness.session.lifecycle.kind, "finalize_partial");
+  assert.equal(harness.session.lastFinalize.failures.some((f) => f.tabId === 404), true);
+  assert.equal(
+    harness.calls.logs.some((log) => log.event === "tabs.finalize.unknown_keep_tab"),
+    true,
+    "an unknown keep tabId must emit the unknown_keep_tab debug log",
+  );
+}
+
+{
+  // audit §4.10: multiple unknown keep tabIds each surface as their own
+  // not_attempted failure (exercises the loop with >1 element).
+  const harness = createHarness({
+    session: sessionWithTabs([[10, { tabId: 10, origin: "agent", status: "active" }]]),
+  });
+
+  const result = await harness.controller.finalizeTabs(sessionParams(), {
+    keep: [
+      { tabId: 10, status: "handoff" },
+      { tabId: 404, status: "deliverable" },
+      { tabId: 405, status: "handoff" },
+    ],
+  });
+
+  assert.equal(result.status, "partial");
+  assert.equal(harness.session.tabs.get(10).status, "handoff");
+  const unknown = result.failures.filter((failure) => failure.outcome === "not_attempted");
+  assert.equal(unknown.length, 2);
+  assert.deepEqual(
+    unknown.map((failure) => failure.tabId).sort((a, b) => a - b),
+    [404, 405],
+  );
+  assert.equal(unknown.every((failure) => failure.errorCode === "tab_not_owned"), true);
+}
+
 function sessionParams() {
   return { session_id: "session-a", turn_id: "turn-1" };
 }
