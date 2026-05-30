@@ -619,9 +619,13 @@ pub(crate) fn render_visible_dom_compact_text(nodes: &[Value]) -> String {
 /// packages/sdk/src/snapshot-text.ts — flag iff pre-clip length > max_len).
 pub(crate) fn aggregate_text_with_flag(node: &Value, max_len: usize) -> (String, bool) {
     let mut out = String::new();
-    append_text(node, &mut out, max_len);
+    let mut clipped = false;
+    append_text(node, &mut out, max_len, &mut clipped);
     let normalized = normalize_ws(&out);
-    let truncated = normalized.chars().count() > max_len;
+    // `clipped` catches the byte-budget early return, including multi-byte text
+    // that hits the byte cap before `max_len` chars. The char-count arm catches a
+    // single text node that overshoots in one push_str.
+    let truncated = clipped || normalized.chars().count() > max_len;
     (normalized.chars().take(max_len).collect(), truncated)
 }
 
@@ -670,15 +674,15 @@ fn is_non_content_tag(node: &Value) -> bool {
     )
 }
 
-fn append_text(node: &Value, out: &mut String, max_len: usize) {
-    if out.len() >= max_len || is_hidden_subtree(node) {
+fn append_text(node: &Value, out: &mut String, max_len: usize, clipped: &mut bool) {
+    // Hidden / non-content subtrees contribute no text in either behavior.
+    // Checking them before the budget guard records clipping only for content
+    // subtrees that would otherwise have been visited.
+    if is_hidden_subtree(node) || is_non_content_tag(node) {
         return;
     }
-    // Skip non-content elements: their text is source/non-rendered content
-    // (CSS, JS, <noscript> fallbacks, inert <template> bodies) that must never
-    // leak into an element's accessible label — e.g. a styled <button> that
-    // inlines a <style> would otherwise surface the stylesheet in snapshotText().
-    if is_non_content_tag(node) {
+    if out.len() >= max_len {
+        *clipped = true;
         return;
     }
     if node
@@ -693,10 +697,10 @@ fn append_text(node: &Value, out: &mut String, max_len: usize) {
     for key in ["children", "shadowRoots", "contentDocument"] {
         if let Some(children) = node.get(key).and_then(Value::as_array) {
             for child in children {
-                append_text(child, out, max_len);
+                append_text(child, out, max_len, clipped);
             }
         } else if let Some(child) = node.get(key) {
-            append_text(child, out, max_len);
+            append_text(child, out, max_len, clipped);
         }
     }
 }
@@ -1190,6 +1194,39 @@ mod tests {
         assert!(truncated);
         // The legacy wrapper still returns just the clipped string.
         assert_eq!(aggregate_text(&long, 240), text);
+    }
+
+    #[test]
+    fn text_truncated_flags_multinode_byte_budget_clip() {
+        // Two content #text children. The first fills the 240-byte budget; the
+        // second is skipped by the byte-budget guard. Pre-clip CHAR count (~240)
+        // is NOT > 240, so the old heuristic returned false even though content
+        // from the second node was dropped.
+        let node = json!({
+            "nodeName": "DIV",
+            "children": [
+                { "nodeName": "#text", "nodeValue": "a".repeat(240) },
+                { "nodeName": "#text", "nodeValue": "b".repeat(50) },
+            ]
+        });
+        let (_text, truncated) = aggregate_text_with_flag(&node, 240);
+        assert!(truncated, "dropping the second text node must flag truncation");
+    }
+
+    #[test]
+    fn text_truncated_flags_multibyte_byte_cap() {
+        // 100 CJK chars across two nodes = 300 bytes; the 240-byte budget trips
+        // after ~80 chars, dropping the rest. chars().count() (~80) is NOT > 240,
+        // so only the byte-budget clipped signal can catch this.
+        let node = json!({
+            "nodeName": "DIV",
+            "children": [
+                { "nodeName": "#text", "nodeValue": "中".repeat(80) },
+                { "nodeName": "#text", "nodeValue": "文".repeat(20) },
+            ]
+        });
+        let (_text, truncated) = aggregate_text_with_flag(&node, 240);
+        assert!(truncated, "multi-byte text past the byte cap must flag truncation");
     }
 
     #[test]
