@@ -123,10 +123,11 @@ the target):
    anything addressable in the DOM.
 2. DOM-CUA (`tab.dom_cua`): click/type by snapshot node id when locators cannot
    target the element but it still exists as a DOM node. Use `tab.dom_cua.text()` to
-   read the node list while keeping ids valid. The visible-DOM read self-describes via
-   `meta.{shown,total,truncated}` (plus per-entry `text_truncated` for labels clipped at
-   240 chars) — branch on `meta.truncated` to fall back to `domSnapshot()`/`evaluate()`
-   rather than trusting the node list as complete.
+   read the node list while keeping ids valid. The default (json) read self-describes via
+   `meta.{shown,total,truncated,degraded}` (plus per-entry `text_truncated` for labels
+   clipped at 240 chars); `text()` appends a one-line truncation marker. Branch on
+   `meta.truncated` / `meta.degraded` to fall back to `domSnapshot()`/`evaluate()` rather
+   than trusting the node list as complete.
 3. Coordinate-CUA (`tab.cua`): act by viewport coordinates when DOM targeting fails
    but the element is visibly rendered (canvas, custom widgets).
 4. Vision (`tab.screenshotForModel(...)`): use a clipped screenshot to *decide where*
