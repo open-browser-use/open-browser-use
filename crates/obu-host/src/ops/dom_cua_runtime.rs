@@ -1120,6 +1120,121 @@ mod hoist_tests {
         );
     }
 
+    // One top-level <button> and one OOPIF-session <button>, both in-viewport.
+    // Locks the emitted node field set, bounds mapping from content quad, and
+    // the OOPIF `session_id` tag.
+    struct PayloadBackend;
+    #[async_trait]
+    impl DomCuaRuntimeBackend for PayloadBackend {
+        async fn execute_dom_cdp(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            method: &str,
+            _p: Value,
+        ) -> Result<Value> {
+            match method {
+                "Page.getLayoutMetrics" => Ok(json!({
+                    "cssVisualViewport": { "pageX": 0, "pageY": 0, "clientWidth": 100, "clientHeight": 100 }
+                })),
+                "DOM.getDocument" => Ok(json!({
+                    "root": {
+                        "nodeName": "DIV", "backendNodeId": 1,
+                        "children": [
+                            { "nodeName": "BUTTON", "backendNodeId": 2, "attributes": ["aria-label", "Top"] }
+                        ]
+                    }
+                })),
+                "DOM.getBoxModel" => {
+                    Ok(json!({ "model": { "content": [0, 0, 10, 0, 10, 10, 0, 10] } }))
+                }
+                _ => Ok(json!({})),
+            }
+        }
+        async fn execute_dom_cdp_on_session(
+            &self,
+            _c: &BackendRequestContext,
+            _s: &str,
+            method: &str,
+            _p: Value,
+        ) -> Result<Value> {
+            match method {
+                "DOM.getDocument" => Ok(json!({
+                    "root": {
+                        "nodeName": "DIV", "backendNodeId": 4,
+                        "children": [
+                            { "nodeName": "BUTTON", "backendNodeId": 5, "attributes": ["aria-label", "Frame"] }
+                        ]
+                    }
+                })),
+                "DOM.getBoxModel" => {
+                    Ok(json!({ "model": { "content": [0, 0, 20, 0, 20, 20, 0, 20] } }))
+                }
+                _ => Ok(json!({})),
+            }
+        }
+        async fn oopif_sessions_for_tab(&self, _t: &str) -> Vec<String> {
+            vec!["F1".into()]
+        }
+        async fn dispatch_coordinate_cua(
+            &self,
+            _c: &BackendRequestContext,
+            _m: &str,
+            _p: Value,
+        ) -> Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn remember_visible_dom_nodes(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+            _n: &[Value],
+        ) {
+        }
+        async fn validate_visible_dom_node(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+            _n: &str,
+        ) -> Result<()> {
+            Ok(())
+        }
+        async fn forget_visible_dom_snapshot(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+        ) {
+        }
+    }
+
+    #[tokio::test]
+    async fn visible_dom_payload_locks_full_node_shape_incl_oopif_session() {
+        let backend = PayloadBackend;
+        let params = json!({ "tab_id": "tab" });
+        let response = visible_dom(&backend, &ctx(), params).await.unwrap();
+        assert_eq!(
+            response["nodes"],
+            json!([
+                {
+                    "node_id": "2", "tag": "button", "role": "", "name": "Top",
+                    "text": "", "text_truncated": false,
+                    "bounds": { "x": 0.0, "y": 0.0, "width": 10.0, "height": 10.0 },
+                    "attributes": { "aria-label": "Top" }
+                },
+                {
+                    "node_id": "5", "tag": "button", "role": "", "name": "Frame",
+                    "text": "", "text_truncated": false,
+                    "bounds": { "x": 0.0, "y": 0.0, "width": 20.0, "height": 20.0 },
+                    "attributes": { "aria-label": "Frame" },
+                    "session_id": "F1"
+                }
+            ])
+        );
+    }
+
     #[tokio::test]
     async fn visible_dom_meta_counts_candidates_shown_and_total() {
         // One in-viewport <button> (emitted) + one off-viewport <button> (a
