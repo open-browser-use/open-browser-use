@@ -9,15 +9,25 @@ export type DomCuaNode = {
   role?: string;
   name?: string;
   text?: string;
+  text_truncated?: boolean;
   tag?: string;
   bounds?: { x: number; y: number; width: number; height: number };
   children?: DomCuaNode[];
+};
+
+export type DomCuaMeta = {
+  shown: number;
+  total: number;
+  truncated: boolean;
+  degraded: boolean;
+  hint?: string;
 };
 
 export type DomCuaSnapshot = {
   nodes?: DomCuaNode[];
   root?: DomCuaNode;
   text?: string;
+  meta?: DomCuaMeta;
 };
 
 export type DomCuaTimeoutOptions = { timeout?: number };
@@ -68,7 +78,9 @@ export class TabDomCua {
       }),
       opts.timeout,
     );
-    if (opts.format === "text" || opts.format === "debug_text" || opts.format === "compact_text") return response.text ?? "";
+    if (opts.format === "text" || opts.format === "debug_text" || opts.format === "compact_text") {
+      return appendDomCuaTruncationMarker(response.text ?? "", response.meta);
+    }
     return response;
   }
 
@@ -137,4 +149,10 @@ export class TabDomCua {
 
 function observationWireParam(observationId: string | undefined): Record<string, string> {
   return observationId === undefined ? {} : { observation_id: observationId };
+}
+
+function appendDomCuaTruncationMarker(text: string, meta?: DomCuaMeta): string {
+  if (!meta?.truncated) return text;
+  const marker = `[dom_cua: ${meta.shown} of ${meta.total} shown - some elements off-screen, clipped, or in unread child frames; scroll, or use tab.domSnapshot()/tab.evaluate() for full fidelity]`;
+  return text.length > 0 ? `${text}\n${marker}` : marker;
 }
