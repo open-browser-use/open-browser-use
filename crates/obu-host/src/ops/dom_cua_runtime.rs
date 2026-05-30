@@ -140,6 +140,9 @@ async fn visible_dom<B: DomCuaRuntimeBackend + Sync>(
         .ok_or_else(|| HostError::Protocol("DOM.getDocument missing root".into()))?;
     let mut nodes = Vec::new();
     let mut total: usize = 0;
+    // Whole child-frame drops contribute no candidates to `total`, so they need
+    // an explicit honesty signal; otherwise shown == total can still be incomplete.
+    let mut degraded = false;
     total +=
         collect_visible_dom_nodes(backend, ctx, tab_id, None, root, viewport, &mut nodes).await?;
     // Each OOPIF session is enumerated against the SAME top-level `viewport`. An
@@ -160,6 +163,7 @@ async fn visible_dom<B: DomCuaRuntimeBackend + Sync>(
         else {
             // A flaky child frame must not blank the whole snapshot; skip it, but
             // leave a breadcrumb — the feature's failure mode is "nodes absent".
+            degraded = true;
             tracing::debug!(session_id = %session_id, "OOPIF DOM.getDocument failed; its nodes are absent from this snapshot");
             continue;
         };
@@ -174,6 +178,9 @@ async fn visible_dom<B: DomCuaRuntimeBackend + Sync>(
                 &mut nodes,
             )
             .await?;
+        } else {
+            degraded = true;
+            tracing::debug!(session_id = %session_id, "OOPIF DOM.getDocument returned no root; its nodes are absent from this snapshot");
         }
     }
     backend
@@ -197,8 +204,9 @@ async fn visible_dom<B: DomCuaRuntimeBackend + Sync>(
     // Honest accounting (mirrors SnapshotTextMeta): `total` = candidates
     // considered (interesting & non-hidden, with a backendNodeId) summed across
     // the top-level + every OOPIF session; `shown` = emitted (also had a positive
-    // box-model rect intersecting the viewport); `truncated` iff some candidate
-    // was dropped OR an emitted entry's label was clipped. The `hint` points at
+    // box-model rect intersecting the viewport); `degraded` = at least one child
+    // frame subtree could not be read; `truncated` iff any candidate was dropped,
+    // a label was clipped, OR a child frame was unreadable. The `hint` points at
     // the open primitives so the agent never treats the list as exhaustive.
     let shown = nodes.len();
     let text_clipped = nodes.iter().any(|node| {
@@ -206,17 +214,18 @@ async fn visible_dom<B: DomCuaRuntimeBackend + Sync>(
             .and_then(Value::as_bool)
             .unwrap_or(false)
     });
-    let truncated = shown < total || text_clipped;
+    let truncated = shown < total || text_clipped || degraded;
     if let Some(object) = response.as_object_mut() {
         let mut meta = serde_json::Map::new();
         meta.insert("shown".into(), json!(shown));
         meta.insert("total".into(), json!(total));
         meta.insert("truncated".into(), json!(truncated));
+        meta.insert("degraded".into(), json!(degraded));
         if truncated {
             meta.insert(
                 "hint".into(),
                 json!(
-                    "Some interesting elements are off-screen/zero-area or their labels were clipped at 240 chars. Scroll the page, or read full-fidelity content with tab.evaluate(...) or tab.domSnapshot()."
+                    "Some interesting elements may be off-screen, zero-area, unmeasurable, in a child frame that could not be read, or have labels clipped at 240 chars. Scroll the page, or read full-fidelity content with tab.evaluate(...) or tab.domSnapshot()."
                 ),
             );
         }
@@ -1017,6 +1026,100 @@ mod hoist_tests {
         }
     }
 
+    // Top-level page is clean, but the single OOPIF session's DOM.getDocument
+    // fails. The frame's nodes are absent, so the snapshot must be degraded even
+    // when shown == total for the top-level tree.
+    struct OopifDropBackend;
+    #[async_trait]
+    impl DomCuaRuntimeBackend for OopifDropBackend {
+        async fn execute_dom_cdp(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            method: &str,
+            _p: Value,
+        ) -> Result<Value> {
+            match method {
+                "Page.getLayoutMetrics" => Ok(json!({
+                    "cssVisualViewport": { "pageX": 0, "pageY": 0, "clientWidth": 100, "clientHeight": 100 }
+                })),
+                "DOM.getDocument" => Ok(json!({
+                    "root": {
+                        "nodeName": "DIV", "backendNodeId": 1,
+                        "children": [
+                            { "nodeName": "BUTTON", "backendNodeId": 2, "attributes": ["aria-label", "ok"] }
+                        ]
+                    }
+                })),
+                "DOM.getBoxModel" => {
+                    Ok(json!({ "model": { "content": [0, 0, 10, 0, 10, 10, 0, 10] } }))
+                }
+                _ => Ok(json!({})),
+            }
+        }
+        async fn execute_dom_cdp_on_session(
+            &self,
+            _c: &BackendRequestContext,
+            _s: &str,
+            _m: &str,
+            _p: Value,
+        ) -> Result<Value> {
+            Err(HostError::Protocol("oopif getDocument failed".into()))
+        }
+        async fn oopif_sessions_for_tab(&self, _t: &str) -> Vec<String> {
+            vec!["OOPIF-X".into()]
+        }
+        async fn dispatch_coordinate_cua(
+            &self,
+            _c: &BackendRequestContext,
+            _m: &str,
+            _p: Value,
+        ) -> Result<Value> {
+            Ok(Value::Null)
+        }
+        async fn remember_visible_dom_nodes(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+            _n: &[Value],
+        ) {
+        }
+        async fn validate_visible_dom_node(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+            _n: &str,
+        ) -> Result<()> {
+            Ok(())
+        }
+        async fn forget_visible_dom_snapshot(
+            &self,
+            _c: &BackendRequestContext,
+            _t: &str,
+            _o: Option<&str>,
+        ) {
+        }
+    }
+
+    #[tokio::test]
+    async fn visible_dom_meta_degraded_when_oopif_frame_dropped() {
+        let backend = OopifDropBackend;
+        let params = json!({ "tab_id": "tab", "observation_id": "obs" });
+        let response = visible_dom(&backend, &ctx(), params).await.unwrap();
+        assert_eq!(response["meta"]["shown"], json!(1));
+        assert_eq!(response["meta"]["total"], json!(1));
+        assert_eq!(response["meta"]["degraded"], json!(true));
+        assert_eq!(response["meta"]["truncated"], json!(true));
+        assert!(
+            response["meta"]["hint"]
+                .as_str()
+                .unwrap()
+                .contains("child frame")
+        );
+    }
+
     #[tokio::test]
     async fn visible_dom_meta_counts_candidates_shown_and_total() {
         // One in-viewport <button> (emitted) + one off-viewport <button> (a
@@ -1027,6 +1130,7 @@ mod hoist_tests {
         assert_eq!(response["meta"]["shown"], json!(1));
         assert_eq!(response["meta"]["total"], json!(2));
         assert_eq!(response["meta"]["truncated"], json!(true));
+        assert_eq!(response["meta"]["degraded"], json!(false));
         assert!(
             response["meta"]["hint"]
                 .as_str()
@@ -1126,6 +1230,7 @@ mod hoist_tests {
         assert_eq!(response["meta"]["shown"], json!(2));
         assert_eq!(response["meta"]["total"], json!(2));
         assert_eq!(response["meta"]["truncated"], json!(true));
+        assert_eq!(response["meta"]["degraded"], json!(false));
         assert!(
             response["meta"]["hint"]
                 .as_str()
@@ -1144,6 +1249,7 @@ mod hoist_tests {
         assert_eq!(response["meta"]["shown"], json!(2));
         assert_eq!(response["meta"]["total"], json!(2));
         assert_eq!(response["meta"]["truncated"], json!(false));
+        assert_eq!(response["meta"]["degraded"], json!(false));
         // No silent caps and no noise: `hint` is omitted entirely when honest.
         assert!(response["meta"].get("hint").is_none());
         assert!(
