@@ -1150,33 +1150,60 @@ mod tests {
     }
 
     #[test]
-    fn with_variants_match_their_node_computing_wrappers() {
-        let node = json!({
-            "nodeName": "BUTTON",
-            "backendNodeId": 5,
-            "attributes": ["aria-label", "Save now", "role", "button"],
-            "children": [{ "nodeName": "#text", "nodeValue": "Save now" }]
-        });
-        let tag = node_tag(&node);
-        let attrs = attributes_object(&node);
-        assert_eq!(
-            is_hidden_subtree_with(&node, &tag, &attrs),
-            is_hidden_subtree(&node)
-        );
-        assert_eq!(
-            is_interesting_node_with(&tag, &attrs),
-            is_interesting_node(&node)
-        );
+    fn predicates_classify_nodes_by_behavior() {
+        assert!(is_interesting_node(
+            &json!({ "nodeName": "BUTTON", "backendNodeId": 2 })
+        ));
+        assert!(is_interesting_node(
+            &json!({ "nodeName": "INPUT", "backendNodeId": 3 })
+        ));
+        assert!(is_interesting_node(
+            &json!({ "nodeName": "SPAN", "attributes": ["role", "button"] })
+        ));
+        assert!(is_interesting_node(
+            &json!({ "nodeName": "DIV", "attributes": ["aria-label", "Menu"] })
+        ));
+        assert!(!is_interesting_node(
+            &json!({ "nodeName": "DIV", "backendNodeId": 4 })
+        ));
+        assert!(!is_interesting_node(&json!({ "nodeName": "SPAN" })));
+
+        assert!(is_hidden_subtree(
+            &json!({ "nodeName": "DIV", "attributes": ["hidden", ""] })
+        ));
+        assert!(is_hidden_subtree(
+            &json!({ "nodeName": "DIV", "attributes": ["aria-hidden", "true"] })
+        ));
+        assert!(is_hidden_subtree(
+            &json!({ "nodeName": "INPUT", "attributes": ["type", "hidden"] })
+        ));
+        assert!(is_hidden_subtree(
+            &json!({ "nodeName": "DIV", "attributes": ["style", "display: none"] })
+        ));
+        assert!(!is_hidden_subtree(
+            &json!({ "nodeName": "DIV", "backendNodeId": 1 })
+        ));
+
         let rect = Rect {
-            x: 1.0,
-            y: 2.0,
-            width: 3.0,
-            height: 4.0,
+            x: 0.0,
+            y: 0.0,
+            width: 5.0,
+            height: 5.0,
         };
-        assert_eq!(
-            snapshot_entry_with(&node, 5, rect, &tag, &attrs),
-            snapshot_entry(&node, 5, rect)
-        );
+        let entry = snapshot_entry(
+            &json!({
+                "nodeName": "BUTTON", "backendNodeId": 7,
+                "children": [{ "nodeName": "#text", "nodeValue": "Buy" }]
+            }),
+            7,
+            rect,
+        )
+        .expect("interesting node yields an entry");
+        assert_eq!(entry["node_id"], json!("7"));
+        assert_eq!(entry["tag"], json!("button"));
+        assert_eq!(entry["name"], json!("Buy"));
+        assert_eq!(entry["text"], json!("Buy"));
+        assert_eq!(entry["text_truncated"], json!(false));
     }
 
     #[test]
@@ -1210,7 +1237,10 @@ mod tests {
             ]
         });
         let (_text, truncated) = aggregate_text_with_flag(&node, 240);
-        assert!(truncated, "dropping the second text node must flag truncation");
+        assert!(
+            truncated,
+            "dropping the second text node must flag truncation"
+        );
     }
 
     #[test]
@@ -1226,7 +1256,10 @@ mod tests {
             ]
         });
         let (_text, truncated) = aggregate_text_with_flag(&node, 240);
-        assert!(truncated, "multi-byte text past the byte cap must flag truncation");
+        assert!(
+            truncated,
+            "multi-byte text past the byte cap must flag truncation"
+        );
     }
 
     #[test]
