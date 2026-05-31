@@ -111,3 +111,35 @@ assert.equal(coordinator.hasPendingActivity(), true);
   // release_abandoned must NOT be pending
   assert.equal(coordinator2.hasPendingActivity(), false, "release_abandoned must not count as pending");
 }
+
+// audit §4.2: activate() during hide()'s await must NOT be clobbered by the resumed hide().
+{
+  // reset leftover failNextHide from the prior block so the activeTabIds()===[20] assertion is itself discriminating (audit §4.2 review follow-up)
+  failNextHide = false;
+  const triggers2 = [];
+  const coordinator3 = new OverlayCoordinator((trigger) => triggers2.push(trigger));
+  // While the OBU_CURSOR_HIDE round-trip is in flight, simulate a concurrent
+  // re-activation (e.g. moveMouse/claimUserTab) landing a fresh active takeover.
+  let reactivateDuringHide = false;
+  const originalExecuteScript = globalThis.chrome.scripting.executeScript;
+  globalThis.chrome.scripting.executeScript = async (injection) => {
+    const message = injection.args?.[1];
+    if (message?.type === "OBU_CURSOR_HIDE" && reactivateDuringHide) {
+      reactivateDuringHide = false;
+      await coordinator3.activate(20, { session_id: "session-b", turn_id: "turn-b" });
+    }
+    return originalExecuteScript(injection);
+  };
+  try {
+    await coordinator3.activate(20, { session_id: "session-a", turn_id: "turn-a" });
+    reactivateDuringHide = true;
+    await coordinator3.hide(20);
+    // The concurrent activate() must survive: the tab is still tracked AND active.
+    assert.deepEqual(coordinator3.activeTabIds(), [20], "concurrent activate() must not be dropped by hide()");
+    assert.equal(coordinator3.hasPendingActivity(), false, "no dangling release_pending after the race");
+    assert.deepEqual(coordinator3.releaseDiagnostics(), [], "active entry must not be left in a release state");
+    assert.deepEqual(coordinator3.activeTakeoverSessionId(20), "session-b", "the freshly-activated takeover identity must be preserved");
+  } finally {
+    globalThis.chrome.scripting.executeScript = originalExecuteScript;
+  }
+}
