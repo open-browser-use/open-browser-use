@@ -10,6 +10,8 @@ use std::time::Duration;
 use futures_util::{SinkExt, StreamExt};
 use serde_json::{Value, json};
 use tokio::net::TcpStream;
+#[cfg(test)]
+use tokio::sync::Notify;
 use tokio::sync::{Mutex, broadcast, oneshot, watch};
 use tokio::time::timeout;
 use tokio_tungstenite::tungstenite::Message;
@@ -89,6 +91,27 @@ pub struct CdpTransport {
     reconnect_gen: watch::Sender<u64>,
     /// Set once the reconnect budget is exhausted: the transport is dead.
     terminal: AtomicBool,
+    /// Set while the read pump is between sockets; new commands must not write
+    /// to the old sink once the reader has ended.
+    reconnecting: AtomicBool,
+    #[cfg(test)]
+    after_connection_end_pause: StdMutex<Option<Arc<ConnectionEndPause>>>,
+}
+
+#[cfg(test)]
+struct ConnectionEndPause {
+    reached: Notify,
+    proceed: Notify,
+}
+
+#[cfg(test)]
+impl ConnectionEndPause {
+    fn new() -> Self {
+        Self {
+            reached: Notify::new(),
+            proceed: Notify::new(),
+        }
+    }
 }
 
 struct PendingRemovalGuard<'a, K, V>
@@ -137,6 +160,9 @@ impl CdpTransport {
             ws_url,
             reconnect_gen,
             terminal: AtomicBool::new(false),
+            reconnecting: AtomicBool::new(false),
+            #[cfg(test)]
+            after_connection_end_pause: StdMutex::new(None),
         });
 
         let pump_transport = transport.clone();
@@ -170,6 +196,32 @@ impl CdpTransport {
         }
     }
 
+    #[cfg(test)]
+    fn pause_after_connection_end_for_test(&self) -> Arc<ConnectionEndPause> {
+        let pause = Arc::new(ConnectionEndPause::new());
+        *self
+            .after_connection_end_pause
+            .lock()
+            .expect("connection-end pause lock") = Some(pause.clone());
+        pause
+    }
+
+    #[cfg(test)]
+    async fn maybe_pause_after_connection_end_for_test(&self) {
+        let pause = self
+            .after_connection_end_pause
+            .lock()
+            .expect("connection-end pause lock")
+            .take();
+        if let Some(pause) = pause {
+            pause.reached.notify_waiters();
+            pause.proceed.notified().await;
+        }
+    }
+
+    #[cfg(not(test))]
+    async fn maybe_pause_after_connection_end_for_test(&self) {}
+
     /// Supervised read pump: drain the current connection until it ends, then
     /// reconnect (bounded backoff) and resume, or go terminal once exhausted.
     async fn run_read_pump(self: Arc<Self>, mut read: WsSource, config: ReconnectConfig) {
@@ -178,14 +230,21 @@ impl CdpTransport {
             self.drain_connection(&mut read).await;
 
             // The connection ended. In-flight requests were not delivered:
-            // resolve them retryably and mark the write sink unavailable.
-            self.fail_all_pending(|| CdpError::Reconnecting);
+            // first gate new sends away from the old sink, then resolve every
+            // pending request retryably. The order matters: a send that starts
+            // after the pending drain must still see `Reconnecting` instead of
+            // writing to the closed sink and hanging or surfacing a hard
+            // WebSocket error.
+            self.reconnecting.store(true, Ordering::SeqCst);
             *self.write.lock().await = None;
+            self.fail_all_pending(|| CdpError::Reconnecting);
+            self.maybe_pause_after_connection_end_for_test().await;
 
             match self.reconnect(config).await {
                 Some((new_write, new_read)) => {
                     *self.write.lock().await = Some(new_write);
                     read = new_read;
+                    self.reconnecting.store(false, Ordering::SeqCst);
                     let next = self.reconnect_gen.borrow().wrapping_add(1);
                     let _ = self.reconnect_gen.send(next);
                     tracing::info!(generation = next, "CDP transport reconnected");
@@ -291,6 +350,9 @@ impl CdpTransport {
         if self.terminal.load(Ordering::SeqCst) {
             return Err(CdpError::Disconnected);
         }
+        if self.reconnecting.load(Ordering::SeqCst) {
+            return Err(CdpError::Reconnecting);
+        }
         let id = self.next_id.fetch_add(1, Ordering::Relaxed);
         let mut payload = json!({
             "id": id,
@@ -310,8 +372,14 @@ impl CdpTransport {
             pending: &self.pending,
             id,
         };
+        if self.reconnecting.load(Ordering::SeqCst) {
+            return Err(CdpError::Reconnecting);
+        }
         {
             let mut write = self.write.lock().await;
+            if self.reconnecting.load(Ordering::SeqCst) {
+                return Err(CdpError::Reconnecting);
+            }
             let Some(sink) = write.as_mut() else {
                 // No live sink: reconnecting (retryable) or terminally dead.
                 return Err(if self.terminal.load(Ordering::SeqCst) {
@@ -465,6 +533,40 @@ mod tests {
         assert!(
             recovered.is_some(),
             "transport never recovered after reconnect"
+        );
+    }
+
+    #[tokio::test]
+    async fn command_started_after_connection_end_gets_reconnecting_not_old_sink() {
+        let server = FakeCdpServer::start().await;
+        let transport =
+            CdpTransport::connect_with_config(server.ws_url(), ReconnectConfig::fast_for_tests())
+                .await
+                .unwrap();
+        transport
+            .send_command("Target.getTargets", json!({}), None)
+            .await
+            .unwrap();
+
+        let pause = transport.pause_after_connection_end_for_test();
+        server.drop_active_connection();
+        pause.reached.notified().await;
+
+        let before = server.requests().len();
+        let error = scope_client_timeout(Some(25), async {
+            transport
+                .send_command("Runtime.evaluate", json!({}), None)
+                .await
+        })
+        .await
+        .unwrap_err();
+        let after = server.requests().len();
+        pause.proceed.notify_waiters();
+
+        assert!(matches!(error, CdpError::Reconnecting), "got {error:?}");
+        assert_eq!(
+            after, before,
+            "command started after connection end must not be written to the old sink"
         );
     }
 
