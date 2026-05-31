@@ -188,6 +188,43 @@ describe("SDK wire-shape contracts", () => {
     delete (globalThis as { nodeRepl?: unknown }).nodeRepl;
   });
 
+  it("dom_cua surfaces meta on the json path and appends a truncation marker on the text path", async () => {
+    const restoreMeta = setRequestMeta();
+    const transport = new FakeTransport();
+    const tab = new Tab(asTransport(transport), new Guards(), "tab-a");
+    try {
+      transport.responses.set(M.DOM_CUA_GET_VISIBLE_DOM, {
+        nodes: [{ node_id: "1", text: "Save", text_truncated: false }],
+        text: "[1] <button> Save",
+        meta: {
+          shown: 1,
+          total: 3,
+          truncated: true,
+          degraded: false,
+          hint: "Some interesting elements may be off-screen...",
+        },
+      });
+
+      const jsonSnapshot = await tab.dom_cua.get_visible_dom();
+      expect(jsonSnapshot).toMatchObject({
+        nodes: [{ node_id: "1", text_truncated: false }],
+        meta: { shown: 1, total: 3, truncated: true, degraded: false },
+      });
+
+      const text = await tab.dom_cua.text();
+      expect(text.startsWith("[1] <button> Save")).toBe(true);
+      expect(text).toContain("1 of 3 shown");
+
+      transport.responses.set(M.DOM_CUA_GET_VISIBLE_DOM, {
+        text: "[1] <button> Save",
+        meta: { shown: 1, total: 1, truncated: false, degraded: false },
+      });
+      await expect(tab.dom_cua.text()).resolves.toBe("[1] <button> Save");
+    } finally {
+      restoreMeta();
+    }
+  });
+
   it("Tab delegates navigation, metadata, screenshot, and lifecycle calls with tab id and timeout", async () => {
     const restoreMeta = setRequestMeta();
     const transport = new FakeTransport();
