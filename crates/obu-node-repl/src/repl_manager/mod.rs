@@ -6,7 +6,9 @@ pub mod runtime_descriptor_lifecycle;
 pub mod spawn;
 pub mod stdio_codec;
 
-pub use kernel_state::{DisplayEntry, ExecRegistry, JsExecResult, KernelState, TruncationInfo};
+pub use kernel_state::{
+    DisplayEntry, ExecRegistry, JsExecResult, KernelState, MAX_DISPLAY_COUNT, TruncationInfo,
+};
 pub use node_version::{NodeVersion, required_node_version, resolve_compatible_node};
 pub use runtime_descriptor_lifecycle::{
     RuntimeDescriptorReadIssue, RuntimeDescriptorReadReasonCode, RuntimeDescriptorReadState,
@@ -644,7 +646,7 @@ impl JsRuntimeManager {
         } else {
             None
         };
-        let displays = self.registry.lock().await.finish();
+        let (displays, displays_total) = self.registry.lock().await.finish();
         Ok(JsExecResult {
             stdout: frame
                 .get("stdout")
@@ -664,6 +666,7 @@ impl JsRuntimeManager {
                 .unwrap_or(0),
             truncated: TruncationInfo::default(),
             displays,
+            displays_total,
             response_meta: frame
                 .get("response_meta")
                 .filter(|value| !value.is_null())
@@ -1015,13 +1018,11 @@ async fn handle_display_frame(
     let value = frame.get("value").cloned().unwrap_or(Value::Null);
     let progress = {
         let mut registry = registry.lock().await;
-        registry.progress_counter += 1;
-        registry.displays.push(DisplayEntry {
+        registry.push_display(DisplayEntry {
             at_ms,
             kind: kind.clone(),
             value: value.clone(),
-        });
-        registry.progress_counter
+        })
     };
 
     let display_kind = crate::display_router::classify(&kind);
@@ -1058,14 +1059,14 @@ async fn handle_emit_image_frame(
             .await;
         return;
     };
-    let mut registry = registry.lock().await;
-    registry.progress_counter += 1;
-    registry.displays.push(DisplayEntry {
-        at_ms: 0,
-        kind: "image".to_string(),
-        value: json!({ "image_url": image_url }),
-    });
-    drop(registry);
+    {
+        let mut registry = registry.lock().await;
+        registry.push_display(DisplayEntry {
+            at_ms: 0,
+            kind: "image".to_string(),
+            value: json!({ "image_url": image_url }),
+        });
+    }
     let _ = kernel_stdin
         .lock()
         .await
