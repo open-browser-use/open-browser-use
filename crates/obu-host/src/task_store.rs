@@ -22,7 +22,7 @@ use crate::task_lifecycle::{ControlProjection, SessionTurnEvidence, TaskState};
 /// Opening a store whose persisted version is newer than this constant fails
 /// rather than attempting a silent migration (stale-resource behavior after a
 /// host downgrade or partial upgrade).
-pub const TASK_STORE_SCHEMA_VERSION: u32 = 3;
+pub const TASK_STORE_SCHEMA_VERSION: u32 = 4;
 
 /// Summary of a task's most recent execution segment, for task listings.
 ///
@@ -613,6 +613,7 @@ impl TaskStore {
                  turn_id    TEXT NOT NULL,
                  started_at INTEGER NOT NULL,
                  generation INTEGER,
+                 segment_seq INTEGER,
                  PRIMARY KEY (task_id, segment_id)
              );
              CREATE TABLE IF NOT EXISTS task_checkpoints (
@@ -742,6 +743,18 @@ impl TaskStore {
                         "migrate task_segments: remove duplicate task/session/turn rows (v3)",
                     )?;
                 }
+                // v3 -> v4 (audit §2.2 review): prior segment recency queries
+                // used `rowid` as the millisecond-timestamp tiebreak. SQLite
+                // cannot index `rowid` in a CREATE INDEX statement, so expose a
+                // real sequence column and backfill it from the historical rowid
+                // to preserve existing insertion order.
+                if on_disk < 4 {
+                    tx.execute_batch(
+                        "ALTER TABLE task_segments ADD COLUMN segment_seq INTEGER;
+                         UPDATE task_segments SET segment_seq = rowid WHERE segment_seq IS NULL;",
+                    )
+                    .context("migrate task_segments: add segment sequence (v4)")?;
+                }
                 if on_disk < TASK_STORE_SCHEMA_VERSION {
                     tx.execute(
                         "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
@@ -762,10 +775,13 @@ impl TaskStore {
         tx.execute_batch(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_segments_task_session_turn
              ON task_segments(task_id, session_id, turn_id);
-             CREATE INDEX IF NOT EXISTS idx_task_segments_task_started
-             ON task_segments(task_id, started_at DESC);",
+             CREATE INDEX IF NOT EXISTS idx_task_segments_task_started_seq
+             ON task_segments(task_id, started_at ASC, segment_seq ASC);
+             CREATE INDEX IF NOT EXISTS idx_tasks_terminal_created
+             ON tasks(created_at ASC, id ASC)
+             WHERE state IN ('completed', 'cancelled', 'failed');",
         )
-        .context("create task_segments indexes (v3)")?;
+        .context("create task store indexes")?;
 
         tx.commit().context("commit schema setup tx")?;
         Ok(())
@@ -857,8 +873,12 @@ impl TaskStore {
     pub fn append_segment(&self, task_id: &str, segment: Segment) -> Result<()> {
         self.conn
             .execute(
-                "INSERT INTO task_segments (task_id, segment_id, session_id, turn_id, started_at, generation)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO task_segments
+                 (task_id, segment_id, session_id, turn_id, started_at, generation, segment_seq)
+                 VALUES (
+                     ?1, ?2, ?3, ?4, ?5, ?6,
+                     COALESCE((SELECT MAX(segment_seq) FROM task_segments WHERE task_id = ?1), 0) + 1
+                 )",
                 rusqlite::params![
                     task_id,
                     segment.segment_id,
@@ -874,9 +894,10 @@ impl TaskStore {
 
     /// Return a task's execution segments in insertion (resume) order.
     ///
-    /// Ordering is `started_at ASC, rowid ASC`: `started_at` is a millisecond
-    /// timestamp that can collide for two fast appends, so the implicit
-    /// `rowid` is the deterministic tiebreak that preserves insertion order.
+    /// Ordering is `started_at ASC, segment_seq ASC`: `started_at` is a
+    /// millisecond timestamp that can collide for two fast appends, so
+    /// `segment_seq` is the deterministic, indexable tiebreak that preserves
+    /// insertion order.
     pub fn segments(&self, task_id: &str) -> Result<Vec<Segment>> {
         let mut stmt = self
             .conn
@@ -884,7 +905,7 @@ impl TaskStore {
                 "SELECT segment_id, session_id, turn_id, generation
                  FROM task_segments
                  WHERE task_id = ?1
-                 ORDER BY started_at ASC, rowid ASC",
+                 ORDER BY started_at ASC, segment_seq ASC",
             )
             .context("prepare segments query")?;
         let rows = stmt
@@ -1126,7 +1147,7 @@ impl TaskStore {
 
     /// Return up to `limit` task ids after `after_task_id`, ordered by id.
     ///
-    /// The maintenance actor uses this as a durable cursor over bounded passes.
+    /// The maintenance actor uses this as a stable in-memory cursor over bounded passes.
     /// Ordering by the immutable primary key avoids an unbounded OFFSET scan and
     /// keeps pagination stable even when tasks are inserted or pruned.
     pub(crate) fn task_ids_after(
@@ -1187,7 +1208,7 @@ impl TaskStore {
                        SELECT segment_id
                        FROM task_segments
                        WHERE task_id = ?1
-                       ORDER BY started_at DESC, rowid DESC
+                       ORDER BY started_at DESC, segment_seq DESC
                        LIMIT ?2
                    )
                    UNION
@@ -1207,7 +1228,7 @@ impl TaskStore {
                            SELECT segment_id
                            FROM task_segments
                            WHERE task_id = ?1
-                           ORDER BY started_at DESC, rowid DESC
+                           ORDER BY started_at DESC, segment_seq DESC
                            LIMIT ?2
                        )
                        UNION
@@ -1409,15 +1430,16 @@ impl TaskStore {
     /// Summarize a task's most recent execution segment, if any.
     ///
     /// "Most recent" mirrors [`TaskStore::segments`] ordering (`started_at`,
-    /// `rowid` ascending), so the last segment is the highest `(started_at,
-    /// rowid)` — selected here by ordering descending and taking the first row.
+    /// `segment_seq` ascending), so the last segment is the highest
+    /// `(started_at, segment_seq)` — selected here by ordering descending and
+    /// taking the first row.
     fn last_segment_summary(&self, task_id: &str) -> Result<Option<LastSegmentSummary>> {
         self.conn
             .query_row(
                 "SELECT segment_id, session_id, turn_id, generation
                  FROM task_segments
                  WHERE task_id = ?1
-                 ORDER BY started_at DESC, rowid DESC
+                 ORDER BY started_at DESC, segment_seq DESC
                  LIMIT 1",
                 [task_id],
                 |row| {
@@ -1900,10 +1922,22 @@ mod tests {
         }
     }
 
+    fn query_plan_details(store: &TaskStore, sql: &str) -> String {
+        store
+            .conn
+            .prepare(sql)
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+            .join("\n")
+    }
+
     #[test]
-    fn task_store_creates_segment_recency_index() {
+    fn task_store_creates_resource_bound_indexes() {
         let (store, _dir) = open_temp_store();
-        let indexes = store
+        let segment_indexes = store
             .conn
             .prepare("PRAGMA index_list('task_segments')")
             .unwrap()
@@ -1912,10 +1946,60 @@ mod tests {
             .collect::<rusqlite::Result<Vec<_>>>()
             .unwrap();
         assert!(
-            indexes
+            segment_indexes
                 .iter()
-                .any(|name| name == "idx_task_segments_task_started")
+                .any(|name| name == "idx_task_segments_task_started_seq")
         );
+        let task_indexes = store
+            .conn
+            .prepare("PRAGMA index_list('tasks')")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(
+            task_indexes
+                .iter()
+                .any(|name| name == "idx_tasks_terminal_created")
+        );
+    }
+
+    #[test]
+    fn maintenance_recency_queries_use_bounded_indexes_without_temp_sort() {
+        let (store, _dir) = open_temp_store();
+
+        let prune_plan = query_plan_details(
+            &store,
+            "EXPLAIN QUERY PLAN
+             SELECT id
+             FROM tasks
+             WHERE state IN ('completed', 'cancelled', 'failed')
+               AND created_at < 123
+             ORDER BY created_at ASC, id ASC
+             LIMIT 2",
+        );
+        assert!(
+            prune_plan.contains("idx_tasks_terminal_created"),
+            "{prune_plan}"
+        );
+        assert!(!prune_plan.contains("SCAN tasks"), "{prune_plan}");
+        assert!(!prune_plan.contains("TEMP B-TREE"), "{prune_plan}");
+
+        let segment_plan = query_plan_details(
+            &store,
+            "EXPLAIN QUERY PLAN
+             SELECT segment_id
+             FROM task_segments
+             WHERE task_id = 'task-1'
+             ORDER BY started_at DESC, segment_seq DESC
+             LIMIT 2",
+        );
+        assert!(
+            segment_plan.contains("idx_task_segments_task_started_seq"),
+            "{segment_plan}"
+        );
+        assert!(!segment_plan.contains("TEMP B-TREE"), "{segment_plan}");
     }
 
     #[test]
@@ -2206,9 +2290,10 @@ mod tests {
         assert_eq!(segs[1].generation, None);
     }
 
-    // v1->v2 migration: an existing v1-shaped db (task_segments created WITHOUT
+    // v1 migration: an existing v1-shaped db (task_segments created WITHOUT
     // the generation column, meta version '1') must open, get the column added,
-    // record version 2, and load its pre-existing segment with generation None.
+    // advance to the current version, and load its pre-existing segment with
+    // generation None.
     #[test]
     fn opens_and_migrates_v1_database() {
         let dir = owner_only_tempdir();
@@ -2262,7 +2347,8 @@ mod tests {
     }
 
     // Finding 3: a real pre-v3 store may already hold duplicate
-    // `(task_id, session_id, turn_id)` task_segments rows. Opening it at v3 must
+    // `(task_id, session_id, turn_id)` task_segments rows. Opening it at the
+    // current schema version must
     // (a) dedupe by keeping the earliest row (MIN(rowid)) per group, then (b)
     // build the UNIQUE index `idx_task_segments_task_session_turn` successfully —
     // proving both that the dedupe SQL removed the right rows and that the index
@@ -2312,10 +2398,10 @@ mod tests {
             assert_eq!(count, 2, "seed must contain two duplicate segment rows");
         }
 
-        // Opening at v3 triggers the dedupe + unique-index migration.
+        // Opening at the current version triggers the dedupe + unique-index migration.
         let store = TaskStore::open(dir.path()).unwrap();
 
-        // (1) schema_version is now 3.
+        // (1) schema_version is now current.
         let version: String = store
             .conn
             .query_row(
