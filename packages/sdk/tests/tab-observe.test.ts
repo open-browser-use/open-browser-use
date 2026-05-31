@@ -211,6 +211,26 @@ describe("Tab.observe", () => {
     });
   });
 
+  it("derives a stable domCuaRevision for identical snapshots (no sortRecord dependency)", async () => {
+    const transport = new ConfigurableObserveTransport();
+    const tab = new Tab(
+      transport as unknown as Transport,
+      new Guards(),
+      "tab-1",
+      { commandable: true, owned: true, status: "active" },
+      {
+        supportedMethods: [M.DOM_CUA_GET_VISIBLE_DOM, M.DOM_CUA_CLICK],
+        unsupportedMethods: [],
+      },
+    );
+
+    const first = await tab.observe({ mode: "actionable", timeout: 1000, observationTtlMs: 5000 });
+    const second = await tab.observe({ mode: "actionable", timeout: 1000, observationTtlMs: 5000 });
+
+    expect(first.lifecycle.domCuaRevision).toMatch(/^psh_[0-9a-f]{8}$/);
+    expect(second.lifecycle.domCuaRevision).toBe(first.lifecycle.domCuaRevision);
+  });
+
   it("returns blocked when actionable observation has no usable page action family", async () => {
     const transport = new FakeTransport();
     const tab = new Tab(
