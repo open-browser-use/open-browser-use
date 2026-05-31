@@ -13,6 +13,8 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::thread;
 
 use anyhow::{Result, anyhow};
@@ -27,6 +29,198 @@ use crate::task_store::{
     TaskStore, TaskSummary, now_millis, plan_task_resume,
 };
 
+/// Bounded capacity of the actor command channel (audit §4.9).
+///
+/// Comfortably absorbs interactive bursts while capping the queue + cloned
+/// payloads a tight command loop can pile up before the single SQLite writer
+/// drains them. Best-effort observability writes shed (and count) past this;
+/// must-send writes (resume/export/list) apply back-pressure instead.
+const ACTOR_CHANNEL_CAPACITY: usize = 1024;
+
+const DEFAULT_TASK_STORE_RETENTION_WINDOW_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
+const DEFAULT_TASK_STORE_EVENT_CAP: i64 = 10_000;
+const DEFAULT_TASK_STORE_SEGMENT_CAP: i64 = 1_000;
+const DEFAULT_TASK_STORE_MAINTENANCE_INTERVAL_MS: i64 = 60_000;
+const DEFAULT_TASK_STORE_MAINTENANCE_TASKS_PER_PASS: usize = 64;
+
+const ENV_TASK_STORE_RETENTION_WINDOW_MS: &str = "OBU_TASK_STORE_RETENTION_WINDOW_MS";
+const ENV_TASK_STORE_EVENT_CAP: &str = "OBU_TASK_STORE_EVENT_CAP";
+const ENV_TASK_STORE_SEGMENT_CAP: &str = "OBU_TASK_STORE_SEGMENT_CAP";
+const ENV_TASK_STORE_MAINTENANCE_INTERVAL_MS: &str = "OBU_TASK_STORE_MAINTENANCE_INTERVAL_MS";
+const ENV_TASK_STORE_MAINTENANCE_TASKS_PER_PASS: &str = "OBU_TASK_STORE_MAINTENANCE_TASKS_PER_PASS";
+
+/// Runtime maintenance bounds for the durable task store (audit §2.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TaskStoreMaintenanceConfig {
+    retention_window_ms: i64,
+    max_events_per_task: i64,
+    max_segments_per_task: i64,
+    maintenance_interval_ms: i64,
+    maintenance_tasks_per_pass: usize,
+}
+
+impl Default for TaskStoreMaintenanceConfig {
+    fn default() -> Self {
+        Self {
+            retention_window_ms: DEFAULT_TASK_STORE_RETENTION_WINDOW_MS,
+            max_events_per_task: DEFAULT_TASK_STORE_EVENT_CAP,
+            max_segments_per_task: DEFAULT_TASK_STORE_SEGMENT_CAP,
+            maintenance_interval_ms: DEFAULT_TASK_STORE_MAINTENANCE_INTERVAL_MS,
+            maintenance_tasks_per_pass: DEFAULT_TASK_STORE_MAINTENANCE_TASKS_PER_PASS,
+        }
+    }
+}
+
+impl TaskStoreMaintenanceConfig {
+    fn from_env() -> Self {
+        Self::from_lookup(|name| std::env::var(name).ok())
+    }
+
+    fn from_lookup(mut lookup: impl FnMut(&str) -> Option<String>) -> Self {
+        let default = Self::default();
+        Self {
+            retention_window_ms: env_i64_at_least(
+                &mut lookup,
+                ENV_TASK_STORE_RETENTION_WINDOW_MS,
+                default.retention_window_ms,
+                0,
+            ),
+            max_events_per_task: env_i64_at_least(
+                &mut lookup,
+                ENV_TASK_STORE_EVENT_CAP,
+                default.max_events_per_task,
+                0,
+            ),
+            max_segments_per_task: env_i64_at_least(
+                &mut lookup,
+                ENV_TASK_STORE_SEGMENT_CAP,
+                default.max_segments_per_task,
+                0,
+            ),
+            maintenance_interval_ms: env_i64_at_least(
+                &mut lookup,
+                ENV_TASK_STORE_MAINTENANCE_INTERVAL_MS,
+                default.maintenance_interval_ms,
+                1,
+            ),
+            maintenance_tasks_per_pass: env_usize_at_least(
+                &mut lookup,
+                ENV_TASK_STORE_MAINTENANCE_TASKS_PER_PASS,
+                default.maintenance_tasks_per_pass,
+                1,
+            ),
+        }
+    }
+}
+
+#[derive(Default)]
+struct TaskStoreMaintenanceCursor {
+    after_task_id: Option<String>,
+}
+
+#[derive(Default)]
+struct TaskStoreMaintenanceStats {
+    pruned_tasks: usize,
+    capped_events: usize,
+    capped_segments: usize,
+}
+
+impl TaskStoreMaintenanceStats {
+    fn changed(&self) -> bool {
+        self.pruned_tasks > 0 || self.capped_events > 0 || self.capped_segments > 0
+    }
+}
+
+fn env_i64_at_least(
+    lookup: &mut impl FnMut(&str) -> Option<String>,
+    name: &str,
+    default: i64,
+    min: i64,
+) -> i64 {
+    lookup(name)
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| *value >= min)
+        .unwrap_or(default)
+}
+
+fn env_usize_at_least(
+    lookup: &mut impl FnMut(&str) -> Option<String>,
+    name: &str,
+    default: usize,
+    min: usize,
+) -> usize {
+    lookup(name)
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value >= min)
+        .unwrap_or(default)
+}
+
+fn run_task_store_maintenance(
+    store: &TaskStore,
+    config: TaskStoreMaintenanceConfig,
+    cursor: &mut TaskStoreMaintenanceCursor,
+) -> Result<TaskStoreMaintenanceStats> {
+    let task_limit = config.maintenance_tasks_per_pass.max(1);
+    let mut stats = TaskStoreMaintenanceStats {
+        pruned_tasks: store.prune_terminal_tasks_limited(config.retention_window_ms, task_limit)?,
+        ..TaskStoreMaintenanceStats::default()
+    };
+    let mut task_ids = store.task_ids_after(
+        cursor.after_task_id.as_deref(),
+        task_limit.saturating_add(1),
+    )?;
+    let reached_end = task_ids.len() <= task_limit;
+    if !reached_end {
+        task_ids.truncate(task_limit);
+    }
+    let next_after = task_ids.last().cloned();
+    for task_id in task_ids {
+        stats.capped_events += store.cap_task_events(&task_id, config.max_events_per_task)?;
+        stats.capped_segments += store.cap_task_segments(&task_id, config.max_segments_per_task)?;
+    }
+    cursor.after_task_id = if reached_end { None } else { next_after };
+    store.incremental_vacuum()?;
+    Ok(stats)
+}
+
+fn maybe_run_task_store_maintenance(
+    store: &TaskStore,
+    config: TaskStoreMaintenanceConfig,
+    cursor: &mut TaskStoreMaintenanceCursor,
+    next_maintenance_at_ms: &mut i64,
+) {
+    let now = now_millis();
+    if now < *next_maintenance_at_ms {
+        return;
+    }
+    run_task_store_maintenance_and_log(store, config, cursor, "periodic");
+    *next_maintenance_at_ms = now.saturating_add(config.maintenance_interval_ms);
+}
+
+fn run_task_store_maintenance_and_log(
+    store: &TaskStore,
+    config: TaskStoreMaintenanceConfig,
+    cursor: &mut TaskStoreMaintenanceCursor,
+    trigger: &'static str,
+) {
+    match run_task_store_maintenance(store, config, cursor) {
+        Ok(stats) if stats.changed() => {
+            tracing::debug!(
+                trigger,
+                pruned_tasks = stats.pruned_tasks,
+                capped_events = stats.capped_events,
+                capped_segments = stats.capped_segments,
+                next_after_task_id = cursor.after_task_id.as_deref().unwrap_or(""),
+                "task store maintenance applied"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(%error, trigger, "task store maintenance failed");
+        }
+    }
+}
+
 /// Cloneable async handle to the task-store actor.
 ///
 /// Each handle holds the sender end of the actor's command channel; cloning a
@@ -34,7 +228,9 @@ use crate::task_store::{
 /// is dropped the channel closes and the actor thread exits after draining.
 #[derive(Clone)]
 pub struct TaskStoreHandle {
-    tx: mpsc::UnboundedSender<TaskStoreCommand>,
+    tx: mpsc::Sender<TaskStoreCommand>,
+    /// Count of best-effort writes shed because the bounded queue was full.
+    dropped_best_effort_writes: Arc<AtomicU64>,
 }
 
 /// A unit of work for the task-store actor thread.
@@ -134,7 +330,14 @@ impl TaskStoreHandle {
     /// reply path; subsequent calls on the handle then resolve to a "task store
     /// actor closed" error rather than blocking.
     pub fn open(dir: PathBuf) -> Result<Self> {
-        let (tx, mut rx) = mpsc::unbounded_channel::<TaskStoreCommand>();
+        Self::open_with_maintenance_config(dir, TaskStoreMaintenanceConfig::from_env())
+    }
+
+    fn open_with_maintenance_config(
+        dir: PathBuf,
+        maintenance_config: TaskStoreMaintenanceConfig,
+    ) -> Result<Self> {
+        let (tx, mut rx) = mpsc::channel::<TaskStoreCommand>(ACTOR_CHANNEL_CAPACITY);
         thread::Builder::new()
             .name("obu-task-store".into())
             .spawn(move || {
@@ -145,6 +348,15 @@ impl TaskStoreHandle {
                         return;
                     }
                 };
+                let mut maintenance_cursor = TaskStoreMaintenanceCursor::default();
+                run_task_store_maintenance_and_log(
+                    &store,
+                    maintenance_config,
+                    &mut maintenance_cursor,
+                    "startup",
+                );
+                let mut next_maintenance_at_ms =
+                    now_millis().saturating_add(maintenance_config.maintenance_interval_ms);
                 // Raw resume tokens for in-flight attempts, keyed by attempt id.
                 // The store persists only token *hashes*, never the raw token,
                 // so this in-memory map is the only place the raw wire token
@@ -301,9 +513,33 @@ impl TaskStoreHandle {
                             let _ = reply.send(result);
                         }
                     }
+                    maybe_run_task_store_maintenance(
+                        &store,
+                        maintenance_config,
+                        &mut maintenance_cursor,
+                        &mut next_maintenance_at_ms,
+                    );
                 }
             })?;
-        Ok(Self { tx })
+        Ok(Self {
+            tx,
+            dropped_best_effort_writes: Arc::new(AtomicU64::new(0)),
+        })
+    }
+
+    #[cfg(test)]
+    fn open_with_maintenance_config_for_test(
+        dir: PathBuf,
+        maintenance_config: TaskStoreMaintenanceConfig,
+    ) -> Result<Self> {
+        Self::open_with_maintenance_config(dir, maintenance_config)
+    }
+
+    /// Number of best-effort observability writes shed because the bounded queue
+    /// was full (audit §4.9). Monotonic over the handle's lifetime; useful for
+    /// diagnostics and exercised by the load-shedding unit test.
+    pub fn dropped_best_effort_writes(&self) -> u64 {
+        self.dropped_best_effort_writes.load(Ordering::Relaxed)
     }
 
     /// List tasks matching `filter` via the actor thread.
@@ -314,8 +550,14 @@ impl TaskStoreHandle {
     /// every handle was dropped) instead of hanging.
     pub async fn list_tasks(&self, filter: TaskListFilter) -> Result<Vec<TaskSummary>> {
         let (reply, rx) = oneshot::channel();
+        // must-send: the blocking, back-pressured `send().await` is intentional —
+        // do NOT convert these (list/export/resume_*) to `try_send`. Shedding a
+        // write whose result the caller awaits would silently lose durable
+        // resume/episode state. Only the best-effort observability writes shed
+        // (see `ACTOR_CHANNEL_CAPACITY`).
         self.tx
             .send(TaskStoreCommand::ListTasks { filter, reply })
+            .await
             .map_err(|_| anyhow!("task store actor closed"))?;
         rx.await
             .map_err(|_| anyhow!("task store actor closed"))?
@@ -327,6 +569,7 @@ impl TaskStoreHandle {
         let (reply, rx) = oneshot::channel();
         self.tx
             .send(TaskStoreCommand::Export { task_id, reply })
+            .await
             .map_err(|_| anyhow!("task store actor closed"))?;
         rx.await
             .map_err(|_| anyhow!("task store actor closed"))?
@@ -359,6 +602,7 @@ impl TaskStoreHandle {
                 ttl_ms,
                 reply,
             })
+            .await
             .map_err(|_| anyhow!("task store actor closed"))?;
         rx.await
             .map_err(|_| anyhow!("task store actor closed"))?
@@ -375,6 +619,7 @@ impl TaskStoreHandle {
                 generation,
                 reply,
             })
+            .await
             .map_err(|_| anyhow!("task store actor closed"))?;
         rx.await
             .map_err(|_| anyhow!("task store actor closed"))?
@@ -391,6 +636,7 @@ impl TaskStoreHandle {
                 payload,
                 reply,
             })
+            .await
             .map_err(|_| anyhow!("task store actor closed"))?;
         rx.await
             .map_err(|_| anyhow!("task store actor closed"))?
@@ -413,15 +659,41 @@ impl TaskStoreHandle {
         outcome: Value,
     ) -> Result<()> {
         let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(TaskStoreCommand::RecordFinalizeEvidence {
-                session_id,
-                turn_id,
-                generation,
-                outcome,
-                reply,
-            })
-            .map_err(|_| anyhow!("task store actor closed"))?;
+        // Best-effort observability write: shed (and count) instead of blocking
+        // when the bounded queue is full, so a tight command loop can never grow
+        // the actor queue without bound (audit §4.9). A full queue resolves
+        // Ok(()) — the dispatcher's caller already log-and-continues on Err, and a
+        // shed finalize-evidence record must not stall or fail the user's action.
+        match self.tx.try_send(TaskStoreCommand::RecordFinalizeEvidence {
+            session_id,
+            turn_id,
+            generation,
+            outcome,
+            reply,
+        }) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                let prev = self
+                    .dropped_best_effort_writes
+                    .fetch_add(1, Ordering::Relaxed);
+                // audit §4.9: the shed is otherwise dark. Warn on the first drop
+                // and on power-of-two boundaries (rate-limited so a saturated
+                // command loop cannot spam the log) so an operator/verifier can
+                // detect a degraded episode. The dropped row is best-effort
+                // observability only — resume/segment state is must-send.
+                if prev == 0 || (prev + 1).is_power_of_two() {
+                    tracing::warn!(
+                        dropped_best_effort_writes = prev + 1,
+                        write = "record_finalize_evidence",
+                        "task store actor queue full; shedding a best-effort observability write (audit §4.9)"
+                    );
+                }
+                return Ok(());
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                return Err(anyhow!("task store actor closed"));
+            }
+        }
         rx.await
             .map_err(|_| anyhow!("task store actor closed"))?
             .map_err(anyhow::Error::msg)
@@ -439,14 +711,40 @@ impl TaskStoreHandle {
         generation: Option<i64>,
     ) -> Result<()> {
         let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(TaskStoreCommand::RecordTurnEndedEvidence {
-                session_id,
-                turn_id,
-                generation,
-                reply,
-            })
-            .map_err(|_| anyhow!("task store actor closed"))?;
+        // Best-effort observability write: shed (and count) instead of blocking
+        // when the bounded queue is full, so a tight command loop can never grow
+        // the actor queue without bound (audit §4.9). A full queue resolves
+        // Ok(()) — the dispatcher's caller already log-and-continues on Err, and a
+        // shed turn-ended-evidence record must not stall or fail the user's action.
+        match self.tx.try_send(TaskStoreCommand::RecordTurnEndedEvidence {
+            session_id,
+            turn_id,
+            generation,
+            reply,
+        }) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                let prev = self
+                    .dropped_best_effort_writes
+                    .fetch_add(1, Ordering::Relaxed);
+                // audit §4.9: the shed is otherwise dark. Warn on the first drop
+                // and on power-of-two boundaries (rate-limited so a saturated
+                // command loop cannot spam the log) so an operator/verifier can
+                // detect a degraded episode. The dropped row is best-effort
+                // observability only — resume/segment state is must-send.
+                if prev == 0 || (prev + 1).is_power_of_two() {
+                    tracing::warn!(
+                        dropped_best_effort_writes = prev + 1,
+                        write = "record_turn_ended_evidence",
+                        "task store actor queue full; shedding a best-effort observability write (audit §4.9)"
+                    );
+                }
+                return Ok(());
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                return Err(anyhow!("task store actor closed"));
+            }
+        }
         rx.await
             .map_err(|_| anyhow!("task store actor closed"))?
             .map_err(anyhow::Error::msg)
@@ -465,15 +763,41 @@ impl TaskStoreHandle {
         event: Value,
     ) -> Result<()> {
         let (reply, rx) = oneshot::channel();
-        self.tx
-            .send(TaskStoreCommand::RecordCommandEvent {
-                session_id,
-                turn_id,
-                generation,
-                event,
-                reply,
-            })
-            .map_err(|_| anyhow!("task store actor closed"))?;
+        // Best-effort observability write: shed (and count) instead of blocking
+        // when the bounded queue is full, so a tight command loop can never grow
+        // the actor queue without bound (audit §4.9). A full queue resolves
+        // Ok(()) — the dispatcher's caller already log-and-continues on Err, and a
+        // shed command-event must not stall or fail the user's action.
+        match self.tx.try_send(TaskStoreCommand::RecordCommandEvent {
+            session_id,
+            turn_id,
+            generation,
+            event,
+            reply,
+        }) {
+            Ok(()) => {}
+            Err(mpsc::error::TrySendError::Full(_)) => {
+                let prev = self
+                    .dropped_best_effort_writes
+                    .fetch_add(1, Ordering::Relaxed);
+                // audit §4.9: the shed is otherwise dark. Warn on the first drop
+                // and on power-of-two boundaries (rate-limited so a saturated
+                // command loop cannot spam the log) so an operator/verifier can
+                // detect a degraded episode. The dropped row is best-effort
+                // observability only — resume/segment state is must-send.
+                if prev == 0 || (prev + 1).is_power_of_two() {
+                    tracing::warn!(
+                        dropped_best_effort_writes = prev + 1,
+                        write = "record_command_event",
+                        "task store actor queue full; shedding a best-effort observability write (audit §4.9)"
+                    );
+                }
+                return Ok(());
+            }
+            Err(mpsc::error::TrySendError::Closed(_)) => {
+                return Err(anyhow!("task store actor closed"));
+            }
+        }
         rx.await
             .map_err(|_| anyhow!("task store actor closed"))?
             .map_err(anyhow::Error::msg)
@@ -758,6 +1082,105 @@ fn evict_resume_token(raw_resume_tokens: &mut HashMap<String, String>, token: &s
 mod tests {
     use super::*;
 
+    #[test]
+    fn maintenance_config_uses_defaults_and_env_overrides() {
+        assert_eq!(
+            TaskStoreMaintenanceConfig::from_lookup(|_| None),
+            TaskStoreMaintenanceConfig::default()
+        );
+
+        let overridden = TaskStoreMaintenanceConfig::from_lookup(|name| match name {
+            ENV_TASK_STORE_RETENTION_WINDOW_MS => Some("10".into()),
+            ENV_TASK_STORE_EVENT_CAP => Some("11".into()),
+            ENV_TASK_STORE_SEGMENT_CAP => Some("12".into()),
+            ENV_TASK_STORE_MAINTENANCE_INTERVAL_MS => Some("13".into()),
+            ENV_TASK_STORE_MAINTENANCE_TASKS_PER_PASS => Some("14".into()),
+            _ => None,
+        });
+        assert_eq!(
+            overridden,
+            TaskStoreMaintenanceConfig {
+                retention_window_ms: 10,
+                max_events_per_task: 11,
+                max_segments_per_task: 12,
+                maintenance_interval_ms: 13,
+                maintenance_tasks_per_pass: 14,
+            }
+        );
+
+        let invalid = TaskStoreMaintenanceConfig::from_lookup(|name| match name {
+            ENV_TASK_STORE_RETENTION_WINDOW_MS => Some("-1".into()),
+            ENV_TASK_STORE_EVENT_CAP => Some("not-a-number".into()),
+            ENV_TASK_STORE_SEGMENT_CAP => Some("-12".into()),
+            ENV_TASK_STORE_MAINTENANCE_INTERVAL_MS => Some("0".into()),
+            ENV_TASK_STORE_MAINTENANCE_TASKS_PER_PASS => Some("0".into()),
+            _ => None,
+        });
+        assert_eq!(invalid, TaskStoreMaintenanceConfig::default());
+    }
+
+    #[test]
+    fn maintenance_cursor_bounds_segment_and_event_capping_per_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(
+            dir.path(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+        let store = TaskStore::open(dir.path()).unwrap();
+
+        for task_index in 0..3 {
+            let task_id = store
+                .create_task(NewTask {
+                    label: format!("task-{task_index}"),
+                    schema_version: TASK_STORE_SCHEMA_VERSION,
+                })
+                .unwrap();
+            for _ in 0..3 {
+                store.append_event(&task_id, "marker", "{}").unwrap();
+            }
+            for segment_index in 0..3 {
+                store
+                    .ensure_turn_segment(
+                        &task_id,
+                        &format!("s{task_index}"),
+                        &format!("t{segment_index}"),
+                        Some(7),
+                    )
+                    .unwrap();
+            }
+        }
+
+        let task_ids = store.task_ids_after(None, 10).unwrap();
+        assert_eq!(task_ids.len(), 3);
+        let config = TaskStoreMaintenanceConfig {
+            retention_window_ms: 60_000,
+            max_events_per_task: 1,
+            max_segments_per_task: 1,
+            maintenance_interval_ms: 0,
+            maintenance_tasks_per_pass: 1,
+        };
+        let mut cursor = TaskStoreMaintenanceCursor::default();
+
+        run_task_store_maintenance(&store, config, &mut cursor).unwrap();
+        assert_eq!(store.events(&task_ids[0]).unwrap().len(), 1);
+        assert_eq!(store.segments(&task_ids[0]).unwrap().len(), 1);
+        assert_eq!(store.events(&task_ids[1]).unwrap().len(), 3);
+        assert_eq!(store.segments(&task_ids[1]).unwrap().len(), 3);
+
+        run_task_store_maintenance(&store, config, &mut cursor).unwrap();
+        assert_eq!(store.events(&task_ids[1]).unwrap().len(), 1);
+        assert_eq!(store.segments(&task_ids[1]).unwrap().len(), 1);
+        assert_eq!(store.events(&task_ids[2]).unwrap().len(), 3);
+        assert_eq!(store.segments(&task_ids[2]).unwrap().len(), 3);
+
+        run_task_store_maintenance(&store, config, &mut cursor).unwrap();
+        assert_eq!(store.events(&task_ids[2]).unwrap().len(), 1);
+        assert_eq!(store.segments(&task_ids[2]).unwrap().len(), 1);
+        assert_eq!(cursor.after_task_id, None);
+    }
+
     #[tokio::test]
     async fn actor_opens_store_and_lists_empty_tasks() {
         let dir = tempfile::tempdir().unwrap();
@@ -805,5 +1228,139 @@ mod tests {
         let handle = TaskStoreHandle::open(dir.path().to_path_buf()).unwrap();
         let result = handle.list_tasks(Default::default()).await;
         assert!(result.is_err());
+    }
+
+    /// A best-effort write past the bounded queue capacity is dropped (counted),
+    /// never grows the queue, and resolves `Ok(())` so the caller's
+    /// log-and-continue path is unaffected (audit §4.9).
+    #[tokio::test]
+    async fn record_command_event_sheds_load_when_queue_is_full() {
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(
+            dir.path(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+        let handle = TaskStoreHandle::open(dir.path().to_path_buf()).unwrap();
+        // Flood far past the bounded capacity with best-effort writes. Each call is
+        // spawned (not awaited inline) so the sends outpace the single SQLite writer
+        // — exactly how the dispatcher fires these (`tokio::spawn` +
+        // `record_command_event`, see `Dispatcher::route_request`). Awaiting each
+        // call inline would instead serialize on its oneshot reply, holding queue
+        // depth at one and never exercising the shed path. With the flood, some
+        // `try_send`s see a full queue and are counted as drops — yet every call
+        // still resolves `Ok(())`, leaving the caller's log-and-continue unaffected.
+        let mut writes = Vec::with_capacity(10_000);
+        for _ in 0..10_000 {
+            let handle = handle.clone();
+            writes.push(tokio::spawn(async move {
+                handle
+                    .record_command_event(
+                        "s1".into(),
+                        "t1".into(),
+                        None,
+                        serde_json::json!({"method": "noop"}),
+                    )
+                    .await
+                    .expect("best-effort write must resolve Ok even when shed");
+            }));
+        }
+        for write in writes {
+            write
+                .await
+                .expect("spawned best-effort write must not panic");
+        }
+        assert!(
+            handle.dropped_best_effort_writes() > 0,
+            "a 10k-deep flood past the bounded queue must shed at least one write"
+        );
+    }
+
+    #[tokio::test]
+    async fn actor_maintenance_prunes_old_terminal_and_caps_written_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(
+            dir.path(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+
+        {
+            let store = TaskStore::open(dir.path()).unwrap();
+            let old_terminal = store
+                .create_task(NewTask {
+                    label: "old".into(),
+                    schema_version: TASK_STORE_SCHEMA_VERSION,
+                })
+                .unwrap();
+            store
+                .ensure_turn_segment(&old_terminal, "old-session", "old-turn", Some(1))
+                .unwrap();
+            store
+                .append_typed_event(
+                    &old_terminal,
+                    "marker",
+                    serde_json::json!({"kind": "marker"}),
+                )
+                .unwrap();
+            store
+                .set_task_created_at_for_test(&old_terminal, now_millis() - 1_000_000)
+                .unwrap();
+            store
+                .set_state(&old_terminal, TaskState::Completed)
+                .unwrap();
+        }
+
+        let handle = TaskStoreHandle::open_with_maintenance_config_for_test(
+            dir.path().to_path_buf(),
+            TaskStoreMaintenanceConfig {
+                retention_window_ms: 60_000,
+                max_events_per_task: 3,
+                max_segments_per_task: 2,
+                maintenance_interval_ms: 0,
+                maintenance_tasks_per_pass: 64,
+            },
+        )
+        .unwrap();
+
+        assert!(
+            handle
+                .list_tasks(Default::default())
+                .await
+                .unwrap()
+                .is_empty(),
+            "startup maintenance must prune old terminal tasks through the actor path"
+        );
+
+        for index in 0..5 {
+            handle
+                .record_command_event(
+                    "s1".into(),
+                    format!("t{index}"),
+                    Some(7),
+                    serde_json::json!({"method": "noop", "status": "ok", "index": index}),
+                )
+                .await
+                .unwrap();
+        }
+
+        let rows = handle.list_tasks(Default::default()).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        let episode = handle
+            .export_episode(rows[0].task_id.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            episode.events.len(),
+            3,
+            "actor-written task events must be capped by periodic maintenance"
+        );
+        assert_eq!(
+            episode.turns.len(),
+            2,
+            "actor-created execution segments must be capped by periodic maintenance"
+        );
     }
 }

@@ -22,7 +22,7 @@ use crate::task_lifecycle::{ControlProjection, SessionTurnEvidence, TaskState};
 /// Opening a store whose persisted version is newer than this constant fails
 /// rather than attempting a silent migration (stale-resource behavior after a
 /// host downgrade or partial upgrade).
-pub const TASK_STORE_SCHEMA_VERSION: u32 = 3;
+pub const TASK_STORE_SCHEMA_VERSION: u32 = 4;
 
 /// Summary of a task's most recent execution segment, for task listings.
 ///
@@ -364,6 +364,10 @@ pub(crate) fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
+fn sqlite_limit(limit: usize) -> i64 {
+    i64::try_from(limit).unwrap_or(i64::MAX)
+}
+
 /// Record a fresh execution segment for a task resume, bound to the current
 /// MCP turn.
 ///
@@ -557,6 +561,22 @@ impl TaskStore {
             .context("set journal_mode=WAL")?;
         conn.pragma_update(None, "foreign_keys", "ON")
             .context("enable foreign_keys")?;
+        // §2.2: enable incremental auto-vacuum so deleted pages join a free-list
+        // that `incremental_vacuum` can reclaim. SQLite only honours an
+        // auto_vacuum mode change made BEFORE any table is created (a fresh db),
+        // OR after a full `VACUUM`. We set it before `setup_schema` (correct for a
+        // fresh db) and read it back; if a pre-existing db is still on mode 0
+        // (`NONE`), a one-time `VACUUM` converts its free-list so future
+        // `incremental_vacuum` calls reclaim space.
+        conn.pragma_update(None, "auto_vacuum", "INCREMENTAL")
+            .context("set auto_vacuum=INCREMENTAL")?;
+        let auto_vacuum: i64 = conn
+            .query_row("PRAGMA auto_vacuum", [], |row| row.get(0))
+            .context("read auto_vacuum mode")?;
+        if auto_vacuum != 2 {
+            conn.execute_batch("VACUUM")
+                .context("convert existing db to incremental auto_vacuum")?;
+        }
 
         Self::setup_schema(&mut conn)?;
 
@@ -593,6 +613,7 @@ impl TaskStore {
                  turn_id    TEXT NOT NULL,
                  started_at INTEGER NOT NULL,
                  generation INTEGER,
+                 segment_seq INTEGER,
                  PRIMARY KEY (task_id, segment_id)
              );
              CREATE TABLE IF NOT EXISTS task_checkpoints (
@@ -722,6 +743,18 @@ impl TaskStore {
                         "migrate task_segments: remove duplicate task/session/turn rows (v3)",
                     )?;
                 }
+                // v3 -> v4 (audit §2.2 review): prior segment recency queries
+                // used `rowid` as the millisecond-timestamp tiebreak. SQLite
+                // cannot index `rowid` in a CREATE INDEX statement, so expose a
+                // real sequence column and backfill it from the historical rowid
+                // to preserve existing insertion order.
+                if on_disk < 4 {
+                    tx.execute_batch(
+                        "ALTER TABLE task_segments ADD COLUMN segment_seq INTEGER;
+                         UPDATE task_segments SET segment_seq = rowid WHERE segment_seq IS NULL;",
+                    )
+                    .context("migrate task_segments: add segment sequence (v4)")?;
+                }
                 if on_disk < TASK_STORE_SCHEMA_VERSION {
                     tx.execute(
                         "UPDATE meta SET value = ?1 WHERE key = 'schema_version'",
@@ -741,9 +774,14 @@ impl TaskStore {
         // duplicates. Inside the same `tx`, so it commits atomically below.
         tx.execute_batch(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_segments_task_session_turn
-             ON task_segments(task_id, session_id, turn_id);",
+             ON task_segments(task_id, session_id, turn_id);
+             CREATE INDEX IF NOT EXISTS idx_task_segments_task_started_seq
+             ON task_segments(task_id, started_at ASC, segment_seq ASC);
+             CREATE INDEX IF NOT EXISTS idx_tasks_terminal_created
+             ON tasks(created_at ASC, id ASC)
+             WHERE state IN ('completed', 'cancelled', 'failed');",
         )
-        .context("create task_segments unique index (v3)")?;
+        .context("create task store indexes")?;
 
         tx.commit().context("commit schema setup tx")?;
         Ok(())
@@ -835,8 +873,12 @@ impl TaskStore {
     pub fn append_segment(&self, task_id: &str, segment: Segment) -> Result<()> {
         self.conn
             .execute(
-                "INSERT INTO task_segments (task_id, segment_id, session_id, turn_id, started_at, generation)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+                "INSERT INTO task_segments
+                 (task_id, segment_id, session_id, turn_id, started_at, generation, segment_seq)
+                 VALUES (
+                     ?1, ?2, ?3, ?4, ?5, ?6,
+                     COALESCE((SELECT MAX(segment_seq) FROM task_segments WHERE task_id = ?1), 0) + 1
+                 )",
                 rusqlite::params![
                     task_id,
                     segment.segment_id,
@@ -852,9 +894,10 @@ impl TaskStore {
 
     /// Return a task's execution segments in insertion (resume) order.
     ///
-    /// Ordering is `started_at ASC, rowid ASC`: `started_at` is a millisecond
-    /// timestamp that can collide for two fast appends, so the implicit
-    /// `rowid` is the deterministic tiebreak that preserves insertion order.
+    /// Ordering is `started_at ASC, segment_seq ASC`: `started_at` is a
+    /// millisecond timestamp that can collide for two fast appends, so
+    /// `segment_seq` is the deterministic, indexable tiebreak that preserves
+    /// insertion order.
     pub fn segments(&self, task_id: &str) -> Result<Vec<Segment>> {
         let mut stmt = self
             .conn
@@ -862,7 +905,7 @@ impl TaskStore {
                 "SELECT segment_id, session_id, turn_id, generation
                  FROM task_segments
                  WHERE task_id = ?1
-                 ORDER BY started_at ASC, rowid ASC",
+                 ORDER BY started_at ASC, segment_seq ASC",
             )
             .context("prepare segments query")?;
         let rows = stmt
@@ -1037,6 +1080,197 @@ impl TaskStore {
         Ok(exists.is_some())
     }
 
+    /// Delete terminal tasks older than `window_ms` (audit §2.2).
+    ///
+    /// Removes every task in a *canonical terminal* state — `completed` /
+    /// `cancelled` / `failed`, the three FROZEN `TaskState::as_str` literals that
+    /// `allowed_transitions` maps to an empty slice (`task_lifecycle.rs`) — whose
+    /// `created_at` is more than `window_ms` in the past. All child rows
+    /// (segments, checkpoints, events, resources, bindings, resume attempts,
+    /// execution owners) are removed automatically by the existing
+    /// `ON DELETE CASCADE` foreign keys. Non-terminal tasks are never touched —
+    /// in particular `blocked` is recoverable (it re-enters via `resuming`), so it
+    /// is deliberately excluded. Returns the number of `tasks` rows deleted.
+    /// Callers pass a non-negative `window_ms`.
+    pub fn prune_terminal_tasks(&self, window_ms: i64) -> Result<usize> {
+        self.prune_terminal_tasks_limited(window_ms, usize::MAX)
+    }
+
+    /// Delete up to `limit` terminal tasks older than `window_ms` (audit §2.2).
+    ///
+    /// This is the actor-maintenance entry point: it keeps a single maintenance
+    /// tick from materializing or deleting an unbounded task set.
+    pub fn prune_terminal_tasks_limited(&self, window_ms: i64, limit: usize) -> Result<usize> {
+        if limit == 0 {
+            return Ok(0);
+        }
+        let cutoff = now_millis() - window_ms;
+        let deleted = self
+            .conn
+            .execute(
+                "DELETE FROM tasks
+                 WHERE id IN (
+                     SELECT id
+                     FROM tasks
+                     WHERE state IN ('completed', 'cancelled', 'failed')
+                       AND created_at < ?1
+                     ORDER BY created_at ASC, id ASC
+                     LIMIT ?2
+                 )",
+                rusqlite::params![cutoff, sqlite_limit(limit)],
+            )
+            .context("prune terminal tasks")?;
+        Ok(deleted)
+    }
+
+    /// Cap a single task's durable event log to its `cap` most recent cursors
+    /// (audit §2.2).
+    ///
+    /// Deletes the lowest-cursor `task_events` rows so at most `cap` remain,
+    /// preserving the newest events and the monotonic `MAX(cursor)` that
+    /// `append_event` reads to assign the next cursor. Returns the number of rows
+    /// removed. A `cap` of 0 clears the log.
+    pub fn cap_task_events(&self, task_id: &str, cap: i64) -> Result<usize> {
+        let removed = self
+            .conn
+            .execute(
+                "DELETE FROM task_events
+                 WHERE task_id = ?1
+                   AND cursor <= (
+                       SELECT MAX(cursor) FROM task_events WHERE task_id = ?1
+                   ) - ?2",
+                rusqlite::params![task_id, cap],
+            )
+            .context("cap task events")?;
+        Ok(removed)
+    }
+
+    /// Return up to `limit` task ids after `after_task_id`, ordered by id.
+    ///
+    /// The maintenance actor uses this as a stable in-memory cursor over bounded passes.
+    /// Ordering by the immutable primary key avoids an unbounded OFFSET scan and
+    /// keeps pagination stable even when tasks are inserted or pruned.
+    pub(crate) fn task_ids_after(
+        &self,
+        after_task_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = sqlite_limit(limit);
+        let mut stmt = self
+            .conn
+            .prepare(match after_task_id {
+                Some(_) => "SELECT id FROM tasks WHERE id > ?1 ORDER BY id ASC LIMIT ?2",
+                None => "SELECT id FROM tasks ORDER BY id ASC LIMIT ?1",
+            })
+            .context("prepare task id query")?;
+        let mut task_ids = Vec::new();
+        if let Some(after_task_id) = after_task_id {
+            let rows = stmt
+                .query_map(rusqlite::params![after_task_id, limit], |row| {
+                    row.get::<_, String>(0)
+                })
+                .context("query paged task ids")?;
+            for row in rows {
+                task_ids.push(row.context("read task id")?);
+            }
+            return Ok(task_ids);
+        }
+        let rows = stmt
+            .query_map([limit], |row| row.get::<_, String>(0))
+            .context("query task ids")?;
+        for row in rows {
+            task_ids.push(row.context("read task id")?);
+        }
+        Ok(task_ids)
+    }
+
+    /// Cap a single task's execution segments to its most recent `cap` rows
+    /// (audit §2.2).
+    ///
+    /// The active execution-owner segment is exempt even if it is older than the
+    /// cap, because deleting the live authority row would make resume planning
+    /// under-report the current browser attachment. Turn bindings for deleted
+    /// segments are removed with the segment rows so old `(session, turn)` pairs
+    /// no longer point at non-existent segment ids.
+    pub fn cap_task_segments(&self, task_id: &str, cap: i64) -> Result<usize> {
+        let tx = self
+            .conn
+            .unchecked_transaction()
+            .context("begin cap task segments transaction")?;
+        tx.execute(
+            "DELETE FROM task_turn_bindings
+             WHERE task_id = ?1
+               AND segment_id NOT IN (
+                   SELECT segment_id FROM (
+                       SELECT segment_id
+                       FROM task_segments
+                       WHERE task_id = ?1
+                       ORDER BY started_at DESC, segment_seq DESC
+                       LIMIT ?2
+                   )
+                   UNION
+                   SELECT segment_id
+                   FROM task_execution_owners
+                   WHERE task_id = ?1
+               )",
+            rusqlite::params![task_id, cap],
+        )
+        .context("delete capped segment turn bindings")?;
+        let removed = tx
+            .execute(
+                "DELETE FROM task_segments
+                 WHERE task_id = ?1
+                   AND segment_id NOT IN (
+                       SELECT segment_id FROM (
+                           SELECT segment_id
+                           FROM task_segments
+                           WHERE task_id = ?1
+                           ORDER BY started_at DESC, segment_seq DESC
+                           LIMIT ?2
+                       )
+                       UNION
+                       SELECT segment_id
+                       FROM task_execution_owners
+                       WHERE task_id = ?1
+                   )",
+                rusqlite::params![task_id, cap],
+            )
+            .context("cap task segments")?;
+        tx.commit()
+            .context("commit cap task segments transaction")?;
+        Ok(removed)
+    }
+
+    /// Reclaim free-list pages produced by retention deletes (audit §2.2).
+    ///
+    /// A thin wrapper over `PRAGMA incremental_vacuum` (a no-op unless
+    /// `auto_vacuum=INCREMENTAL` is in effect, which `open` ensures). Cheap to
+    /// call after a retention pass.
+    pub fn incremental_vacuum(&self) -> Result<()> {
+        self.conn
+            .execute_batch("PRAGMA incremental_vacuum")
+            .context("incremental vacuum")?;
+        Ok(())
+    }
+
+    /// Backdate a task's `created_at` for retention tests (no production caller).
+    ///
+    /// `#[doc(hidden)]` and intended only for unit tests that need a task to fall
+    /// outside the retention window without sleeping.
+    #[doc(hidden)]
+    pub fn set_task_created_at_for_test(&self, task_id: &str, created_at: i64) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE tasks SET created_at = ?2 WHERE id = ?1",
+                rusqlite::params![task_id, created_at],
+            )
+            .context("backdate task created_at")?;
+        Ok(())
+    }
+
     /// Resolve the task currently bound to `session_id`, if any.
     pub fn task_for_session(&self, session_id: &str) -> Result<Option<String>> {
         self.conn
@@ -1196,15 +1430,16 @@ impl TaskStore {
     /// Summarize a task's most recent execution segment, if any.
     ///
     /// "Most recent" mirrors [`TaskStore::segments`] ordering (`started_at`,
-    /// `rowid` ascending), so the last segment is the highest `(started_at,
-    /// rowid)` — selected here by ordering descending and taking the first row.
+    /// `segment_seq` ascending), so the last segment is the highest
+    /// `(started_at, segment_seq)` — selected here by ordering descending and
+    /// taking the first row.
     fn last_segment_summary(&self, task_id: &str) -> Result<Option<LastSegmentSummary>> {
         self.conn
             .query_row(
                 "SELECT segment_id, session_id, turn_id, generation
                  FROM task_segments
                  WHERE task_id = ?1
-                 ORDER BY started_at DESC, rowid DESC
+                 ORDER BY started_at DESC, segment_seq DESC
                  LIMIT 1",
                 [task_id],
                 |row| {
@@ -1294,12 +1529,37 @@ impl TaskStore {
         Ok(summaries)
     }
 
+    /// Flip every still-`pending` resume attempt whose `expires_at` is in the
+    /// past to `status='expired'` (audit §2.1).
+    ///
+    /// Lazy sweep, run before the pending-slot check and before token redemption
+    /// so an abandoned/expired attempt neither blocks the single pending slot nor
+    /// stays redeemable past its TTL. Idempotent and cheap (a single UPDATE keyed
+    /// by the `idx_task_resume_attempts_pending` partial index). Only `'pending'`
+    /// rows are swept: an `'attached'` row is a completed redemption and is left
+    /// alone.
+    fn sweep_expired_resume_attempts(&self, now: i64) -> Result<()> {
+        self.conn
+            .execute(
+                "UPDATE task_resume_attempts
+                 SET status = 'expired'
+                 WHERE status = 'pending' AND expires_at <= ?1",
+                [now],
+            )
+            .context("sweep expired resume attempts")?;
+        Ok(())
+    }
+
     /// Return the single `status='pending'` resume attempt for `task_id`, if any.
     ///
     /// The partial unique index `idx_task_resume_attempts_pending` guarantees at
     /// most one pending row per task, so this is a `query_row` returning `None`
     /// when there is no outstanding attempt.
     fn pending_resume_attempt(&self, task_id: &str) -> Result<Option<PendingResumeAttempt>> {
+        // §2.1: expire stale pending attempts first so an abandoned/expired one
+        // never permanently occupies the single pending slot (the documented
+        // liveness purpose of the TTL).
+        self.sweep_expired_resume_attempts(now_millis())?;
         self.conn
             .query_row(
                 "SELECT attempt_id, session_id, turn_id, expires_at
@@ -1455,12 +1715,20 @@ impl TaskStore {
     /// [`TaskStore::complete_resume_attached`] idempotent: a second attach with
     /// the same token still finds the row.
     fn attempt_by_token_for_attach(&self, token: &str) -> Result<Option<AttachableAttempt>> {
+        // §2.1: expire stale pending attempts first, then enforce the TTL in the
+        // redemption lookup itself. A 'pending' row past its `expires_at` is now
+        // swept to 'expired' (so it no longer matches), while an already-'attached'
+        // row stays redeemable to keep `complete_resume_attached` idempotent.
+        let now = now_millis();
+        self.sweep_expired_resume_attempts(now)?;
         self.conn
             .query_row(
                 "SELECT attempt_id, task_id, session_id, turn_id
                  FROM task_resume_attempts
-                 WHERE token_hash = ?1 AND status IN ('pending', 'attached')",
-                [token_hash(token)],
+                 WHERE token_hash = ?1
+                   AND (status = 'attached'
+                        OR (status = 'pending' AND expires_at > ?2))",
+                rusqlite::params![token_hash(token), now],
                 |row| {
                     Ok(AttachableAttempt {
                         attempt_id: row.get(0)?,
@@ -1652,6 +1920,86 @@ mod tests {
             label: "task".into(),
             schema_version: TASK_STORE_SCHEMA_VERSION,
         }
+    }
+
+    fn query_plan_details(store: &TaskStore, sql: &str) -> String {
+        store
+            .conn
+            .prepare(sql)
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(3))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap()
+            .join("\n")
+    }
+
+    #[test]
+    fn task_store_creates_resource_bound_indexes() {
+        let (store, _dir) = open_temp_store();
+        let segment_indexes = store
+            .conn
+            .prepare("PRAGMA index_list('task_segments')")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(
+            segment_indexes
+                .iter()
+                .any(|name| name == "idx_task_segments_task_started_seq")
+        );
+        let task_indexes = store
+            .conn
+            .prepare("PRAGMA index_list('tasks')")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(
+            task_indexes
+                .iter()
+                .any(|name| name == "idx_tasks_terminal_created")
+        );
+    }
+
+    #[test]
+    fn maintenance_recency_queries_use_bounded_indexes_without_temp_sort() {
+        let (store, _dir) = open_temp_store();
+
+        let prune_plan = query_plan_details(
+            &store,
+            "EXPLAIN QUERY PLAN
+             SELECT id
+             FROM tasks
+             WHERE state IN ('completed', 'cancelled', 'failed')
+               AND created_at < 123
+             ORDER BY created_at ASC, id ASC
+             LIMIT 2",
+        );
+        assert!(
+            prune_plan.contains("idx_tasks_terminal_created"),
+            "{prune_plan}"
+        );
+        assert!(!prune_plan.contains("SCAN tasks"), "{prune_plan}");
+        assert!(!prune_plan.contains("TEMP B-TREE"), "{prune_plan}");
+
+        let segment_plan = query_plan_details(
+            &store,
+            "EXPLAIN QUERY PLAN
+             SELECT segment_id
+             FROM task_segments
+             WHERE task_id = 'task-1'
+             ORDER BY started_at DESC, segment_seq DESC
+             LIMIT 2",
+        );
+        assert!(
+            segment_plan.contains("idx_task_segments_task_started_seq"),
+            "{segment_plan}"
+        );
+        assert!(!segment_plan.contains("TEMP B-TREE"), "{segment_plan}");
     }
 
     #[test]
@@ -1942,9 +2290,10 @@ mod tests {
         assert_eq!(segs[1].generation, None);
     }
 
-    // v1->v2 migration: an existing v1-shaped db (task_segments created WITHOUT
+    // v1 migration: an existing v1-shaped db (task_segments created WITHOUT
     // the generation column, meta version '1') must open, get the column added,
-    // record version 2, and load its pre-existing segment with generation None.
+    // advance to the current version, and load its pre-existing segment with
+    // generation None.
     #[test]
     fn opens_and_migrates_v1_database() {
         let dir = owner_only_tempdir();
@@ -1998,7 +2347,8 @@ mod tests {
     }
 
     // Finding 3: a real pre-v3 store may already hold duplicate
-    // `(task_id, session_id, turn_id)` task_segments rows. Opening it at v3 must
+    // `(task_id, session_id, turn_id)` task_segments rows. Opening it at the
+    // current schema version must
     // (a) dedupe by keeping the earliest row (MIN(rowid)) per group, then (b)
     // build the UNIQUE index `idx_task_segments_task_session_turn` successfully —
     // proving both that the dedupe SQL removed the right rows and that the index
@@ -2048,10 +2398,10 @@ mod tests {
             assert_eq!(count, 2, "seed must contain two duplicate segment rows");
         }
 
-        // Opening at v3 triggers the dedupe + unique-index migration.
+        // Opening at the current version triggers the dedupe + unique-index migration.
         let store = TaskStore::open(dir.path()).unwrap();
 
-        // (1) schema_version is now 3.
+        // (1) schema_version is now current.
         let version: String = store
             .conn
             .query_row(
@@ -2082,6 +2432,111 @@ mod tests {
             dup_insert.is_err(),
             "post-migration unique index must reject a duplicate (task_id, session_id, turn_id)"
         );
+    }
+
+    #[test]
+    fn opens_and_migrates_v3_segments_to_indexable_sequence() {
+        let dir = owner_only_tempdir();
+        let db_path = dir.path().join("tasks.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 CREATE TABLE tasks (
+                     id             TEXT PRIMARY KEY,
+                     label          TEXT NOT NULL,
+                     state          TEXT NOT NULL,
+                     schema_version INTEGER NOT NULL,
+                     created_at     INTEGER NOT NULL
+                 );
+                 CREATE TABLE task_segments (
+                     task_id    TEXT NOT NULL,
+                     segment_id TEXT NOT NULL,
+                     session_id TEXT NOT NULL,
+                     turn_id    TEXT NOT NULL,
+                     started_at INTEGER NOT NULL,
+                     generation INTEGER,
+                     PRIMARY KEY (task_id, segment_id)
+                 );
+                 INSERT INTO meta (key, value) VALUES ('schema_version', '3');
+                 INSERT INTO tasks (id, label, state, schema_version, created_at)
+                     VALUES ('task-1', 'l', 'created', 3, 0);
+                 INSERT INTO task_segments (task_id, segment_id, session_id, turn_id, started_at, generation)
+                     VALUES ('task-1', 'seg-1', 's1', 't1', 10, NULL);
+                 INSERT INTO task_segments (task_id, segment_id, session_id, turn_id, started_at, generation)
+                     VALUES ('task-1', 'seg-2', 's1', 't2', 10, NULL);
+                 INSERT INTO task_segments (task_id, segment_id, session_id, turn_id, started_at, generation)
+                     VALUES ('task-1', 'seg-3', 's1', 't3', 10, NULL);",
+            )
+            .unwrap();
+        }
+
+        let store = TaskStore::open(dir.path()).unwrap();
+        let version: String = store
+            .conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, TASK_STORE_SCHEMA_VERSION.to_string());
+
+        let backfilled: Vec<(String, i64)> = store
+            .conn
+            .prepare(
+                "SELECT segment_id, segment_seq
+                 FROM task_segments
+                 WHERE task_id = 'task-1'
+                 ORDER BY started_at ASC, segment_seq ASC",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            backfilled,
+            vec![
+                ("seg-1".to_string(), 1),
+                ("seg-2".to_string(), 2),
+                ("seg-3".to_string(), 3),
+            ]
+        );
+        assert_eq!(
+            store
+                .segments("task-1")
+                .unwrap()
+                .into_iter()
+                .map(|segment| segment.segment_id)
+                .collect::<Vec<_>>(),
+            vec![
+                "seg-1".to_string(),
+                "seg-2".to_string(),
+                "seg-3".to_string(),
+            ]
+        );
+
+        store
+            .append_segment(
+                "task-1",
+                Segment {
+                    segment_id: "seg-4".into(),
+                    session_id: "s1".into(),
+                    turn_id: "t4".into(),
+                    generation: Some(7),
+                },
+            )
+            .unwrap();
+        let appended_seq: i64 = store
+            .conn
+            .query_row(
+                "SELECT segment_seq FROM task_segments WHERE segment_id = 'seg-4'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(appended_seq, 4);
     }
 
     // Finding 4: a long task spans multiple turns (one segment per resume), so
@@ -2389,5 +2844,372 @@ mod tests {
                 .segment_id,
             attached.segment.segment_id
         );
+    }
+
+    #[test]
+    fn expired_resume_token_is_not_redeemable() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        // ttl_ms = -1 => expires_at = now - 1, i.e. already expired at insert.
+        let begin = store
+            .begin_resume_attempt(&task_id, "s1", "t1", 7, -1)
+            .unwrap();
+        let token = begin.resume_token.expect("fresh attempt mints a token");
+        // Redemption must reject an expired token rather than reattach.
+        assert!(
+            store.complete_resume_attached(&token, 7).is_err(),
+            "expired resume token must not redeem"
+        );
+    }
+
+    #[test]
+    fn expired_pending_attempt_frees_the_single_pending_slot() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        // First attempt is born already expired and occupies the one pending slot.
+        store
+            .begin_resume_attempt(&task_id, "s1", "t1", 7, -1)
+            .unwrap();
+        // A new attempt for a DIFFERENT (session,turn) must succeed: the expired
+        // pending row is swept to 'expired', no longer conflicting.
+        let second = store
+            .begin_resume_attempt(&task_id, "s2", "t2", 7, 60_000)
+            .unwrap();
+        assert!(
+            second.created,
+            "expired pending attempt must not permanently block a fresh attempt"
+        );
+    }
+
+    #[test]
+    fn unexpired_resume_token_still_redeems() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        let begin = store
+            .begin_resume_attempt(&task_id, "s1", "t1", 7, 60_000)
+            .unwrap();
+        let token = begin.resume_token.expect("fresh attempt mints a token");
+        // A live token within TTL must still attach (no over-rejection).
+        assert!(store.complete_resume_attached(&token, 7).is_ok());
+    }
+
+    #[test]
+    fn attached_resume_token_redeems_after_ttl_elapses() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        let begin = store
+            .begin_resume_attempt(&task_id, "s1", "t1", 7, 60_000)
+            .unwrap();
+        let token = begin.resume_token.expect("fresh attempt mints a token");
+        // First redemption while live: the row transitions pending -> attached.
+        assert!(store.complete_resume_attached(&token, 7).is_ok());
+        // Age the now-'attached' row well past its TTL (white-box: drive the
+        // store's own connection so no production backdate surface is added).
+        store
+            .conn
+            .execute(
+                "UPDATE task_resume_attempts SET expires_at = ?1 WHERE token_hash = ?2",
+                rusqlite::params![now_millis() - 1, token_hash(&token)],
+            )
+            .unwrap();
+        // Idempotent re-attach must STILL redeem: an 'attached' row is matched
+        // unconditionally and the sweep only touches 'pending' rows. This pins the
+        // exact invariant the §2.1 WHERE clause protects.
+        assert!(
+            store.complete_resume_attached(&token, 7).is_ok(),
+            "an already-attached row must stay redeemable past its TTL (idempotency)"
+        );
+    }
+
+    #[test]
+    fn prune_terminal_tasks_deletes_old_terminal_and_cascades() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        store
+            .append_segment(&task_id, Segment::new("s1", "t1"))
+            .unwrap();
+        store.append_event(&task_id, "marker", "{}").unwrap();
+        store.set_state(&task_id, TaskState::Completed).unwrap();
+        // Backdate the row well before the retention window.
+        store
+            .set_task_created_at_for_test(&task_id, now_millis() - 1_000_000)
+            .unwrap();
+
+        // Retain only the last 60s of terminal tasks => this one is pruned.
+        let pruned = store.prune_terminal_tasks(60_000).unwrap();
+        assert_eq!(pruned, 1);
+        assert!(!store.task_exists(&task_id).unwrap());
+        // FK ON DELETE CASCADE removed the children too.
+        assert_eq!(store.segments(&task_id).unwrap().len(), 0);
+        assert_eq!(store.event_cursor(&task_id).unwrap(), 0);
+    }
+
+    #[test]
+    fn prune_terminal_tasks_limited_bounds_work_per_call() {
+        let (store, _dir) = open_temp_store();
+        let mut task_ids = Vec::new();
+        for _ in 0..3 {
+            let task_id = store.create_task(default_new_task()).unwrap();
+            store.set_state(&task_id, TaskState::Completed).unwrap();
+            store
+                .set_task_created_at_for_test(&task_id, now_millis() - 1_000_000)
+                .unwrap();
+            task_ids.push(task_id);
+        }
+
+        assert_eq!(store.prune_terminal_tasks_limited(60_000, 2).unwrap(), 2);
+        assert_eq!(
+            task_ids
+                .iter()
+                .filter(|task_id| store.task_exists(task_id).unwrap())
+                .count(),
+            1
+        );
+        assert_eq!(store.prune_terminal_tasks_limited(60_000, 2).unwrap(), 1);
+        assert!(
+            task_ids
+                .iter()
+                .all(|task_id| !store.task_exists(task_id).unwrap())
+        );
+    }
+
+    #[test]
+    fn prune_terminal_tasks_keeps_live_and_recent_tasks() {
+        let (store, _dir) = open_temp_store();
+        // A live (non-terminal) task, old enough to be in-window — must NOT be pruned.
+        let live = store.create_task(default_new_task()).unwrap();
+        store.set_state(&live, TaskState::Running).unwrap();
+        store
+            .set_task_created_at_for_test(&live, now_millis() - 1_000_000)
+            .unwrap();
+        // A terminal task created just now — within the window, must NOT be pruned.
+        let recent = store.create_task(default_new_task()).unwrap();
+        store.set_state(&recent, TaskState::Cancelled).unwrap();
+
+        let pruned = store.prune_terminal_tasks(60_000).unwrap();
+        assert_eq!(pruned, 0);
+        assert!(store.task_exists(&live).unwrap());
+        assert!(store.task_exists(&recent).unwrap());
+    }
+
+    #[test]
+    fn cap_task_events_trims_to_the_most_recent_n() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        for _ in 0..5 {
+            store.append_event(&task_id, "marker", "{}").unwrap();
+        }
+        // Keep only the 2 highest cursors.
+        let removed = store.cap_task_events(&task_id, 2).unwrap();
+        assert_eq!(removed, 3);
+        // event_cursor reports MAX(cursor); the newest event survived.
+        assert_eq!(store.event_cursor(&task_id).unwrap(), 5);
+    }
+
+    #[test]
+    fn prune_terminal_tasks_keeps_blocked_recoverable_tasks() {
+        let (store, _dir) = open_temp_store();
+        // Blocked is NOT terminal (Blocked -> {Resuming, WaitingForHuman,
+        // Cancelling, Failed}); it is recoverable live work and must survive
+        // retention even when old.
+        let blocked = store.create_task(default_new_task()).unwrap();
+        store.set_state(&blocked, TaskState::Blocked).unwrap();
+        store
+            .set_task_created_at_for_test(&blocked, now_millis() - 1_000_000)
+            .unwrap();
+        assert_eq!(store.prune_terminal_tasks(60_000).unwrap(), 0);
+        assert!(store.task_exists(&blocked).unwrap());
+    }
+
+    #[test]
+    fn prune_terminal_tasks_deletes_old_failed_tasks() {
+        let (store, _dir) = open_temp_store();
+        // Failed is terminal (allowed_transitions -> empty slice) and must prune.
+        let failed = store.create_task(default_new_task()).unwrap();
+        store.set_state(&failed, TaskState::Failed).unwrap();
+        store
+            .set_task_created_at_for_test(&failed, now_millis() - 1_000_000)
+            .unwrap();
+        assert_eq!(store.prune_terminal_tasks(60_000).unwrap(), 1);
+        assert!(!store.task_exists(&failed).unwrap());
+    }
+
+    #[test]
+    fn task_ids_after_paginates_by_stable_id_order() {
+        let (store, _dir) = open_temp_store();
+        let mut expected = Vec::new();
+        for _ in 0..3 {
+            expected.push(store.create_task(default_new_task()).unwrap());
+        }
+        expected.sort();
+
+        assert_eq!(store.task_ids_after(None, 2).unwrap(), expected[..2]);
+        assert_eq!(
+            store.task_ids_after(Some(&expected[0]), 2).unwrap(),
+            expected[1..]
+        );
+        assert_eq!(
+            store
+                .task_ids_after(Some(expected.last().unwrap()), 2)
+                .unwrap(),
+            Vec::<String>::new()
+        );
+    }
+
+    #[test]
+    fn cap_task_events_edge_cases() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        for _ in 0..3 {
+            store.append_event(&task_id, "marker", "{}").unwrap();
+        }
+        // cap >= count is a no-op.
+        assert_eq!(store.cap_task_events(&task_id, 10).unwrap(), 0);
+        assert_eq!(store.event_cursor(&task_id).unwrap(), 3);
+        // cap == 0 clears the log.
+        assert_eq!(store.cap_task_events(&task_id, 0).unwrap(), 3);
+        assert_eq!(store.event_cursor(&task_id).unwrap(), 0);
+    }
+
+    #[test]
+    fn cap_task_segments_trims_to_recent_segments_and_turn_bindings() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        for turn_id in ["t1", "t2", "t3", "t4"] {
+            store
+                .ensure_turn_segment(&task_id, "s1", turn_id, Some(7))
+                .unwrap();
+        }
+
+        let removed = store.cap_task_segments(&task_id, 2).unwrap();
+        assert_eq!(removed, 2);
+        let turns: Vec<String> = store
+            .segments(&task_id)
+            .unwrap()
+            .into_iter()
+            .map(|segment| segment.turn_id)
+            .collect();
+        assert_eq!(turns, vec!["t3".to_string(), "t4".to_string()]);
+        assert_eq!(store.task_for_turn("s1", "t1").unwrap(), None);
+        assert_eq!(store.task_for_turn("s1", "t2").unwrap(), None);
+        assert_eq!(store.task_for_turn("s1", "t4").unwrap(), Some(task_id));
+    }
+
+    #[test]
+    fn cap_task_segments_preserves_active_execution_owner() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        let begin = store
+            .begin_resume_attempt(&task_id, "s1", "t1", 7, 60_000)
+            .unwrap();
+        let token = begin.resume_token.expect("fresh attempt mints token");
+        let attached = store.complete_resume_attached(&token, 7).unwrap();
+        store
+            .ensure_turn_segment(&task_id, "s1", "t2", Some(7))
+            .unwrap();
+        store
+            .ensure_turn_segment(&task_id, "s1", "t3", Some(7))
+            .unwrap();
+
+        let removed = store.cap_task_segments(&task_id, 1).unwrap();
+        assert_eq!(removed, 1);
+        let segments = store.segments(&task_id).unwrap();
+        assert!(
+            segments
+                .iter()
+                .any(|segment| segment.segment_id == attached.segment.segment_id),
+            "the active execution owner segment must survive segment capping"
+        );
+        assert!(
+            segments.iter().any(|segment| segment.turn_id == "t3"),
+            "the newest non-active segment should also be retained"
+        );
+        assert_eq!(store.task_for_turn("s1", "t2").unwrap(), None);
+    }
+
+    /// Helper: read the live `PRAGMA auto_vacuum` mode off a store's connection
+    /// (0 = NONE, 1 = FULL, 2 = INCREMENTAL).
+    fn auto_vacuum_mode(store: &TaskStore) -> i64 {
+        store
+            .conn
+            .query_row("PRAGMA auto_vacuum", [], |row| row.get::<_, i64>(0))
+            .unwrap()
+    }
+
+    #[test]
+    fn incremental_vacuum_succeeds_after_a_prune() {
+        // §2.2: after retention deletes free up pages, `incremental_vacuum`
+        // reclaims them. Drive a real prune, then vacuum, and assert Ok.
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        store
+            .append_segment(&task_id, Segment::new("s1", "t1"))
+            .unwrap();
+        store.append_event(&task_id, "marker", "{}").unwrap();
+        store.set_state(&task_id, TaskState::Completed).unwrap();
+        // Backdate well past the retention window so the prune actually deletes.
+        store
+            .set_task_created_at_for_test(&task_id, now_millis() - 1_000_000)
+            .unwrap();
+        assert_eq!(store.prune_terminal_tasks(60_000).unwrap(), 1);
+
+        // The vacuum is a no-op unless auto_vacuum=INCREMENTAL is in effect,
+        // which `open` guarantees; either way it must succeed.
+        store.incremental_vacuum().unwrap();
+    }
+
+    #[test]
+    fn fresh_store_uses_incremental_auto_vacuum() {
+        // §2.2: a freshly created db must come up in INCREMENTAL (mode 2),
+        // set BEFORE setup_schema creates any table.
+        let (store, _dir) = open_temp_store();
+        assert_eq!(
+            auto_vacuum_mode(&store),
+            2,
+            "fresh store must be auto_vacuum=INCREMENTAL"
+        );
+    }
+
+    #[test]
+    fn open_migrates_preexisting_none_mode_db_to_incremental() {
+        // §2.2 migration branch (`if auto_vacuum != 2 { VACUUM }`): a db that
+        // already exists with auto_vacuum=NONE AND at least one table cannot
+        // honour a later mode change without a full VACUUM. `open` must detect
+        // mode != 2 and run that VACUUM, converting the db to INCREMENTAL.
+        let dir = owner_only_tempdir();
+        let db_path = dir.path().join("tasks.db");
+
+        // Pre-seed the EXACT file `open` will use (`<dir>/tasks.db`) with
+        // auto_vacuum=NONE and a populated table, then close it so SQLite has
+        // committed mode 0 to a non-empty db. A later mode flip alone is then a
+        // no-op — only the migration VACUUM can convert it.
+        {
+            let seed = Connection::open(&db_path).unwrap();
+            seed.pragma_update(None, "auto_vacuum", "NONE").unwrap();
+            seed.execute_batch("CREATE TABLE _premigration_marker (x)")
+                .unwrap();
+            // Confirm the pre-seed really committed NONE (mode 0): this is what
+            // makes the test load-bearing — without `open`'s VACUUM the db would
+            // stay here.
+            let seeded_mode: i64 = seed
+                .query_row("PRAGMA auto_vacuum", [], |row| row.get(0))
+                .unwrap();
+            assert_eq!(seeded_mode, 0, "pre-seed must commit auto_vacuum=NONE");
+        } // drop closes the connection, flushing mode 0 to disk.
+
+        // Open through the real entry point against the same dir.
+        let store = TaskStore::open(dir.path()).unwrap();
+
+        // The migration VACUUM must have converted the pre-existing db.
+        assert_eq!(
+            auto_vacuum_mode(&store),
+            2,
+            "open must migrate a pre-existing NONE-mode db to INCREMENTAL"
+        );
+
+        // And the store is fully functional afterwards: the migration VACUUM
+        // did not corrupt the schema setup_schema created on top.
+        let task_id = store.create_task(default_new_task()).unwrap();
+        assert_eq!(store.task_state(&task_id).unwrap(), TaskState::Created);
     }
 }

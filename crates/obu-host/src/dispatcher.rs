@@ -387,6 +387,12 @@ impl Dispatcher {
             let _permit = permit;
             let id = request.id.clone();
             let method = request.method.clone();
+            // §3.11: `method` is moved into the `route` async block below
+            // (`format!("{method} ...")` in the timeout arm), so the rarely-taken
+            // cancel arm cannot reuse it. Keep one eager clone here purely to
+            // survive that move; the larger redundant-allocation win is the
+            // move-not-clone of the command-event ids in
+            // `build_browser_command_event`.
             let cancel_method = method.clone();
             let timeout_ms = request_context(&request).client_timeout_ms;
             let backend_owns_deadline =
@@ -490,6 +496,20 @@ impl Dispatcher {
     }
 
     async fn route_request_inner(&self, req: Request, ctx: BackendRequestContext) -> Response {
+        // §4.6: capture the teardown class of this method up front (before `req`
+        // is consumed by routing) so a successful close/finalize can evict its
+        // process-global lock-map entry afterward.
+        let method_is_tab_close = req.method == methods::TAB_CLOSE;
+        let method_is_finalize = req.method == methods::FINALIZE_TABS;
+        // Capture the session id for finalize eviction up front too: `ctx` is
+        // consumed by `route_supported_request` before the trailing eviction
+        // runs, so we cannot borrow `ctx.session_id` afterward. Only cloned on a
+        // finalize, so the common path pays nothing.
+        let finalize_session_id = if method_is_finalize {
+            ctx.session_id.clone()
+        } else {
+            None
+        };
         if let Err(error) = reject_user_runtime_metadata(&req.method, &req.params) {
             return Response::err(req.id, error);
         }
@@ -517,11 +537,32 @@ impl Dispatcher {
             None => None,
         };
         if let Some(tab_id) = tab_mutation_key(&req.method, &req.params) {
-            let lock = self.tab_operation_lock(&tab_id).await;
-            let _guard = lock.lock().await;
+            // §4.6: only mint/serialize a per-tab lock for a tab the backend
+            // actually knows. A mutating request naming a closed/unknown tab id
+            // used to permanently mint a map entry before any validation; gating
+            // on existence stops that leak. Unknown tabs fall through and let the
+            // backend return its own not-attached error.
+            if self.inner.backend.knows_tab(&tab_id) {
+                let lock = self.tab_operation_lock(&tab_id).await;
+                let _guard = lock.lock().await;
+                let response = self.route_supported_request(req, ctx).await;
+                // §4.6: a successful close is tab teardown — drop the lock entry.
+                if method_is_tab_close && response.error.is_none() {
+                    self.evict_tab_lock(&tab_id).await;
+                }
+                return response;
+            }
             return self.route_supported_request(req, ctx).await;
         }
-        self.route_supported_request(req, ctx).await
+        let response = self.route_supported_request(req, ctx).await;
+        // §4.6: a successful finalizeTabs is session teardown — drop the
+        // session lock entry so a finished session does not leak forever.
+        if response.error.is_none()
+            && let Some(session_id) = finalize_session_id.as_deref()
+        {
+            self.evict_session_lock(session_id).await;
+        }
+        response
     }
 
     /// Build the durable `browser_command` event plus its routing, or `None`
@@ -550,13 +591,17 @@ impl Dispatcher {
             return None;
         }
         // The predicate already guaranteed both ids are present and non-empty;
-        // this `let-else` re-extracts them as owned values (and never panics).
+        // this `let-else` re-extracts them as owned `&str` (and never panics).
         let (Some(session_id), Some(turn_id)) = (
             ctx.session_id.as_deref().filter(|id| !id.is_empty()),
             ctx.turn_id.as_deref().filter(|id| !id.is_empty()),
         ) else {
             return None;
         };
+        // §3.11: own the ids once here so the return can move them into the
+        // spawned write rather than cloning the same strings a third time.
+        let session_id = session_id.to_owned();
+        let turn_id = turn_id.to_owned();
         let mut event = serde_json::Map::new();
         event.insert("method".to_string(), json!(method));
         event.insert(
@@ -617,8 +662,8 @@ impl Dispatcher {
         }
         Some((
             Value::Object(event),
-            session_id.to_string(),
-            turn_id.to_string(),
+            session_id,
+            turn_id,
             ctx.trusted_kernel_generation,
         ))
     }
@@ -1317,6 +1362,43 @@ impl Dispatcher {
             .entry(session_id.to_string())
             .or_insert_with(|| Arc::new(Mutex::new(())))
             .clone()
+    }
+
+    /// Drop the per-tab operation-lock entry for `tab_id` on tab teardown
+    /// (audit §4.6).
+    ///
+    /// Lifecycle-tied eviction: called after a successful `tab_close` so a closed
+    /// tab's lock no longer occupies the process-global map. Removing the map
+    /// entry only drops the dispatcher's strong ref to the `Arc<Mutex<()>>`; any
+    /// task still holding the lock keeps its own clone alive, so mutual exclusion
+    /// is never broken (unlike a strong-count GC, which could evict a key a live
+    /// holder still guards). A re-opened tab simply mints a fresh entry on its
+    /// next mutating request.
+    async fn evict_tab_lock(&self, tab_id: &str) {
+        self.inner.tab_operation_locks.lock().await.remove(tab_id);
+    }
+
+    /// Drop the per-session operation-lock entry for `session_id` on session
+    /// teardown (audit §4.6). Called after a successful `finalizeTabs`. Same
+    /// liveness-safe semantics as [`Self::evict_tab_lock`].
+    async fn evict_session_lock(&self, session_id: &str) {
+        self.inner
+            .session_operation_locks
+            .lock()
+            .await
+            .remove(session_id);
+    }
+
+    /// Number of live per-tab lock entries (test-only diagnostic, audit §4.6).
+    #[doc(hidden)]
+    pub async fn tab_lock_count(&self) -> usize {
+        self.inner.tab_operation_locks.lock().await.len()
+    }
+
+    /// Number of live per-session lock entries (test-only diagnostic, audit §4.6).
+    #[doc(hidden)]
+    pub async fn session_lock_count(&self) -> usize {
+        self.inner.session_operation_locks.lock().await.len()
     }
 
     async fn enforce_policy(
@@ -2159,6 +2241,11 @@ fn requires_mutation_context(method: &str) -> bool {
         )
 }
 
+// NOTE (audit §4.6): the process-global operation-lock maps are evicted on
+// lifecycle teardown in `route_request_inner`, keyed off `methods::TAB_CLOSE`
+// and `methods::FINALIZE_TABS`. Any NEW teardown method added here (e.g. a
+// bulk tab-close) MUST also wire a matching `evict_tab_lock` / `evict_session_lock`
+// call in `route_request_inner`, or its lock entries will leak.
 fn is_session_mutating_method(method: &str) -> bool {
     method == methods::CREATE_TAB
         || method == methods::FINALIZE_TABS
@@ -2801,5 +2888,210 @@ mod tests {
             trusted_kernel_generation: None,
         };
         assert!(require_mutation_context(methods::RESUME_CONTROL, &ctx).is_ok());
+    }
+
+    #[tokio::test]
+    async fn tab_lock_is_evicted_and_reevicting_absent_key_is_noop() {
+        let dispatcher = Dispatcher::new_for_test();
+        // A normal mutating use mints a tab-lock entry.
+        let _ = dispatcher.tab_operation_lock("tab-A").await;
+        assert_eq!(dispatcher.tab_lock_count().await, 1);
+        // Lifecycle teardown drops it.
+        dispatcher.evict_tab_lock("tab-A").await;
+        assert_eq!(dispatcher.tab_lock_count().await, 0);
+        // Evicting an absent key is a harmless no-op.
+        dispatcher.evict_tab_lock("tab-A").await;
+        assert_eq!(dispatcher.tab_lock_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn session_lock_is_evicted_on_finalize() {
+        let dispatcher = Dispatcher::new_for_test();
+        let _ = dispatcher.session_operation_lock("sess-1").await;
+        assert_eq!(dispatcher.session_lock_count().await, 1);
+        dispatcher.evict_session_lock("sess-1").await;
+        assert_eq!(dispatcher.session_lock_count().await, 0);
+    }
+
+    /// A backend whose `tab_close` and `finalizeTabs` can be configured to SUCCEED
+    /// (`Ok`) or FAIL (`Err`), used to drive the §4.6 route-level eviction gating
+    /// in [`Dispatcher::route_request_inner`] for real. It reports
+    /// `kind() == WebExtension` so the default `supports_method` accepts both
+    /// `tab_close` and `finalizeTabs`, and inherits the default `knows_tab() ==
+    /// true` so a `tab_close` actually mints a per-tab lock before the gate runs.
+    struct EvictionGatingBackend {
+        close_succeeds: bool,
+        finalize_succeeds: bool,
+    }
+
+    #[async_trait::async_trait]
+    impl BrowserBackend for EvictionGatingBackend {
+        fn kind(&self) -> crate::backends::BackendKind {
+            crate::backends::BackendKind::WebExtension
+        }
+
+        fn id(&self) -> &str {
+            "eviction-gating"
+        }
+
+        async fn tab_command_with_context(
+            &self,
+            _ctx: &BackendRequestContext,
+            method: &str,
+            _params: Value,
+        ) -> Result<Value> {
+            // Only `tab_close` is exercised here; succeed/fail per config so the
+            // route-level gate sees `response.error.is_none()` either true or false.
+            if method == methods::TAB_CLOSE && !self.close_succeeds {
+                return Err(HostError::TabNotAttached("tab gone".into()));
+            }
+            Ok(Value::Null)
+        }
+
+        async fn finalize_tabs_with_context(
+            &self,
+            _ctx: &BackendRequestContext,
+            _params: Value,
+        ) -> Result<Value> {
+            if self.finalize_succeeds {
+                Ok(Value::Null)
+            } else {
+                Err(HostError::TabNotAttached("finalize failed".into()))
+            }
+        }
+    }
+
+    fn mutating_ctx() -> BackendRequestContext {
+        BackendRequestContext {
+            session_id: Some("sess-1".into()),
+            turn_id: Some("turn-1".into()),
+            client_timeout_ms: None,
+            trusted_kernel_generation: None,
+        }
+    }
+
+    fn tab_close_request(tab_id: &str) -> Request {
+        Request::new(
+            1,
+            methods::TAB_CLOSE,
+            json!({ "session_id": "sess-1", "turn_id": "turn-1", "tab_id": tab_id }),
+        )
+    }
+
+    fn finalize_request() -> Request {
+        Request::new(
+            1,
+            methods::FINALIZE_TABS,
+            json!({ "session_id": "sess-1", "turn_id": "turn-1" }),
+        )
+    }
+
+    /// Route-level gate (audit §4.6 review follow-up): a SUCCESSFUL `tab_close`
+    /// routed through `route_request_inner` must evict the per-tab lock entry it
+    /// minted. With `knows_tab() == true` the close mints then (on success)
+    /// evicts, so the count returns to 0 for the only tab.
+    #[tokio::test]
+    async fn route_level_successful_tab_close_evicts_tab_lock() {
+        let dispatcher = Dispatcher::new(
+            env!("CARGO_PKG_VERSION").into(),
+            Arc::new(EvictionGatingBackend {
+                close_succeeds: true,
+                finalize_succeeds: true,
+            }),
+        );
+        let response = dispatcher
+            .route_request_inner(tab_close_request("tab-A"), mutating_ctx())
+            .await;
+        assert!(
+            response.error.is_none(),
+            "configured tab_close should succeed: {:?}",
+            response.error
+        );
+        // The lock minted for tab-A was evicted on the successful close.
+        assert_eq!(
+            dispatcher.tab_lock_count().await,
+            0,
+            "successful tab_close must evict its tab lock at the route level"
+        );
+    }
+
+    /// Route-level gate (audit §4.6 review follow-up): a FAILED `tab_close` must
+    /// NOT evict the minted lock entry — the gate keys off
+    /// `response.error.is_none()`, so a failure leaves the entry in place. This is
+    /// the regression bound: a change that evicted on a failed close would drop
+    /// the count to 0 and make this assertion fail.
+    #[tokio::test]
+    async fn route_level_failed_tab_close_does_not_evict_tab_lock() {
+        let dispatcher = Dispatcher::new(
+            env!("CARGO_PKG_VERSION").into(),
+            Arc::new(EvictionGatingBackend {
+                close_succeeds: false,
+                finalize_succeeds: true,
+            }),
+        );
+        let response = dispatcher
+            .route_request_inner(tab_close_request("tab-A"), mutating_ctx())
+            .await;
+        assert!(
+            response.error.is_some(),
+            "configured tab_close should fail so the gate sees error.is_some()"
+        );
+        assert_eq!(
+            dispatcher.tab_lock_count().await,
+            1,
+            "a failed tab_close must NOT evict the tab lock"
+        );
+    }
+
+    /// Route-level gate (audit §4.6 review follow-up): a SUCCESSFUL `finalizeTabs`
+    /// routed through `route_request_inner` must evict the per-session lock entry
+    /// it minted.
+    #[tokio::test]
+    async fn route_level_successful_finalize_evicts_session_lock() {
+        let dispatcher = Dispatcher::new(
+            env!("CARGO_PKG_VERSION").into(),
+            Arc::new(EvictionGatingBackend {
+                close_succeeds: true,
+                finalize_succeeds: true,
+            }),
+        );
+        let response = dispatcher
+            .route_request_inner(finalize_request(), mutating_ctx())
+            .await;
+        assert!(
+            response.error.is_none(),
+            "configured finalizeTabs should succeed: {:?}",
+            response.error
+        );
+        assert_eq!(
+            dispatcher.session_lock_count().await,
+            0,
+            "successful finalizeTabs must evict its session lock at the route level"
+        );
+    }
+
+    /// Route-level gate (audit §4.6 review follow-up): a FAILED `finalizeTabs`
+    /// must NOT evict the minted session lock entry.
+    #[tokio::test]
+    async fn route_level_failed_finalize_does_not_evict_session_lock() {
+        let dispatcher = Dispatcher::new(
+            env!("CARGO_PKG_VERSION").into(),
+            Arc::new(EvictionGatingBackend {
+                close_succeeds: true,
+                finalize_succeeds: false,
+            }),
+        );
+        let response = dispatcher
+            .route_request_inner(finalize_request(), mutating_ctx())
+            .await;
+        assert!(
+            response.error.is_some(),
+            "configured finalizeTabs should fail so the gate sees error.is_some()"
+        );
+        assert_eq!(
+            dispatcher.session_lock_count().await,
+            1,
+            "a failed finalizeTabs must NOT evict the session lock"
+        );
     }
 }
