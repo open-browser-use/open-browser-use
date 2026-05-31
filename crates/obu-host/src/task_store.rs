@@ -2434,6 +2434,111 @@ mod tests {
         );
     }
 
+    #[test]
+    fn opens_and_migrates_v3_segments_to_indexable_sequence() {
+        let dir = owner_only_tempdir();
+        let db_path = dir.path().join("tasks.db");
+        {
+            let conn = Connection::open(&db_path).unwrap();
+            conn.execute_batch(
+                "CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                 CREATE TABLE tasks (
+                     id             TEXT PRIMARY KEY,
+                     label          TEXT NOT NULL,
+                     state          TEXT NOT NULL,
+                     schema_version INTEGER NOT NULL,
+                     created_at     INTEGER NOT NULL
+                 );
+                 CREATE TABLE task_segments (
+                     task_id    TEXT NOT NULL,
+                     segment_id TEXT NOT NULL,
+                     session_id TEXT NOT NULL,
+                     turn_id    TEXT NOT NULL,
+                     started_at INTEGER NOT NULL,
+                     generation INTEGER,
+                     PRIMARY KEY (task_id, segment_id)
+                 );
+                 INSERT INTO meta (key, value) VALUES ('schema_version', '3');
+                 INSERT INTO tasks (id, label, state, schema_version, created_at)
+                     VALUES ('task-1', 'l', 'created', 3, 0);
+                 INSERT INTO task_segments (task_id, segment_id, session_id, turn_id, started_at, generation)
+                     VALUES ('task-1', 'seg-1', 's1', 't1', 10, NULL);
+                 INSERT INTO task_segments (task_id, segment_id, session_id, turn_id, started_at, generation)
+                     VALUES ('task-1', 'seg-2', 's1', 't2', 10, NULL);
+                 INSERT INTO task_segments (task_id, segment_id, session_id, turn_id, started_at, generation)
+                     VALUES ('task-1', 'seg-3', 's1', 't3', 10, NULL);",
+            )
+            .unwrap();
+        }
+
+        let store = TaskStore::open(dir.path()).unwrap();
+        let version: String = store
+            .conn
+            .query_row(
+                "SELECT value FROM meta WHERE key = 'schema_version'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(version, TASK_STORE_SCHEMA_VERSION.to_string());
+
+        let backfilled: Vec<(String, i64)> = store
+            .conn
+            .prepare(
+                "SELECT segment_id, segment_seq
+                 FROM task_segments
+                 WHERE task_id = 'task-1'
+                 ORDER BY started_at ASC, segment_seq ASC",
+            )
+            .unwrap()
+            .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert_eq!(
+            backfilled,
+            vec![
+                ("seg-1".to_string(), 1),
+                ("seg-2".to_string(), 2),
+                ("seg-3".to_string(), 3),
+            ]
+        );
+        assert_eq!(
+            store
+                .segments("task-1")
+                .unwrap()
+                .into_iter()
+                .map(|segment| segment.segment_id)
+                .collect::<Vec<_>>(),
+            vec![
+                "seg-1".to_string(),
+                "seg-2".to_string(),
+                "seg-3".to_string(),
+            ]
+        );
+
+        store
+            .append_segment(
+                "task-1",
+                Segment {
+                    segment_id: "seg-4".into(),
+                    session_id: "s1".into(),
+                    turn_id: "t4".into(),
+                    generation: Some(7),
+                },
+            )
+            .unwrap();
+        let appended_seq: i64 = store
+            .conn
+            .query_row(
+                "SELECT segment_seq FROM task_segments WHERE segment_id = 'seg-4'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(appended_seq, 4);
+    }
+
     // Finding 4: a long task spans multiple turns (one segment per resume), so
     // its episode export is segmented by turn: one section per `(session,turn)`
     // segment, in resume order, linked by task-level events. Every section
