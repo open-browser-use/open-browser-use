@@ -364,6 +364,10 @@ pub(crate) fn now_millis() -> i64 {
         .unwrap_or(0)
 }
 
+fn sqlite_limit(limit: usize) -> i64 {
+    i64::try_from(limit).unwrap_or(i64::MAX)
+}
+
 /// Record a fresh execution segment for a task resume, bound to the current
 /// MCP turn.
 ///
@@ -757,9 +761,11 @@ impl TaskStore {
         // duplicates. Inside the same `tx`, so it commits atomically below.
         tx.execute_batch(
             "CREATE UNIQUE INDEX IF NOT EXISTS idx_task_segments_task_session_turn
-             ON task_segments(task_id, session_id, turn_id);",
+             ON task_segments(task_id, session_id, turn_id);
+             CREATE INDEX IF NOT EXISTS idx_task_segments_task_started
+             ON task_segments(task_id, started_at DESC);",
         )
-        .context("create task_segments unique index (v3)")?;
+        .context("create task_segments indexes (v3)")?;
 
         tx.commit().context("commit schema setup tx")?;
         Ok(())
@@ -1066,14 +1072,31 @@ impl TaskStore {
     /// is deliberately excluded. Returns the number of `tasks` rows deleted.
     /// Callers pass a non-negative `window_ms`.
     pub fn prune_terminal_tasks(&self, window_ms: i64) -> Result<usize> {
+        self.prune_terminal_tasks_limited(window_ms, usize::MAX)
+    }
+
+    /// Delete up to `limit` terminal tasks older than `window_ms` (audit §2.2).
+    ///
+    /// This is the actor-maintenance entry point: it keeps a single maintenance
+    /// tick from materializing or deleting an unbounded task set.
+    pub fn prune_terminal_tasks_limited(&self, window_ms: i64, limit: usize) -> Result<usize> {
+        if limit == 0 {
+            return Ok(0);
+        }
         let cutoff = now_millis() - window_ms;
         let deleted = self
             .conn
             .execute(
                 "DELETE FROM tasks
-                 WHERE state IN ('completed', 'cancelled', 'failed')
-                   AND created_at < ?1",
-                [cutoff],
+                 WHERE id IN (
+                     SELECT id
+                     FROM tasks
+                     WHERE state IN ('completed', 'cancelled', 'failed')
+                       AND created_at < ?1
+                     ORDER BY created_at ASC, id ASC
+                     LIMIT ?2
+                 )",
+                rusqlite::params![cutoff, sqlite_limit(limit)],
             )
             .context("prune terminal tasks")?;
         Ok(deleted)
@@ -1101,16 +1124,42 @@ impl TaskStore {
         Ok(removed)
     }
 
-    /// Return all task ids currently present in the store, in stable order.
-    pub(crate) fn task_ids(&self) -> Result<Vec<String>> {
+    /// Return up to `limit` task ids after `after_task_id`, ordered by id.
+    ///
+    /// The maintenance actor uses this as a durable cursor over bounded passes.
+    /// Ordering by the immutable primary key avoids an unbounded OFFSET scan and
+    /// keeps pagination stable even when tasks are inserted or pruned.
+    pub(crate) fn task_ids_after(
+        &self,
+        after_task_id: Option<&str>,
+        limit: usize,
+    ) -> Result<Vec<String>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let limit = sqlite_limit(limit);
         let mut stmt = self
             .conn
-            .prepare("SELECT id FROM tasks ORDER BY created_at ASC, id ASC")
+            .prepare(match after_task_id {
+                Some(_) => "SELECT id FROM tasks WHERE id > ?1 ORDER BY id ASC LIMIT ?2",
+                None => "SELECT id FROM tasks ORDER BY id ASC LIMIT ?1",
+            })
             .context("prepare task id query")?;
-        let rows = stmt
-            .query_map([], |row| row.get::<_, String>(0))
-            .context("query task ids")?;
         let mut task_ids = Vec::new();
+        if let Some(after_task_id) = after_task_id {
+            let rows = stmt
+                .query_map(rusqlite::params![after_task_id, limit], |row| {
+                    row.get::<_, String>(0)
+                })
+                .context("query paged task ids")?;
+            for row in rows {
+                task_ids.push(row.context("read task id")?);
+            }
+            return Ok(task_ids);
+        }
+        let rows = stmt
+            .query_map([limit], |row| row.get::<_, String>(0))
+            .context("query task ids")?;
         for row in rows {
             task_ids.push(row.context("read task id")?);
         }
@@ -1126,28 +1175,30 @@ impl TaskStore {
     /// segments are removed with the segment rows so old `(session, turn)` pairs
     /// no longer point at non-existent segment ids.
     pub fn cap_task_segments(&self, task_id: &str, cap: i64) -> Result<usize> {
-        self.conn
-            .execute(
-                "DELETE FROM task_turn_bindings
-                 WHERE task_id = ?1
-                   AND segment_id NOT IN (
-                       SELECT segment_id FROM (
-                           SELECT segment_id
-                           FROM task_segments
-                           WHERE task_id = ?1
-                           ORDER BY started_at DESC, rowid DESC
-                           LIMIT ?2
-                       )
-                       UNION
-                       SELECT segment_id
-                       FROM task_execution_owners
-                       WHERE task_id = ?1
-                   )",
-                rusqlite::params![task_id, cap],
-            )
-            .context("delete capped segment turn bindings")?;
-        let removed = self
+        let tx = self
             .conn
+            .unchecked_transaction()
+            .context("begin cap task segments transaction")?;
+        tx.execute(
+            "DELETE FROM task_turn_bindings
+             WHERE task_id = ?1
+               AND segment_id NOT IN (
+                   SELECT segment_id FROM (
+                       SELECT segment_id
+                       FROM task_segments
+                       WHERE task_id = ?1
+                       ORDER BY started_at DESC, rowid DESC
+                       LIMIT ?2
+                   )
+                   UNION
+                   SELECT segment_id
+                   FROM task_execution_owners
+                   WHERE task_id = ?1
+               )",
+            rusqlite::params![task_id, cap],
+        )
+        .context("delete capped segment turn bindings")?;
+        let removed = tx
             .execute(
                 "DELETE FROM task_segments
                  WHERE task_id = ?1
@@ -1167,6 +1218,8 @@ impl TaskStore {
                 rusqlite::params![task_id, cap],
             )
             .context("cap task segments")?;
+        tx.commit()
+            .context("commit cap task segments transaction")?;
         Ok(removed)
     }
 
@@ -1845,6 +1898,24 @@ mod tests {
             label: "task".into(),
             schema_version: TASK_STORE_SCHEMA_VERSION,
         }
+    }
+
+    #[test]
+    fn task_store_creates_segment_recency_index() {
+        let (store, _dir) = open_temp_store();
+        let indexes = store
+            .conn
+            .prepare("PRAGMA index_list('task_segments')")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<rusqlite::Result<Vec<_>>>()
+            .unwrap();
+        assert!(
+            indexes
+                .iter()
+                .any(|name| name == "idx_task_segments_task_started")
+        );
     }
 
     #[test]
@@ -2683,6 +2754,35 @@ mod tests {
     }
 
     #[test]
+    fn prune_terminal_tasks_limited_bounds_work_per_call() {
+        let (store, _dir) = open_temp_store();
+        let mut task_ids = Vec::new();
+        for _ in 0..3 {
+            let task_id = store.create_task(default_new_task()).unwrap();
+            store.set_state(&task_id, TaskState::Completed).unwrap();
+            store
+                .set_task_created_at_for_test(&task_id, now_millis() - 1_000_000)
+                .unwrap();
+            task_ids.push(task_id);
+        }
+
+        assert_eq!(store.prune_terminal_tasks_limited(60_000, 2).unwrap(), 2);
+        assert_eq!(
+            task_ids
+                .iter()
+                .filter(|task_id| store.task_exists(task_id).unwrap())
+                .count(),
+            1
+        );
+        assert_eq!(store.prune_terminal_tasks_limited(60_000, 2).unwrap(), 1);
+        assert!(
+            task_ids
+                .iter()
+                .all(|task_id| !store.task_exists(task_id).unwrap())
+        );
+    }
+
+    #[test]
     fn prune_terminal_tasks_keeps_live_and_recent_tasks() {
         let (store, _dir) = open_temp_store();
         // A live (non-terminal) task, old enough to be in-window — must NOT be pruned.
@@ -2741,6 +2841,28 @@ mod tests {
             .unwrap();
         assert_eq!(store.prune_terminal_tasks(60_000).unwrap(), 1);
         assert!(!store.task_exists(&failed).unwrap());
+    }
+
+    #[test]
+    fn task_ids_after_paginates_by_stable_id_order() {
+        let (store, _dir) = open_temp_store();
+        let mut expected = Vec::new();
+        for _ in 0..3 {
+            expected.push(store.create_task(default_new_task()).unwrap());
+        }
+        expected.sort();
+
+        assert_eq!(store.task_ids_after(None, 2).unwrap(), expected[..2]);
+        assert_eq!(
+            store.task_ids_after(Some(&expected[0]), 2).unwrap(),
+            expected[1..]
+        );
+        assert_eq!(
+            store
+                .task_ids_after(Some(expected.last().unwrap()), 2)
+                .unwrap(),
+            Vec::<String>::new()
+        );
     }
 
     #[test]

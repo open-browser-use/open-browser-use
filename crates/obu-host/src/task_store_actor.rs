@@ -41,11 +41,13 @@ const DEFAULT_TASK_STORE_RETENTION_WINDOW_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
 const DEFAULT_TASK_STORE_EVENT_CAP: i64 = 10_000;
 const DEFAULT_TASK_STORE_SEGMENT_CAP: i64 = 1_000;
 const DEFAULT_TASK_STORE_MAINTENANCE_INTERVAL_MS: i64 = 60_000;
+const DEFAULT_TASK_STORE_MAINTENANCE_TASKS_PER_PASS: usize = 64;
 
 const ENV_TASK_STORE_RETENTION_WINDOW_MS: &str = "OBU_TASK_STORE_RETENTION_WINDOW_MS";
 const ENV_TASK_STORE_EVENT_CAP: &str = "OBU_TASK_STORE_EVENT_CAP";
 const ENV_TASK_STORE_SEGMENT_CAP: &str = "OBU_TASK_STORE_SEGMENT_CAP";
 const ENV_TASK_STORE_MAINTENANCE_INTERVAL_MS: &str = "OBU_TASK_STORE_MAINTENANCE_INTERVAL_MS";
+const ENV_TASK_STORE_MAINTENANCE_TASKS_PER_PASS: &str = "OBU_TASK_STORE_MAINTENANCE_TASKS_PER_PASS";
 
 /// Runtime maintenance bounds for the durable task store (audit §2.2).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -54,6 +56,7 @@ struct TaskStoreMaintenanceConfig {
     max_events_per_task: i64,
     max_segments_per_task: i64,
     maintenance_interval_ms: i64,
+    maintenance_tasks_per_pass: usize,
 }
 
 impl Default for TaskStoreMaintenanceConfig {
@@ -63,6 +66,7 @@ impl Default for TaskStoreMaintenanceConfig {
             max_events_per_task: DEFAULT_TASK_STORE_EVENT_CAP,
             max_segments_per_task: DEFAULT_TASK_STORE_SEGMENT_CAP,
             maintenance_interval_ms: DEFAULT_TASK_STORE_MAINTENANCE_INTERVAL_MS,
+            maintenance_tasks_per_pass: DEFAULT_TASK_STORE_MAINTENANCE_TASKS_PER_PASS,
         }
     }
 }
@@ -97,10 +101,21 @@ impl TaskStoreMaintenanceConfig {
                 &mut lookup,
                 ENV_TASK_STORE_MAINTENANCE_INTERVAL_MS,
                 default.maintenance_interval_ms,
-                0,
+                1,
+            ),
+            maintenance_tasks_per_pass: env_usize_at_least(
+                &mut lookup,
+                ENV_TASK_STORE_MAINTENANCE_TASKS_PER_PASS,
+                default.maintenance_tasks_per_pass,
+                1,
             ),
         }
     }
+}
+
+#[derive(Default)]
+struct TaskStoreMaintenanceCursor {
+    after_task_id: Option<String>,
 }
 
 #[derive(Default)]
@@ -128,18 +143,42 @@ fn env_i64_at_least(
         .unwrap_or(default)
 }
 
+fn env_usize_at_least(
+    lookup: &mut impl FnMut(&str) -> Option<String>,
+    name: &str,
+    default: usize,
+    min: usize,
+) -> usize {
+    lookup(name)
+        .and_then(|value| value.parse::<usize>().ok())
+        .filter(|value| *value >= min)
+        .unwrap_or(default)
+}
+
 fn run_task_store_maintenance(
     store: &TaskStore,
     config: TaskStoreMaintenanceConfig,
+    cursor: &mut TaskStoreMaintenanceCursor,
 ) -> Result<TaskStoreMaintenanceStats> {
+    let task_limit = config.maintenance_tasks_per_pass.max(1);
     let mut stats = TaskStoreMaintenanceStats {
-        pruned_tasks: store.prune_terminal_tasks(config.retention_window_ms)?,
+        pruned_tasks: store.prune_terminal_tasks_limited(config.retention_window_ms, task_limit)?,
         ..TaskStoreMaintenanceStats::default()
     };
-    for task_id in store.task_ids()? {
+    let mut task_ids = store.task_ids_after(
+        cursor.after_task_id.as_deref(),
+        task_limit.saturating_add(1),
+    )?;
+    let reached_end = task_ids.len() <= task_limit;
+    if !reached_end {
+        task_ids.truncate(task_limit);
+    }
+    let next_after = task_ids.last().cloned();
+    for task_id in task_ids {
         stats.capped_events += store.cap_task_events(&task_id, config.max_events_per_task)?;
         stats.capped_segments += store.cap_task_segments(&task_id, config.max_segments_per_task)?;
     }
+    cursor.after_task_id = if reached_end { None } else { next_after };
     store.incremental_vacuum()?;
     Ok(stats)
 }
@@ -147,28 +186,31 @@ fn run_task_store_maintenance(
 fn maybe_run_task_store_maintenance(
     store: &TaskStore,
     config: TaskStoreMaintenanceConfig,
+    cursor: &mut TaskStoreMaintenanceCursor,
     next_maintenance_at_ms: &mut i64,
 ) {
     let now = now_millis();
     if now < *next_maintenance_at_ms {
         return;
     }
-    run_task_store_maintenance_and_log(store, config, "periodic");
+    run_task_store_maintenance_and_log(store, config, cursor, "periodic");
     *next_maintenance_at_ms = now.saturating_add(config.maintenance_interval_ms);
 }
 
 fn run_task_store_maintenance_and_log(
     store: &TaskStore,
     config: TaskStoreMaintenanceConfig,
+    cursor: &mut TaskStoreMaintenanceCursor,
     trigger: &'static str,
 ) {
-    match run_task_store_maintenance(store, config) {
+    match run_task_store_maintenance(store, config, cursor) {
         Ok(stats) if stats.changed() => {
             tracing::debug!(
                 trigger,
                 pruned_tasks = stats.pruned_tasks,
                 capped_events = stats.capped_events,
                 capped_segments = stats.capped_segments,
+                next_after_task_id = cursor.after_task_id.as_deref().unwrap_or(""),
                 "task store maintenance applied"
             );
         }
@@ -306,7 +348,13 @@ impl TaskStoreHandle {
                         return;
                     }
                 };
-                run_task_store_maintenance_and_log(&store, maintenance_config, "startup");
+                let mut maintenance_cursor = TaskStoreMaintenanceCursor::default();
+                run_task_store_maintenance_and_log(
+                    &store,
+                    maintenance_config,
+                    &mut maintenance_cursor,
+                    "startup",
+                );
                 let mut next_maintenance_at_ms =
                     now_millis().saturating_add(maintenance_config.maintenance_interval_ms);
                 // Raw resume tokens for in-flight attempts, keyed by attempt id.
@@ -468,6 +516,7 @@ impl TaskStoreHandle {
                     maybe_run_task_store_maintenance(
                         &store,
                         maintenance_config,
+                        &mut maintenance_cursor,
                         &mut next_maintenance_at_ms,
                     );
                 }
@@ -1045,6 +1094,7 @@ mod tests {
             ENV_TASK_STORE_EVENT_CAP => Some("11".into()),
             ENV_TASK_STORE_SEGMENT_CAP => Some("12".into()),
             ENV_TASK_STORE_MAINTENANCE_INTERVAL_MS => Some("13".into()),
+            ENV_TASK_STORE_MAINTENANCE_TASKS_PER_PASS => Some("14".into()),
             _ => None,
         });
         assert_eq!(
@@ -1054,6 +1104,7 @@ mod tests {
                 max_events_per_task: 11,
                 max_segments_per_task: 12,
                 maintenance_interval_ms: 13,
+                maintenance_tasks_per_pass: 14,
             }
         );
 
@@ -1061,10 +1112,73 @@ mod tests {
             ENV_TASK_STORE_RETENTION_WINDOW_MS => Some("-1".into()),
             ENV_TASK_STORE_EVENT_CAP => Some("not-a-number".into()),
             ENV_TASK_STORE_SEGMENT_CAP => Some("-12".into()),
-            ENV_TASK_STORE_MAINTENANCE_INTERVAL_MS => Some("-13".into()),
+            ENV_TASK_STORE_MAINTENANCE_INTERVAL_MS => Some("0".into()),
+            ENV_TASK_STORE_MAINTENANCE_TASKS_PER_PASS => Some("0".into()),
             _ => None,
         });
         assert_eq!(invalid, TaskStoreMaintenanceConfig::default());
+    }
+
+    #[test]
+    fn maintenance_cursor_bounds_segment_and_event_capping_per_pass() {
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(
+            dir.path(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+        let store = TaskStore::open(dir.path()).unwrap();
+
+        for task_index in 0..3 {
+            let task_id = store
+                .create_task(NewTask {
+                    label: format!("task-{task_index}"),
+                    schema_version: TASK_STORE_SCHEMA_VERSION,
+                })
+                .unwrap();
+            for _ in 0..3 {
+                store.append_event(&task_id, "marker", "{}").unwrap();
+            }
+            for segment_index in 0..3 {
+                store
+                    .ensure_turn_segment(
+                        &task_id,
+                        &format!("s{task_index}"),
+                        &format!("t{segment_index}"),
+                        Some(7),
+                    )
+                    .unwrap();
+            }
+        }
+
+        let task_ids = store.task_ids_after(None, 10).unwrap();
+        assert_eq!(task_ids.len(), 3);
+        let config = TaskStoreMaintenanceConfig {
+            retention_window_ms: 60_000,
+            max_events_per_task: 1,
+            max_segments_per_task: 1,
+            maintenance_interval_ms: 0,
+            maintenance_tasks_per_pass: 1,
+        };
+        let mut cursor = TaskStoreMaintenanceCursor::default();
+
+        run_task_store_maintenance(&store, config, &mut cursor).unwrap();
+        assert_eq!(store.events(&task_ids[0]).unwrap().len(), 1);
+        assert_eq!(store.segments(&task_ids[0]).unwrap().len(), 1);
+        assert_eq!(store.events(&task_ids[1]).unwrap().len(), 3);
+        assert_eq!(store.segments(&task_ids[1]).unwrap().len(), 3);
+
+        run_task_store_maintenance(&store, config, &mut cursor).unwrap();
+        assert_eq!(store.events(&task_ids[1]).unwrap().len(), 1);
+        assert_eq!(store.segments(&task_ids[1]).unwrap().len(), 1);
+        assert_eq!(store.events(&task_ids[2]).unwrap().len(), 3);
+        assert_eq!(store.segments(&task_ids[2]).unwrap().len(), 3);
+
+        run_task_store_maintenance(&store, config, &mut cursor).unwrap();
+        assert_eq!(store.events(&task_ids[2]).unwrap().len(), 1);
+        assert_eq!(store.segments(&task_ids[2]).unwrap().len(), 1);
+        assert_eq!(cursor.after_task_id, None);
     }
 
     #[tokio::test]
@@ -1206,6 +1320,7 @@ mod tests {
                 max_events_per_task: 3,
                 max_segments_per_task: 2,
                 maintenance_interval_ms: 0,
+                maintenance_tasks_per_pass: 64,
             },
         )
         .unwrap();
