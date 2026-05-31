@@ -1101,6 +1101,75 @@ impl TaskStore {
         Ok(removed)
     }
 
+    /// Return all task ids currently present in the store, in stable order.
+    pub(crate) fn task_ids(&self) -> Result<Vec<String>> {
+        let mut stmt = self
+            .conn
+            .prepare("SELECT id FROM tasks ORDER BY created_at ASC, id ASC")
+            .context("prepare task id query")?;
+        let rows = stmt
+            .query_map([], |row| row.get::<_, String>(0))
+            .context("query task ids")?;
+        let mut task_ids = Vec::new();
+        for row in rows {
+            task_ids.push(row.context("read task id")?);
+        }
+        Ok(task_ids)
+    }
+
+    /// Cap a single task's execution segments to its most recent `cap` rows
+    /// (audit §2.2).
+    ///
+    /// The active execution-owner segment is exempt even if it is older than the
+    /// cap, because deleting the live authority row would make resume planning
+    /// under-report the current browser attachment. Turn bindings for deleted
+    /// segments are removed with the segment rows so old `(session, turn)` pairs
+    /// no longer point at non-existent segment ids.
+    pub fn cap_task_segments(&self, task_id: &str, cap: i64) -> Result<usize> {
+        self.conn
+            .execute(
+                "DELETE FROM task_turn_bindings
+                 WHERE task_id = ?1
+                   AND segment_id NOT IN (
+                       SELECT segment_id FROM (
+                           SELECT segment_id
+                           FROM task_segments
+                           WHERE task_id = ?1
+                           ORDER BY started_at DESC, rowid DESC
+                           LIMIT ?2
+                       )
+                       UNION
+                       SELECT segment_id
+                       FROM task_execution_owners
+                       WHERE task_id = ?1
+                   )",
+                rusqlite::params![task_id, cap],
+            )
+            .context("delete capped segment turn bindings")?;
+        let removed = self
+            .conn
+            .execute(
+                "DELETE FROM task_segments
+                 WHERE task_id = ?1
+                   AND segment_id NOT IN (
+                       SELECT segment_id FROM (
+                           SELECT segment_id
+                           FROM task_segments
+                           WHERE task_id = ?1
+                           ORDER BY started_at DESC, rowid DESC
+                           LIMIT ?2
+                       )
+                       UNION
+                       SELECT segment_id
+                       FROM task_execution_owners
+                       WHERE task_id = ?1
+                   )",
+                rusqlite::params![task_id, cap],
+            )
+            .context("cap task segments")?;
+        Ok(removed)
+    }
+
     /// Reclaim free-list pages produced by retention deletes (audit §2.2).
     ///
     /// A thin wrapper over `PRAGMA incremental_vacuum` (a no-op unless
@@ -2687,6 +2756,62 @@ mod tests {
         // cap == 0 clears the log.
         assert_eq!(store.cap_task_events(&task_id, 0).unwrap(), 3);
         assert_eq!(store.event_cursor(&task_id).unwrap(), 0);
+    }
+
+    #[test]
+    fn cap_task_segments_trims_to_recent_segments_and_turn_bindings() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        for turn_id in ["t1", "t2", "t3", "t4"] {
+            store
+                .ensure_turn_segment(&task_id, "s1", turn_id, Some(7))
+                .unwrap();
+        }
+
+        let removed = store.cap_task_segments(&task_id, 2).unwrap();
+        assert_eq!(removed, 2);
+        let turns: Vec<String> = store
+            .segments(&task_id)
+            .unwrap()
+            .into_iter()
+            .map(|segment| segment.turn_id)
+            .collect();
+        assert_eq!(turns, vec!["t3".to_string(), "t4".to_string()]);
+        assert_eq!(store.task_for_turn("s1", "t1").unwrap(), None);
+        assert_eq!(store.task_for_turn("s1", "t2").unwrap(), None);
+        assert_eq!(store.task_for_turn("s1", "t4").unwrap(), Some(task_id));
+    }
+
+    #[test]
+    fn cap_task_segments_preserves_active_execution_owner() {
+        let (store, _dir) = open_temp_store();
+        let task_id = store.create_task(default_new_task()).unwrap();
+        let begin = store
+            .begin_resume_attempt(&task_id, "s1", "t1", 7, 60_000)
+            .unwrap();
+        let token = begin.resume_token.expect("fresh attempt mints token");
+        let attached = store.complete_resume_attached(&token, 7).unwrap();
+        store
+            .ensure_turn_segment(&task_id, "s1", "t2", Some(7))
+            .unwrap();
+        store
+            .ensure_turn_segment(&task_id, "s1", "t3", Some(7))
+            .unwrap();
+
+        let removed = store.cap_task_segments(&task_id, 1).unwrap();
+        assert_eq!(removed, 1);
+        let segments = store.segments(&task_id).unwrap();
+        assert!(
+            segments
+                .iter()
+                .any(|segment| segment.segment_id == attached.segment.segment_id),
+            "the active execution owner segment must survive segment capping"
+        );
+        assert!(
+            segments.iter().any(|segment| segment.turn_id == "t3"),
+            "the newest non-active segment should also be retained"
+        );
+        assert_eq!(store.task_for_turn("s1", "t2").unwrap(), None);
     }
 
     /// Helper: read the live `PRAGMA auto_vacuum` mode off a store's connection

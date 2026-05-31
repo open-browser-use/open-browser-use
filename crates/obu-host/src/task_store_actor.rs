@@ -37,6 +37,148 @@ use crate::task_store::{
 /// must-send writes (resume/export/list) apply back-pressure instead.
 const ACTOR_CHANNEL_CAPACITY: usize = 1024;
 
+const DEFAULT_TASK_STORE_RETENTION_WINDOW_MS: i64 = 30 * 24 * 60 * 60 * 1_000;
+const DEFAULT_TASK_STORE_EVENT_CAP: i64 = 10_000;
+const DEFAULT_TASK_STORE_SEGMENT_CAP: i64 = 1_000;
+const DEFAULT_TASK_STORE_MAINTENANCE_INTERVAL_MS: i64 = 60_000;
+
+const ENV_TASK_STORE_RETENTION_WINDOW_MS: &str = "OBU_TASK_STORE_RETENTION_WINDOW_MS";
+const ENV_TASK_STORE_EVENT_CAP: &str = "OBU_TASK_STORE_EVENT_CAP";
+const ENV_TASK_STORE_SEGMENT_CAP: &str = "OBU_TASK_STORE_SEGMENT_CAP";
+const ENV_TASK_STORE_MAINTENANCE_INTERVAL_MS: &str = "OBU_TASK_STORE_MAINTENANCE_INTERVAL_MS";
+
+/// Runtime maintenance bounds for the durable task store (audit §2.2).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct TaskStoreMaintenanceConfig {
+    retention_window_ms: i64,
+    max_events_per_task: i64,
+    max_segments_per_task: i64,
+    maintenance_interval_ms: i64,
+}
+
+impl Default for TaskStoreMaintenanceConfig {
+    fn default() -> Self {
+        Self {
+            retention_window_ms: DEFAULT_TASK_STORE_RETENTION_WINDOW_MS,
+            max_events_per_task: DEFAULT_TASK_STORE_EVENT_CAP,
+            max_segments_per_task: DEFAULT_TASK_STORE_SEGMENT_CAP,
+            maintenance_interval_ms: DEFAULT_TASK_STORE_MAINTENANCE_INTERVAL_MS,
+        }
+    }
+}
+
+impl TaskStoreMaintenanceConfig {
+    fn from_env() -> Self {
+        Self::from_lookup(|name| std::env::var(name).ok())
+    }
+
+    fn from_lookup(mut lookup: impl FnMut(&str) -> Option<String>) -> Self {
+        let default = Self::default();
+        Self {
+            retention_window_ms: env_i64_at_least(
+                &mut lookup,
+                ENV_TASK_STORE_RETENTION_WINDOW_MS,
+                default.retention_window_ms,
+                0,
+            ),
+            max_events_per_task: env_i64_at_least(
+                &mut lookup,
+                ENV_TASK_STORE_EVENT_CAP,
+                default.max_events_per_task,
+                0,
+            ),
+            max_segments_per_task: env_i64_at_least(
+                &mut lookup,
+                ENV_TASK_STORE_SEGMENT_CAP,
+                default.max_segments_per_task,
+                0,
+            ),
+            maintenance_interval_ms: env_i64_at_least(
+                &mut lookup,
+                ENV_TASK_STORE_MAINTENANCE_INTERVAL_MS,
+                default.maintenance_interval_ms,
+                0,
+            ),
+        }
+    }
+}
+
+#[derive(Default)]
+struct TaskStoreMaintenanceStats {
+    pruned_tasks: usize,
+    capped_events: usize,
+    capped_segments: usize,
+}
+
+impl TaskStoreMaintenanceStats {
+    fn changed(&self) -> bool {
+        self.pruned_tasks > 0 || self.capped_events > 0 || self.capped_segments > 0
+    }
+}
+
+fn env_i64_at_least(
+    lookup: &mut impl FnMut(&str) -> Option<String>,
+    name: &str,
+    default: i64,
+    min: i64,
+) -> i64 {
+    lookup(name)
+        .and_then(|value| value.parse::<i64>().ok())
+        .filter(|value| *value >= min)
+        .unwrap_or(default)
+}
+
+fn run_task_store_maintenance(
+    store: &TaskStore,
+    config: TaskStoreMaintenanceConfig,
+) -> Result<TaskStoreMaintenanceStats> {
+    let mut stats = TaskStoreMaintenanceStats {
+        pruned_tasks: store.prune_terminal_tasks(config.retention_window_ms)?,
+        ..TaskStoreMaintenanceStats::default()
+    };
+    for task_id in store.task_ids()? {
+        stats.capped_events += store.cap_task_events(&task_id, config.max_events_per_task)?;
+        stats.capped_segments += store.cap_task_segments(&task_id, config.max_segments_per_task)?;
+    }
+    store.incremental_vacuum()?;
+    Ok(stats)
+}
+
+fn maybe_run_task_store_maintenance(
+    store: &TaskStore,
+    config: TaskStoreMaintenanceConfig,
+    next_maintenance_at_ms: &mut i64,
+) {
+    let now = now_millis();
+    if now < *next_maintenance_at_ms {
+        return;
+    }
+    run_task_store_maintenance_and_log(store, config, "periodic");
+    *next_maintenance_at_ms = now.saturating_add(config.maintenance_interval_ms);
+}
+
+fn run_task_store_maintenance_and_log(
+    store: &TaskStore,
+    config: TaskStoreMaintenanceConfig,
+    trigger: &'static str,
+) {
+    match run_task_store_maintenance(store, config) {
+        Ok(stats) if stats.changed() => {
+            tracing::debug!(
+                trigger,
+                pruned_tasks = stats.pruned_tasks,
+                capped_events = stats.capped_events,
+                capped_segments = stats.capped_segments,
+                "task store maintenance applied"
+            );
+        }
+        Ok(_) => {}
+        Err(error) => {
+            tracing::warn!(%error, trigger, "task store maintenance failed");
+        }
+    }
+}
+
 /// Cloneable async handle to the task-store actor.
 ///
 /// Each handle holds the sender end of the actor's command channel; cloning a
@@ -146,6 +288,13 @@ impl TaskStoreHandle {
     /// reply path; subsequent calls on the handle then resolve to a "task store
     /// actor closed" error rather than blocking.
     pub fn open(dir: PathBuf) -> Result<Self> {
+        Self::open_with_maintenance_config(dir, TaskStoreMaintenanceConfig::from_env())
+    }
+
+    fn open_with_maintenance_config(
+        dir: PathBuf,
+        maintenance_config: TaskStoreMaintenanceConfig,
+    ) -> Result<Self> {
         let (tx, mut rx) = mpsc::channel::<TaskStoreCommand>(ACTOR_CHANNEL_CAPACITY);
         thread::Builder::new()
             .name("obu-task-store".into())
@@ -157,6 +306,9 @@ impl TaskStoreHandle {
                         return;
                     }
                 };
+                run_task_store_maintenance_and_log(&store, maintenance_config, "startup");
+                let mut next_maintenance_at_ms =
+                    now_millis().saturating_add(maintenance_config.maintenance_interval_ms);
                 // Raw resume tokens for in-flight attempts, keyed by attempt id.
                 // The store persists only token *hashes*, never the raw token,
                 // so this in-memory map is the only place the raw wire token
@@ -313,12 +465,25 @@ impl TaskStoreHandle {
                             let _ = reply.send(result);
                         }
                     }
+                    maybe_run_task_store_maintenance(
+                        &store,
+                        maintenance_config,
+                        &mut next_maintenance_at_ms,
+                    );
                 }
             })?;
         Ok(Self {
             tx,
             dropped_best_effort_writes: Arc::new(AtomicU64::new(0)),
         })
+    }
+
+    #[cfg(test)]
+    fn open_with_maintenance_config_for_test(
+        dir: PathBuf,
+        maintenance_config: TaskStoreMaintenanceConfig,
+    ) -> Result<Self> {
+        Self::open_with_maintenance_config(dir, maintenance_config)
     }
 
     /// Number of best-effort observability writes shed because the bounded queue
@@ -868,6 +1033,40 @@ fn evict_resume_token(raw_resume_tokens: &mut HashMap<String, String>, token: &s
 mod tests {
     use super::*;
 
+    #[test]
+    fn maintenance_config_uses_defaults_and_env_overrides() {
+        assert_eq!(
+            TaskStoreMaintenanceConfig::from_lookup(|_| None),
+            TaskStoreMaintenanceConfig::default()
+        );
+
+        let overridden = TaskStoreMaintenanceConfig::from_lookup(|name| match name {
+            ENV_TASK_STORE_RETENTION_WINDOW_MS => Some("10".into()),
+            ENV_TASK_STORE_EVENT_CAP => Some("11".into()),
+            ENV_TASK_STORE_SEGMENT_CAP => Some("12".into()),
+            ENV_TASK_STORE_MAINTENANCE_INTERVAL_MS => Some("13".into()),
+            _ => None,
+        });
+        assert_eq!(
+            overridden,
+            TaskStoreMaintenanceConfig {
+                retention_window_ms: 10,
+                max_events_per_task: 11,
+                max_segments_per_task: 12,
+                maintenance_interval_ms: 13,
+            }
+        );
+
+        let invalid = TaskStoreMaintenanceConfig::from_lookup(|name| match name {
+            ENV_TASK_STORE_RETENTION_WINDOW_MS => Some("-1".into()),
+            ENV_TASK_STORE_EVENT_CAP => Some("not-a-number".into()),
+            ENV_TASK_STORE_SEGMENT_CAP => Some("-12".into()),
+            ENV_TASK_STORE_MAINTENANCE_INTERVAL_MS => Some("-13".into()),
+            _ => None,
+        });
+        assert_eq!(invalid, TaskStoreMaintenanceConfig::default());
+    }
+
     #[tokio::test]
     async fn actor_opens_store_and_lists_empty_tasks() {
         let dir = tempfile::tempdir().unwrap();
@@ -961,6 +1160,92 @@ mod tests {
         assert!(
             handle.dropped_best_effort_writes() > 0,
             "a 10k-deep flood past the bounded queue must shed at least one write"
+        );
+    }
+
+    #[tokio::test]
+    async fn actor_maintenance_prunes_old_terminal_and_caps_written_rows() {
+        let dir = tempfile::tempdir().unwrap();
+        #[cfg(unix)]
+        std::fs::set_permissions(
+            dir.path(),
+            std::os::unix::fs::PermissionsExt::from_mode(0o700),
+        )
+        .unwrap();
+
+        {
+            let store = TaskStore::open(dir.path()).unwrap();
+            let old_terminal = store
+                .create_task(NewTask {
+                    label: "old".into(),
+                    schema_version: TASK_STORE_SCHEMA_VERSION,
+                })
+                .unwrap();
+            store
+                .ensure_turn_segment(&old_terminal, "old-session", "old-turn", Some(1))
+                .unwrap();
+            store
+                .append_typed_event(
+                    &old_terminal,
+                    "marker",
+                    serde_json::json!({"kind": "marker"}),
+                )
+                .unwrap();
+            store
+                .set_task_created_at_for_test(&old_terminal, now_millis() - 1_000_000)
+                .unwrap();
+            store
+                .set_state(&old_terminal, TaskState::Completed)
+                .unwrap();
+        }
+
+        let handle = TaskStoreHandle::open_with_maintenance_config_for_test(
+            dir.path().to_path_buf(),
+            TaskStoreMaintenanceConfig {
+                retention_window_ms: 60_000,
+                max_events_per_task: 3,
+                max_segments_per_task: 2,
+                maintenance_interval_ms: 0,
+            },
+        )
+        .unwrap();
+
+        assert!(
+            handle
+                .list_tasks(Default::default())
+                .await
+                .unwrap()
+                .is_empty(),
+            "startup maintenance must prune old terminal tasks through the actor path"
+        );
+
+        for index in 0..5 {
+            handle
+                .record_command_event(
+                    "s1".into(),
+                    format!("t{index}"),
+                    Some(7),
+                    serde_json::json!({"method": "noop", "status": "ok", "index": index}),
+                )
+                .await
+                .unwrap();
+        }
+
+        let rows = handle.list_tasks(Default::default()).await.unwrap();
+        assert_eq!(rows.len(), 1);
+        let episode = handle
+            .export_episode(rows[0].task_id.clone())
+            .await
+            .unwrap();
+        assert_eq!(
+            episode.events.len(),
+            3,
+            "actor-written task events must be capped by periodic maintenance"
+        );
+        assert_eq!(
+            episode.turns.len(),
+            2,
+            "actor-created execution segments must be capped by periodic maintenance"
         );
     }
 }
